@@ -1,0 +1,51 @@
+dependency_id,source_slice,target_slice,dependency_type,reason
+PRF_DEP_001,PRF-000,PRF-001,data,Release gate records must use the frozen target gap list
+PRF_DEP_002,PRF-001,PRF-002,data,Target zero-grey gate consumes release gate and conformance manifest records
+PRF_DEP_003,PRF-002,PRF-003,process,Registry status updater must enforce target gate evidence rules
+PRF_DEP_003A,PRF-000,PRF-004,data,Target evidence manifest is keyed from the frozen target gap registry
+PRF_DEP_003B,PRF-004,PRF-002,data,Target zero-grey gate consumes target evidence requirements
+PRF_DEP_003C,PRF-005,PRF-010,audit,TLS drift baseline must use preflight inventory as starting evidence
+PRF_DEP_003D,PRF-006,PRF-020,format,Catalog descriptor changes must comply with durable format migration policy
+PRF_DEP_003E,PRF-006,PRF-030,format,Constraint descriptor changes must comply with durable format migration policy
+PRF_DEP_003F,PRF-006,PRF-041,format,Checkpoint dirty manifest backup delta and PITR structures must comply with durable format migration policy
+PRF_DEP_003G,PRF-007,PRF-013,test,TLS negative gates must cover the fault injection matrix
+PRF_DEP_003H,PRF-007,PRF-034,test,Constraint diagnostic gates must cover the fault injection matrix
+PRF_DEP_003I,PRF-007,PRF-042,test,Recovery idempotency gates must cover the fault injection matrix
+PRF_DEP_003J,PRF-008,PRF-001,coordination,Agent write scopes must be assigned before parallel implementation begins
+PRF_DEP_003K,PRF-009,PRF-019,spec,SQL object synonym implementation cannot start until canonical synonym specs are manifest-listed and updated
+PRF_DEP_004,PRF-010,PRF-011,design,TLS implementation must start from drift and threat model evidence
+PRF_DEP_005,PRF-011,PRF-012,security,Authentication channel binding depends on the concrete TLS transport path
+PRF_DEP_006,PRF-012,PRF-013,test,TLS tests require transport and engine auth binding implementation
+PRF_DEP_006A,PRF-014,PRF-013,test,TLS tests require generated certificate and negative fixture policy
+PRF_DEP_006B,PRF-018,PRF-020,design,Catalog descriptor implementation requires physical index and projection naming decisions
+PRF_DEP_006B1,PRF-018,PRF-019,design,Synonym implementation consumes catalog physical index and projection naming decisions
+PRF_DEP_006C,PRF-019,PRF-020,design,Catalog common descriptors must include first-class synonym object descriptor requirements
+PRF_DEP_006D,PRF-019,PRF-022,data,Resolver closure must enforce synonym object name conflict and language determination rules
+PRF_DEP_007,PRF-020,PRF-021,data,Physical sys.catalog tables depend on final common descriptor and row codec fields
+PRF_DEP_008,PRF-021,PRF-022,data,Resolver tables attach to physical catalog object identities
+PRF_DEP_009,PRF-021,PRF-023,transaction,Catalog generation commit and rollback requires physical catalog table authority
+PRF_DEP_010,PRF-023,PRF-024,data,Dependency graph updates must publish through catalog generation and MGA commit rules
+PRF_DEP_011,PRF-022,PRF-025,data,Readable catalog projections depend on name and comment resolver closure
+PRF_DEP_011A,PRF-019,PRF-024,data,Synonym target UUIDs must publish dependency edges and support bounded traversal diagnostics
+PRF_DEP_012,PRF-025,PRF-026,data,Information projections reuse catalog readable resolver and security filtering
+PRF_DEP_012A,PRF-019,PRF-026,data,sys.information_schema synonym behavior depends on first-class SQL object synonym semantics
+PRF_DEP_013,PRF-021,PRF-027,diagnostic,Catalog diagnostic and metadata gates depend on physical catalog descriptor coverage
+PRF_DEP_014,PRF-020,PRF-030,data,Constraint descriptors depend on common catalog descriptor fields
+PRF_DEP_015,PRF-030,PRF-031,parser,Constraint DDL and lowering depend on descriptor model
+PRF_DEP_016,PRF-031,PRF-032,execution,DML enforcement depends on constraint DDL and catalog persistence
+PRF_DEP_016A,PRF-035,PRF-032,execution,DML constraint enforcement depends on backing-index dependency policy
+PRF_DEP_017,PRF-032,PRF-033,transaction,Constraint transaction behavior depends on enforcement points
+PRF_DEP_018,PRF-032,PRF-034,diagnostic,Constraint diagnostics depend on concrete enforcement outcomes
+PRF_DEP_019,PRF-040,PRF-041,storage,Dirty manifest emission depends on recovery proof model
+PRF_DEP_020,PRF-041,PRF-042,recovery,Startup recovery consumes checkpoint and dirty manifest records
+PRF_DEP_021,PRF-042,PRF-043,recovery,Backup restore proof must agree with restart recovery evidence
+PRF_DEP_022,PRF-043,PRF-044,recovery,Delta coverage records depend on backup timeline and coverage manifests
+PRF_DEP_023,PRF-044,PRF-045,recovery,PITR rollforward depends on backup and delta coverage proof
+PRF_DEP_024,PRF-041,PRF-046,durability,Durability ordering must protect checkpoint publication and manifest correctness
+PRF_DEP_024A,PRF-049,PRF-050,test,Full route implementation tests must follow the full-route acceptance fixture contract
+PRF_DEP_025,PRF-013,PRF-050,integration,Full route tests require TLS transport security gates
+PRF_DEP_026,PRF-027,PRF-050,integration,Full route tests require catalog diagnostics and metadata
+PRF_DEP_027,PRF-034,PRF-050,integration,Full route tests require constraints and diagnostics
+PRF_DEP_028,PRF-045,PRF-050,integration,Full route tests require backup delta and PITR implementation
+PRF_DEP_029,PRF-050,PRF-060,release,Final target closure depends on full-route integration passing
+PRF_DEP_030,PRF-060,PRF-061,release,Global non-target regression audit runs after final target zero-grey closure

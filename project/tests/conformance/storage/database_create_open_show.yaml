@@ -1,0 +1,18 @@
+id: DBOPEN-CONFORMANCE-001
+status: specified
+surface: storage.database.create_open_show
+probe: sb_database_probe
+requires:
+  - uuidv7_database_identity
+  - uuidv7_filespace_identity
+  - engine_internal_show_database
+  - no_sql_parser_authority
+expect:
+  ok: true
+  show_version_rows: 1
+  show_database_rows: 1
+  catalog_objects_minimum: 4
+  transaction_state: committed
+notes:
+  - This fixture is declarative until the validation gate is explicitly run.
+  - The database file path and UUIDv7 values are supplied by the validation harness.

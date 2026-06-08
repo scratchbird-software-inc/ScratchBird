@@ -1,0 +1,42 @@
+// SEARCH_KEY: ARHC_SINGLE_SOURCE_AGENT_MANIFEST
+// SEARCH_KEY: AEIC_GENERATED_AGENT_MANIFEST_DRIFT_GATE
+//
+// Single machine-readable agent manifest.
+//
+// Format:
+//   SB_AGENT_MANIFEST_ENTRY(type_id, deployment, scope, authority, activation)
+//
+// `type_id`, `deployment`, `authority`, and `activation` are tokens. `scope` is
+// a string literal. This file is included by the runtime manifest builder and
+// parsed by the AEIC manifest drift gate; do not duplicate canonical agent
+// identity lists elsewhere without adding a gate comparison.
+
+SB_AGENT_MANIFEST_ENTRY(node_resource_agent, local, "node", observe_only, observe_only)
+SB_AGENT_MANIFEST_ENTRY(metrics_registry_manager, both, "node/database/cluster", direct_bounded_action, dry_run)
+SB_AGENT_MANIFEST_ENTRY(storage_health_manager, local, "node/database/filespace", recommend_only, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(filespace_capacity_manager, local, "node/database/filespace", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(page_allocation_manager, local, "database/filespace/page_family/page_type", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(memory_governor, local, "node/database/session/workload", direct_bounded_action, dry_run)
+SB_AGENT_MANIFEST_ENTRY(index_health_manager, local, "database/index", recommend_only, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(cluster_autoscale_manager, cluster, "cluster", request_action, disabled)
+SB_AGENT_MANIFEST_ENTRY(admission_control_manager, both, "database/cluster/workload", direct_bounded_action, dry_run)
+SB_AGENT_MANIFEST_ENTRY(parser_interface_manager, local, "node/parser/interface", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(transaction_pressure_manager, both, "database/cluster", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(storage_version_cleanup_agent, local, "database/filespace/page_family/row_version", direct_bounded_action, dry_run)
+SB_AGENT_MANIFEST_ENTRY(cleanup_archive_manager, both, "database/cluster", direct_bounded_action, dry_run)
+SB_AGENT_MANIFEST_ENTRY(policy_recommendation_manager, both, "database/cluster", recommend_only, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(distributed_query_metrics_agent, cluster, "cluster/query", observe_only, disabled)
+SB_AGENT_MANIFEST_ENTRY(remote_query_routing_agent, cluster, "cluster/query/route", request_action, disabled)
+SB_AGENT_MANIFEST_ENTRY(runtime_learning_agent, local, "database/optimizer", recommend_only, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(support_bundle_triage_agent, both, "node/database/cluster/support", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(cluster_scheduler_manager, cluster, "cluster/jobs", request_action, disabled)
+SB_AGENT_MANIFEST_ENTRY(job_control_manager, both, "database/cluster/jobs", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(backup_manager, both, "database/cluster/backup", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(archive_manager, both, "database/cluster/archive", direct_bounded_action, dry_run)
+SB_AGENT_MANIFEST_ENTRY(restore_drill_manager, both, "database/cluster/restore", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(pitr_manager, both, "database/cluster/pitr", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(identity_manager, both, "database/cluster/security", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(session_control_manager, both, "database/cluster/session", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(alert_manager, both, "node/database/cluster", direct_bounded_action, dry_run)
+SB_AGENT_MANIFEST_ENTRY(export_adapter_manager, both, "node/database/cluster/export", request_action, recommend_only)
+SB_AGENT_MANIFEST_ENTRY(cluster_upgrade_manager, cluster, "cluster/upgrade", request_action, disabled)

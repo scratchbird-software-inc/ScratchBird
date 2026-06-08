@@ -1,0 +1,407 @@
+{
+  "schema_version": "1.0",
+  "gate_id": "DSR-044",
+  "search_key": "DRIVER_SERVER_DOCUMENTATION_SAMPLE_APP",
+  "route_declaration_source": "project/drivers/DriverPackageManifest.csv",
+  "required_capabilities": [
+    "dsn",
+    "auth",
+    "tls",
+    "transactions",
+    "prepared_statements",
+    "metadata",
+    "diagnostics",
+    "cancel_or_lifecycle"
+  ],
+  "coverage_defaults": {
+    "dsn": "DriverPackageManifest dsn_key_set plus lane CTest or smoke harness exercises connection-string or DSN setup.",
+    "auth": "Engine-owned authentication identity is declared in auth_method_set and exercised by the lane CTest or smoke harness.",
+    "tls": "ScratchBird TLS profile is declared in tls_profile_set and exercised by the lane CTest or smoke harness.",
+    "transactions": "MGA transaction semantics are covered by lane transaction conformance or package-contract smoke harness.",
+    "prepared_statements": "Prepared statement prepare/bind/execute coverage is declared in lane conformance and exercised by CTest or smoke harness.",
+    "metadata": "Result and catalog metadata coverage is declared in lane conformance and exercised by CTest or smoke harness.",
+    "diagnostics": "SQLSTATE and native diagnostic mapping coverage is declared in lane conformance and exercised by CTest or smoke harness.",
+    "cancel_or_lifecycle": "Cancel, timeout, pool reset, adapter lifecycle, or tool lifecycle behavior is covered by the lane CTest or smoke harness."
+  },
+  "shortcut_rejection": {
+    "parser_only_shortcuts": "rejected",
+    "direct_engine_evidence": "rejected",
+    "allowed_route": "client_or_driver_or_tool_to_sbwp_tls_or_admitted_ipc_to_listener_parser_server_engine"
+  },
+  "lanes": [
+    {
+      "component_id": "driver:adbc",
+      "documentation_refs": ["project/drivers/driver/adbc/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_adbc_gate",
+        "ctest_label": "driver_adbc_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_adbc_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:adbc"
+    },
+    {
+      "component_id": "driver:flightsql",
+      "documentation_refs": ["project/drivers/driver/flightsql/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_flightsql_gate",
+        "ctest_label": "driver_flightsql_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_flightsql_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:flightsql"
+    },
+    {
+      "component_id": "driver:julia",
+      "documentation_refs": ["project/drivers/driver/julia/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_julia_gate",
+        "ctest_label": "driver_julia_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_julia_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:julia"
+    },
+    {
+      "component_id": "driver:perl",
+      "documentation_refs": ["project/drivers/driver/perl/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_perl_gate",
+        "ctest_label": "driver_perl_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_perl_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:perl"
+    },
+    {
+      "component_id": "driver:r2dbc",
+      "documentation_refs": ["project/drivers/driver/r2dbc/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_r2dbc_gate",
+        "ctest_label": "driver_r2dbc_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_r2dbc_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:r2dbc"
+    },
+    {
+      "component_id": "adaptor:scratchbird-airbyte",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-airbyte/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_airbyte_gate",
+        "ctest_label": "adaptor_airbyte_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_airbyte_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-airbyte"
+    },
+    {
+      "component_id": "adaptor:scratchbird-dbt-adapter",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-dbt-adapter/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_dbt_gate",
+        "ctest_label": "adaptor_dbt_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_dbt_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-dbt-adapter"
+    },
+    {
+      "component_id": "adaptor:scratchbird-looker",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-looker/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_looker_gate",
+        "ctest_label": "adaptor_looker_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_looker_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-looker"
+    },
+    {
+      "component_id": "adaptor:scratchbird-powerbi",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-powerbi/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_powerbi_gate",
+        "ctest_label": "adaptor_powerbi_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_powerbi_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-powerbi"
+    },
+    {
+      "component_id": "adaptor:scratchbird-tableau",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-tableau/package_contract.json"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_tableau_gate",
+        "ctest_label": "adaptor_tableau_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_tableau_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-tableau"
+    },
+    {
+      "component_id": "driver:cpp",
+      "documentation_refs": ["project/drivers/driver/cpp/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_cpp_gate",
+        "ctest_label": "driver_cpp_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_cpp_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:cpp"
+    },
+    {
+      "component_id": "driver:dart",
+      "documentation_refs": ["project/drivers/driver/dart/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_dart_gate",
+        "ctest_label": "driver_dart_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_dart_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:dart"
+    },
+    {
+      "component_id": "driver:dotnet",
+      "documentation_refs": ["project/drivers/driver/dotnet/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_dotnet_gate",
+        "ctest_label": "driver_dotnet_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_dotnet_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:dotnet"
+    },
+    {
+      "component_id": "driver:elixir",
+      "documentation_refs": ["project/drivers/driver/elixir/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_elixir_gate",
+        "ctest_label": "driver_elixir_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_elixir_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:elixir"
+    },
+    {
+      "component_id": "driver:go",
+      "documentation_refs": ["project/drivers/driver/go/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_go_gate",
+        "ctest_label": "driver_go_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_go_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:go"
+    },
+    {
+      "component_id": "driver:jdbc",
+      "documentation_refs": ["project/drivers/driver/jdbc/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_jdbc_gate",
+        "ctest_label": "driver_jdbc_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_jdbc_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:jdbc"
+    },
+    {
+      "component_id": "driver:mojo",
+      "documentation_refs": ["project/drivers/driver/mojo/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_mojo_gate",
+        "ctest_label": "driver_mojo_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_mojo_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:mojo"
+    },
+    {
+      "component_id": "driver:node",
+      "documentation_refs": ["project/drivers/driver/node/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_node_gate",
+        "ctest_label": "driver_node_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_node_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:node"
+    },
+    {
+      "component_id": "driver:odbc",
+      "documentation_refs": ["project/drivers/driver/odbc/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_odbc_gate",
+        "ctest_label": "driver_odbc_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_odbc_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:odbc"
+    },
+    {
+      "component_id": "driver:pascal",
+      "documentation_refs": ["project/drivers/driver/pascal/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_pascal_gate",
+        "ctest_label": "driver_pascal_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_pascal_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:pascal"
+    },
+    {
+      "component_id": "driver:php",
+      "documentation_refs": ["project/drivers/driver/php/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_php_gate",
+        "ctest_label": "driver_php_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_php_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:php"
+    },
+    {
+      "component_id": "driver:python",
+      "documentation_refs": ["project/drivers/driver/python/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_python_gate",
+        "ctest_label": "driver_python_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_python_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:python"
+    },
+    {
+      "component_id": "driver:r",
+      "documentation_refs": ["project/drivers/driver/r/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_r_gate",
+        "ctest_label": "driver_r_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_r_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:r"
+    },
+    {
+      "component_id": "driver:ruby",
+      "documentation_refs": ["project/drivers/driver/ruby/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_ruby_gate",
+        "ctest_label": "driver_ruby_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_ruby_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:ruby"
+    },
+    {
+      "component_id": "driver:rust",
+      "documentation_refs": ["project/drivers/driver/rust/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_rust_gate",
+        "ctest_label": "driver_rust_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_rust_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:rust"
+    },
+    {
+      "component_id": "driver:swift",
+      "documentation_refs": ["project/drivers/driver/swift/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "driver_swift_gate",
+        "ctest_label": "driver_swift_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^driver_swift_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#driver:swift"
+    },
+    {
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-dbeaver-driver/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_dbeaver_gate",
+        "ctest_label": "adaptor_dbeaver_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_dbeaver_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-dbeaver-driver"
+    },
+    {
+      "component_id": "adaptor:scratchbird-hibernate-dialect",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-hibernate-dialect/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_hibernate_gate",
+        "ctest_label": "adaptor_hibernate_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_hibernate_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-hibernate-dialect"
+    },
+    {
+      "component_id": "adaptor:scratchbird-metabase-driver",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-metabase-driver/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_metabase_gate",
+        "ctest_label": "adaptor_metabase_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_metabase_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-metabase-driver"
+    },
+    {
+      "component_id": "adaptor:scratchbird-prisma-adapter",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-prisma-adapter/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_prisma_gate",
+        "ctest_label": "adaptor_prisma_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_prisma_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-prisma-adapter"
+    },
+    {
+      "component_id": "adaptor:scratchbird-sqlalchemy-dialect",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-sqlalchemy-dialect/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_sqlalchemy_gate",
+        "ctest_label": "adaptor_sqlalchemy_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_sqlalchemy_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-sqlalchemy-dialect"
+    },
+    {
+      "component_id": "adaptor:scratchbird-superset-driver",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-superset-driver/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_superset_gate",
+        "ctest_label": "adaptor_superset_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_superset_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-superset-driver"
+    },
+    {
+      "component_id": "adaptor:scratchbird-typeorm-adapter",
+      "documentation_refs": ["project/drivers/adaptor/scratchbird-typeorm-adapter/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "adaptor_typeorm_gate",
+        "ctest_label": "adaptor_typeorm_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^adaptor_typeorm_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#adaptor:scratchbird-typeorm-adapter"
+    },
+    {
+      "component_id": "tool:cli",
+      "documentation_refs": ["project/drivers/tool/cli/README.md"],
+      "sample_harness": {
+        "kind": "ctest",
+        "ctest_name": "tool_cli_gate",
+        "ctest_label": "tool_cli_gate",
+        "command": "ctest --test-dir build --output-on-failure -R ^tool_cli_gate$"
+      },
+      "declared_route_ref": "project/drivers/DriverPackageManifest.csv#tool:cli"
+    }
+  ]
+}

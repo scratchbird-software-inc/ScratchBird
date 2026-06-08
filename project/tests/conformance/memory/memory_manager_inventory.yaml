@@ -1,0 +1,77 @@
+# MEMORY-MANAGER-CONFORMANCE
+inventory: memory_manager
+status: implemented_pending_validation
+required_policies:
+  - hard_limit_bytes
+  - soft_limit_bytes
+  - per_context_limit_bytes
+  - page_buffer_pool_limit_bytes
+  - failure_mode
+  - zero_memory_on_release
+required_context_fields:
+  - subsystem
+  - purpose
+  - category
+  - lifetime
+  - owner
+  - context_id
+required_categories:
+  implemented_now:
+    - core_runtime
+    - page_buffer
+    - catalog_bootstrap
+    - resource_seed
+    - datatype_payload
+    - transaction_local
+    - transaction_snapshot
+    - version_chain
+    - cleanup
+    - archive
+    - metrics
+    - diagnostics
+    - test_probe
+  reserved_hooks:
+    - executor_query_reserved
+    - parser_handoff_reserved
+    - udr_reserved
+    - llvm_code_reserved
+    - llvm_data_reserved
+    - gpu_host_pinned_reserved
+    - gpu_device_reserved
+    - cluster_control_reserved
+    - cluster_decision_reserved
+required_lifetimes:
+  - process
+  - database
+  - connection
+  - transaction
+  - statement
+  - page_buffer
+  - arena
+  - temporary
+  - deferred_epoch
+  - static_reserved
+required_metrics:
+  - current_bytes
+  - peak_bytes
+  - allocation_count
+  - deallocation_count
+  - failure_count
+  - active_allocation_count
+  - policy_rejection_count
+  - unknown_pointer_failure_count
+  - page_buffer_current_bytes
+  - page_buffer_peak_bytes
+  - arena_current_bytes
+  - arena_peak_bytes
+  - leak_candidate_count
+required_failure_diagnostics:
+  - SB-MEMORY-ALLOC-ZERO-SIZE
+  - SB-MEMORY-ALLOC-ALIGNMENT-INVALID
+  - SB-MEMORY-ALLOC-CONTEXT-LIMIT-EXCEEDED
+  - SB-MEMORY-ALLOC-LIMIT-EXCEEDED
+  - SB-MEMORY-PAGE-BUFFER-POOL-LIMIT-EXCEEDED
+  - SB-MEMORY-PAGE-BUFFER-SIZE-INVALID
+  - SB-MEMORY-PAGE-BUFFER-COUNT-INVALID
+  - SB-MEMORY-DEALLOC-UNKNOWN-POINTER
+required_probe: sb_memory_probe

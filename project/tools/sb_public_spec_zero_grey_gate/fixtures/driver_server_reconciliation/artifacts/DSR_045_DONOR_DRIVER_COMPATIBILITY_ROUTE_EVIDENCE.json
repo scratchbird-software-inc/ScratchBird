@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "gate_id": "DSR-045",
+  "search_key": "DRIVER_SERVER_DONOR_COMPATIBILITY_ROUTE",
+  "route_requirement": "donor tool or compatibility driver to ScratchBird SBWP/TLS or admitted IPC listener, parser, server, and engine route",
+  "required_donor_families": [
+    "firebird",
+    "postgresql",
+    "mysql"
+  ],
+  "shortcut_rejection": {
+    "parser_only_shortcuts": "rejected",
+    "direct_engine_evidence": "rejected",
+    "allowed_route": "donor_tool_or_driver_to_sbwp_tls_or_admitted_ipc_to_listener_parser_server_engine"
+  },
+  "routes": [
+    {
+      "route_id": "firebird-isql-sbwp-listener-parser-server-engine",
+      "donor_family": "firebird",
+      "donor_tool": "isql",
+      "compatibility_profile": "firebird_5_0_4",
+      "scratchbird_route_command": "scratchbird-route --donor-tool isql --profile firebird_5_0_4 --dsn scratchbird://127.0.0.1:3092/dsr045_firebird?wire=sbwp_v1_1&tls=required --auth engine:driver_compat_route --via listener/parser/server/engine",
+      "auth_identity": "engine:driver_compat_route",
+      "expected_behavior_source": [
+        "public_contract_snapshot",
+        "public_contract_snapshot",
+        "public_contract_snapshot"
+      ],
+      "comparison_rule": "Normalize donor tool and ScratchBird route output, compare row values, row counts, SQLSTATE, diagnostics, metadata names, and transaction finality.",
+      "refusal_rule": "Unsupported Firebird profile features fail closed with profile refusal evidence; parser-only success is not accepted as compatibility evidence.",
+      "ctest_label": "DSR-045;donor_driver_compatibility_route;public_single_node_full_route_gate;sbwp_tls_engine_auth_gate",
+      "artifact_location": "project/drivers/fixtures/driver_server_reconciliation/artifacts/DSR_045_DONOR_DRIVER_COMPATIBILITY_ROUTE_EVIDENCE.json",
+      "parser_only_shortcut_rejected": true,
+      "direct_engine_evidence_rejected": true
+    },
+    {
+      "route_id": "postgresql-psql-sbwp-listener-parser-server-engine",
+      "donor_family": "postgresql",
+      "donor_tool": "psql",
+      "compatibility_profile": "postgresql_16",
+      "scratchbird_route_command": "scratchbird-route --donor-tool psql --profile postgresql_16 --dsn scratchbird://127.0.0.1:3092/dsr045_postgresql?wire=sbwp_v1_1&tls=required --auth engine:driver_compat_route --via listener/parser/server/engine",
+      "auth_identity": "engine:driver_compat_route",
+      "expected_behavior_source": [
+        "public_contract_snapshot",
+        "public_contract_snapshot",
+        "public_contract_snapshot"
+      ],
+      "comparison_rule": "Normalize donor tool and ScratchBird route output, compare row values, row counts, SQLSTATE, diagnostics, metadata names, and transaction finality.",
+      "refusal_rule": "Unsupported PostgreSQL profile features fail closed with profile refusal evidence; parser-only success is not accepted as compatibility evidence.",
+      "ctest_label": "DSR-045;donor_driver_compatibility_route;public_single_node_full_route_gate;sbwp_tls_engine_auth_gate",
+      "artifact_location": "project/drivers/fixtures/driver_server_reconciliation/artifacts/DSR_045_DONOR_DRIVER_COMPATIBILITY_ROUTE_EVIDENCE.json",
+      "parser_only_shortcut_rejected": true,
+      "direct_engine_evidence_rejected": true
+    },
+    {
+      "route_id": "mysql-cli-sbwp-listener-parser-server-engine",
+      "donor_family": "mysql",
+      "donor_tool": "mysql",
+      "compatibility_profile": "mysql_8_lts",
+      "scratchbird_route_command": "scratchbird-route --donor-tool mysql --profile mysql_8_lts --dsn scratchbird://127.0.0.1:3092/dsr045_mysql?wire=sbwp_v1_1&tls=required --auth engine:driver_compat_route --via listener/parser/server/engine",
+      "auth_identity": "engine:driver_compat_route",
+      "expected_behavior_source": [
+        "public_contract_snapshot",
+        "public_contract_snapshot",
+        "public_contract_snapshot"
+      ],
+      "comparison_rule": "Normalize donor tool and ScratchBird route output, compare row values, row counts, SQLSTATE, diagnostics, metadata names, and transaction finality.",
+      "refusal_rule": "Unsupported MySQL profile features fail closed with profile refusal evidence; parser-only success is not accepted as compatibility evidence.",
+      "ctest_label": "DSR-045;donor_driver_compatibility_route;public_single_node_full_route_gate;sbwp_tls_engine_auth_gate",
+      "artifact_location": "project/drivers/fixtures/driver_server_reconciliation/artifacts/DSR_045_DONOR_DRIVER_COMPATIBILITY_ROUTE_EVIDENCE.json",
+      "parser_only_shortcut_rejected": true,
+      "direct_engine_evidence_rejected": true
+    }
+  ]
+}

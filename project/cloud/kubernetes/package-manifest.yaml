@@ -1,0 +1,29 @@
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdKubernetesOperatorPackage
+metadata:
+  name: public-single-node-operator-package
+profile: public-single-node
+searchKey: SB_K8S_PUBLIC_SINGLE_NODE_PACKAGE_MANIFEST
+artifacts:
+  - path: project/cloud/kubernetes/README.md
+    purpose: operator_asset_index
+  - path: project/cloud/kubernetes/contracts/public-single-node-operator-contract.yaml
+    purpose: public_single_node_contract
+  - path: project/cloud/kubernetes/crds/public-single-node-crds.yaml
+    purpose: kubernetes_crd_schema_bundle
+  - path: project/cloud/kubernetes/manifests/public-single-node/sample-stack.yaml
+    purpose: public_single_node_sample_stack
+  - path: project/cloud/kubernetes/fixtures/public-single-node/database-shutdown.yaml
+    purpose: shutdown_positive_fixture
+  - path: project/cloud/kubernetes/fixtures/public-single-node/database-cluster-field-refused.yaml
+    purpose: cluster_field_refusal_fixture
+  - path: project/cloud/kubernetes/fixtures/public-single-node/database-shutdown-refused.yaml
+    purpose: shutdown_refusal_fixture
+  - path: project/cloud/kubernetes/tools/operator_gate.py
+    purpose: local_dry_run_reconcile_gate
+  - path: project/tests/cloud_ops/kubernetes_operator_lifecycle_gate.py
+    purpose: local_conformance_gate
+gates:
+  - name: kubernetes_operator_lifecycle_gate
+    command: python3 project/tests/cloud_ops/kubernetes_operator_lifecycle_gate.py --repo-root .
+    evidence: deterministic_crd_dry_run_reconcile_refusal_status

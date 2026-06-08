@@ -1,0 +1,3 @@
+search_key,claim_id,workload,baseline_result,current_result,baseline_proxy,current_proxy,equality_status,result_hash
+DPC_EVIDENCE_PROVENANCE_RETENTION_GATE,DPC-072-PAGE-SUMMARY,wl08-range-scan,baseline-full-scan,summary-prune,1000,240,passed,115d7400880e48f28999933a3bcc989713292f25a4206dddeadcafbfeff86673
+DPC_EVIDENCE_PROVENANCE_RETENTION_GATE,DPC-072-PAGE-SUMMARY,wl10-aggregate,baseline-full-scan,summary-prune,800,220,passed,df0e8590067ac01adde516447813870861d01ca38f77b8ca8d8c8401fd87c56b

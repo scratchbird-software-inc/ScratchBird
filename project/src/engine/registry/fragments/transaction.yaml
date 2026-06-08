@@ -1,0 +1,6 @@
+# SBSQL source-layout registry fragment: transaction
+# This fragment is the future source-of-editing for transaction registry rows.
+# Existing aggregate registries remain authoritative until a later registry
+# migration execution_plan moves rows into fragments.
+family: transaction
+rows: []

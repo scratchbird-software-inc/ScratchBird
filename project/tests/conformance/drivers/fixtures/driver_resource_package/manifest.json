@@ -1,0 +1,45 @@
+{
+  "artifact_role": "readiness_control_fixture_manifest",
+  "authority_boundary": "Fixture evidence is conformance input only; it is not product behavior authority.",
+  "canonical_sources": [
+    "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIVER_RESOURCE_PACKAGE_SCHEMA.csv#schema_id",
+    "public_input_snapshot"
+  ],
+  "cases": [
+    {
+      "case_id": "DPR-FIX-007-POS-001",
+      "case_kind": "positive_control",
+      "expected_gate_behavior": "Pass fixture catalog materialization checks only.",
+      "purpose": "Verify the indexed canonical sources and consumer handoff are present before implementation agents start."
+    },
+    {
+      "case_id": "DPR-FIX-007-NEG-001",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "unsigned package"
+    },
+    {
+      "case_id": "DPR-FIX-007-NEG-002",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "hash mismatch"
+    },
+    {
+      "case_id": "DPR-FIX-007-NEG-003",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "profile collapse"
+    }
+  ],
+  "consumer_agents": [
+    "driver_resource_generator_agent",
+    "driver_lane_agents"
+  ],
+  "covered_gates": [
+    "DPR-GATE-009",
+    "DPR-GATE-009A"
+  ],
+  "fixture_family": "driver_resource_package_fixtures",
+  "fixture_id": "DPR-FIX-007",
+  "forbidden_fixture_source": "manual generated resource edit"
+}

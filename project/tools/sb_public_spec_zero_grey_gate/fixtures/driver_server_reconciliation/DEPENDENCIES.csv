@@ -1,0 +1,20 @@
+dependency_id,required_for,status,source_or_owner,notes
+DSR_DEP_001,All phases,available,public_contract_snapshot,Canonical checklist registry.
+DSR_DEP_002,P1-P4,available,public_audit_summary,Spec-gap evidence source.
+DSR_DEP_003,P1-P4,available,public_audit_summary,Implementation-ahead evidence source.
+DSR_DEP_004,P1-P4,available,public_contract_snapshot,Authority manifest must include new spec/registry files.
+DSR_DEP_005,P1-P4,available,public_contract_snapshot,Needed for D2/D5/D22 connect-time options.
+DSR_DEP_006,P1-P4,available,public_contract_snapshot,Needed for D11/D12 cancel/timeout diagnostics.
+DSR_DEP_007,P1-P4,available,public_contract_snapshot,Needed for per-lane row status gates.
+DSR_DEP_008,P2-P4,available,project/src/engine/internal_api/SBLR_API_OPERATION_MATRIX.yaml,Implementation matrix to reconcile into spec registry.
+DSR_DEP_009,P2-P4,available,project/src/core/datatypes/datatype_descriptor.hpp,CanonicalTypeId implementation enum to stitch into wire/type specs.
+DSR_DEP_010,P3-P4,available,project/drivers,Driver/adaptor/tool source lanes have row-status and package evidence reconciliation.
+DSR_DEP_011,P4,available,CTest,CTest includes checklist-row evidence enforcement for all lanes.
+DSR_DEP_012,P4,available,local server route,Benchmark/full-route tests must be verified against the real SBWP/TLS/listener/parser/server/engine route.
+DSR_DEP_013,P1-P4,available,public_contract_snapshot,Protocol version and feature negotiation rules are byte specified for compatibility tests.
+DSR_DEP_014,P1-P4,available,public_contract_snapshot,Deterministic refusal rows use the same diagnostic authority as cancel timeout and network outcomes.
+DSR_DEP_015,P2-P4,available,project/tests,Fuzz and fault injection harnesses are extended for wire/auth/driver route tests.
+DSR_DEP_016,P3-P4,available,project/drivers,Packaging evidence is represented in lane row-status manifests and enforced by CTest.
+DSR_DEP_017,P4,available,project/drivers;project/tests,Performance budgets depend on real-route benchmark fixtures and current baseline capture.
+DSR_DEP_018,P4,available,references donor sources and tools,Donor compatibility route evidence depends on donor tools and compatibility drivers being available or explicitly cited unavailable.
+DSR_DEP_019,P5,available,public_audit_summary,Release declaration generation depends on row-status manifests CTest evidence implementation-ahead classification and inventory sync.

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "min_supported_schema_version": 1,
+  "max_supported_schema_version": 1,
+  "policy_pack_uuid": "018f7a10-1280-7000-8000-000000000001",
+  "policy_pack_id": "default-local-password",
+  "policy_pack_version": "1.0.0",
+  "description": "First public release default policy pack: local password provider only.",
+  "content_hash_algorithm": "sha256",
+  "content_sha256": "2046eabdff50fdfe662511734b3d8036e2f4890da89f4d5266cddef5bc840462",
+  "signature_status": "signature-ready-unsigned",
+  "provenance": {
+    "source": "public-project-tree",
+    "generated": false,
+    "private_inputs_required": false,
+    "external_provider_runtime_required": false
+  },
+  "default_provider_policy": {
+    "mode": "local-password-only",
+    "enabled_provider_families": [
+      "local_password"
+    ],
+    "external_provider_families_disabled_by_default": [
+      "ldap_ad",
+      "oidc_jwt",
+      "saml",
+      "kerberos_pac",
+      "pam",
+      "radius",
+      "webauthn",
+      "certificate_mtls",
+      "workload_identity",
+      "managed_identity",
+      "custom_cpp_plugin"
+    ]
+  },
+  "create_time_only": true,
+  "post_create_filesystem_authority": false,
+  "catalog_materialization_metadata": "catalog_materialization.json",
+  "content_manifest": [
+    {
+      "path": "policies/security_providers.json",
+      "sha256": "15df7ee593a25189a5339fadc0e1ce33a479623b5f307e349d628ecdef22c35c"
+    },
+    {
+      "path": "policies/roles.json",
+      "sha256": "c526f07d47305e3cc4e991362b033354af9cdc142459cb34b52750628e41169c"
+    },
+    {
+      "path": "policies/groups.json",
+      "sha256": "bf629d16c267c2f109f940d942fd5c753f07a7addf6c402b45cd8a8e38fe148f"
+    },
+    {
+      "path": "policies/grants.json",
+      "sha256": "fe0602e1b600eb733318eacc7f9c04a6430301320bea23ff2930da09c85cd05f"
+    },
+    {
+      "path": "policies/policy_profiles.json",
+      "sha256": "66d476d657f3200e916be60fe36ca0b0e24a2129a9e46561f037115e781c21cc"
+    },
+    {
+      "path": "catalog_materialization.json",
+      "sha256": "aa7eb39c6969c27f881dc398218c771209d51b966e1e18f6097187cbae9dd408"
+    }
+  ]
+}

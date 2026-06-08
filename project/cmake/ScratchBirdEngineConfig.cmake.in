@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/ScratchBirdEngineTargets.cmake")
+
+if(NOT TARGET ScratchBird::sb_engine)
+  set(ScratchBirdEngine_FOUND FALSE)
+  set(ScratchBirdEngine_NOT_FOUND_MESSAGE "ScratchBird::sb_engine target was not exported")
+endif()

@@ -1,0 +1,47 @@
+category,key,count,closure_requirement
+total,sbsql_surfaces,2617,Every row has exact implementation evidence or exact required public fail-closed proof
+status,cluster_private,37,Must public-fail-closed and have private-profile evidence where private cluster authority exists
+status,native_now,2580,Must reach e2e_passed
+cluster_scope,cluster_private,57,Must public-fail-closed without cluster execution path
+cluster_scope,noncluster_or_profile_scoped,2560,Must reach e2e_passed
+surface_kind,canonical_surface,39,Must have exact parser/binder/lowering/server/engine evidence appropriate to this surface kind
+surface_kind,function,1515,Must have exact parser/binder/lowering/server/engine evidence appropriate to this surface kind
+surface_kind,grammar_production,1044,Must have exact parser/binder/lowering/server/engine evidence appropriate to this surface kind
+surface_kind,operator,18,Must have exact parser/binder/lowering/server/engine evidence appropriate to this surface kind
+surface_kind,variable,1,Must have exact parser/binder/lowering/server/engine evidence appropriate to this surface kind
+family,acceleration,4,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,archive_replication,10,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,bridge,34,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,cluster_private,24,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,ddl_catalog,180,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,dml,36,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,expression_runtime,1534,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,general,554,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,jobs_scheduler,8,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,migration,4,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,multi_model,70,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,observability,41,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,query,44,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,runtime_management,14,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,security,23,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,storage_management,11,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+family,transaction,26,"Must have exact family-level parser, SBLR, engine, diagnostic, and regression evidence"
+sblr_operation_family,sblr.acceleration.llvm.v3,1,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.acceleration.operation.v3,3,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.archive_replication.operation.v3,10,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.bridge.operation.v3,34,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.catalog.mutation.v3,180,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.cluster.private_operation.v3,24,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.dml.operation.v3,36,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.expression.runtime.v3,1534,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.general.operation.v3,553,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.jobs.operation.v3,8,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.management.runtime_operation.v3,14,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.migration.operation.v3,4,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.observability.inspect.v3,41,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.query.multimodel_or_ddl.v3,70,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.query.relational.v3,44,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.query.values.v3,1,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.security.mutation_or_inspect.v3,23,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.storage.management_operation.v3,11,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"
+sblr_operation_family,sblr.transaction.control.v3,26,"Must have exact SBLR operation-family binding, dispatch, result-shape, and diagnostic evidence"

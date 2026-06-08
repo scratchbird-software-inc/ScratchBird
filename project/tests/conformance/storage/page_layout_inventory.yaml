@@ -1,0 +1,57 @@
+# PAGE-LAYOUT-INVENTORY-CONFORMANCE
+suite: page_layout_inventory
+status: specified_for_probe
+probe: sb_storage_foundation_probe
+required_registry: BuiltinPageLayoutRegistry
+supported_page_sizes:
+  - 1024
+  - 2048
+  - 4096
+  - 8192
+  - 16384
+  - 32768
+  - 65536
+  - 131072
+  - 262144
+  - 524288
+  - 1048576
+cases:
+  - id: PAGE-CONF-001
+    name: every defined page type has layout metadata
+    required_page_types:
+      - database_header
+      - allocation_map
+      - catalog
+      - transaction_inventory
+      - row_data
+      - index_btree
+      - blob
+      - metrics
+      - archive
+      - columnar
+      - vector
+      - graph
+      - reserved_local
+      - cluster_decision
+      - cluster_route
+      - cluster_catalog
+      - cluster_transaction
+      - encrypted_opaque
+  - id: PAGE-CONF-002
+    name: local writable page types compute nonzero usable capacity by supported page size
+    expected_capacity: nonzero_for_payload_pages
+  - id: TOAST-CONF-001
+    name: toast planner computes chunk count by page size
+    required_function: PlanToastValue
+  - id: ROWPAGE-CONF-001
+    name: row-data page body round-trips typed cells
+    required_functions:
+      - BuildRowDataPageBody
+      - ParseRowDataPageBody
+    expected:
+      row_uuid_required: true
+      transaction_uuid_required: true
+      typed_cells_use_datatype_binary_envelope: true
+  - id: ROWPAGE-CONF-002
+    name: oversized row page fails closed
+    expected_diagnostic: SB-ROW-DATA-PAGE-BODY-TOO-LARGE

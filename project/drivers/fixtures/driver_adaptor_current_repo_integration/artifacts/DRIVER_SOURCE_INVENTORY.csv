@@ -1,0 +1,35 @@
+category,name,relative_path,language,build_system,ctest_label,required_status,artifact_root
+driver,adbc,drivers/driver/adbc,C/Arrow ADBC,contract package,driver_adbc_gate,required,build/drivers/driver/adbc
+driver,cpp,drivers/driver/cpp,C++,CMake,driver_cpp_gate,required,build/drivers/driver/cpp
+driver,dart,drivers/driver/dart,Dart,pub,driver_dart_gate,required,build/drivers/driver/dart
+driver,dotnet,drivers/driver/dotnet,C#,dotnet,driver_dotnet_gate,required,build/drivers/driver/dotnet
+driver,elixir,drivers/driver/elixir,Elixir,mix,driver_elixir_gate,required,build/drivers/driver/elixir
+driver,flightsql,drivers/driver/flightsql,Arrow Flight SQL,contract package,driver_flightsql_gate,required,build/drivers/driver/flightsql
+driver,go,drivers/driver/go,Go,go,driver_go_gate,required,build/drivers/driver/go
+driver,jdbc,drivers/driver/jdbc,Java,Gradle,driver_jdbc_gate,required,build/drivers/driver/jdbc
+driver,julia,drivers/driver/julia,Julia,contract package,driver_julia_gate,required,build/drivers/driver/julia
+driver,mojo,drivers/driver/mojo,Mojo,mojo,driver_mojo_gate,required,build/drivers/driver/mojo
+driver,node,drivers/driver/node,TypeScript,npm,driver_node_gate,required,build/drivers/driver/node
+driver,odbc,drivers/driver/odbc,C/C++,CMake,driver_odbc_gate,required,build/drivers/driver/odbc
+driver,pascal,drivers/driver/pascal,Pascal,fpc,driver_pascal_gate,required,build/drivers/driver/pascal
+driver,perl,drivers/driver/perl,Perl DBI,contract package,driver_perl_gate,required,build/drivers/driver/perl
+driver,php,drivers/driver/php,PHP,composer,driver_php_gate,required,build/drivers/driver/php
+driver,python,drivers/driver/python,Python,pyproject/pytest,driver_python_gate,required,build/drivers/driver/python
+driver,r,drivers/driver/r,R,R CMD,driver_r_gate,required,build/drivers/driver/r
+driver,r2dbc,drivers/driver/r2dbc,Java R2DBC,contract package,driver_r2dbc_gate,required,build/drivers/driver/r2dbc
+driver,ruby,drivers/driver/ruby,Ruby,bundler/gem,driver_ruby_gate,required,build/drivers/driver/ruby
+driver,rust,drivers/driver/rust,Rust,cargo,driver_rust_gate,required,build/drivers/driver/rust
+driver,swift,drivers/driver/swift,Swift,swift package,driver_swift_gate,required,build/drivers/driver/swift
+adaptor,scratchbird-airbyte,drivers/adaptor/scratchbird-airbyte,Python/Airbyte,contract package,adaptor_airbyte_gate,required,build/drivers/adaptor/scratchbird-airbyte
+adaptor,scratchbird-dbeaver-driver,drivers/adaptor/scratchbird-dbeaver-driver,Java/Eclipse,Maven/Tycho,adaptor_dbeaver_gate,required,build/drivers/adaptor/scratchbird-dbeaver-driver
+adaptor,scratchbird-dbt-adapter,drivers/adaptor/scratchbird-dbt-adapter,Python/dbt,contract package,adaptor_dbt_gate,required,build/drivers/adaptor/scratchbird-dbt-adapter
+adaptor,scratchbird-hibernate-dialect,drivers/adaptor/scratchbird-hibernate-dialect,Java,Maven,adaptor_hibernate_gate,required,build/drivers/adaptor/scratchbird-hibernate-dialect
+adaptor,scratchbird-looker,drivers/adaptor/scratchbird-looker,LookML,contract package,adaptor_looker_gate,required,build/drivers/adaptor/scratchbird-looker
+adaptor,scratchbird-metabase-driver,drivers/adaptor/scratchbird-metabase-driver,Clojure,clojure,adaptor_metabase_gate,required,build/drivers/adaptor/scratchbird-metabase-driver
+adaptor,scratchbird-powerbi,drivers/adaptor/scratchbird-powerbi,Power Query M,contract package,adaptor_powerbi_gate,required,build/drivers/adaptor/scratchbird-powerbi
+adaptor,scratchbird-prisma-adapter,drivers/adaptor/scratchbird-prisma-adapter,TypeScript,npm,adaptor_prisma_gate,required,build/drivers/adaptor/scratchbird-prisma-adapter
+adaptor,scratchbird-sqlalchemy-dialect,drivers/adaptor/scratchbird-sqlalchemy-dialect,Python,pyproject/pytest,adaptor_sqlalchemy_gate,required,build/drivers/adaptor/scratchbird-sqlalchemy-dialect
+adaptor,scratchbird-superset-driver,drivers/adaptor/scratchbird-superset-driver,Python,pyproject/pytest,adaptor_superset_gate,required,build/drivers/adaptor/scratchbird-superset-driver
+adaptor,scratchbird-tableau,drivers/adaptor/scratchbird-tableau,Tableau Connector,contract package,adaptor_tableau_gate,required,build/drivers/adaptor/scratchbird-tableau
+adaptor,scratchbird-typeorm-adapter,drivers/adaptor/scratchbird-typeorm-adapter,TypeScript,npm,adaptor_typeorm_gate,required,build/drivers/adaptor/scratchbird-typeorm-adapter
+tool,cli,drivers/tool/cli,C++,CMake,tool_cli_gate,required,build/drivers/tool/cli

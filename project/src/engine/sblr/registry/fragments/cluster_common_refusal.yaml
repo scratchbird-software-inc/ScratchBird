@@ -1,0 +1,6 @@
+# SBSQL source-layout registry fragment: cluster_common_refusal
+# This fragment is the future source-of-editing for cluster_common_refusal registry rows.
+# Existing aggregate registries remain authoritative until a later registry
+# migration execution_plan moves rows into fragments.
+family: cluster_common_refusal
+rows: []

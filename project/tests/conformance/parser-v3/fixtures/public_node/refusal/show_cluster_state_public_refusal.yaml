@@ -1,0 +1,40 @@
+fixture_id: CONF-REFUSE-SHOW-CLUSTER-STATE-PUBLIC
+fixture_version: 1
+surface_key: show.cluster.state
+row_kind: refusal_command
+edition_scope: refusal_public_safe
+parser_mode: native_sbsql
+donor_mode: none
+input:
+  command_text: "SHOW CLUSTER STATE;"
+  source_encoding: utf8
+  command_terminator_mode: semicolon
+  database_uuid_placeholder: fixture.database.primary
+  principal_uuid_placeholder: fixture.principal.public_user
+  catalog_epoch_placeholder: fixture.catalog_epoch.initial
+  package_profile: public_node
+expected_parse:
+  ast_node: ShowClusterAst
+  ast_format_version: 1
+  surface_key_candidate: show.cluster.state
+  fields:
+    show_kind: cluster_state
+expected_bind:
+  bound_ast_node: null
+  edition_gate_result: refused
+  profile_gate_result: refused
+  required_right: OBS_CLUSTER_HEALTH_INSPECT
+  scope_mode: refusal
+expected_lower:
+  envelope_kind: refusal_diagnostic
+  operation_key: null
+  operation_version: null
+  operands: []
+expected_result_shape: rs.generic.refusal.v1
+expected_diagnostic_shape: diag.private.refusal.v1
+expected_trace: SBSQL-SURFACE-TRACE-SHOW-CLUSTER-STATE
+redaction_class: public_safe
+package_filter_expectation: public_refusal_only
+evidence_refs:
+  - public_contract_snapshot
+  - public_contract_snapshot

@@ -1,0 +1,191 @@
+{
+  "rules": [
+    {
+      "authority": "sentinel",
+      "category": "sentinel",
+      "fixed_identity": true,
+      "id": "src-nil-uuid-sentinel",
+      "literal": "00000000-0000-0000-0000-000000000000",
+      "path_glob": "project/src/**",
+      "rationale": "Nil UUID literals in source are sentinel values only."
+    },
+    {
+      "authority": "builtin_registry",
+      "category": "builtin_registry",
+      "fixed_identity": true,
+      "id": "src-catalog-bootstrap",
+      "path_glob": "project/src/catalog/**",
+      "rationale": "Catalog bootstrap literals are fixed builtin registry identities."
+    },
+    {
+      "authority": "builtin_registry",
+      "category": "builtin_registry",
+      "fixed_identity": true,
+      "id": "src-parser-generated-registry",
+      "path_glob": "project/src/parsers/sbsql_worker/registry/generated/**",
+      "rationale": "Generated parser registry literals are fixed builtin surface registry identities."
+    },
+    {
+      "authority": "accepted_engine_authority",
+      "category": "accepted_engine_authority",
+      "fixed_identity": true,
+      "id": "src-parser-runtime",
+      "path_glob": "project/src/parsers/**",
+      "rationale": "Parser runtime source literals are accepted fixed engine route identities."
+    },
+    {
+      "authority": "builtin_registry",
+      "category": "builtin_registry",
+      "fixed_identity": true,
+      "id": "src-function-registry",
+      "path_glob": "project/src/engine/functions/registry/**",
+      "rationale": "Function seed registry literals are fixed builtin function identities."
+    },
+    {
+      "authority": "accepted_engine_authority",
+      "category": "accepted_engine_authority",
+      "fixed_identity": true,
+      "id": "src-engine",
+      "path_glob": "project/src/engine/**",
+      "rationale": "Engine source literals are accepted fixed internal authority identities."
+    },
+    {
+      "authority": "accepted_engine_authority",
+      "category": "accepted_engine_authority",
+      "fixed_identity": true,
+      "id": "src-core",
+      "path_glob": "project/src/core/**",
+      "rationale": "Core source literals are accepted fixed engine authority identities."
+    },
+    {
+      "authority": "accepted_engine_authority",
+      "category": "accepted_engine_authority",
+      "fixed_identity": true,
+      "id": "src-storage",
+      "path_glob": "project/src/storage/**",
+      "rationale": "Storage source literals are accepted fixed storage authority identities."
+    },
+    {
+      "authority": "accepted_engine_authority",
+      "category": "accepted_engine_authority",
+      "fixed_identity": true,
+      "id": "src-transaction",
+      "path_glob": "project/src/transaction/**",
+      "rationale": "Transaction source literals are accepted fixed MGA authority identities."
+    },
+    {
+      "authority": "platform",
+      "category": "platform_identity",
+      "fixed_identity": true,
+      "id": "src-platform-server",
+      "path_glob": "project/src/server/**",
+      "rationale": "Server literals are fixed public platform profile identities."
+    },
+    {
+      "authority": "platform",
+      "category": "platform_identity",
+      "fixed_identity": true,
+      "id": "src-platform-listener",
+      "path_glob": "project/src/listener/**",
+      "rationale": "Listener literals are fixed public platform profile identities."
+    },
+    {
+      "authority": "accepted_engine_authority",
+      "category": "accepted_engine_authority",
+      "fixed_identity": true,
+      "id": "src-fallback",
+      "path_glob": "project/src/**",
+      "rationale": "Remaining source literals are fixed accepted engine authority identities."
+    },
+    {
+      "authority": "none",
+      "category": "generated_surface_evidence",
+      "evidence_only": true,
+      "fixed_identity": false,
+      "id": "tests-sbsql-generated",
+      "path_glob": "project/tests/sbsql_parser_worker/generated/**",
+      "rationale": "Generated parser-worker literals are evidence fixtures and not engine authority."
+    },
+    {
+      "authority": "none",
+      "category": "generated_surface_evidence",
+      "evidence_only": true,
+      "fixed_identity": false,
+      "id": "tests-sbsql-fixture-artifacts",
+      "path_glob": "project/tests/sbsql_parser_worker/fixtures/**",
+      "rationale": "Parser-worker fixture artifacts are generated evidence and not engine authority."
+    },
+    {
+      "authority": "none",
+      "category": "test_fixture_identity",
+      "evidence_only": true,
+      "fixed_identity": false,
+      "id": "tests-sbsql-worker",
+      "path_glob": "project/tests/sbsql_parser_worker/**",
+      "rationale": "Parser-worker test literals are fixture identities and not engine authority."
+    },
+    {
+      "authority": "none",
+      "category": "generated_surface_evidence",
+      "evidence_only": true,
+      "fixed_identity": false,
+      "id": "tests-database-fixture-artifacts",
+      "path_glob": "project/tests/database_lifecycle/fixtures/**",
+      "rationale": "Database lifecycle fixture artifacts are generated evidence and not authority."
+    },
+    {
+      "authority": "none",
+      "category": "test_fixture_identity",
+      "evidence_only": true,
+      "fixed_identity": false,
+      "id": "tests-general",
+      "path_glob": "project/tests/**",
+      "rationale": "Project test literals are fixture identities and not durable authority."
+    },
+    {
+      "authority": "none",
+      "category": "probe_fixture_identity",
+      "evidence_only": true,
+      "fixed_identity": false,
+      "id": "tools-probes",
+      "path_glob": "project/tools/sb_*probe/**",
+      "rationale": "Probe tool literals are fixture identities and not engine authority."
+    },
+    {
+      "authority": "none",
+      "category": "generated_surface_evidence",
+      "evidence_only": true,
+      "fixed_identity": false,
+      "id": "tools-parser-generation",
+      "path_glob": "project/tools/sb_parser_gen/**",
+      "rationale": "Parser generation literals are generated evidence and not engine authority."
+    },
+    {
+      "authority": "accepted_engine_authority",
+      "category": "accepted_engine_authority",
+      "fixed_identity": true,
+      "id": "tools-release-cpp",
+      "path_glob": "project/tools/release/*.cpp",
+      "rationale": "Release C++ tool literals are accepted fixed public proof identities."
+    },
+    {
+      "authority": "none",
+      "category": "release_evidence",
+      "evidence_only": true,
+      "fixed_identity": false,
+      "id": "tools-release-python",
+      "path_glob": "project/tools/release/*.py",
+      "rationale": "Release Python literals are gate fixtures and evidence-only records."
+    },
+    {
+      "authority": "none",
+      "category": "probe_fixture_identity",
+      "evidence_only": true,
+      "fixed_identity": false,
+      "id": "tools-general",
+      "path_glob": "project/tools/**",
+      "rationale": "Remaining tool literals are fixture identities and not engine authority."
+    }
+  ],
+  "version": 1
+}

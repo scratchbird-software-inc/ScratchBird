@@ -1,0 +1,9 @@
+info:
+  name: ScratchBird
+  version: 0.1.0
+  description: ScratchBird JDBC driver for Metabase
+
+driver:
+  name: scratchbird
+  init: metabase.driver.scratchbird/init
+  parent: sql-jdbc

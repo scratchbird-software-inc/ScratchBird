@@ -1,0 +1,14 @@
+{
+  "name": "@scratchbird/typeorm-adapter",
+  "version": "0.1.0-beta",
+  "description": "Deterministic TypeORM adapter contracts for ScratchBird",
+  "main": "lib/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MPL-2.0"
+}

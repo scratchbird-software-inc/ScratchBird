@@ -1,0 +1,49 @@
+slice_id,depends_on,reason
+DCT-000,,Source inventory is the root input for all later slices
+DCT-001,DCT-000,Artifact isolation must know every imported ecosystem
+DCT-002,DCT-000,Path scan needs the imported inventory
+DCT-003,DCT-000,Toolchain policy needs every language and adaptor ecosystem
+DCT-004,DCT-000,Common conformance matrix needs driver inventory
+DCT-005,DCT-000;DCT-003;DCT-004,CTest matrix needs inventory toolchain and conformance rules
+DCT-006,DCT-005,Server fixture must integrate into planned CTest labels
+DCT-007,DCT-002;DCT-005,Benchmark readiness depends on current path policy and CTest ownership
+DCT-008,DCT-003;DCT-005,Packaging policy depends on toolchain and CTest rules
+DCT-009,DCT-001;DCT-002;DCT-005,Static hygiene must enforce artifact isolation path and CTest policies
+DCT-010,DCT-001;DCT-003;DCT-005,CMake substrate needs artifact toolchain and CTest matrices
+DCT-011,DCT-010,Build directory implementation requires CMake substrate
+DCT-012,DCT-011,Dependency cache redirection depends on build layout
+DCT-013,DCT-002;DCT-009;DCT-010,Old path and write gates depend on backlog policy and CTest substrate
+DCT-020,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-021,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-022,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-023,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-024,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-025,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-026,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-027,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-028,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-029,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-030,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-031,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-032,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-033,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-034,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-035,DCT-011;DCT-012;DCT-013,Driver integration needs build dependency and hygiene substrate
+DCT-040,DCT-011;DCT-012;DCT-013,Adaptor integration needs build dependency and hygiene substrate
+DCT-041,DCT-011;DCT-012;DCT-013,Adaptor integration needs build dependency and hygiene substrate
+DCT-042,DCT-011;DCT-012;DCT-013,Adaptor integration needs build dependency and hygiene substrate
+DCT-043,DCT-011;DCT-012;DCT-013,Adaptor integration needs build dependency and hygiene substrate
+DCT-044,DCT-011;DCT-012;DCT-013;DCT-031,SQLAlchemy adaptor depends on Python driver path and substrate
+DCT-045,DCT-011;DCT-012;DCT-013;DCT-031,Superset adaptor depends on Python driver path and substrate
+DCT-046,DCT-011;DCT-012;DCT-013,Adaptor integration needs build dependency and hygiene substrate
+DCT-050,DCT-011;DCT-012;DCT-013,CLI tool integration needs build dependency and hygiene substrate
+DCT-060,DCT-006;DCT-010,CTest server fixture depends on fixture policy and CTest substrate
+DCT-061,DCT-004;DCT-020;DCT-021;DCT-022;DCT-023;DCT-024;DCT-025;DCT-026;DCT-027;DCT-028;DCT-029;DCT-030;DCT-031;DCT-032;DCT-033;DCT-034;DCT-035;DCT-060,Common conformance depends on integrated drivers and server fixture
+DCT-062,DCT-040;DCT-041;DCT-042;DCT-043;DCT-044;DCT-045;DCT-046;DCT-060,Adaptor functional tests depend on integrated adaptors and server fixture
+DCT-063,DCT-050;DCT-060,Tool tests depend on integrated CLI and server fixture
+DCT-064,DCT-007;DCT-031;DCT-050;DCT-060;DCT-061,Benchmark harness depends on Python driver CLI tool server fixture and conformance
+DCT-065,DCT-008;DCT-020;DCT-021;DCT-022;DCT-023;DCT-024;DCT-025;DCT-026;DCT-027;DCT-028;DCT-029;DCT-030;DCT-031;DCT-032;DCT-033;DCT-034;DCT-035;DCT-040;DCT-041;DCT-042;DCT-043;DCT-044;DCT-045;DCT-046;DCT-050,Packaging depends on integrated source trees
+DCT-066,DCT-013;DCT-061;DCT-062;DCT-063;DCT-064;DCT-065,Static hygiene validates all integrated test and package runs
+DCT-070,DCT-061;DCT-062;DCT-063;DCT-064;DCT-065;DCT-066,Aggregate suite depends on all test classes
+DCT-071,DCT-070,Documentation must reflect final passing labels and evidence
+DCT-072,DCT-070;DCT-071,Final audit closes only after aggregate suite and docs

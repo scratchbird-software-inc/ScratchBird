@@ -1,0 +1,96 @@
+{
+  "search_key": "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+  "claim_id": "DPC-073-SHADOW-INDEX-CONCURRENT-DML",
+  "lane_id": "shadow_index_concurrent_dml",
+  "lane_title": "Shadow index build under concurrent DML",
+  "claim_status": "bounded",
+  "accepted_optimization_claim": false,
+  "elapsed_time_only": false,
+  "transaction_sensitive": true,
+  "before_profile": {
+    "profile_digest_source": "DPC-073:shadow_index_concurrent_dml:before",
+    "profile_digest": "f18e4ba9bb9557ed192b334a2fe444027541d8055fb075085f4e1b7d58113b34",
+    "dominant_hot_paths": [
+      {"name": "foreground_shadow_validation_wait", "share_percent": 33.0},
+      {"name": "delta_drain_replay", "share_percent": 25.0}
+    ]
+  },
+  "after_profile": {
+    "profile_digest_source": "DPC-073:shadow_index_concurrent_dml:after",
+    "profile_digest": "92dde07efaa6ea1884caa60f5c75d04a9dd602a7af7a03b47953cf8d46b1b0a5",
+    "dominant_hot_paths": [
+      {"name": "bounded_shadow_delta_drain", "share_percent": 27.0},
+      {"name": "publish_barrier_wait", "share_percent": 22.0}
+    ]
+  },
+  "changed_hot_paths": [
+    "delta_drain_replay changed to bounded_shadow_delta_drain",
+    "publish_barrier_wait remains the bounded target bottleneck"
+  ],
+  "delta_explanation": "The profile records a bounded target: delta drain became budgeted, while concurrent DML still leaves publish barrier wait as the remaining bottleneck.",
+  "remaining_bottleneck": "publish_barrier_wait while concurrent DML remains active",
+  "measurement_families": {
+    "cpu_samples": {"before": 3500, "after": 2680, "unit": "samples", "attribution": "drain replay reduced but not eliminated"},
+    "lock_wait_mutex_hold_timing": {"before": 1120, "after": 850, "unit": "microseconds_p95", "attribution": "publish barrier still bounded"},
+    "io_syscall_counts": {"before": 790, "after": 650, "unit": "calls", "attribution": "shadow writes batched"},
+    "allocator_pressure": {"before": 1210, "after": 890, "unit": "allocations", "attribution": "candidate buffers pooled"},
+    "parser_lowering_timing": {"before": 42, "after": 42, "unit": "microseconds", "attribution": "not dominant"},
+    "sblr_admission_dispatch_timing": {"before": 70, "after": 68, "unit": "microseconds", "attribution": "management route unchanged"},
+    "plan_cache_hit_miss_invalidation_timing": {"before": 48, "after": 45, "unit": "microseconds", "attribution": "publication invalidation bounded"},
+    "metadata_cache_hit_miss_timing": {"before": 72, "after": 59, "unit": "microseconds", "attribution": "shadow descriptor reused"},
+    "statistics_epoch_plan_selection_timing": {"before": 44, "after": 41, "unit": "microseconds", "attribution": "planner stays on published index"},
+    "page_allocation_demand_grant_timing": {"before": 620, "after": 470, "unit": "microseconds", "attribution": "shadow page grant batched"},
+    "index_maintenance_timing_by_family": {"before": 1610, "after": 980, "unit": "microseconds", "attribution": "shadow family drain bounded"},
+    "agent_queue_wake_run_throttle_completion_timing": {"before": 830, "after": 610, "unit": "microseconds", "attribution": "agent throttles safely"}
+  },
+  "result_correctness_hash_pointer": {
+    "digest_source": "DPC-073:shadow_index_concurrent_dml:result",
+    "digest": "af6b82ba827b6f5c0643cd94181491cffea22ec6886ca6a50cab2fd1592d0c5a",
+    "correctness_anchor": "published index remains invisible until validated and consistent"
+  },
+  "source_anchor": {
+    "path": "project/tests/database_lifecycle/dpc_shadow_index_delta_drain_recovery_gate.cpp",
+    "search_key": "DPC_SHADOW_INDEX_DELTA_DRAIN_RECOVERY_GATE"
+  },
+  "route_or_source_anchor": "project/tests/database_lifecycle/dpc_shadow_index_build_lifecycle_gate.cpp#DPC_SHADOW_INDEX_BUILD_LIFECYCLE_GATE",
+  "ctest_name": "dpc_profiler_hot_path_attribution_gate",
+  "ctest_labels": [
+    "dpc_profiler_hot_path_attribution_gate",
+    "DPC-073",
+    "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+    "DPC_P6_PROFILER_ATTRIBUTION_READY",
+    "DPC_AUDIT_PROFILER_ATTRIBUTION",
+    "DPC_DEP_PROFILER_ATTRIBUTION",
+    "profiler_attribution",
+    "database_lifecycle",
+    "mga_transaction_regression"
+  ],
+  "build_instrumentation": {
+    "build_type": "Release diagnostic",
+    "profiler_mode": "compact-retained-attribution",
+    "hotpath_trace": true,
+    "exec_profile_trace": true,
+    "prepared_trace": true,
+    "source_state": "fixture-retained-source-state"
+  },
+  "agent_metrics": {
+    "bounded": true,
+    "queue_max": 18,
+    "wake_max": 11,
+    "run_budget_ms": 35,
+    "throttle_events_max": 5,
+    "completion_state": "bounded_remaining_bottleneck"
+  },
+  "authority": {
+    "mga_authority_declaration": "engine_mga_transaction_inventory_authority",
+    "engine_mga_transaction_inventory_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "driver_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_log_finality_authority": false,
+    "timestamp_order_finality_authority": false,
+    "uuid_order_finality_authority": false,
+    "event_stream_finality_authority": false
+  }
+}

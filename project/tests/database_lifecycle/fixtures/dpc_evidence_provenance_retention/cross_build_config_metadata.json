@@ -1,0 +1,23 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "claim_id": "DPC-072-CROSS-BUILD-CONFIG",
+  "evidence_kind": "build-config-json",
+  "result_digest_source": {
+    "claim_id": "DPC-072-CROSS-BUILD-CONFIG",
+    "build_modes": [
+      "debug-no-cluster",
+      "release-no-cluster",
+      "benchmark-clean",
+      "cluster-stub"
+    ],
+    "cache_flags": "retained",
+    "ctest_labels": "retained"
+  },
+  "result_hash": "d178dd6e3e811be35ef07d543bdc7bbe3756269a794fc5f028832d3ef7fdafcd",
+  "build_config": {
+    "cmake_cache_summary": "retained",
+    "package_defaults": "retained",
+    "cluster_provider_modes": "retained",
+    "instrumentation_flags": "retained"
+  }
+}

@@ -1,0 +1,168 @@
+{
+  "seed_manifest_uuid": "7699c1eb-517c-50c1-b667-f66aa43a234e",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "immudb-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_DONOR_CATALOG_SEED_IMMUDB_BETA2_FULL",
+  "seed_manifest_status": "profile_derived_private_seed_manifest",
+  "donor_family": "immudb",
+  "donor_version_profile_id": "immudb_beta2_full",
+  "donor_version_profile_uuid": "a02ce909-88c8-5279-b524-5658f3f6c3f4",
+  "donor_exact_version": "immudb beta2-full compatibility profile",
+  "new_database_recipe_id": "immudb_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-05-10T00:00:00Z",
+  "extraction_tool_ref": "docs/specifications/registries/donor-catalog-source-derived-seed-rows.yaml",
+  "normalization_profile_ref": "embedded:SB_DONOR_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "pg_type",
+      "donor_catalog_object_name": "pg_type",
+      "donor_catalog_object_kind": "system_table",
+      "namespace_kind": "sql_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_immudb_pg_type",
+      "definition_source_ref": "donor_source_reference:immudb/embedded/sql/catalog.go",
+      "diagnostic_code": "DONOR.IMMUDB.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "column_id": "pg_type_object_name",
+      "object_ref": "pg_type",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "f76a11e601ef665113cdfbdb712f51025c2e2aa8483f571e697b24ee05ee3046"
+    },
+    {
+      "column_id": "pg_type_object_kind",
+      "object_ref": "pg_type",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "85cf25c9a3022cd0ebba0a6ef0896f4615d2407e4e7e35f68ca552a92d113a6b"
+    },
+    {
+      "column_id": "pg_type_source_ref",
+      "object_ref": "pg_type",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "032561973aa29fe7746d03fb90cc1350a35c7c37b237d17d8442bd55c5f1292b"
+    }
+  ],
+  "default_row_set": [
+    {
+      "row_id": "immudb.seed.pg_type",
+      "donor_object_ref": "pg_type",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "pg_type",
+      "definition_source_ref": "donor_source_reference:immudb/embedded/sql/catalog.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "4153d52c86f3455b11b153b3e3afd2870558b72b7c2d4bad5d49cde3ea460343"
+    }
+  ],
+  "default_metadata_set": [],
+  "default_security_row_set": [
+    {
+      "row_id": "immudb.security.default_visibility_policy",
+      "principal": "PUBLIC",
+      "secret_material": "redacted_not_applicable",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "row_hash": "bd1a7f5448ebc476669c9956df9497d2c2bbf0a8c047fa7c341a25a0f4d6f3b3"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "value_id": "immudb.runtime.database_identity",
+      "value_class": "instance_generated_uuid",
+      "emulation_rule": "generate ScratchBird UUIDv7 at database/profile create and expose only donor-compatible rendering",
+      "row_hash": "a6eb60e06324288fd0b3e46911b28e474c38a13c43984e4db455a903c3d1404f"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "rule_id": "grant_filtered_metadata",
+      "rule": "visible only through donor metadata policy and ScratchBird engine authorization"
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "rule_id": "raw_secret_forbidden",
+      "rule": "raw secrets are never stored in donor seed manifests"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "rule_id": "report_only",
+      "rule": "catalog seed rows are report-only; mutation routes through UUID-backed ScratchBird catalog APIs"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_immudb_pg_type",
+      "donor_object_ref": "pg_type",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d3faeb13-b644-5994-b6fa-65de6a44a7b8",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "DONOR.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "DONOR.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "DONOR.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "DONOR.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "DONOR.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "DONOR.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "DONOR.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "DONOR.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "DONOR.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "rowset_hashes": {
+    "catalog_object_set": "b18d9f966eb69705f2a799890987ad89a6733e77ec36ec7fbb52395b981c7548",
+    "catalog_column_set": "098b52ba84686852649e477382da88989c8ec69e65465ca886e8bf7214889dc9",
+    "default_row_set": "4e296dd73135e068b0dbf84edc770782409e869f5d9eeeab4f21ef1b9ad9dc36",
+    "default_metadata_set": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "default_security_row_set": "4729024d5048ea7aa095cf5c4b0ce85d0fdc9f24df6de846a28e656b02e9da23",
+    "default_runtime_generated_value_set": "d93aa0d0c7684f6a879b7ea05a18757a64dfc02b72be13620b977a9e1bee47d6",
+    "visibility_rule_set": "e3d11affebfa8ba62fe7e7f0c2014ac363d6d1ac1ccaa3f47aafd18109cdd20c",
+    "redaction_rule_set": "c081d87b2dadb71687177f97c210a024f823fba2383d3e299998c66deee46f2f",
+    "mutation_rule_set": "8b806b0d95bbd92e3c2aeb3d7d4ecd0fd0abc1aaf9c6a14639f8966080719fed",
+    "scratchbird_mapping_set": "e264a7c1d1400fa240954821e567ce1d094800c7bd23e034c6cf31465437b6a6"
+  },
+  "manifest_hash": "53e0ab7bd2fa0787890b69a0a625546e701a1be20df5f06ab7af33626495ff28"
+}

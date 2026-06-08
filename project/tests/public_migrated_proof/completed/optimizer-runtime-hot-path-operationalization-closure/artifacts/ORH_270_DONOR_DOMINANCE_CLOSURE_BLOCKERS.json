@@ -1,0 +1,208 @@
+{
+  "row_id": "ORH-270",
+  "gate_id": "ORH-GATE-270",
+  "status": "completed-blocked",
+  "as_of_commit": "a9f99f97",
+  "diagnostic_code": "ORH_DONOR_DOMINANCE_NOT_ACHIEVED",
+  "benchmark_clean": false,
+  "donor_dominance_claim": false,
+  "performance_superiority_claim": false,
+  "contract_only_evidence": false,
+  "fresh_live_dominance_proof_present": false,
+  "blocker_summary": "No fresh live embedded IPC and INET ScratchBird run with Firebird MySQL and PostgreSQL donor-best controls exists in this workspace. Existing artifacts are preimplementation or smoke/blocker infrastructure and cannot support a donor-dominance claim.",
+  "required_scratchbird_routes": [
+    "embedded",
+    "ipc",
+    "inet"
+  ],
+  "required_donor_engines": [
+    "firebird",
+    "mysql",
+    "postgresql"
+  ],
+  "required_cache_phases": [
+    "cold",
+    "warm"
+  ],
+  "required_scale_tiers": [
+    "execution_plan10_preserved_scale",
+    "gb_scale"
+  ],
+  "required_comparable_workloads": [
+    "customers_load",
+    "products_load",
+    "orders_load",
+    "order_items_load",
+    "inner_join_simple",
+    "inner_join_large_result",
+    "inner_join_multiple_conditions",
+    "left_join_all_customers",
+    "four_table_join",
+    "self_join_same_country",
+    "bulk_update_with_join"
+  ],
+  "required_micro_equivalence_workloads": [
+    "single_insert",
+    "point_select",
+    "simple_aggregate"
+  ],
+  "available_artifacts": [
+    {
+      "path": "project/tests/public_migrated_proof/execution-plans/optimizer-runtime-hot-path-operationalization-closure/artifacts/PERFORMANCE_DOMINANCE_TARGETS.csv",
+      "classification": "target_contract",
+      "fresh_live_dominance_authority": false,
+      "reason": "ORH-200 target contract only; contains donor-best targets but not fresh post-implementation live route runs"
+    },
+    {
+      "path": "project/tests/public_migrated_proof/execution-plans/optimizer-runtime-hot-path-operationalization-closure/artifacts/preimplementation_benchmark_20260525",
+      "classification": "preimplementation_snapshot",
+      "fresh_live_dominance_authority": false,
+      "reason": "preimplementation snapshot predates completed ORH hot-path rows and records many slower-than-donor comparisons"
+    },
+    {
+      "path": "project/tests/performance/optimizer_runtime_hot_path_orh_287_gate.cpp",
+      "classification": "ab_bisect_infrastructure",
+      "fresh_live_dominance_authority": false,
+      "reason": "A/B harness validates methodology and result equivalence but does not execute donor-best dominance"
+    },
+    {
+      "path": "project/tests/performance/optimizer_runtime_hot_path_orh_288_gate.cpp",
+      "classification": "large_scale_tier_infrastructure",
+      "fresh_live_dominance_authority": false,
+      "reason": "tier infrastructure is completed-blocked for true GB-scale execution and does not claim dominance"
+    }
+  ],
+  "missing_lanes": [
+    {
+      "lane_id": "scratchbird:embedded:execution_plan10_preserved_scale:cold_warm:all_comparable_workloads",
+      "route_label": "embedded",
+      "scale_tier": "execution_plan10_preserved_scale",
+      "cache_phase": "cold_and_warm",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_LIVE_ROUTE_MISSING.EMBEDDED",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "result_hash": null,
+      "mga_security_evidence": false,
+      "runtime_consumed": false,
+      "exact_blocker": "fresh embedded ScratchBird route benchmark missing for preserved Execution_Plan 10 comparable workloads"
+    },
+    {
+      "lane_id": "scratchbird:ipc:execution_plan10_preserved_scale:cold_warm:all_comparable_workloads",
+      "route_label": "ipc",
+      "scale_tier": "execution_plan10_preserved_scale",
+      "cache_phase": "cold_and_warm",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_LIVE_ROUTE_MISSING.IPC",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "result_hash": null,
+      "mga_security_evidence": false,
+      "runtime_consumed": false,
+      "exact_blocker": "fresh IPC ScratchBird route benchmark missing for preserved Execution_Plan 10 comparable workloads"
+    },
+    {
+      "lane_id": "scratchbird:inet:execution_plan10_preserved_scale:cold_warm:all_comparable_workloads",
+      "route_label": "inet",
+      "scale_tier": "execution_plan10_preserved_scale",
+      "cache_phase": "cold_and_warm",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_LIVE_ROUTE_MISSING.INET",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "result_hash": null,
+      "mga_security_evidence": false,
+      "runtime_consumed": false,
+      "exact_blocker": "fresh INET ScratchBird route benchmark missing for preserved Execution_Plan 10 comparable workloads"
+    },
+    {
+      "lane_id": "donor_best:firebird:mysql:postgresql:execution_plan10_preserved_scale:cold_warm:all_comparable_workloads",
+      "route_label": "donor_best_controls",
+      "scale_tier": "execution_plan10_preserved_scale",
+      "cache_phase": "cold_and_warm",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_DONOR_CONTROLS_MISSING",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "result_hash": null,
+      "donor_equivalent_best_method_controls": false,
+      "exact_blocker": "fresh Firebird MySQL and PostgreSQL donor-best reruns with best-method equivalence controls are missing"
+    },
+    {
+      "lane_id": "scratchbird:embedded_ipc_inet:gb_scale:all_comparable_workloads",
+      "route_label": "embedded_ipc_inet",
+      "scale_tier": "gb_scale",
+      "cache_phase": "cold_and_warm",
+      "diagnostic_code": "ORH_LARGE_SCALE_BENCHMARK_TIER_UNAVAILABLE",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "result_hash": null,
+      "runtime_consumed": false,
+      "exact_blocker": "true GB-scale ScratchBird and donor-equivalent dominance lanes are not executed in this environment"
+    }
+  ],
+  "negative_controls": [
+    {
+      "case": "stale_artifacts",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_STALE_ARTIFACT",
+      "validated": true
+    },
+    {
+      "case": "missing_donor_route",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_DONOR_CONTROLS_MISSING",
+      "validated": true
+    },
+    {
+      "case": "missing_ipc_live_route",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_LIVE_ROUTE_MISSING.IPC",
+      "validated": true
+    },
+    {
+      "case": "missing_inet_live_route",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_LIVE_ROUTE_MISSING.INET",
+      "validated": true
+    },
+    {
+      "case": "missing_result_hash",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_RESULT_HASH_MISSING",
+      "validated": true
+    },
+    {
+      "case": "contract_only_evidence",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_CONTRACT_ONLY_EVIDENCE",
+      "validated": true
+    },
+    {
+      "case": "missing_mga_security",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_MGA_SECURITY_MISSING",
+      "validated": true
+    },
+    {
+      "case": "non_reproducible_metadata",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_NON_REPRODUCIBLE_METADATA",
+      "validated": true
+    },
+    {
+      "case": "benchmark_clean_overclaim",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_BENCHMARK_CLEAN_OVERCLAIM",
+      "validated": true
+    },
+    {
+      "case": "donor_dominance_overclaim",
+      "diagnostic_code": "ORH_DONOR_DOMINANCE_OVERCLAIM",
+      "validated": true
+    },
+    {
+      "case": "gb_scale_unavailable",
+      "diagnostic_code": "ORH_LARGE_SCALE_BENCHMARK_TIER_UNAVAILABLE",
+      "validated": true
+    }
+  ],
+  "closure_decision": {
+    "selected_status": "completed-blocked",
+    "completion_allowed": false,
+    "completed_blocked_allowed": true,
+    "reason": "Strict ORH-270 dominance acceptance cannot be met without fresh live embedded IPC INET ScratchBird and Firebird MySQL PostgreSQL donor-best results for every comparable workload."
+  }
+}

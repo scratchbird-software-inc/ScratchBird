@@ -1,0 +1,6 @@
+# SBSQL source-layout registry fragment: dml
+# This fragment is the future source-of-editing for dml registry rows.
+# Existing aggregate registries remain authoritative until a later registry
+# migration execution_plan moves rows into fragments.
+family: dml
+rows: []

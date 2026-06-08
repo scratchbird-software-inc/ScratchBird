@@ -1,0 +1,257 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+/*
+ * DBeaver - Universal Database Manager
+ * Copyright (C) 2010-2026 DBeaver Corp and others
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.jkiss.dbeaver.ext.scratchbird.model;
+
+import org.jkiss.code.NotNull;
+import org.jkiss.code.Nullable;
+import org.jkiss.dbeaver.DBException;
+import org.jkiss.dbeaver.Log;
+import org.jkiss.dbeaver.ext.generic.model.GenericCatalog;
+import org.jkiss.dbeaver.ext.generic.model.GenericDataSource;
+import org.jkiss.dbeaver.ext.generic.model.GenericSchema;
+import org.jkiss.dbeaver.ext.generic.model.GenericTable;
+import org.jkiss.dbeaver.model.DBUtils;
+import org.jkiss.dbeaver.model.exec.jdbc.JDBCPreparedStatement;
+import org.jkiss.dbeaver.model.exec.jdbc.JDBCResultSet;
+import org.jkiss.dbeaver.model.exec.jdbc.JDBCSession;
+import org.jkiss.dbeaver.model.impl.jdbc.JDBCUtils;
+import org.jkiss.dbeaver.model.meta.Association;
+import org.jkiss.dbeaver.model.meta.Property;
+import org.jkiss.dbeaver.model.runtime.DBRProgressMonitor;
+import org.jkiss.dbeaver.model.struct.DBSObject;
+import org.jkiss.utils.CommonUtils;
+
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+public class ScratchBirdCatalog extends GenericCatalog {
+
+    private static final Log log = Log.getLog(ScratchBirdCatalog.class);
+
+    private List<ScratchBirdSchemaNode> schemaTree;
+    @Nullable
+    private String databaseUuid;
+
+    public ScratchBirdCatalog(@NotNull GenericDataSource dataSource, @NotNull String catalogName) {
+        super(dataSource, catalogName);
+    }
+
+    @Association
+    public synchronized Collection<ScratchBirdSchemaNode> getSchemaTree(@NotNull DBRProgressMonitor monitor) throws DBException {
+        if (schemaTree == null && !monitor.isForceCacheUsage()) {
+            buildSchemaTree(monitor);
+        }
+        return schemaTree == null ? Collections.emptyList() : schemaTree;
+    }
+
+    private void buildSchemaTree(@NotNull DBRProgressMonitor monitor) throws DBException {
+        Collection<GenericSchema> schemas = getSchemas(monitor);
+
+        List<String> schemaPaths = new ArrayList<>();
+        Map<String, ScratchBirdSchema> schemasByPath = new LinkedHashMap<>();
+
+        if (!CommonUtils.isEmpty(schemas)) {
+            for (GenericSchema schema : schemas) {
+                String fullPath = schema.getName();
+                if (CommonUtils.isEmpty(fullPath)) {
+                    continue;
+                }
+                schemaPaths.add(fullPath);
+                if (schema instanceof ScratchBirdSchema scratchBirdSchema) {
+                    schemasByPath.put(fullPath, scratchBirdSchema);
+                } else {
+                    ScratchBirdSchema wrappedSchema = new ScratchBirdSchema(getDataSource(), this, fullPath);
+                    if (schema.isVirtual()) {
+                        wrappedSchema.setVirtual(true);
+                    }
+                    schemasByPath.put(fullPath, wrappedSchema);
+                }
+            }
+        }
+
+        List<ScratchBirdCatalogObjectReference> catalogReferences = loadCatalogObjectReferences(monitor);
+        if (catalogReferences.isEmpty()) {
+            for (String schemaPath : schemaPaths) {
+                catalogReferences.add(ScratchBirdCatalogObjectReference.syntheticSchema(schemaPath));
+            }
+        }
+
+        List<ScratchBirdSchemaTreeBuilder.Node> tree = ScratchBirdSchemaTreeBuilder.buildFromCatalog(catalogReferences);
+        List<ScratchBirdSchemaNode> roots = new ArrayList<>();
+        for (ScratchBirdSchemaTreeBuilder.Node root : tree) {
+            roots.add(inflateTree(root, null, schemasByPath));
+        }
+        schemaTree = roots;
+    }
+
+    @NotNull
+    @Property(viewable = true, optional = true, order = 2)
+    public String getIdentityStatus() {
+        return CommonUtils.isEmpty(databaseUuid)
+            ? "database UUID not published by current JDBC metadata surface"
+            : "database UUID " + databaseUuid;
+    }
+
+    @Nullable
+    @Property(viewable = true, optional = true, order = 3)
+    public String getDatabaseUuid() {
+        return databaseUuid;
+    }
+
+    @NotNull
+    private List<ScratchBirdCatalogObjectReference> loadCatalogObjectReferences(
+        @NotNull DBRProgressMonitor monitor
+    ) {
+        List<ScratchBirdCatalogObjectReference> references = new ArrayList<>();
+        try {
+            executeCatalogObjectQuery(
+                monitor,
+                "SELECT database_id, object_id, parent_object_id, object_type, schema_path, full_path, object_name " +
+                    "FROM sys.catalog.object_resolver " +
+                    "WHERE object_type = 'SCHEMA' " +
+                    "ORDER BY full_path",
+                references);
+            return references;
+        } catch (SQLException | DBException e) {
+            log.debug("ScratchBird object resolver parent UUID metadata is not available yet", e);
+        }
+
+        references.clear();
+        try {
+            executeCatalogObjectQuery(
+                monitor,
+                "SELECT NULL AS database_id, object_id, NULL AS parent_object_id, object_type, schema_path, full_path, object_name " +
+                    "FROM sys.catalog.object_resolver " +
+                    "WHERE object_type = 'SCHEMA' " +
+                    "ORDER BY full_path",
+                references);
+        } catch (SQLException | DBException e) {
+            log.debug("ScratchBird object resolver is not available for navigator UUID metadata", e);
+        }
+        return references;
+    }
+
+    private void executeCatalogObjectQuery(
+        @NotNull DBRProgressMonitor monitor,
+        @NotNull String query,
+        @NotNull List<ScratchBirdCatalogObjectReference> references
+    ) throws SQLException, DBException {
+        try (JDBCSession session = DBUtils.openMetaSession(monitor, this, "Load ScratchBird catalog UUID tree");
+             JDBCPreparedStatement statement = session.prepareStatement(query);
+             JDBCResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                String fullPath = JDBCUtils.safeGetString(resultSet, "full_path");
+                if (CommonUtils.isEmpty(fullPath)) {
+                    fullPath = JDBCUtils.safeGetString(resultSet, "schema_path");
+                }
+                if (CommonUtils.isEmpty(fullPath) || ScratchBirdNamespaceSemantics.isMetricsPath(fullPath)) {
+                    continue;
+                }
+                String objectName = JDBCUtils.safeGetString(resultSet, "object_name");
+                if (CommonUtils.isEmpty(databaseUuid)) {
+                    databaseUuid = JDBCUtils.safeGetString(resultSet, "database_id");
+                }
+                references.add(ScratchBirdCatalogObjectReference.schema(
+                    databaseUuid,
+                    JDBCUtils.safeGetString(resultSet, "object_id"),
+                    JDBCUtils.safeGetString(resultSet, "parent_object_id"),
+                    fullPath,
+                    CommonUtils.isEmpty(objectName) ? leafName(fullPath) : objectName));
+            }
+        }
+    }
+
+    @NotNull
+    private static String leafName(@NotNull String fullPath) {
+        int separator = fullPath.lastIndexOf('.');
+        return separator < 0 ? fullPath : fullPath.substring(separator + 1);
+    }
+
+    @NotNull
+    private ScratchBirdSchemaNode inflateTree(
+        @NotNull ScratchBirdSchemaTreeBuilder.Node source,
+        @Nullable ScratchBirdSchemaNode parent,
+        @NotNull Map<String, ScratchBirdSchema> schemasByPath
+    ) {
+        ScratchBirdSchemaNode node = new ScratchBirdSchemaNode(
+            getDataSource(),
+            this,
+            parent,
+            source.getName(),
+            source.getFullPath(),
+            source.isCatalogBacked(),
+            source.isClientOnly(),
+            source.getObjectPath(),
+            source.getObjectType());
+        ScratchBirdSchema backing = schemasByPath.get(source.getFullPath());
+        if (source.isCatalogBacked() && (backing != null || source.isTerminal())) {
+            node.setBackingSchema(backing == null ? new ScratchBirdSchema(getDataSource(), this, source.getFullPath()) : backing);
+        }
+        for (ScratchBirdSchemaTreeBuilder.Node child : source.getChildren()) {
+            node.addChild(inflateTree(child, node, schemasByPath));
+        }
+        return node;
+    }
+
+    @Nullable
+    @Override
+    public Collection<? extends DBSObject> getChildren(@NotNull DBRProgressMonitor monitor) throws DBException {
+        Collection<ScratchBirdSchemaNode> tree = getSchemaTree(monitor);
+        if (!tree.isEmpty()) {
+            return tree;
+        }
+        return super.getChildren(monitor);
+    }
+
+    @Override
+    public DBSObject getChild(@NotNull DBRProgressMonitor monitor, @NotNull String childName) throws DBException {
+        for (ScratchBirdSchemaNode node : getSchemaTree(monitor)) {
+            if (childName.equals(node.getName())) {
+                return node;
+            }
+        }
+        return super.getChild(monitor, childName);
+    }
+
+    @NotNull
+    @Override
+    public Class<? extends DBSObject> getPrimaryChildType(@Nullable DBRProgressMonitor monitor) throws DBException {
+        if (monitor != null && !getSchemaTree(monitor).isEmpty()) {
+            return ScratchBirdSchemaNode.class;
+        }
+        return GenericTable.class;
+    }
+
+    @Override
+    public DBSObject refreshObject(@NotNull DBRProgressMonitor monitor) throws DBException {
+        schemaTree = null;
+        return super.refreshObject(monitor);
+    }
+}

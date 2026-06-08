@@ -1,0 +1,30 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "claim_id": "DPC-072-SOAK-RESOURCE",
+  "evidence_kind": "resource-json",
+  "result_digest_source": {
+    "claim_id": "DPC-072-SOAK-RESOURCE",
+    "rss": "bounded",
+    "fd": "bounded",
+    "threads": "bounded",
+    "foreground_p95": "bounded",
+    "shutdown_reopen": "clean"
+  },
+  "result_hash": "d6cb4166fb7a8bb6a331d595964fb304c19a37db5c3eeb27ca1b3254ccc6297b",
+  "resource_evidence": {
+    "rss_kib": "bounded",
+    "fd_count": "bounded",
+    "thread_count": "bounded",
+    "database_tree_bytes": "bounded",
+    "foreground_p95_millis": "bounded",
+    "clean_shutdown": true,
+    "read_only_reopen_classification": "clean"
+  },
+  "authority": {
+    "engine_mga_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_finality_authority": false
+  }
+}

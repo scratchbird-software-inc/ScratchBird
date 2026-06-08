@@ -1,0 +1,96 @@
+{
+  "search_key": "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+  "claim_id": "DPC-073-MGA-INDEX-CLEANUP-LOAD",
+  "lane_id": "mga_index_cleanup_load",
+  "lane_title": "MGA cleanup and index cleanup under load",
+  "claim_status": "bounded",
+  "accepted_optimization_claim": false,
+  "elapsed_time_only": false,
+  "transaction_sensitive": true,
+  "before_profile": {
+    "profile_digest_source": "DPC-073:mga_index_cleanup_load:before",
+    "profile_digest": "e4237d8418bc8a7d521f9c3da6a1eee3431a46ccfd4a50e02ded1e4798196d0e",
+    "dominant_hot_paths": [
+      {"name": "cleanup_horizon_scan", "share_percent": 29.0},
+      {"name": "index_garbage_validation", "share_percent": 24.0}
+    ]
+  },
+  "after_profile": {
+    "profile_digest_source": "DPC-073:mga_index_cleanup_load:after",
+    "profile_digest": "e1a08c5c82e5f046bbe2070ac80a2dd06c636bb461ed223c72ae109644a2622e",
+    "dominant_hot_paths": [
+      {"name": "bounded_cleanup_batch", "share_percent": 23.0},
+      {"name": "foreground_horizon_blocker_wait", "share_percent": 19.0}
+    ]
+  },
+  "changed_hot_paths": [
+    "cleanup_horizon_scan changed to bounded_cleanup_batch",
+    "remaining bottleneck is foreground_horizon_blocker_wait"
+  ],
+  "delta_explanation": "The target is bounded rather than closed as a speed win: profiler evidence shows batch cleanup reduced scan cost but active horizon blockers remain dominant under load.",
+  "remaining_bottleneck": "foreground_horizon_blocker_wait remains bounded by active MGA horizon blockers",
+  "measurement_families": {
+    "cpu_samples": {"before": 2910, "after": 2210, "unit": "samples", "attribution": "batch cleanup reduces scan work"},
+    "lock_wait_mutex_hold_timing": {"before": 940, "after": 760, "unit": "microseconds_p95", "attribution": "horizon blocker still visible"},
+    "io_syscall_counts": {"before": 680, "after": 520, "unit": "calls", "attribution": "fewer garbage page visits"},
+    "allocator_pressure": {"before": 980, "after": 700, "unit": "allocations", "attribution": "cleanup candidates pooled"},
+    "parser_lowering_timing": {"before": 40, "after": 40, "unit": "microseconds", "attribution": "not part of lane"},
+    "sblr_admission_dispatch_timing": {"before": 66, "after": 64, "unit": "microseconds", "attribution": "management route unchanged"},
+    "plan_cache_hit_miss_invalidation_timing": {"before": 35, "after": 35, "unit": "microseconds", "attribution": "not dominant"},
+    "metadata_cache_hit_miss_timing": {"before": 53, "after": 47, "unit": "microseconds", "attribution": "cleanup metadata reused"},
+    "statistics_epoch_plan_selection_timing": {"before": 27, "after": 27, "unit": "microseconds", "attribution": "not dominant"},
+    "page_allocation_demand_grant_timing": {"before": 250, "after": 210, "unit": "microseconds", "attribution": "cleanup frees pressure"},
+    "index_maintenance_timing_by_family": {"before": 1180, "after": 760, "unit": "microseconds", "attribution": "garbage family batches"},
+    "agent_queue_wake_run_throttle_completion_timing": {"before": 620, "after": 430, "unit": "microseconds", "attribution": "bounded agent slices"}
+  },
+  "result_correctness_hash_pointer": {
+    "digest_source": "DPC-073:mga_index_cleanup_load:result",
+    "digest": "938064dd70e9478be0e49ab1dbcc0a4fa8396ffc41f15d3e82b7dc8d1ad897a2",
+    "correctness_anchor": "cleanup preserves visible versions and index consistency"
+  },
+  "source_anchor": {
+    "path": "project/tests/database_lifecycle/dpc_mga_index_cleanup_benchmark_gate.cpp",
+    "search_key": "DPC_MGA_INDEX_CLEANUP_BENCHMARK_GATE"
+  },
+  "route_or_source_anchor": "project/tests/database_lifecycle/dpc_secondary_index_garbage_cleanup_agent_gate.cpp#DPC_SECONDARY_INDEX_GARBAGE_CLEANUP_AGENT_GATE",
+  "ctest_name": "dpc_profiler_hot_path_attribution_gate",
+  "ctest_labels": [
+    "dpc_profiler_hot_path_attribution_gate",
+    "DPC-073",
+    "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+    "DPC_P6_PROFILER_ATTRIBUTION_READY",
+    "DPC_AUDIT_PROFILER_ATTRIBUTION",
+    "DPC_DEP_PROFILER_ATTRIBUTION",
+    "profiler_attribution",
+    "database_lifecycle",
+    "mga_transaction_regression"
+  ],
+  "build_instrumentation": {
+    "build_type": "Release diagnostic",
+    "profiler_mode": "compact-retained-attribution",
+    "hotpath_trace": true,
+    "exec_profile_trace": true,
+    "prepared_trace": true,
+    "source_state": "fixture-retained-source-state"
+  },
+  "agent_metrics": {
+    "bounded": true,
+    "queue_max": 16,
+    "wake_max": 10,
+    "run_budget_ms": 35,
+    "throttle_events_max": 4,
+    "completion_state": "bounded_remaining_bottleneck"
+  },
+  "authority": {
+    "mga_authority_declaration": "engine_mga_transaction_inventory_authority",
+    "engine_mga_transaction_inventory_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "driver_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_log_finality_authority": false,
+    "timestamp_order_finality_authority": false,
+    "uuid_order_finality_authority": false,
+    "event_stream_finality_authority": false
+  }
+}

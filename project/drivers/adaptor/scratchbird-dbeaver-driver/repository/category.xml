@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<site>
+    <category-def name="com.scratchbird.dbeaver" label="ScratchBird Extensions">
+        <description>ScratchBird plugins for DBeaver</description>
+    </category-def>
+
+    <feature id="org.jkiss.dbeaver.ext.scratchbird.feature" version="0.0.0">
+        <category name="com.scratchbird.dbeaver"/>
+    </feature>
+</site>

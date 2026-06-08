@@ -1,0 +1,437 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "manifest_version": 1,
+  "retention_root": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention",
+  "shared_metadata": {
+    "path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json",
+    "artifact_sha256": "49b555203b72ebe60a4ceba1408ddf0b35c623e39b453eacfb64e5fbb04b0fcc"
+  },
+  "required_categories": [
+    "baseline_current_benchmark_comparison",
+    "page_summary_benchmark",
+    "deferred_index_hot_update_benchmark",
+    "mga_index_cleanup_benchmark",
+    "specialized_index_benchmark",
+    "executor_batch_benchmark",
+    "management_support_bundle_evidence",
+    "soak_resource_evidence",
+    "cross_build_build_config_evidence",
+    "operator_ui_docs",
+    "rejected_technique_gate",
+    "standalone_ctest_independence",
+    "security_config_packaging"
+  ],
+  "claims": [
+    {
+      "claim_id": "DPC-072-BASELINE-CURRENT",
+      "phase_slice": "P0/DPC-002",
+      "category": "baseline_current_benchmark_comparison",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_evidence_provenance_retention_gate.py",
+        "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_evidence_provenance_retention_gate.py#DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/baseline_current_comparison.json",
+      "evidence_kind": "benchmark-json",
+      "artifact_sha256": "7627485a5840a97e7cf3d3a7f1cd03aa44b543d172fdc3674cc05f2d385530e7",
+      "result_hash": "4f48621082076258c6b731968b659d27da673f2ed110d0f513576721e1b4305c",
+      "benchmark_claim": true,
+      "test_backed": true,
+      "ctest_name": "dpc_evidence_provenance_retention_gate",
+      "ctest_labels": [
+        "dpc_evidence_provenance_retention_gate",
+        "DPC-072",
+        "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+        "DPC_P6_EVIDENCE_RETENTION_READY",
+        "DPC_AUDIT_EVIDENCE_RETENTION",
+        "DPC_DEP_EVIDENCE_RETENTION",
+        "evidence_retention",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": true,
+      "mga_authority_declaration": "engine_mga_transaction_inventory_authority"
+    },
+    {
+      "claim_id": "DPC-072-PAGE-SUMMARY",
+      "phase_slice": "P1/DPC-014",
+      "category": "page_summary_benchmark",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_page_extent_summary_benchmark_gate.cpp",
+        "search_key": "DPC_PAGE_EXTENT_SUMMARY_BENCHMARK_GATE"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_page_extent_summary_benchmark_gate.cpp#DPC_PAGE_EXTENT_SUMMARY_BENCHMARK_GATE",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/page_summary_benchmark.csv",
+      "evidence_kind": "benchmark-csv",
+      "artifact_sha256": "d41249118f632b95146f6bd7a575b2bfc0e1e20dcf918566fbab22fe1da0340b",
+      "result_hashes": [
+        "115d7400880e48f28999933a3bcc989713292f25a4206dddeadcafbfeff86673",
+        "df0e8590067ac01adde516447813870861d01ca38f77b8ca8d8c8401fd87c56b"
+      ],
+      "benchmark_claim": true,
+      "test_backed": true,
+      "ctest_name": "dpc_page_extent_summary_benchmark_gate",
+      "ctest_labels": [
+        "DPC-014",
+        "DPC_TEST_PAGE_SUMMARY",
+        "page_summary_benchmark",
+        "benchmark",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": true,
+      "mga_authority_declaration": "engine_mga_transaction_inventory_authority"
+    },
+    {
+      "claim_id": "DPC-072-DEFERRED-HOT-UPDATE",
+      "phase_slice": "P2/DPC-027",
+      "category": "deferred_index_hot_update_benchmark",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_deferred_index_hot_update_benchmark_gate.cpp",
+        "search_key": "DPC_DEFERRED_INDEX_HOT_UPDATE_BENCHMARK_GATE"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_deferred_index_hot_update_benchmark_gate.cpp#DPC_DEFERRED_INDEX_HOT_UPDATE_BENCHMARK_GATE",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/deferred_index_hot_update_benchmark.json",
+      "evidence_kind": "benchmark-json",
+      "artifact_sha256": "8c05288874b5649fb103585e41af0bcb779a93b84f5489c2b3173363bc457dd3",
+      "result_hash": "e183b184411990521062d3a87bff798d08b6ec3c9ff3d8357958e151cbe2b6db",
+      "benchmark_claim": true,
+      "test_backed": true,
+      "ctest_name": "dpc_deferred_index_hot_update_benchmark_gate",
+      "ctest_labels": [
+        "DPC-027",
+        "DPC_TEST_DEFERRED_INDEX_HOT_UPDATE_BENCHMARK",
+        "deferred_index",
+        "hot_update",
+        "benchmark",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": true,
+      "mga_authority_declaration": "engine_mga_transaction_inventory_authority"
+    },
+    {
+      "claim_id": "DPC-072-MGA-INDEX-CLEANUP",
+      "phase_slice": "P3/DPC-035",
+      "category": "mga_index_cleanup_benchmark",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_mga_index_cleanup_benchmark_gate.cpp",
+        "search_key": "DPC_MGA_INDEX_CLEANUP_BENCHMARK_GATE"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_mga_index_cleanup_benchmark_gate.cpp#DPC_MGA_INDEX_CLEANUP_BENCHMARK_GATE",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/mga_index_cleanup_benchmark.json",
+      "evidence_kind": "benchmark-json",
+      "artifact_sha256": "2bfd3a55a282206166ac0b36564ce8d8fcee0d2e17019121712371acc050b08c",
+      "result_hash": "f4c4d3378235df61009b2279d46abe5b28c54a0b465b1ada2bd1917a0eb196b5",
+      "benchmark_claim": true,
+      "test_backed": true,
+      "ctest_name": "dpc_mga_index_cleanup_benchmark_gate",
+      "ctest_labels": [
+        "DPC-035",
+        "DPC_TEST_MGA_INDEX_CLEANUP_BENCHMARK",
+        "cleanup_horizon",
+        "benchmark",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": true,
+      "mga_authority_declaration": "engine_mga_transaction_inventory_authority"
+    },
+    {
+      "claim_id": "DPC-072-SPECIALIZED-INDEX",
+      "phase_slice": "P4/DPC-045",
+      "category": "specialized_index_benchmark",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_specialized_index_benchmark_gate.cpp",
+        "search_key": "DPC_SPECIALIZED_INDEX_BENCHMARK_GATE"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_specialized_index_benchmark_gate.cpp#DPC_SPECIALIZED_INDEX_BENCHMARK_GATE",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/specialized_index_benchmark.csv",
+      "evidence_kind": "benchmark-csv",
+      "artifact_sha256": "f25fd3a2d806cd3ae64281338bec867cf8237ec58d3fd8629d59a3555efeb9fd",
+      "result_hashes": [
+        "6bf64d59c3d818c9e038ec5ec814e243d1f99ded431f615876e57a56fc9d4e98",
+        "08dc58661168f0d70946f9aee58bfcd1b1f83edaf4cfa2cb132a418889e1b2e1",
+        "e42014d110911d52fbd9065b7c38f5c83887530d0a98e8bbefe7a632ad03146c"
+      ],
+      "benchmark_claim": true,
+      "test_backed": true,
+      "ctest_name": "dpc_specialized_index_benchmark_gate",
+      "ctest_labels": [
+        "DPC-045",
+        "DPC_TEST_SPECIALIZED_INDEX_BENCHMARK",
+        "time_range_pruning",
+        "inverted_search_segment",
+        "vector_generation",
+        "benchmark",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": true,
+      "mga_authority_declaration": "engine_mga_transaction_inventory_authority"
+    },
+    {
+      "claim_id": "DPC-072-EXECUTOR-BATCH",
+      "phase_slice": "P5/DPC-054",
+      "category": "executor_batch_benchmark",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_executor_batch_benchmark_gate.cpp",
+        "search_key": "DPC_EXECUTOR_BATCH_BENCHMARK_GATE"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_executor_batch_benchmark_gate.cpp#DPC_EXECUTOR_BATCH_BENCHMARK_GATE",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/executor_batch_benchmark.json",
+      "evidence_kind": "benchmark-json",
+      "artifact_sha256": "cede9100a20d1f3512bc80a0e3953362fd20145f848044f3f61d30b118c3a763",
+      "result_hash": "25a795657b2d7e2f52cb33c5d202c0d7ba2732671df79c2a1fecee1ccbe7cf17",
+      "benchmark_claim": true,
+      "test_backed": true,
+      "ctest_name": "dpc_executor_batch_benchmark_gate",
+      "ctest_labels": [
+        "DPC-054",
+        "DPC_EXECUTOR_BATCH_BENCHMARK_GATE",
+        "DPC_TEST_EXECUTOR_BATCH",
+        "executor_batch",
+        "benchmark",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": true,
+      "mga_authority_declaration": "engine_mga_transaction_inventory_authority"
+    },
+    {
+      "claim_id": "DPC-072-MANAGEMENT-SUPPORT",
+      "phase_slice": "P6/DPC-061",
+      "category": "management_support_bundle_evidence",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_management_observability_support_bundle_gate.cpp",
+        "search_key": "DPC_MANAGEMENT_OBSERVABILITY_SUPPORT_BUNDLE_GATE"
+      },
+      "route_or_source_anchor": "project/src/engine/internal_api/management/support_bundle_api.hpp#DPC_MANAGEMENT_SUPPORT_BUNDLE_OBSERVABILITY",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/management_support_bundle_evidence.json",
+      "evidence_kind": "support-bundle-json",
+      "artifact_sha256": "280ede6ed8b27fcd77f8de5a03a113d382a359370081b62cdc115a019aeed81e",
+      "result_hash": "9f1a8f4a56f46cacc1068a74e9cfaf6500a76f9548a946a4f202dc4aa1d8a06c",
+      "test_backed": true,
+      "ctest_name": "dpc_management_observability_support_bundle_gate",
+      "ctest_labels": [
+        "DPC-061",
+        "DPC_P6_OBSERVABILITY_READY",
+        "DPC_TEST_OBSERVABILITY",
+        "management_observability",
+        "support_bundle",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "support_metadata": {
+        "retention_policy_ref": "dpc-retain-compact-evidence-v1",
+        "redaction_profile_ref": "dpc-support-redaction-v1",
+        "support_bundle_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/management_support_bundle_evidence.json"
+      },
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": true,
+      "mga_authority_declaration": "engine_mga_transaction_inventory_authority"
+    },
+    {
+      "claim_id": "DPC-072-SOAK-RESOURCE",
+      "phase_slice": "P6/DPC-070",
+      "category": "soak_resource_evidence",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_soak_leak_resource_stability_gate.cpp",
+        "search_key": "DPC_SOAK_LEAK_RESOURCE_STABILITY_GATE"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_soak_leak_resource_stability_gate.cpp#DPC_SOAK_LEAK_RESOURCE_STABILITY_GATE",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/soak_resource_evidence.json",
+      "evidence_kind": "resource-json",
+      "artifact_sha256": "f475530fb028cd682a378226aa2dd4cd748225d0fae2ee0f034378fa3a716af7",
+      "result_hash": "d6cb4166fb7a8bb6a331d595964fb304c19a37db5c3eeb27ca1b3254ccc6297b",
+      "test_backed": true,
+      "ctest_name": "dpc_soak_leak_resource_stability_gate",
+      "ctest_labels": [
+        "DPC-070",
+        "DPC_SOAK_LEAK_RESOURCE_STABILITY_GATE",
+        "DPC_P6_SOAK_LEAK_READY",
+        "resource_stability",
+        "support_bundle",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": true,
+      "mga_authority_declaration": "engine_mga_transaction_inventory_authority"
+    },
+    {
+      "claim_id": "DPC-072-CROSS-BUILD-CONFIG",
+      "phase_slice": "P6/DPC-069",
+      "category": "cross_build_build_config_evidence",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_cross_build_matrix_gate.py",
+        "search_key": "DPC_CROSS_BUILD_MATRIX"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_cross_build_matrix_gate.py#DPC_CROSS_BUILD_MATRIX",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/cross_build_config_metadata.json",
+      "evidence_kind": "build-config-json",
+      "artifact_sha256": "ba3cb4e98221947f58a6f6a3ba682d884b1998db2f805482019722288722caef",
+      "result_hash": "d178dd6e3e811be35ef07d543bdc7bbe3756269a794fc5f028832d3ef7fdafcd",
+      "test_backed": true,
+      "ctest_name": "dpc_cross_build_matrix_gate",
+      "ctest_labels": [
+        "DPC-069",
+        "DPC_P6_CROSS_BUILD_READY",
+        "DPC_AUDIT_CROSS_BUILD",
+        "DPC_DEP_CROSS_BUILD",
+        "cross_build_matrix",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": false
+    },
+    {
+      "claim_id": "DPC-072-OPERATOR-UI-DOCS",
+      "phase_slice": "P6/DPC-071",
+      "category": "operator_ui_docs",
+      "source_anchor": {
+        "path": "docs/management-interface/README.md",
+        "search_key": "DPC_OPERATOR_UI_DOCS"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_operator_ui_documentation_gate.py#DPC_OPERATOR_UI_DOCUMENTATION_GATE",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/operator_ui_docs_evidence.json",
+      "evidence_kind": "operator-docs-json",
+      "artifact_sha256": "1ad465f72d48e54584acf8cd19e6f9707d8b1953a35064e274d8e75db05ae94f",
+      "result_hash": "4130c26377527bec4c8ced8d43de0729a4d5bf94662874511e3f0b4a35fc9413",
+      "test_backed": true,
+      "ctest_name": "dpc_operator_ui_documentation_gate",
+      "ctest_labels": [
+        "DPC-071",
+        "DPC_OPERATOR_UI_DOCUMENTATION_GATE",
+        "DPC_P6_OPERATOR_UI_DOC_READY",
+        "operator_ui_docs",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": false
+    },
+    {
+      "claim_id": "DPC-072-REJECTED-TECHNIQUE",
+      "phase_slice": "P6/DPC-067",
+      "category": "rejected_technique_gate",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_negative_rejected_technique_drift_gate.py",
+        "search_key": "DPC_NEGATIVE_DRIFT"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_negative_rejected_technique_drift_gate.py#DPC_NEGATIVE_DRIFT",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/rejected_technique_gate_evidence.json",
+      "evidence_kind": "negative-gate-json",
+      "artifact_sha256": "a9dbf39aaec83cba83448473d9dfbb4f585c3ace2b7024e7f95c42f05a76fa35",
+      "result_hash": "ddd6c815703b52f8e5c7e0343dbc54bf6b7bf885df3d4fa1c70272c4e2211dd9",
+      "test_backed": true,
+      "ctest_name": "dpc_negative_rejected_technique_drift_gate",
+      "ctest_labels": [
+        "DPC-067",
+        "DPC_NEGATIVE_DRIFT",
+        "DPC_DEP_NEGATIVE_DRIFT",
+        "rejected_technique_drift",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": true,
+      "mga_authority_declaration": "engine_mga_transaction_inventory_authority"
+    },
+    {
+      "claim_id": "DPC-072-STANDALONE-CTEST",
+      "phase_slice": "P6/DPC-062",
+      "category": "standalone_ctest_independence",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/CMakeLists.txt",
+        "search_key": "dpc_standalone_ctest_independence_gate"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/CMakeLists.txt#dpc_standalone_ctest_independence_gate",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/standalone_ctest_independence_evidence.json",
+      "evidence_kind": "ctest-independence-json",
+      "artifact_sha256": "cd803fb74fb90d010d16c9049a0d186c54da19c5aa2571a3d2cfa861694a12a3",
+      "result_hash": "63959c3bef515ac23f1e24df2649b5394f3f082a902386cdd514bdc01700674a",
+      "test_backed": true,
+      "ctest_name": "dpc_standalone_ctest_independence_gate",
+      "ctest_labels": [
+        "DPC-062",
+        "DPC_P6_STANDALONE_CTEST_READY",
+        "DPC_AUDIT_STANDALONE_CTEST",
+        "DPC_DEP_STANDALONE_CTEST",
+        "standalone_ctest",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": false
+    },
+    {
+      "claim_id": "DPC-072-SECURITY-CONFIG",
+      "phase_slice": "P6/DPC-066/DPC-068",
+      "category": "security_config_packaging",
+      "source_anchor": {
+        "path": "project/tests/database_lifecycle/dpc_config_defaults_packaging_gate.cpp",
+        "search_key": "DPC_CONFIG_DEFAULTS_PACKAGING_GATE"
+      },
+      "route_or_source_anchor": "project/tests/database_lifecycle/dpc_security_privilege_gate.cpp#DPC_SECURITY_PRIVILEGE_GATE",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/security_config_packaging_evidence.json",
+      "evidence_kind": "security-config-json",
+      "artifact_sha256": "28af349c8fac155fd30ff872aaac5762891b3a4b01d568dabefd6dfcf84ec9d8",
+      "result_hash": "5d24bed6afebe239b4d54fa8af4b92cfa62984138d27e565967d3aa0c10d4a56",
+      "test_backed": true,
+      "ctest_name": "dpc_config_defaults_packaging_gate",
+      "ctest_labels": [
+        "DPC-068",
+        "DPC_P6_CONFIG_PACKAGING_READY",
+        "DPC_AUDIT_CONFIG_PACKAGING",
+        "DPC_DEP_CONFIG_PACKAGING",
+        "config_defaults",
+        "packaging",
+        "support_bundle",
+        "database_lifecycle",
+        "mga_transaction_regression"
+      ],
+      "support_metadata": {
+        "retention_policy_ref": "dpc-retain-compact-evidence-v1",
+        "redaction_profile_ref": "dpc-support-redaction-v1",
+        "support_bundle_path": "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/security_config_packaging_evidence.json"
+      },
+      "retained_metadata_paths": [
+        "project/tests/database_lifecycle/fixtures/dpc_evidence_provenance_retention/source_state_profile_metadata.json"
+      ],
+      "transaction_sensitive": true,
+      "mga_authority_declaration": "engine_mga_transaction_inventory_authority"
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+# Public release staging scope.
+#
+# At this stage, only the public documentation tree, public project tree, and
+# root release metadata files are trackable. Top-level build, output, tool,
+# scratch, and artifact directories are local preparation artifacts.
+/*
+!/docs/
+!/project/
+!/.gitignore
+!/LICENSE
+!/NOTICE
+!/README.md
+
+/build/
+/build-*/
+/cmake-build-*/
+/output/
+/artifacts/
+/dist/
+/release/
+/tmp/
+/tools/
+
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Testing/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.pyc
+__pycache__/
+.pytest_cache/
+.cache/
+.DS_Store
+*.log
+*.tmp
+*.swp
+
+# Donor material in the public repository is limited to original regression
+# suites and compiled/downloaded tool harness payloads. Donor source trees,
+# source archives, release-packet evidence extracts, and source-acquisition
+# manifests stay local/private and must not be tracked.
+project/tests/donor_regression/donor_release_acquisition/**
+!project/tests/donor_regression/donor_release_acquisition/
+!project/tests/donor_regression/donor_release_acquisition/**/
+!project/tests/donor_regression/donor_release_acquisition/**/regression/
+!project/tests/donor_regression/donor_release_acquisition/**/regression/**
+
+!project/tests/donor_regression/donor_catalog_seeds/
+!project/tests/donor_regression/donor_catalog_seeds/**
+!project/tests/donor_regression/**/native_tool_harness/tools/
+!project/tests/donor_regression/**/native_tool_harness/tools/**
+!project/tests/donor_regression/firebird/original_firebird_qa/
+!project/tests/donor_regression/firebird/original_firebird_qa/**

@@ -1,0 +1,26 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "claim_id": "DPC-072-BASELINE-CURRENT",
+  "evidence_kind": "benchmark-json",
+  "result_digest_source": {
+    "claim_id": "DPC-072-BASELINE-CURRENT",
+    "baseline_package": "current-completion-baseline",
+    "comparison_scope": "route-split current old-project latest-current compact retention",
+    "source_state": "synthetic-retained-fixture-state",
+    "build_mode": "benchmark-clean",
+    "result": "baseline-current-comparability-retained"
+  },
+  "result_hash": "4f48621082076258c6b731968b659d27da673f2ed110d0f513576721e1b4305c",
+  "benchmark_log": {
+    "json_summary": "retained",
+    "csv_comparability": "retained",
+    "source_artifact_manifest": "retained"
+  },
+  "authority": {
+    "engine_mga_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_finality_authority": false
+  }
+}

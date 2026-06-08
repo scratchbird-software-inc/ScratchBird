@@ -1,0 +1,20 @@
+manifest_format_version: 1
+parser_package_uuid: 00000000-0000-7000-8000-000000000003
+parser_package_name: sbp_sbsql_bad_public_fixture
+parser_package_version: 0.0.1-fixture
+build_uuid: 00000000-0000-7000-8000-000000000004
+package_kind: native_sbsql_parser
+edition_scope: public_node
+registry_snapshot_hash: fixture-snapshot-hash
+generated_artifact_inventory:
+  - grammar/
+  - manifests/
+# This term is intentionally present so public package validation can reject it.
+private_cluster_command_authority: true
+required_libraries: []
+required_parser_support_udrs: []
+supported_parser_modes:
+  - native_sbsql
+supported_donor_modes: []
+supported_result_renderers:
+  - native_sbsql

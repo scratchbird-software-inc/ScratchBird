@@ -1,0 +1,18 @@
+{
+  "version": "2026-04-20.1",
+  "dialects": {
+    "native": {
+      "status": "baseline",
+      "read_select": true,
+      "write_dml": true,
+      "ddl": true,
+      "transactions": true,
+      "prepare_bind": true,
+      "metadata_introspection": true,
+      "vector_ops": true,
+      "graph_ops": true,
+      "last_verified_at": "2026-04-20",
+      "compat_version": "sb-ai-0.1"
+    }
+  }
+}

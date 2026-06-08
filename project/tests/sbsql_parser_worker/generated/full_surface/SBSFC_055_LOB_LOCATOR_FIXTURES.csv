@@ -1,0 +1,28 @@
+fixture_id,surface_id,canonical_name,function_id,canonical_builtin_id,case_kind,arguments_json,expected_result_descriptor,expected_result_json,expected_diagnostic_code,notes
+SBSFC055-lob-locator-to-binary-marker,SBSQL-15EB156297E9,lob_locator_to_binary,sb.lob.locator_to_binary,sb.lob.locator_to_binary,positive,[],binary,,,marker returns empty binary when no locator is supplied
+SBSFC055-locator-validity-arg,SBSQL-176685E96193,locator_validity(locator),sb.locator.validity,sb.locator.validity,positive,[],boolean,1,,locator validity accepts bounded locator descriptors
+SBSFC055-lob-write-marker,SBSQL-1EE6C3D7F2EE,lob_write,sb.lob.write,sb.lob.write,positive,[],json_document,,,lob write updates bounded descriptor data bytes
+SBSFC055-lob-close-arg,SBSQL-2E2F4913A42F,lob_close(locator),sb.lob.close,sb.lob.close,positive,[],json_document,,,lob close marks a locator descriptor closed
+SBSFC055-lob-size-marker,SBSQL-317A464A74B3,lob_size,sb.lob.size,sb.lob.size,positive,[],int64,0,,lob size marker defaults to zero
+SBSFC055-lob-open-arg,SBSQL-41A19A07C09B,"lob_open(locator,mode)",sb.lob.open,sb.lob.open,positive,[],json_document,,,lob open accepts locator and mode
+SBSFC055-lob-append-marker,SBSQL-4B3B3D4FB26A,lob_append,sb.lob.append,sb.lob.append,positive,[],json_document,,,lob append marker appends to default descriptor
+SBSFC055-current-row-locator-marker,SBSQL-531A760C8C66,current_row_locator,sb.locator.current_row,sb.locator.current_row,positive,[],json_document,,,current row locator returns a bounded locator descriptor
+SBSFC055-locator-validity-marker,SBSQL-7B6B59743B35,locator_validity,sb.locator.validity,sb.locator.validity,positive,[],boolean,0,,locator validity marker defaults false
+SBSFC055-lob-truncate-marker,SBSQL-7CF4F4150D85,lob_truncate,sb.lob.truncate,sb.lob.truncate,positive,[],json_document,,,lob truncate shortens descriptor data bytes
+SBSFC055-lob-open-marker,SBSQL-891992A5F310,lob_open,sb.lob.open,sb.lob.open,positive,[],json_document,,,lob open marker returns default open descriptor
+SBSFC055-lob-locator-to-binary-arg,SBSQL-96DE0F2265B6,lob_locator_to_binary(locator),sb.lob.locator_to_binary,sb.lob.locator_to_binary,positive,[],binary,,,locator to binary returns descriptor bytes
+SBSFC055-lob-truncate-arg,SBSQL-9C16F6BF7072,"lob_truncate(locator,length)",sb.lob.truncate,sb.lob.truncate,positive,[],json_document,,,lob truncate accepts explicit length
+SBSFC055-lob-write-arg,SBSQL-A9177A9A947C,"lob_write(locator,offset,data)",sb.lob.write,sb.lob.write,positive,[],json_document,,,lob write accepts explicit offset and data
+SBSFC055-lob-read-marker,SBSQL-C2F659F4DFC0,lob_read,sb.lob.read,sb.lob.read,positive,[],character,ell,,lob read marker uses text locator fixture in runtime evidence
+SBSFC055-lob-size-arg,SBSQL-C62D69D167C8,lob_size(locator),sb.lob.size,sb.lob.size,positive,[],int64,5,,lob size reads locator descriptor byte count
+SBSFC055-lob-create-arg,SBSQL-D2E48C4160ED,"lob_create(class,[media])",sb.lob.create,sb.lob.create,positive,[],json_document,,,lob create accepts class and optional media type
+SBSFC055-lob-append-arg,SBSQL-D5E167A4984B,"lob_append(locator,data)",sb.lob.append,sb.lob.append,positive,[],json_document,,,lob append accepts explicit locator and data
+SBSFC055-lob-create-marker,SBSQL-D89EF3B31969,lob_create,sb.lob.create,sb.lob.create,positive,[],json_document,,,lob create marker returns default binary locator
+SBSFC055-lob-locator-to-text-arg,SBSQL-DA9087A02218,lob_locator_to_text(locator),sb.lob.locator_to_text,sb.lob.locator_to_text,positive,[],character,hello,,locator to text returns descriptor bytes as UTF-8 text
+SBSFC055-lob-close-marker,SBSQL-DF89DE098501,lob_close,sb.lob.close,sb.lob.close,positive,[],json_document,,,lob close marker closes default locator
+SBSFC055-lob-locator-to-text-marker,SBSQL-E7CBEEE4AAC6,lob_locator_to_text,sb.lob.locator_to_text,sb.lob.locator_to_text,positive,[],character,,,locator to text marker returns empty text
+SBSFC055-locator-marker,SBSQL-F2A363288372,locator,sb.locator.locator,sb.locator.locator,positive,[],json_document,,,locator marker returns a generic locator descriptor
+SBSFC055-lob-read-arg,SBSQL-FC06D12DAC16,"lob_read(locator,offset,length)",sb.lob.read,sb.lob.read,positive,[],character,ell,,lob read accepts locator offset and length
+SBSFC055-lob-read-missing,SBSFC055-INVALID,lob_read-invalid,sb.lob.read,sb.lob.read,invalid_input,[],,,SB_DIAG_FUNCTION_INVALID_INPUT,missing locator refuses
+SBSFC055-lob-open-malformed,SBSFC055-INVALID,lob_open-invalid,sb.lob.open,sb.lob.open,invalid_input,[],,,SB_DIAG_FUNCTION_INVALID_INPUT,malformed locator refuses
+SBSFC055-lob-write-bad-offset,SBSFC055-INVALID,lob_write-invalid,sb.lob.write,sb.lob.write,invalid_input,[],,,SB_DIAG_FUNCTION_INVALID_INPUT,non-positive offset refuses

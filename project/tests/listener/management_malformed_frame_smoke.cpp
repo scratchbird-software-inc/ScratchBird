@@ -1,0 +1,253 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#include "control_plane.hpp"
+
+#include <csignal>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
+#include <filesystem>
+#include <iostream>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#include <thread>
+#include <unistd.h>
+#include <vector>
+
+namespace {
+
+int FindFreePort() {
+  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) return 0;
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = 0;
+  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    ::close(fd);
+    return 0;
+  }
+  socklen_t len = sizeof(addr);
+  if (::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+    ::close(fd);
+    return 0;
+  }
+  const int port = ntohs(addr.sin_port);
+  ::close(fd);
+  return port;
+}
+
+std::filesystem::path MakeTempDir() {
+  std::string tmpl = "/tmp/sb_lmmf.XXXXXX";
+  std::vector<char> writable(tmpl.begin(), tmpl.end());
+  writable.push_back('\0');
+  char* made = ::mkdtemp(writable.data());
+  return made == nullptr ? std::filesystem::path{} : std::filesystem::path(made);
+}
+
+std::filesystem::path FindManagementSocket(const std::filesystem::path& control_dir) {
+  std::error_code ec;
+  if (!std::filesystem::exists(control_dir, ec)) return {};
+  for (const auto& entry : std::filesystem::directory_iterator(control_dir, ec)) {
+    if (ec) return {};
+    const auto path = entry.path();
+    const auto name = path.filename().string();
+    if (name.size() >= std::string(".management.sock").size() &&
+        name.ends_with(".management.sock")) {
+      return path;
+    }
+  }
+  return {};
+}
+
+int ConnectUnix(const std::filesystem::path& path) {
+  const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  const auto text = path.string();
+  if (text.size() >= sizeof(addr.sun_path)) {
+    ::close(fd);
+    return -1;
+  }
+  std::strncpy(addr.sun_path, text.c_str(), sizeof(addr.sun_path) - 1);
+  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    ::close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+struct CommandResult {
+  bool got_frame{false};
+  bool ok{false};
+  std::string body;
+};
+
+CommandResult SendFrame(const std::filesystem::path& socket_path,
+                        scratchbird::listener::ListenerControlOpcode opcode,
+                        const std::string& command,
+                        std::uint64_t sequence) {
+  CommandResult result;
+  const int fd = ConnectUnix(socket_path);
+  if (fd < 0) return result;
+  scratchbird::listener::ListenerControlFrame frame;
+  frame.opcode = opcode;
+  frame.sequence = sequence;
+  frame.payload_json = command;
+  if (!scratchbird::listener::SendControlFrame(fd, frame)) {
+    ::close(fd);
+    return result;
+  }
+  scratchbird::listener::ListenerControlDecodeResult decoded;
+  int received_fd = -1;
+  if (!scratchbird::listener::ReadControlFrame(fd, &decoded, &received_fd, 3000)) {
+    if (received_fd >= 0) ::close(received_fd);
+    ::close(fd);
+    return result;
+  }
+  if (received_fd >= 0) ::close(received_fd);
+  ::close(fd);
+  result.got_frame = decoded.frame.opcode == scratchbird::listener::ListenerControlOpcode::kManagementResponse &&
+                     !decoded.frame.payload.empty();
+  if (!result.got_frame) return result;
+  result.ok = decoded.frame.payload[0] == 0;
+  result.body.assign(decoded.frame.payload.begin() + 1, decoded.frame.payload.end());
+  return result;
+}
+
+bool SendRawGarbage(const std::filesystem::path& socket_path) {
+  const int fd = ConnectUnix(socket_path);
+  if (fd < 0) return false;
+  const char garbage[] = "not-an-sbct-frame";
+  const bool wrote = ::write(fd, garbage, sizeof(garbage) - 1) == static_cast<ssize_t>(sizeof(garbage) - 1);
+  ::shutdown(fd, SHUT_WR);
+  ::close(fd);
+  return wrote;
+}
+
+void Require(bool condition, const std::string& message) {
+  if (!condition) {
+    std::cerr << message << '\n';
+    std::exit(EXIT_FAILURE);
+  }
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  if (argc != 3) {
+    std::cerr << "usage: sb_listener_management_malformed_frame_smoke <sb_listener> <sb_parser_dummy>\n";
+    return EXIT_FAILURE;
+  }
+  const std::filesystem::path listener = argv[1];
+  const std::filesystem::path parser = argv[2];
+  const auto work = MakeTempDir();
+  Require(!work.empty(), "could not create temp dir");
+  const int port = FindFreePort();
+  Require(port > 0, "could not allocate test port");
+
+  const auto control_dir = work / "control";
+  const auto runtime_dir = work / "runtime";
+  const auto stdout_path = work / "listener.out";
+  const auto stderr_path = work / "listener.err";
+
+  const pid_t pid = ::fork();
+  if (pid == 0) {
+    int out = ::creat(stdout_path.c_str(), 0600);
+    int err = ::creat(stderr_path.c_str(), 0600);
+    if (out >= 0) {
+      ::dup2(out, STDOUT_FILENO);
+      ::close(out);
+    }
+    if (err >= 0) {
+      ::dup2(err, STDERR_FILENO);
+      ::close(err);
+    }
+    const std::string parser_arg = "--parser-executable=" + parser.string();
+    const std::string control_arg = "--control-dir=" + control_dir.string();
+    const std::string runtime_arg = "--runtime-dir=" + runtime_dir.string();
+    const std::string port_arg = "--port=" + std::to_string(port);
+    ::execl(listener.c_str(),
+            listener.c_str(),
+            "--foreground",
+            "--protocol-family=sbsql",
+            "--listener-profile=default",
+            "--bundle-contract-id=bundle.default@1",
+            "--database-selector=dev_bootstrap_path:/tmp/sb_listener_management_malformed.sbdb",
+            "--server-endpoint=unix:/tmp/sb_listener_management_malformed.sbps.sock",
+            parser_arg.c_str(),
+            control_arg.c_str(),
+            runtime_arg.c_str(),
+            "--bind-address=127.0.0.1",
+            port_arg.c_str(),
+            "--warm-pool-min=1",
+            "--warm-pool-max=1",
+            nullptr);
+    _exit(127);
+  }
+  Require(pid > 0, "could not fork listener");
+
+  auto cleanup = [&] {
+    ::kill(pid, SIGTERM);
+    int status = 0;
+    for (int i = 0; i < 100; ++i) {
+      const auto rc = ::waitpid(pid, &status, WNOHANG);
+      if (rc == pid) return;
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    ::kill(pid, SIGKILL);
+    ::waitpid(pid, &status, 0);
+  };
+
+  std::filesystem::path management_socket;
+  for (int i = 0; i < 100; ++i) {
+    management_socket = FindManagementSocket(control_dir);
+    if (!management_socket.empty()) {
+      const int probe_fd = ConnectUnix(management_socket);
+      if (probe_fd >= 0) {
+        ::close(probe_fd);
+        break;
+      }
+    }
+    int status = 0;
+    if (::waitpid(pid, &status, WNOHANG) == pid) {
+      std::cerr << "listener exited before management socket became reachable\n";
+      return EXIT_FAILURE;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  Require(!management_socket.empty(), "management socket was not created");
+
+  auto wrong_opcode = SendFrame(management_socket,
+                                scratchbird::listener::ListenerControlOpcode::kHello,
+                                "",
+                                1);
+  Require(wrong_opcode.got_frame && !wrong_opcode.ok,
+          "management socket must reject a valid SBCT frame with the wrong opcode");
+  Require(wrong_opcode.body.find("CONTROL.MESSAGE_TYPE_INVALID") != std::string::npos,
+          "wrong opcode response must expose CONTROL.MESSAGE_TYPE_INVALID");
+
+  Require(SendRawGarbage(management_socket), "raw malformed frame write must complete");
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  auto status = SendFrame(management_socket,
+                          scratchbird::listener::ListenerControlOpcode::kManagementCommand,
+                          "STATUS",
+                          2);
+  cleanup();
+  Require(status.got_frame && status.ok,
+          "listener management socket must remain usable after malformed input");
+  std::cout << "management_malformed_frame_smoke=passed work=" << work << '\n';
+  return EXIT_SUCCESS;
+}

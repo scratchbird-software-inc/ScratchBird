@@ -1,0 +1,15 @@
+name: scratchbird
+version: 0.1.0
+publish_to: 'none'
+
+description: Native ScratchBird driver for Dart/Flutter using SBWP v1.1.
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  crypto: ^3.0.3
+  convert: ^3.1.1
+
+dev_dependencies:
+  test: ^1.25.0

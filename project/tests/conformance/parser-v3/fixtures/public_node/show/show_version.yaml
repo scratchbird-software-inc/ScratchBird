@@ -1,0 +1,50 @@
+fixture_id: CONF-ACCEPT-SHOW-VERSION
+fixture_version: 1
+surface_key: show.version
+row_kind: accepted_command
+edition_scope: public_node
+parser_mode: native_sbsql
+donor_mode: none
+input:
+  command_text: "SHOW VERSION;"
+  source_encoding: utf8
+  command_terminator_mode: semicolon
+  database_uuid_placeholder: fixture.database.primary
+  principal_uuid_placeholder: fixture.principal.public_user
+  catalog_epoch_placeholder: fixture.catalog_epoch.initial
+  package_profile: public_node
+expected_parse:
+  ast_node: ShowIdentityAst
+  ast_format_version: 1
+  surface_key_candidate: show.version
+  fields:
+    show_kind: version
+expected_bind:
+  bound_ast_node: BoundShowIdentity
+  database_uuid: fixture.database.primary
+  required_right: CONNECT
+  scope_mode: baseline
+  edition_gate_result: allowed
+  profile_gate_result: allowed
+  sblr_operation_key: op.show.version
+expected_lower:
+  envelope_kind: sblr_show_self_or_baseline
+  operation_key: op.show.version
+  operation_version: 1
+  operands: []
+expected_engine_api_bridge:
+  accepted_by_engine_api: true
+  operation_code: show_version
+  authority_class: baseline_inspect
+  result_cardinality: single_row
+  result_column_count: 8
+  sblr_envelope_kind: native_sblr
+  parser_is_trusted: false
+expected_result_shape: rs.show.version.v1
+expected_diagnostic_shape: diag.generic.success.v1
+expected_trace: SBSQL-SURFACE-TRACE-SHOW-VERSION
+redaction_class: public_safe
+package_filter_expectation: public_allowed
+evidence_refs:
+  - public_contract_snapshot
+  - public_contract_snapshot

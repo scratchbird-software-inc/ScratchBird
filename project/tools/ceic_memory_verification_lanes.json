@@ -1,0 +1,173 @@
+{
+  "search_key": "CEIC_022_MEMORY_VERIFICATION_LANES",
+  "version": 1,
+  "authority_boundary": "memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority",
+  "sanitizer_lanes": [
+    {
+      "id": "ceic-022-asan-linux",
+      "kind": "asan",
+      "platforms": ["linux", "macos"],
+      "cmake_flags": ["-DSB_BUILD_CONSOLIDATED_ENTERPRISE_PROOF_GATE=ON", "-DSB_ENABLE_ASAN=ON"],
+      "test_regex": "ceic_0(1[0-9]|2[0-9])_.*memory|memory|storage|optimizer|executor",
+      "artifact_policy": "preserve_ctest_xml_stdout_stderr_and_failure_inventory"
+    },
+    {
+      "id": "ceic-022-lsan-linux",
+      "kind": "lsan",
+      "platforms": ["linux"],
+      "cmake_flags": ["-DSB_BUILD_CONSOLIDATED_ENTERPRISE_PROOF_GATE=ON", "-DSB_ENABLE_LSAN=ON"],
+      "test_regex": "ceic_0(1[0-9]|2[0-9])_.*memory|memory|storage|optimizer|executor",
+      "artifact_policy": "preserve_leak_reports_ctest_xml_stdout_stderr"
+    },
+    {
+      "id": "ceic-022-ubsan",
+      "kind": "ubsan",
+      "platforms": ["linux", "macos"],
+      "cmake_flags": ["-DSB_BUILD_CONSOLIDATED_ENTERPRISE_PROOF_GATE=ON", "-DSB_ENABLE_UBSAN=ON"],
+      "test_regex": "ceic_0(1[0-9]|2[0-9])_.*memory|memory|storage|optimizer|executor",
+      "artifact_policy": "preserve_undefined_behavior_reports_and_ctest_inventory"
+    },
+    {
+      "id": "ceic-022-tsan",
+      "kind": "tsan",
+      "platforms": ["linux", "macos"],
+      "cmake_flags": ["-DSB_BUILD_CONSOLIDATED_ENTERPRISE_PROOF_GATE=ON", "-DSB_ENABLE_TSAN=ON"],
+      "test_regex": "ceic_022_memory_reservation_model_gate|ceic_014|ceic_015|ceic_019|ceic_020",
+      "artifact_policy": "preserve_thread_race_reports_and_ctest_inventory"
+    }
+  ],
+  "dynamic_analysis_lanes": [
+    {
+      "id": "ceic-022-valgrind-linux",
+      "kind": "valgrind_or_drmemory",
+      "tool_preference": "valgrind_memcheck",
+      "platforms": ["linux"],
+      "test_regex": "ceic_022_memory_reservation_model_gate|ceic_018|ceic_019|ceic_020",
+      "artifact_policy": "preserve_memcheck_xml_logs_and_suppression_diff"
+    },
+    {
+      "id": "ceic-022-drmemory-windows",
+      "kind": "valgrind_or_drmemory",
+      "tool_preference": "drmemory",
+      "platforms": ["windows"],
+      "test_regex": "ceic_022_memory_reservation_model_gate|ceic_018|ceic_019|ceic_020",
+      "artifact_policy": "preserve_drmemory_results_and_failure_inventory"
+    },
+    {
+      "id": "ceic-022-application-verifier-windows",
+      "kind": "windows_application_verifier",
+      "tool_preference": "application_verifier",
+      "platforms": ["windows"],
+      "test_regex": "ceic_0(1[0-9]|2[0-9])_.*memory|ceic_018|ceic_019|ceic_020",
+      "artifact_policy": "preserve_application_verifier_logs_heap_handle_lock_and_leak_failure_inventory"
+    }
+  ],
+  "static_analysis_lanes": [
+    {
+      "id": "ceic-022-clang-tidy-lifetime",
+      "kind": "clang_tidy",
+      "platforms": ["linux", "macos"],
+      "source_roots": [
+        "project/src/core/memory",
+        "project/src/engine/executor",
+        "project/src/engine/optimizer",
+        "project/src/storage/page",
+        "project/src/wire"
+      ],
+      "checks": ["cppcoreguidelines-owning-memory", "bugprone-use-after-move", "clang-analyzer-cplusplus.NewDeleteLeaks"],
+      "artifact_policy": "preserve_compile_commands_clang_tidy_yaml_and_changed_findings"
+    },
+    {
+      "id": "ceic-022-clang-static-analyzer",
+      "kind": "static_analyzer",
+      "platforms": ["linux", "macos"],
+      "source_roots": [
+        "project/src/core/memory",
+        "project/src/engine/executor",
+        "project/src/engine/optimizer",
+        "project/src/storage/page",
+        "project/src/wire"
+      ],
+      "checks": ["core", "cplusplus", "unix", "security"],
+      "artifact_policy": "preserve_plist_html_and_failure_inventory"
+    }
+  ],
+  "fuzz_lanes": [
+    {
+      "id": "ceic-022-memory-policy-fuzz",
+      "kind": "memory_policy_fuzz",
+      "platforms": ["linux", "macos", "windows"],
+      "target": "memory_policy_config_and_hierarchical_budget_ledger",
+      "seed_policy": "fixed_seed_plus_ci_reported_seed",
+      "artifact_policy": "preserve_corpus_crashers_reproducer_and_seed"
+    },
+    {
+      "id": "ceic-022-temp-workspace-fuzz",
+      "kind": "temp_workspace_fuzz",
+      "platforms": ["linux", "macos", "windows"],
+      "target": "secure_temp_workspace_paths_quotas_cleanup_recovery_classification",
+      "seed_policy": "fixed_seed_plus_ci_reported_seed",
+      "artifact_policy": "preserve_corpus_crashers_reproducer_and_seed"
+    }
+  ],
+  "churn_lanes": [
+    {
+      "id": "ceic-022-churn-8",
+      "worker_count": 8,
+      "operations_per_worker": 96,
+      "required_summary": ["p50_ns", "p95_ns", "p99_ns", "cleanup_released"]
+    },
+    {
+      "id": "ceic-022-churn-32",
+      "worker_count": 32,
+      "operations_per_worker": 96,
+      "required_summary": ["p50_ns", "p95_ns", "p99_ns", "cleanup_released"]
+    },
+    {
+      "id": "ceic-022-churn-64",
+      "worker_count": 64,
+      "operations_per_worker": 80,
+      "required_summary": ["p50_ns", "p95_ns", "p99_ns", "cleanup_released"]
+    },
+    {
+      "id": "ceic-022-churn-128",
+      "worker_count": 128,
+      "operations_per_worker": 64,
+      "required_summary": ["p50_ns", "p95_ns", "p99_ns", "cleanup_released"]
+    }
+  ],
+  "soak_lanes": [
+    {
+      "id": "ceic-022-soak-24h-normal-and-pressure",
+      "kind": "soak_24h",
+      "platforms": ["linux", "macos", "windows"],
+      "duration_hours": 24,
+      "workloads": [
+        "normal_oltp",
+        "mixed_oltp_analytics",
+        "spill_storm",
+        "page_cache_pressure",
+        "slow_client_streaming",
+        "background_maintenance"
+      ],
+      "required_evidence": ["memory_snapshot_interval", "leak_delta", "pressure_transitions", "cleanup_reconciliation", "authority_boundary"],
+      "artifact_policy": "preserve_periodic_snapshots_resource_pressure_logs_ctest_inventory_and_failure_reproducers"
+    },
+    {
+      "id": "ceic-022-soak-72h-crash-and-cancel",
+      "kind": "soak_72h",
+      "platforms": ["linux", "macos", "windows"],
+      "duration_hours": 72,
+      "workloads": [
+        "cancellation_storm",
+        "disconnect_storm",
+        "crash_restart_cycles",
+        "cgroup_pressure",
+        "bulk_ingest_with_spill",
+        "query_plan_cache_churn"
+      ],
+      "required_evidence": ["memory_snapshot_interval", "leak_delta", "recovery_cleanup", "reservation_reconciliation", "authority_boundary"],
+      "artifact_policy": "preserve_periodic_snapshots_crash_recovery_logs_ctest_inventory_and_failure_reproducers"
+    }
+  ]
+}

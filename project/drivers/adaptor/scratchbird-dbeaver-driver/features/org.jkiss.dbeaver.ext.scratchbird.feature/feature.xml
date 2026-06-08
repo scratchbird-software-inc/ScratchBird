@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feature
+      id="org.jkiss.dbeaver.ext.scratchbird.feature"
+      label="ScratchBird Extension"
+      version="1.0.1.qualifier"
+      provider-name="ScratchBird">
+
+   <description url="https://scratchbird.com/">
+      ScratchBird extension for DBeaver with recursive schema metadata navigation and DDL folders.
+   </description>
+
+   <copyright>
+      Copyright (C) 2026 ScratchBird
+   </copyright>
+
+   <license>
+      Licensed under the Apache License, Version 2.0.
+   </license>
+
+   <plugin
+         id="org.jkiss.dbeaver.ext.scratchbird"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         unpack="false"/>
+
+   <plugin
+         id="org.jkiss.dbeaver.ext.scratchbird.ui"
+         download-size="0"
+         install-size="0"
+         version="0.0.0"
+         unpack="false"/>
+</feature>

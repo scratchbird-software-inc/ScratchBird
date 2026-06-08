@@ -1,0 +1,42 @@
+{
+  "component_id": "adaptor:scratchbird-powerbi",
+  "category": "adaptor",
+  "name": "scratchbird-powerbi",
+  "driver_family": "powerbi",
+  "status": "beta_2",
+  "wire_protocol": "sbwp_v1_1",
+  "auth_authority": "engine",
+  "transaction_authority": "mga_engine",
+  "api_surface": [
+    "PowerQueryConnector",
+    "NavigationTable",
+    "DirectQuery",
+    "ImportMode",
+    "credential_kind_username_password",
+    "folding_profile"
+  ],
+  "route_requirements": [
+    "sbwp_v1_1",
+    "scratchbird_tls_1_3_floor",
+    "engine_authentication_authority",
+    "engine_authorization_authority",
+    "mga_transaction_finality",
+    "sys_information_metadata",
+    "uuid_identity",
+    "no_hidden_replay"
+  ],
+  "conformance": [
+    "connect_auth",
+    "prepare_execute_fetch",
+    "transactions",
+    "metadata",
+    "type_mapping",
+    "error_mapping",
+    "reconnect",
+    "protocol_negotiation",
+    "cancellation"
+  ],
+  "package_files": [
+    "package_contract.json"
+  ]
+}

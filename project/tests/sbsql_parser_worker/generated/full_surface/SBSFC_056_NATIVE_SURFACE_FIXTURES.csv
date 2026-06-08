@@ -1,0 +1,41 @@
+fixture_id,surface_id,canonical_name,function_id,canonical_builtin_id,case_kind,arguments_json,expected_result_descriptor,expected_result_json,expected_diagnostic_code,notes
+SBSFC056-accept-marker,SBSQL-DF502F8DF4FA,Accept,sb.scalar.accept,sb.scalar.accept,positive,[],character,acceptance.surface,,accept marker is implemented by the native surface family
+SBSFC056-close-marker,SBSQL-8CBB8186C7CC,CLOSE,sb.scalar.close,sb.scalar.close,positive,[],character,keyword.close,,close keyword marker is implemented
+SBSFC056-future-version-marker,SBSQL-755DD39EA853,FUTURE_VERSION,sb.scalar.future_version,sb.scalar.future_version,positive,[],character,syntax.future_version,,future version marker is implemented
+SBSFC056-gap-marker,SBSQL-B30BB888C751,GAP,sb.scalar.gap,sb.scalar.gap,positive,[],character,surface.gap,,gap marker is implemented
+SBSFC056-immutable-marker,SBSQL-CD2216F125FB,IMMUTABLE,sb.scalar.immutable,sb.scalar.immutable,positive,[],character,volatility.immutable,,immutable volatility marker is implemented
+SBSFC056-match-recognize-marker,SBSQL-14EDC2636B45,MATCH_RECOGNIZE,sb.scalar.match_recognize,sb.scalar.match_recognize,positive,[],json_document,"{""kind"":""match_recognize"",""version"":""v1"",""pattern"":""""}",,match_recognize descriptor marker is implemented
+SBSFC056-open-marker,SBSQL-C4027F6E6C8A,OPEN,sb.scalar.open,sb.scalar.open,positive,[],character,keyword.open,,open keyword marker is implemented
+SBSFC056-reserved-marker,SBSQL-67B876B5339F,RESERVED,sb.scalar.reserved,sb.scalar.reserved,positive,[],character,syntax.reserved,,reserved marker is implemented
+SBSFC056-syntax-future-marker,SBSQL-4AF1FA4C5BBC,SBSQL.SYNTAX_FUTURE_VERSION,sb.scalar.sbsql_syntax_future_version,sb.scalar.sbsql_syntax_future_version,positive,[],character,sbsql.syntax.future_version,,SBsql syntax future marker is implemented
+SBSFC056-syntax-reserved-marker,SBSQL-4975481A1AB7,SBSQL.SYNTAX_RESERVED,sb.scalar.sbsql_syntax_reserved,sb.scalar.sbsql_syntax_reserved,positive,[],character,sbsql.syntax.reserved,,SBsql syntax reserved marker is implemented
+SBSFC056-stable-marker,SBSQL-8893D25F387F,STABLE,sb.scalar.stable,sb.scalar.stable,positive,[],character,volatility.stable,,stable volatility marker is implemented
+SBSFC056-treat-marker,SBSQL-ABD89A468ECA,TREAT,sb.scalar.treat,sb.scalar.treat,positive,[],character,special_form.treat,,TREAT marker is implemented
+SBSFC056-treat-typed,SBSQL-504CEBDC6FE1,TREAT_expr_as_subtype,sb.scalar.treat_typed,sb.scalar.treat_typed,positive,[],varchar,abc,,TREAT typed route changes the descriptor of the bounded value
+SBSFC056-volatile-marker,SBSQL-2E11730BB92B,VOLATILE,sb.scalar.volatile,sb.scalar.volatile,positive,[],character,volatility.volatile,,volatile marker is implemented
+SBSFC056-accept-sql2016-timeseries,SBSQL-12CD234538AF,accept_sql2016_timeseries,sb.scalar.accept_sql2016_timeseries,sb.scalar.accept_sql2016_timeseries,positive,[],boolean,1,,accept feature probe returns true for a non-empty feature descriptor
+SBSFC056-any-value-marker,SBSQL-A23C7082573D,any_value,sb.aggregate.any_value,sb.aggregate.any_value,positive,[],character,aggregate.any_value,,any_value marker is implemented
+SBSFC056-any-value-expr,SBSQL-76EC89319569,any_value_expr,sb.aggregate.any_value_expr,sb.aggregate.any_value_expr,positive,[],character,alpha,,any_value returns the bounded expression value
+SBSFC056-at-time-zone,SBSQL-6C877B4376DE,at_time_zone,sb.scalar.at_time_zone,sb.scalar.at_time_zone,positive,[],timestamp_tz,2026-05-18T10:00:00 America/Toronto,,at_time_zone returns a timestamp_tz descriptor
+SBSFC056-bit-string,SBSQL-E17CFDACCB8E,bit_string,sb.scalar.bit_string,sb.scalar.bit_string,positive,[],bit_string,1010,,bit_string normalizes quoted bit literals
+SBSFC056-bulk-exceptions,SBSQL-4E24AE0D0EDE,bulk_exceptions,sb.scalar.bulk_exceptions,sb.scalar.bulk_exceptions,positive,[],json_document,[],,bulk_exceptions returns an empty descriptor when no bulk diagnostics exist
+SBSFC056-collect-marker,SBSQL-D03ED69E33B7,collect,sb.aggregate.collect,sb.aggregate.collect,positive,[],json_document,[],,collect marker returns an empty JSON array
+SBSFC056-collect-expr,SBSQL-A1B94C83C5F1,collect_expr,sb.aggregate.collect_expr,sb.aggregate.collect_expr,positive,[],json_document,"[""alpha""]",,collect wraps the bounded expression value in a JSON array
+SBSFC056-domain-stack-marker,SBSQL-5550BDA0A76C,domain_stack,sb.scalar.domain_stack,sb.scalar.domain_stack,positive,[],json_document,[],,domain_stack marker returns an empty stack
+SBSFC056-domain-stack-value,SBSQL-1906412209C9,domain_stack_value,sb.scalar.domain_stack_value,sb.scalar.domain_stack_value,positive,[],json_document,"[{""value"":""alpha"",""domain"":""character""}]",,domain_stack value records descriptor metadata
+SBSFC056-donor-only,SBSQL-8F66D89149F5,donor_only,sb.scalar.donor_only,sb.scalar.donor_only,positive,[],character,surface.donor_only,,donor-only marker is implemented
+SBSFC056-donor-rewrite,SBSQL-F785EAF383DE,donor_rewrite,sb.scalar.donor_rewrite,sb.scalar.donor_rewrite,positive,[],character,surface.donor_rewrite,,donor rewrite marker is implemented
+SBSFC056-element,SBSQL-FD0DF4067008,element,sb.multiset.element,sb.multiset.element,positive,[],json_document,"""solo""",,element uses the existing singleton multiset route
+SBSFC056-expr-match-recognize,SBSQL-1A8470FC95E7,expr.match_recognize.v1,sb.expr.match_recognize.v1,sb.expr.match_recognize.v1,positive,[],json_document,"{""kind"":""match_recognize"",""version"":""v1"",""pattern"":""PATTERN(A+)""}",,expression match_recognize descriptor is implemented
+SBSFC056-fusion,SBSQL-9F6F909938A0,fusion,sb.multiset.fusion,sb.multiset.fusion,positive,[],json_document,"[1,2,2,3]",,fusion uses the existing multiset route
+SBSFC056-integer,SBSQL-DB32CA47B7B5,integer,sb.type.integer,sb.type.integer,positive,[],type_descriptor,integer,,integer type descriptor is implemented
+SBSFC056-intersection,SBSQL-9C90F3645C34,intersection,sb.multiset.intersection,sb.multiset.intersection,positive,[],json_document,"[2,2]",,intersection uses the existing multiset route
+SBSFC056-native-future,SBSQL-AC8794BE30FE,native_future,sb.scalar.native_future,sb.scalar.native_future,positive,[],character,status.native_future,,native_future status marker is implemented
+SBSFC056-native-now,SBSQL-3F50B9923297,native_now,sb.scalar.native_now,sb.scalar.native_now,positive,[],character,status.native_now,,native_now status marker is implemented
+SBSFC056-nvl,SBSQL-83969495B383,nvl,sb.scalar.nvl,sb.scalar.nvl,positive,[],character,fallback,,nvl returns the fallback for NULL first argument
+SBSFC056-private-only,SBSQL-75F997655797,private_only,sb.scalar.private_only,sb.scalar.private_only,positive,[],character,surface.private_only,,private-only marker is implemented
+SBSFC056-tabular,SBSQL-F94025D79003,tabular,sb.scalar.tabular,sb.scalar.tabular,positive,[],json_document,"{""kind"":""tabular"",""columns"":[],""rows"":[],""row_count"":0}",,tabular descriptor is implemented
+SBSFC056-void,SBSQL-FB4A06130103,void,sb.scalar.void,sb.scalar.void,positive,[],void,null,,void returns SQL NULL with void descriptor
+SBSFC056-bit-string-invalid,SBSQL-E17CFDACCB8E,bit_string,sb.scalar.bit_string,sb.scalar.bit_string,invalid_input,[],,"",SB_DIAG_FUNCTION_INVALID_INPUT,bad bit-string text is refused
+SBSFC056-nvl-missing,SBSQL-83969495B383,nvl,sb.scalar.nvl,sb.scalar.nvl,invalid_input,[],,"",SB_DIAG_FUNCTION_INVALID_INPUT,nvl requires exactly two arguments
+SBSFC056-integer-invalid,SBSQL-DB32CA47B7B5,integer,sb.type.integer,sb.type.integer,invalid_input,[],,"",SB_DIAG_FUNCTION_INVALID_INPUT,integer rejects non-integer text

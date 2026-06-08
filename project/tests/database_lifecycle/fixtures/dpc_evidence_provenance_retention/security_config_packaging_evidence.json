@@ -1,0 +1,36 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "claim_id": "DPC-072-SECURITY-CONFIG",
+  "evidence_kind": "security-config-json",
+  "result_digest_source": {
+    "claim_id": "DPC-072-SECURITY-CONFIG",
+    "config_precedence": "retained",
+    "authorization_denials": "retained",
+    "packaged_defaults": "retained"
+  },
+  "result_hash": "5d24bed6afebe239b4d54fa8af4b92cfa62984138d27e565967d3aa0c10d4a56",
+  "security_config": {
+    "config_precedence_order": "admin_override > cli_option > environment > config_file > packaged_default",
+    "exact_denial_vectors": "retained",
+    "support_bundle_config_metadata": "retained",
+    "unsafe_override_denial": "retained"
+  },
+  "support_bundle": {
+    "retention_policy_ref": "dpc-retain-compact-evidence-v1",
+    "redaction_profile_ref": "dpc-support-redaction-v1",
+    "redaction": {
+      "forbidden_fields_absent": true,
+      "physical_path_redacted": true,
+      "unsafe_payload_redacted": true
+    },
+    "config_metadata_retained": true,
+    "message_vectors_retained": true
+  },
+  "authority": {
+    "engine_mga_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_finality_authority": false
+  }
+}

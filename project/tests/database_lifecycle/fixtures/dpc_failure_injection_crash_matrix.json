@@ -1,0 +1,200 @@
+{
+  "schema_version": "dpc.failure_injection_crash_matrix.v1",
+  "matrix_key": "DPC_FAILURE_INJECTION_CRASH_MATRIX",
+  "gate_key": "DPC_FAILURE_INJECTION_GATE",
+  "gate_name": "dpc_failure_injection_crash_matrix_gate",
+  "runtime_policy": {
+    "reads_execution_plan_files": false,
+    "proof_scope": "contract_matrix",
+    "actual_crash_reopen_execution": false,
+    "requires_engine_feature_implementation": false,
+    "transaction_authority": "scratchbird_mga_transaction_inventory",
+    "recovery_authority": "scratchbird_mga_recovery_classification"
+  },
+  "required_labels": [
+    "DPC-008",
+    "DPC_TEST_FAILURE_INJECTION",
+    "failure_injection",
+    "crash_recovery",
+    "mga_transaction_regression",
+    "database_lifecycle"
+  ],
+  "rows": [
+    {
+      "failure_id": "DPC_FAIL_001",
+      "surface": "deferred_index_delta",
+      "classification": "deferred_delta_precommit",
+      "crash_or_failure_point": "after delta ledger append before transaction commit",
+      "expected_recovery_or_refusal": "rollback ignores or removes uncommitted delta and index remains safe",
+      "message_vector_key": "DPC.FAILURE.DEFERRED_INDEX_DELTA.UNCOMMITTED_DELTA_ROLLBACK_SAFE",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/deferred_index_delta/pre_commit_delta_append",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_002",
+      "surface": "deferred_index_delta",
+      "classification": "deferred_delta_postcommit_premerge",
+      "crash_or_failure_point": "after transaction commit before delta merge",
+      "expected_recovery_or_refusal": "reader overlay sees committed delta or index use is refused with exact message",
+      "message_vector_key": "DPC.FAILURE.DEFERRED_INDEX_DELTA.COMMITTED_DELTA_OVERLAY_OR_REFUSAL",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/deferred_index_delta/post_commit_pre_merge",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_003",
+      "surface": "index_delta_merge",
+      "classification": "merge_batch_pre_publish",
+      "crash_or_failure_point": "during merge batch before publish",
+      "expected_recovery_or_refusal": "merge resumes idempotently or leaves old base plus delta overlay safe",
+      "message_vector_key": "DPC.FAILURE.INDEX_DELTA_MERGE.BATCH_PRE_PUBLISH_SAFE",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/index_delta_merge/batch_pre_publish",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_004",
+      "surface": "shadow_index",
+      "classification": "shadow_build_pre_validation",
+      "crash_or_failure_point": "during shadow build before validation",
+      "expected_recovery_or_refusal": "shadow index remains invisible and repair can discard or rebuild",
+      "message_vector_key": "DPC.FAILURE.SHADOW_INDEX.BUILD_PRE_VALIDATION_INVISIBLE",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/shadow_index/build_pre_validation",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_005",
+      "surface": "shadow_index",
+      "classification": "shadow_drain_pre_publish",
+      "crash_or_failure_point": "during delta drain before publish barrier",
+      "expected_recovery_or_refusal": "old index remains visible and shadow state is repairable or refused",
+      "message_vector_key": "DPC.FAILURE.SHADOW_INDEX.DELTA_DRAIN_PRE_PUBLISH_SAFE",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/shadow_index/delta_drain_pre_publish",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_006",
+      "surface": "shadow_index",
+      "classification": "shadow_publish_barrier",
+      "crash_or_failure_point": "during publish barrier",
+      "expected_recovery_or_refusal": "exactly one index generation is visible after reopen or restricted-open repair is required",
+      "message_vector_key": "DPC.FAILURE.SHADOW_INDEX.PUBLISH_BARRIER_SINGLE_GENERATION",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/shadow_index/publish_barrier",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_007",
+      "surface": "page_summary",
+      "classification": "summary_rebuild_stale_fallback",
+      "crash_or_failure_point": "during summary rebuild",
+      "expected_recovery_or_refusal": "summary is marked stale and planner falls back to full scan",
+      "message_vector_key": "DPC.FAILURE.PAGE_SUMMARY.REBUILD_STALE_FULL_SCAN_FALLBACK",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/page_summary/rebuild_stale_fallback",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_008",
+      "surface": "mga_cleanup",
+      "classification": "mga_cleanup_horizon",
+      "crash_or_failure_point": "during storage version cleanup",
+      "expected_recovery_or_refusal": "no version visible to active transaction is removed and cleanup horizon is recalculated",
+      "message_vector_key": "DPC.FAILURE.MGA_CLEANUP.ACTIVE_VISIBILITY_HORIZON_RECALCULATED",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/mga_cleanup/storage_version_cleanup",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_009",
+      "surface": "index_cleanup",
+      "classification": "index_cleanup_validation",
+      "crash_or_failure_point": "during batched index garbage cleanup",
+      "expected_recovery_or_refusal": "index validation detects incomplete cleanup and resumes or refuses unsafe use",
+      "message_vector_key": "DPC.FAILURE.INDEX_CLEANUP.INCOMPLETE_BATCH_VALIDATE_OR_REFUSE",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/index_cleanup/batched_garbage_cleanup",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_010",
+      "surface": "search_segment",
+      "classification": "search_segment_publish",
+      "crash_or_failure_point": "during inverted segment publish",
+      "expected_recovery_or_refusal": "old exact fallback remains valid and unpublished segment is discarded or repaired",
+      "message_vector_key": "DPC.FAILURE.SEARCH_SEGMENT.PUBLISH_EXACT_FALLBACK",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/search_segment/inverted_segment_publish",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_011",
+      "surface": "search_segment",
+      "classification": "search_segment_merge",
+      "crash_or_failure_point": "during segment merge",
+      "expected_recovery_or_refusal": "old segments remain visible until merge commit marker is complete",
+      "message_vector_key": "DPC.FAILURE.SEARCH_SEGMENT.MERGE_OLD_SEGMENTS_VISIBLE",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/search_segment/segment_merge",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_012",
+      "surface": "vector_generation",
+      "classification": "vector_build_before_seal",
+      "crash_or_failure_point": "during vector build before seal",
+      "expected_recovery_or_refusal": "vector index is not admitted and exact scan fallback remains available",
+      "message_vector_key": "DPC.FAILURE.VECTOR_GENERATION.BUILD_BEFORE_SEAL_EXACT_FALLBACK",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/vector_generation/build_before_seal",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_013",
+      "surface": "vector_generation",
+      "classification": "vector_generation_publish",
+      "crash_or_failure_point": "during sealed generation publish",
+      "expected_recovery_or_refusal": "old vector generation or exact fallback remains available and unsafe generation is refused",
+      "message_vector_key": "DPC.FAILURE.VECTOR_GENERATION.SEALED_PUBLISH_REFUSE_UNSAFE",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/vector_generation/sealed_generation_publish",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_014",
+      "surface": "storage",
+      "classification": "storage_disk_full",
+      "crash_or_failure_point": "disk full during ledger summary shadow or segment write",
+      "expected_recovery_or_refusal": "operation fails with exact message and transaction state remains coherent",
+      "message_vector_key": "DPC.FAILURE.STORAGE.DISK_FULL_TRANSACTION_COHERENT",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/storage/disk_full",
+      "required_test": "standalone CTest failure injection",
+      "proof_scope": "contract_failure_injection_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_015",
+      "surface": "storage",
+      "classification": "storage_allocation_failure",
+      "crash_or_failure_point": "allocation failure during DML or cleanup",
+      "expected_recovery_or_refusal": "operation fails or throttles without visibility drift",
+      "message_vector_key": "DPC.FAILURE.STORAGE.ALLOCATION_FAILURE_NO_VISIBILITY_DRIFT",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/storage/allocation_failure",
+      "required_test": "standalone CTest failure injection",
+      "proof_scope": "contract_failure_injection_classification"
+    },
+    {
+      "failure_id": "DPC_FAIL_016",
+      "surface": "server",
+      "classification": "server_agent_kill",
+      "crash_or_failure_point": "server kill during agent action",
+      "expected_recovery_or_refusal": "reopen classifies action state and support bundle records recovery decision",
+      "message_vector_key": "DPC.FAILURE.SERVER.AGENT_KILL_RECOVERY_DECISION",
+      "fixture_route": "fixture://database_lifecycle/dpc_failure_injection/server/agent_action_kill",
+      "required_test": "standalone CTest crash reopen",
+      "proof_scope": "contract_crash_reopen_classification"
+    }
+  ]
+}

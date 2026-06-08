@@ -1,0 +1,124 @@
+# CATALOG-RECORD-INVENTORY-CONFORMANCE
+suite: catalog_record_inventory
+status: specified_for_probe
+probe: sb_storage_foundation_probe
+required_registry: BuiltinCatalogRecordDescriptors
+cases:
+  - id: CAT-CONF-001
+    name: full catalog record family inventory validates
+    required_record_kinds:
+      - database
+      - filespace
+      - schema
+      - sql_object
+      - localized_name
+      - localized_comment
+      - synonym_descriptor
+      - datatype_descriptor
+      - domain
+      - charset
+      - charset_alias
+      - collation
+      - collation_tailoring
+      - timezone
+      - timezone_transition
+      - timezone_leap_second
+      - resource_bundle
+      - resource_artifact
+      - policy
+      - config_profile
+      - user_account
+      - group_account
+      - role_account
+      - grant_record
+      - masking_policy
+      - rls_policy
+      - udr_package
+      - parser_package
+      - sblr_module
+      - storage_descriptor
+      - table_descriptor
+      - index_descriptor
+      - toast_reference
+      - audit_evidence
+      - management_operation
+      - cluster_stub
+  - id: CAT-CONF-002
+    name: parser-visible catalog families remain engine-authoritative
+    expected: engine_authority_true
+  - id: CAT-CONF-003
+    name: typed catalog records encode into catalog page rows
+    required_functions:
+      - EncodeCatalogTypedRecord
+      - DecodeCatalogTypedRecord
+    expected:
+      catalog_page_row_kind: typed_catalog_record
+      row_uuid_v7_required: true
+      object_uuid_v7_required_when_descriptor_requires: true
+  - id: CAT-CONF-004
+    name: resource seed create emits typed catalog records
+    required_path: database_create
+    expected:
+      resource_bundle_record_kind: typed_catalog_record
+      resource_artifact_record_kind: typed_catalog_record
+      resource_summary_record_kinds:
+        - charset
+        - charset_alias
+        - collation
+        - collation_tailoring
+        - timezone
+        - timezone_transition
+        - timezone_leap_second
+      compatibility_seed_rows_preserved_until_typed_read_path_exists: true
+  - id: CAT-CONF-005
+    name: database create emits core bootstrap typed records
+    required_path: database_create
+    expected_typed_record_kinds:
+      - database
+      - filespace
+      - schema
+      - localized_name
+      - localized_comment
+      - synonym_descriptor
+      - datatype_descriptor
+    expected:
+      root_schemas:
+        - sys.catalog
+        - sys.metrics
+        - local.user
+      built_in_datatype_descriptors: all
+  - id: CAT-CONF-006
+    name: database create emits remaining bootstrap catalog families
+    required_path: database_create
+    expected_typed_record_kinds:
+      - domain
+      - policy
+      - config_profile
+      - user_account
+      - group_account
+      - role_account
+      - grant_record
+      - masking_policy
+      - rls_policy
+      - udr_package
+      - parser_package
+      - sblr_module
+      - storage_descriptor
+      - table_descriptor
+      - index_descriptor
+      - toast_reference
+  - id: CAT-CONF-007
+    name: database open decodes typed catalog records
+    required_path: database_open
+    expected:
+      malformed_typed_catalog_record_fails_closed: true
+      typed_catalog_records_reported_by_probe: true
+  - id: SYNONYM-CONF-001
+    name: first-class SQL object synonym descriptor inventory exists
+    required_record_kinds:
+      - synonym_descriptor
+    expected:
+      catalog_table: sys.catalog.synonym
+      name_authority: sys.catalog.object_name
+      dependency_edge: hard
+      max_dereference_depth: 5

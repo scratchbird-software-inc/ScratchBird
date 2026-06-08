@@ -1,0 +1,17 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "claim_id": "DPC-072-STANDALONE-CTEST",
+  "evidence_kind": "ctest-independence-json",
+  "result_digest_source": {
+    "claim_id": "DPC-072-STANDALONE-CTEST",
+    "runtime_inputs": "project-fixture-source-ctest-only",
+    "execution_plan_runtime": "rejected",
+    "registered_sources": "validated"
+  },
+  "result_hash": "63959c3bef515ac23f1e24df2649b5394f3f082a902386cdd514bdc01700674a",
+  "ctest_independence": {
+    "registered_dpc_sources": "validated",
+    "runtime_fixture_root": "project_tests_database_lifecycle_fixtures",
+    "execution_plan_runtime_dependency": "rejected"
+  }
+}

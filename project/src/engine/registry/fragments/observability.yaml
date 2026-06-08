@@ -1,0 +1,6 @@
+# SBSQL source-layout registry fragment: observability
+# This fragment is the future source-of-editing for observability registry rows.
+# Existing aggregate registries remain authoritative until a later registry
+# migration execution_plan moves rows into fragments.
+family: observability
+rows: []

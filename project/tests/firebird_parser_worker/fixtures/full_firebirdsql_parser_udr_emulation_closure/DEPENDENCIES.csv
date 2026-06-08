@@ -1,0 +1,38 @@
+slice_id,depends_on,dependency_reason
+FFPE-000,,Root authority and source freeze starts the execution_plan
+FFPE-000A,FFPE-000,Placement and package boundaries require frozen authority inputs
+FFPE-000B,FFPE-000;FFPE-000A,Exact row expansion needs source authority and final package boundary rules
+FFPE-000C,FFPE-000B,Non-file emulation policy needs expanded surface rows
+FFPE-000D,FFPE-000,Donor-native regression acquisition needs source evidence and hash records
+FFPE-000E,FFPE-000A;FFPE-000B;FFPE-000C;FFPE-000D,Definition of done depends on package boundary exact rows non-file policy and regression scope
+FFPE-000F,FFPE-000,Clean-room provenance depends on frozen source authority
+FFPE-000G,FFPE-000;FFPE-000B,Version-profile matrix needs source authority and expanded surface rows
+FFPE-000H,FFPE-000B,BLR SQLDA and parameter-buffer matrix needs expanded Firebird API and BLR rows
+FFPE-000I,FFPE-000D,Donor-tool sandbox normalization tiering and failure inventory depend on donor-native regression acquisition
+FFPE-000J,FFPE-000B;FFPE-000C,Wire API full-scope implementation map needs expanded rows and non-file emulation policy
+FFPE-000K,FFPE-000E;FFPE-000I;FFPE-000J,Agent execution orchestration depends on definition of done donor-native test policy and full-scope wire/API ownership
+FFPE-001,FFPE-000E;FFPE-000F;FFPE-000G;FFPE-000H;FFPE-000I;FFPE-000J;FFPE-000K,Generator and linter work requires materialized validation row provenance version BLR buffer donor-native wire and agent execution contracts
+FFPE-002,FFPE-001,Lexer fixtures and token tables are generated from the expanded registry
+FFPE-003,FFPE-002,CST and AST require token and span contracts
+FFPE-004,FFPE-003,Binder requires AST node contracts
+FFPE-005,FFPE-004,Datatype descriptor binding depends on binder and UUID/name rules
+FFPE-006,FFPE-005,Expression and builtin semantics depend on datatype descriptors
+FFPE-007,FFPE-004;FFPE-005;FFPE-006,DML/query/cursor lowering needs binder datatypes and expressions
+FFPE-008,FFPE-004;FFPE-005,DDL/catalog overlays need binder name resolution and datatype/domain mapping
+FFPE-009,FFPE-004;FFPE-006;FFPE-008,PSQL/routine work depends on binder expressions and catalog/routine objects
+FFPE-010,FFPE-000C;FFPE-008,Non-file emulation implementation requires policy and catalog overlay infrastructure
+FFPE-011,FFPE-007;FFPE-008;FFPE-009;FFPE-010,SBLR lowering needs executable/parser-visible surface families
+FFPE-012,FFPE-011,Parser worker runtime needs verified lowering pipeline
+FFPE-013,FFPE-011;FFPE-012,Dynamic SQL UDR must share Firebird-owned parser/lowering behavior with parser worker
+FFPE-014,FFPE-008;FFPE-010,Environment installer depends on catalog overlays and non-file emulation policy
+FFPE-014A,FFPE-014,Upgrade install drift tests depend on environment installer implementation
+FFPE-015,FFPE-012;FFPE-014;FFPE-000J,Bridge/service surfaces need parser runtime environment profile metadata and full-scope wire API map
+FFPE-015A,FFPE-000D;FFPE-012;FFPE-015,Donor-native tools need acquired tool scope and a runnable Firebird parser endpoint
+FFPE-015B,FFPE-015A,Original donor regression replay depends on donor-native tools and smoke
+FFPE-015C,FFPE-015B,Differential oracle lane depends on replay manifest and normalized output rules
+FFPE-015D,FFPE-015B;FFPE-000I,Donor-native result normalization and failure inventory depend on replay and P0 policy
+FFPE-016,FFPE-011;FFPE-012;FFPE-013;FFPE-014;FFPE-015,Diagnostics/rendering require all parser UDR and service paths
+FFPE-017,FFPE-012;FFPE-013;FFPE-014;FFPE-015;FFPE-016,Hardening audits need product targets and diagnostics available
+FFPE-017A,FFPE-017;FFPE-000H,Firebird fuzzing depends on hardening targets and BLR parameter-buffer matrix
+FFPE-017B,FFPE-017,Runtime absence tests depend on package targets and admission gates
+FFPE-018,FFPE-014A;FFPE-015B;FFPE-015C;FFPE-015D;FFPE-016;FFPE-017A;FFPE-017B,Final audit requires installer drift donor-native regression diagnostics hardening fuzzing and runtime absence gates

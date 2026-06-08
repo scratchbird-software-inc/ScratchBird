@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "identity_authority": "uuid",
+  "grant_epoch": 1,
+  "grants": [
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000000300",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000100",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000000301",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000101",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "SELECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000000302",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000101",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "INSERT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000000303",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000101",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "UPDATE",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000000304",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000101",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "DELETE",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000000305",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000102",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "SEC_IDENTITY_ADMIN",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000000306",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000102",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "SEC_MEMBERSHIP_ADMIN",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000000307",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000102",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "SEC_GRANT_ADMIN",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000000308",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000103",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "AUDIT_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000000309",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000104",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_MANAGEMENT_INSPECT",
+      "effect": "allow"
+    }
+  ]
+}

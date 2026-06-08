@@ -1,0 +1,45 @@
+{
+  "artifact_role": "readiness_control_fixture_manifest",
+  "authority_boundary": "Fixture evidence is conformance input only; it is not product behavior authority.",
+  "canonical_sources": [
+    "public_contract_snapshot",
+    "public_contract_snapshot",
+    "public_input_snapshot"
+  ],
+  "cases": [
+    {
+      "case_id": "DPR-FIX-003-POS-001",
+      "case_kind": "positive_control",
+      "expected_gate_behavior": "Pass fixture catalog materialization checks only.",
+      "purpose": "Verify the indexed canonical sources and consumer handoff are present before implementation agents start."
+    },
+    {
+      "case_id": "DPR-FIX-003-NEG-001",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "invalid token"
+    },
+    {
+      "case_id": "DPR-FIX-003-NEG-002",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "ambiguous grammar"
+    },
+    {
+      "case_id": "DPR-FIX-003-NEG-003",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "profile mismatch"
+    }
+  ],
+  "consumer_agents": [
+    "native_sbsql_parser_agent"
+  ],
+  "covered_gates": [
+    "DPR-GATE-004",
+    "DPR-GATE-011"
+  ],
+  "fixture_family": "sbsql_grammar_fixtures",
+  "fixture_id": "DPR-FIX-003",
+  "forbidden_fixture_source": "lane-local grammar sample"
+}

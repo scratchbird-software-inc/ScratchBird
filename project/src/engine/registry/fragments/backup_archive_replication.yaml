@@ -1,0 +1,6 @@
+# SBSQL source-layout registry fragment: backup_archive_replication
+# This fragment is the future source-of-editing for backup_archive_replication registry rows.
+# Existing aggregate registries remain authoritative until a later registry
+# migration execution_plan moves rows into fragments.
+family: backup_archive_replication
+rows: []

@@ -1,0 +1,96 @@
+{
+  "search_key": "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+  "claim_id": "DPC-073-RANGE-SCAN-PAGE-SUMMARY",
+  "lane_id": "range_scan_page_summary",
+  "lane_title": "Range scan and page-summary pruning",
+  "claim_status": "accepted",
+  "accepted_optimization_claim": true,
+  "elapsed_time_only": false,
+  "transaction_sensitive": true,
+  "before_profile": {
+    "profile_digest_source": "DPC-073:range_scan_page_summary:before",
+    "profile_digest": "ebd68d7541a3ddd9381ff391ad8c91ad4f81149949efae97e49a7c4ca53e1e0b",
+    "dominant_hot_paths": [
+      {"name": "full_page_range_scan", "share_percent": 42.0},
+      {"name": "row_predicate_recheck", "share_percent": 18.0}
+    ]
+  },
+  "after_profile": {
+    "profile_digest_source": "DPC-073:range_scan_page_summary:after",
+    "profile_digest": "2bc4d88e554cefdd6fc99764815644371bd1aeb2b0d010d6b082ef04c2720c72",
+    "dominant_hot_paths": [
+      {"name": "summary_prune_admission", "share_percent": 21.0},
+      {"name": "base_row_visibility_recheck", "share_percent": 17.0}
+    ]
+  },
+  "changed_hot_paths": [
+    "full_page_range_scan changed to summary_prune_admission",
+    "row_predicate_recheck narrowed to base_row_visibility_recheck"
+  ],
+  "delta_explanation": "The profile explains the optimization as fewer full page scans after summary admission while retaining base-row visibility and predicate recheck cost.",
+  "remaining_bottleneck": "",
+  "measurement_families": {
+    "cpu_samples": {"before": 4010, "after": 1980, "unit": "samples", "attribution": "fewer scanned rows"},
+    "lock_wait_mutex_hold_timing": {"before": 360, "after": 270, "unit": "microseconds_p95", "attribution": "less page pin duration"},
+    "io_syscall_counts": {"before": 1240, "after": 510, "unit": "calls", "attribution": "pruned page reads"},
+    "allocator_pressure": {"before": 730, "after": 410, "unit": "allocations", "attribution": "fewer row envelopes"},
+    "parser_lowering_timing": {"before": 68, "after": 68, "unit": "microseconds", "attribution": "unchanged"},
+    "sblr_admission_dispatch_timing": {"before": 102, "after": 101, "unit": "microseconds", "attribution": "unchanged"},
+    "plan_cache_hit_miss_invalidation_timing": {"before": 76, "after": 44, "unit": "microseconds", "attribution": "summary-aware plan reused"},
+    "metadata_cache_hit_miss_timing": {"before": 59, "after": 45, "unit": "microseconds", "attribution": "summary metadata hit"},
+    "statistics_epoch_plan_selection_timing": {"before": 88, "after": 49, "unit": "microseconds", "attribution": "epoch-qualified prune selection"},
+    "page_allocation_demand_grant_timing": {"before": 200, "after": 170, "unit": "microseconds", "attribution": "read lane only"},
+    "index_maintenance_timing_by_family": {"before": 120, "after": 110, "unit": "microseconds", "attribution": "not an index maintenance lane"},
+    "agent_queue_wake_run_throttle_completion_timing": {"before": 80, "after": 70, "unit": "microseconds", "attribution": "no background pressure"}
+  },
+  "result_correctness_hash_pointer": {
+    "digest_source": "DPC-073:range_scan_page_summary:result",
+    "digest": "a05884b52589475dffc914e2283a1f4a56c8e55ed86e000399af0c7529cdce75",
+    "correctness_anchor": "disabled full-scan and summary-pruned result equality"
+  },
+  "source_anchor": {
+    "path": "project/tests/database_lifecycle/dpc_page_extent_summary_benchmark_gate.cpp",
+    "search_key": "DPC_PAGE_EXTENT_SUMMARY_BENCHMARK_GATE"
+  },
+  "route_or_source_anchor": "project/tests/database_lifecycle/dpc_page_extent_summary_prune_observability_gate.cpp#DPC_PAGE_EXTENT_SUMMARY_PRUNE_OBSERVABILITY_GATE",
+  "ctest_name": "dpc_profiler_hot_path_attribution_gate",
+  "ctest_labels": [
+    "dpc_profiler_hot_path_attribution_gate",
+    "DPC-073",
+    "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+    "DPC_P6_PROFILER_ATTRIBUTION_READY",
+    "DPC_AUDIT_PROFILER_ATTRIBUTION",
+    "DPC_DEP_PROFILER_ATTRIBUTION",
+    "profiler_attribution",
+    "database_lifecycle",
+    "mga_transaction_regression"
+  ],
+  "build_instrumentation": {
+    "build_type": "Release diagnostic",
+    "profiler_mode": "compact-retained-attribution",
+    "hotpath_trace": true,
+    "exec_profile_trace": true,
+    "prepared_trace": true,
+    "source_state": "fixture-retained-source-state"
+  },
+  "agent_metrics": {
+    "bounded": true,
+    "queue_max": 3,
+    "wake_max": 2,
+    "run_budget_ms": 15,
+    "throttle_events_max": 0,
+    "completion_state": "completed"
+  },
+  "authority": {
+    "mga_authority_declaration": "engine_mga_transaction_inventory_authority",
+    "engine_mga_transaction_inventory_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "driver_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_log_finality_authority": false,
+    "timestamp_order_finality_authority": false,
+    "uuid_order_finality_authority": false,
+    "event_stream_finality_authority": false
+  }
+}

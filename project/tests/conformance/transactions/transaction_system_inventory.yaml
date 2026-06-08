@@ -1,0 +1,110 @@
+# TRANSACTION-SYSTEM-CONFORMANCE
+inventory: transaction_system
+status: implemented_pending_validation
+local_states:
+  - none
+  - created
+  - active
+  - preparing
+  - prepared
+  - committing
+  - committed
+  - rolling_back
+  - rolled_back
+  - limbo
+  - recovering
+  - failed_terminal
+  - archived
+required_transitions:
+  - none->created
+  - created->active
+  - active->preparing
+  - preparing->prepared
+  - prepared->committing
+  - committing->committed
+  - active->rolling_back
+  - rolling_back->rolled_back
+required_page_bodies:
+  - transaction_inventory_page
+  - transaction_inventory_multi_page_chain
+  - transaction_inventory_chain_page_header_validation
+  - transaction_inventory_chain_compaction_rewrite
+  - cluster_transaction_page_placeholder
+required_identity_rules:
+  - transaction_uuid_must_be_engine_v7
+  - local_transaction_id_is_local_inventory_key_only
+  - duplicate_transaction_uuid_fails_closed
+required_horizons:
+  - oldest_interesting_transaction
+  - oldest_active_transaction
+  - oldest_snapshot_transaction
+  - next_transaction_id
+required_cleanup:
+  - cleanup_requires_authoritative_local_inventory
+  - cleanup_reclaims_rolled_back_row_versions_below_horizon
+  - cleanup_reclaims_obsolete_committed_versions_below_horizon
+  - cleanup_retains_committed_head_versions
+  - cleanup_exports_authoritative_horizon_for_toast_and_index_cleanup
+required_temporary_objects:
+  - session_scoped_temporary_tables_require_session_uuid
+  - temporary_tables_are_hidden_from_other_sessions
+  - on_commit_delete_rows_appends_delete_markers_before_commit_finality
+  - on_commit_preserve_rows_keeps_rows_for_same_session
+  - unsupported_temporary_scopes_fail_closed
+required_snapshot_fields:
+  - reader_transaction
+  - visible_through_local_transaction
+  - oldest_active_transaction
+  - oldest_snapshot_transaction
+required_cluster_behavior:
+  - cluster_transaction_metadata_parseable
+  - cluster_transaction_execution_fail_closed
+  - no_cluster_authority_claimed
+required_lineage_restore_evidence:
+  - transaction_lineage_evidence_rows_are_derived_from_durable_inventory
+  - restore_classification_requires_schema_epoch_and_snapshot_capsule
+  - restore_classification_refuses_fail_closed_inventory_states
+  - restore_and_archive_paths_do_not_require_wal_authority
+required_security_rights:
+  - MGA_TRANSACTION_INSPECT
+  - MGA_RECOVERY_INSPECT
+  - MGA_CLEANUP_INSPECT
+  - MGA_CLEANUP_CONTROL
+  - MGA_HORIZON_INSPECT
+  - MGA_LINEAGE_INSPECT
+  - MGA_FORENSIC_INSPECT
+  - MGA_METRICS_READ
+required_metrics:
+  - sb_tx_begin_total
+  - sb_tx_commit_total
+  - sb_tx_rollback_total
+  - sb_tx_runtime_policy_violation_total
+  - sb_mga_row_versions_reclaimed_total
+  - sb_mga_cleanup_horizon_local_transaction_id
+  - sb_mga_cleanup_blocked_total
+  - sb_mga_temporary_on_commit_delete_rows_total
+required_diagnostics:
+  - SB-TXN-STATE-INVALID-TRANSITION
+  - SB-TXN-UUID-MUST-BE-V7
+  - SB-TXN-LOCAL-ID-NOT-FOUND
+  - SB-TXN-INVENTORY-PAGE-CHECKSUM-MISMATCH
+  - SB-TXN-INVENTORY-PAGE-BODY-INVALID
+  - SB-TXN-INVENTORY-PAGE-CAPACITY-INVALID
+  - SB-TXN-INVENTORY-PAGE-CHAIN-INVALID
+  - SB-TXN-INVENTORY-PAGE-TYPE-MISMATCH
+  - SB-TXN-HORIZON-INVALID
+  - SB-TXN-SNAPSHOT-UNSUPPORTED-STATE
+  - SB-SNTXN-LONG-RUNNING-POLICY-VIOLATION
+  - SB-SNTXN-IDLE-POLICY-VIOLATION
+  - SB-SNTXN-DORMANT-UNSUPPORTED
+  - SB-SNTXN-ABANDONED-UNSUPPORTED
+  - SB-SNTXN-CLEANUP-HORIZON-NOT-AUTHORITATIVE
+  - SB-SNTXN-CLEANUP-BLOCKED-BY-HORIZON
+  - SB-SNTXN-CLEANUP-APPLIED
+  - SB-MGA-TEMPORARY-SCOPE-UNSUPPORTED
+  - SB-MGA-WAL-NOT-AUTHORITY
+  - SB-MGA-RESTORE-CONTEXT-MISSING
+  - SB-MGA-RESTORE-CLASSIFICATION-REFUSED
+  - SECURITY.AUTHORIZATION.DENIED
+  - SB-CLUSTER-MAPPING-UNAVAILABLE
+required_probe: sb_transaction_probe

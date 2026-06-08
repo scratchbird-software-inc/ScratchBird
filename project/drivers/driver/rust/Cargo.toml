@@ -1,0 +1,35 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# SPDX-License-Identifier: MPL-2.0
+
+[package]
+name = "scratchbird"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Native ScratchBird Rust driver"
+
+[dependencies]
+base64 = "0.21"
+bigdecimal = "0.4"
+bytes = "1"
+chrono = { version = "0.4", features = ["clock"] }
+hex = "0.4"
+hmac = "0.12"
+pbkdf2 = "0.12"
+rand = "0.8"
+rustls = { version = "0.21", features = ["dangerous_configuration"] }
+rustls-native-certs = "0.6"
+rustls-pemfile = "1"
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["net", "io-util", "time", "rt-multi-thread", "macros", "sync"] }
+tokio-rustls = "0.24"
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

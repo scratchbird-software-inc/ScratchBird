@@ -1,0 +1,73 @@
+# Single-node transaction completion conformance inventory.
+
+conformance_suite: single_node_transaction_completion
+status: validated
+scope:
+  - local_transaction_durable_state
+  - local_crash_recovery_classification
+  - local_snapshot_visibility
+  - local_lock_timeout_deadlock_admission
+  - local_isolation_validation
+  - local_savepoints
+  - local_long_running_idle_policy
+  - local_cleanup_horizons
+  - local_transaction_metrics
+  - local_lineage_restore_forensic_evidence
+  - local_mga_security_and_metrics_surfaces
+  - local_inventory_page4_persistence
+  - cluster_path_not_traversed_without_mapping
+
+mandatory_probes:
+  - name: sb_single_node_transaction_probe
+    binary: project/tools/sb_single_node_transaction_probe/sb_single_node_transaction_probe
+    required_outputs:
+      - ok=true
+      - durable_begin_present=true
+      - durable_commit_state=committed
+      - durable_rollback_state=rolled_back
+      - lock_timeout=true
+      - savepoint_rollback=true
+      - policy_violation=true
+      - idle_policy_violation=true
+      - cleanup_eligible=true
+      - cleanup_reclaimed_row_versions=2
+      - cleanup_retained_row_versions=1
+      - cleanup_authority_refused=true
+      - cluster_path_traversed=false
+  - name: sb_transaction_recovery_probe
+    binary: project/tools/sb_transaction_recovery_probe/sb_transaction_recovery_probe
+    required_outputs:
+      - ok=true
+      - active=recover_rollback
+      - prepared=recover_prepared_in_doubt
+      - committing=recover_commit
+      - rolling_back=recover_rollback
+      - committed=no_action_committed
+      - rolled_back=no_action_rolled_back
+      - limbo=fail_closed_cluster_todo
+  - name: sb_engine_api_transaction_semantics_probe
+    binary: project/tools/sb_engine_api_transaction_semantics_probe/sb_engine_api_transaction_semantics_probe
+    required_outputs:
+      - ok=true
+      - temp_delete_rows_removed_on_commit=true
+      - temp_preserve_rows_kept_on_commit=true
+      - temp_hidden_from_other_session=true
+      - lineage_evidence_visible=true
+      - restore_classification_visible=true
+      - wal_restore_refused=true
+      - lineage_right_enforced=true
+      - mga_metrics_registered=true
+
+must_not:
+  - name: cluster_authority_activation
+    rule: single_node_transaction_completion must not activate cluster transaction authority.
+  - name: wal_dependency
+    rule: transaction durability must not introduce WAL as an authoritative recovery method.
+  - name: projected_cleanup_authority
+    rule: destructive cleanup must not rely on projected cluster state.
+
+implementation_notes:
+  - Local transaction inventory durability is provided through the page 4 transaction inventory page.
+  - Cluster transaction page structures remain present but fail closed until private cluster authority is implemented.
+  - Savepoints are local in-memory mechanics until executor mutation logging is connected.
+  - Domain-based datatype behavior remains executor-bound and outside this transaction suite.

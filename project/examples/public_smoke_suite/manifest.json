@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "marker": "PUBLIC_EXAMPLES",
+  "suite_id": "scratchbird-public-minimal-engine-smoke",
+  "support_level": "public_release_smoke",
+  "policy": {
+    "public_tree_inputs_only": true,
+    "private_paths_allowed": false,
+    "tutorial_only_shortcuts_allowed": false,
+    "sql_text_runtime_authority": false,
+    "engine_execution_authority": "sblr_internal_api_uuid_mga",
+    "cluster_production_execution": "external_provider_only_not_used"
+  },
+  "operations": [
+    {
+      "operation": "create",
+      "ctest": "public_example_database_seed_gate",
+      "evidence_kind": "staged_public_ctest",
+      "source_files": [
+        {
+          "path": "project/tools/release/public_example_database_seed.cpp",
+          "required_tokens": [
+            "CreateDatabaseFile",
+            "public_example_database_seed=passed",
+            "database_identity"
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "open",
+      "ctest": "public_example_database_seed_gate",
+      "evidence_kind": "staged_public_ctest",
+      "source_files": [
+        {
+          "path": "project/tools/release/public_example_database_seed.cpp",
+          "required_tokens": [
+            "OpenDatabaseFile",
+            "resource_seed_catalog_present",
+            "transaction_authority"
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "schema",
+      "ctest": "public_uuid_identity_resolution_gate",
+      "evidence_kind": "staged_public_ctest",
+      "source_files": [
+        {
+          "path": "project/tests/release/public_uuid_identity_resolution_gate.cpp",
+          "required_tokens": [
+            "EngineCreateSchema",
+            "EngineCreateTable",
+            "generated object UUID"
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "insert",
+      "ctest": "public_backup_forward_session_gate",
+      "evidence_kind": "staged_public_ctest",
+      "source_files": [
+        {
+          "path": "project/tests/release/public_backup_forward_session_gate.cpp",
+          "required_tokens": [
+            "EngineInsertRows",
+            "EngineCreateTable",
+            "inserted_count == 1"
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "select",
+      "ctest": "public_backup_forward_session_gate",
+      "evidence_kind": "staged_public_ctest",
+      "source_files": [
+        {
+          "path": "project/tests/release/public_backup_forward_session_gate.cpp",
+          "required_tokens": [
+            "EngineSelectRows",
+            "ContainsValue",
+            "restored values should round trip"
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "transaction",
+      "ctest": "public_transaction_mga_cow_gate",
+      "evidence_kind": "staged_public_ctest",
+      "source_files": [
+        {
+          "path": "project/tests/release/public_transaction_mga_cow_gate.cpp",
+          "required_tokens": [
+            "LocalTransactionManager",
+            "Commit",
+            "read_committed"
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "rollback",
+      "ctest": "public_transaction_savepoint_limbo_cleanup_gate",
+      "evidence_kind": "staged_public_ctest",
+      "source_files": [
+        {
+          "path": "project/tests/release/public_transaction_savepoint_limbo_cleanup_gate.cpp",
+          "required_tokens": [
+            "EngineRollbackToSavepoint",
+            "rollback_actions",
+            "rollback plan should be reverse mutation order"
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "backup",
+      "ctest": "public_backup_forward_session_gate",
+      "evidence_kind": "staged_public_ctest",
+      "source_files": [
+        {
+          "path": "project/tests/release/public_backup_forward_session_gate.cpp",
+          "required_tokens": [
+            "EngineStartLogicalBackup",
+            "backup-forward session should start",
+            "non-authority"
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "verify",
+      "ctest": "public_backup_update_coverage_gate",
+      "evidence_kind": "staged_public_ctest",
+      "source_files": [
+        {
+          "path": "project/tests/release/public_backup_update_coverage_gate.cpp",
+          "required_tokens": [
+            "EngineUpdateBackupFromVerifiedCoverage",
+            "coverage should be contiguous",
+            "idempotent backup update should pass"
+          ]
+        }
+      ]
+    },
+    {
+      "operation": "diagnostics",
+      "ctest": "public_diagnostic_stability_gate",
+      "evidence_kind": "staged_public_ctest",
+      "source_files": [
+        {
+          "path": "project/tools/release/public_diagnostic_matrix_generator.py",
+          "required_tokens": [
+            "public_diagnostic_stability_gate=passed",
+            "diagnostic_only_stable",
+            "redaction"
+          ]
+        }
+      ]
+    }
+  ]
+}

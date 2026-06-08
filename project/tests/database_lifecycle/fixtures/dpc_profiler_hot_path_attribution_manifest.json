@@ -1,0 +1,71 @@
+{
+  "search_key": "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+  "manifest_version": 1,
+  "fixture_root": "project/tests/database_lifecycle/fixtures/dpc_profiler_hot_path_attribution",
+  "required_lanes": [
+    "bulk_native_ingest",
+    "deferred_index_dml",
+    "hot_row_update",
+    "range_scan_page_summary",
+    "join_aggregate_batching",
+    "mga_index_cleanup_load",
+    "shadow_index_concurrent_dml",
+    "search_vector_generation_enabled"
+  ],
+  "required_measurement_families": [
+    "cpu_samples",
+    "lock_wait_mutex_hold_timing",
+    "io_syscall_counts",
+    "allocator_pressure",
+    "parser_lowering_timing",
+    "sblr_admission_dispatch_timing",
+    "plan_cache_hit_miss_invalidation_timing",
+    "metadata_cache_hit_miss_timing",
+    "statistics_epoch_plan_selection_timing",
+    "page_allocation_demand_grant_timing",
+    "index_maintenance_timing_by_family",
+    "agent_queue_wake_run_throttle_completion_timing"
+  ],
+  "claims": [
+    {
+      "claim_id": "DPC-073-BULK-NATIVE-INGEST",
+      "lane_id": "bulk_native_ingest",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_profiler_hot_path_attribution/bulk_native_ingest.json"
+    },
+    {
+      "claim_id": "DPC-073-DEFERRED-INDEX-DML",
+      "lane_id": "deferred_index_dml",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_profiler_hot_path_attribution/deferred_index_dml.json"
+    },
+    {
+      "claim_id": "DPC-073-HOT-ROW-UPDATE",
+      "lane_id": "hot_row_update",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_profiler_hot_path_attribution/hot_row_update.json"
+    },
+    {
+      "claim_id": "DPC-073-RANGE-SCAN-PAGE-SUMMARY",
+      "lane_id": "range_scan_page_summary",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_profiler_hot_path_attribution/range_scan_page_summary.json"
+    },
+    {
+      "claim_id": "DPC-073-JOIN-AGGREGATE-BATCHING",
+      "lane_id": "join_aggregate_batching",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_profiler_hot_path_attribution/join_aggregate_batching.json"
+    },
+    {
+      "claim_id": "DPC-073-MGA-INDEX-CLEANUP-LOAD",
+      "lane_id": "mga_index_cleanup_load",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_profiler_hot_path_attribution/mga_index_cleanup_load.json"
+    },
+    {
+      "claim_id": "DPC-073-SHADOW-INDEX-CONCURRENT-DML",
+      "lane_id": "shadow_index_concurrent_dml",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_profiler_hot_path_attribution/shadow_index_concurrent_dml.json"
+    },
+    {
+      "claim_id": "DPC-073-SEARCH-VECTOR-GENERATION",
+      "lane_id": "search_vector_generation_enabled",
+      "evidence_path": "project/tests/database_lifecycle/fixtures/dpc_profiler_hot_path_attribution/search_vector_generation_enabled.json"
+    }
+  ]
+}

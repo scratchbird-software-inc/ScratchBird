@@ -1,0 +1,4 @@
+# Intentional private leak fixture.
+project/include/scratchbird/api/README.md
+project/src/cluster/README.md
+project/src/parsers/native/v3/minimal/README.md

@@ -1,0 +1,347 @@
+{
+  "schema_version": "scratchbird.optimizer_deficiency.batch_a.proof.v1",
+  "fixture_key": "ODF_BATCH_A_PROOF_HARNESS",
+  "proof_scope": "standalone_ctest_contract_and_existing_gate_linkage",
+  "runtime_policy": {
+    "reads_execution_plan_files": false,
+    "requires_docs_findings": false,
+    "requires_docs_audit": false,
+    "requires_docs_reference": false,
+    "requires_docs_contracts": false,
+    "claims_speed_improvement": false,
+    "transaction_authority": "scratchbird_engine_mga_transaction_inventory",
+    "parser_boundary": "parser_lowers_to_sblr_engine_owns_storage_security_transaction_finality"
+  },
+  "completed_rows": [
+    "ODF-000",
+    "ODF-001",
+    "ODF-002",
+    "ODF-003",
+    "ODF-004",
+    "ODF-005",
+    "ODF-006",
+    "ODF-007",
+    "ODF-008",
+    "ODF-009"
+  ],
+  "scope_digest": {
+    "search_key": "ODF-000-SCOPE-DIGEST",
+    "optimization_families": [
+      "sql_optimizer_access_path_selection",
+      "sql_dml_update_delete_target_row_location",
+      "sql_copy_and_native_bulk_ingest",
+      "nosql_kv_document_search_vector_graph_timeseries_physical_provider",
+      "system_wide_observability_support_bundle_security_upgrade_rollback"
+    ],
+    "artifact_classes": [
+      "benchmark_parity_corpus",
+      "plan_shape_comparator",
+      "performance_kill_gates",
+      "latency_budget_attribution",
+      "binary_evidence_ring",
+      "rollback_disable_matrix",
+      "persisted_format_gate_link",
+      "fault_injection_gate_link",
+      "security_redaction_gate_link"
+    ],
+    "runtime_forbidden_roots": [
+      "execution_plan",
+      "findings",
+      "audit",
+      "reference",
+      "references",
+      "contracts"
+    ]
+  },
+  "benchmark_clean_build_flags": {
+    "SCRATCHBIRD_ENABLE_DEBUG_LOGS": "OFF",
+    "SCRATCHBIRD_ENABLE_HOTPATH_TRACE": "OFF",
+    "SCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE": "OFF",
+    "SCRATCHBIRD_ENABLE_PREPARED_TRACE": "OFF"
+  },
+  "routes": [
+    "embedded",
+    "local_ipc",
+    "inet_listener"
+  ],
+  "benchmark_parity_corpus": [
+    {
+      "workload_id": "ODF-SQL-POINT-LOOKUP",
+      "family": "sql_select",
+      "schema_name": "odf_a_sql_point_lookup",
+      "seed": 2026052301,
+      "row_count": 10000,
+      "operation_shape": "select_by_primary_key",
+      "expected_result_hash_by_route": {
+        "embedded": "sha256:081c8758c4102bdac2f1f4d96598c5199d398e9bed1a712916d1eac8c9e0e4df",
+        "local_ipc": "sha256:081c8758c4102bdac2f1f4d96598c5199d398e9bed1a712916d1eac8c9e0e4df",
+        "inet_listener": "sha256:081c8758c4102bdac2f1f4d96598c5199d398e9bed1a712916d1eac8c9e0e4df"
+      },
+      "rows_input": 1,
+      "rows_affected": 0,
+      "rows_returned": 1,
+      "selected_physical_path": "baseline_result_equivalence_only",
+      "fallback_reasons": []
+    },
+    {
+      "workload_id": "ODF-DML-INDEXED-UPDATE",
+      "family": "sql_dml",
+      "schema_name": "odf_a_dml_indexed_update",
+      "seed": 2026052302,
+      "row_count": 25000,
+      "operation_shape": "update_by_unique_secondary_key",
+      "expected_result_hash_by_route": {
+        "embedded": "sha256:1f3516cf2cb718ac5544556754d83f3a5cde29cdf122e26db2ba611c370c2a1c",
+        "local_ipc": "sha256:1f3516cf2cb718ac5544556754d83f3a5cde29cdf122e26db2ba611c370c2a1c",
+        "inet_listener": "sha256:1f3516cf2cb718ac5544556754d83f3a5cde29cdf122e26db2ba611c370c2a1c"
+      },
+      "rows_input": 1,
+      "rows_affected": 1,
+      "rows_returned": 0,
+      "selected_physical_path": "baseline_result_equivalence_only",
+      "fallback_reasons": []
+    },
+    {
+      "workload_id": "ODF-COPY-BULK-INGEST",
+      "family": "copy_bulk",
+      "schema_name": "odf_a_copy_bulk_ingest",
+      "seed": 2026052303,
+      "row_count": 50000,
+      "operation_shape": "copy_insert_commit",
+      "expected_result_hash_by_route": {
+        "embedded": "sha256:7d9a49b2cded402643e781f296b3b981a50c0a6476b54bf759d2bb4f8c0e2f32",
+        "local_ipc": "sha256:7d9a49b2cded402643e781f296b3b981a50c0a6476b54bf759d2bb4f8c0e2f32",
+        "inet_listener": "sha256:7d9a49b2cded402643e781f296b3b981a50c0a6476b54bf759d2bb4f8c0e2f32"
+      },
+      "rows_input": 50000,
+      "rows_affected": 50000,
+      "rows_returned": 0,
+      "selected_physical_path": "baseline_result_equivalence_only",
+      "fallback_reasons": []
+    },
+    {
+      "workload_id": "ODF-NOSQL-KV-EXACT-GET",
+      "family": "nosql_kv",
+      "schema_name": "odf_a_kv_exact_get",
+      "seed": 2026052304,
+      "row_count": 10000,
+      "operation_shape": "kv_exact_get",
+      "expected_result_hash_by_route": {
+        "embedded": "sha256:bf37a1037cae49c580a1b1e66a6eadf5516c524c8e4cd53698a40b17c32f02c5",
+        "local_ipc": "sha256:bf37a1037cae49c580a1b1e66a6eadf5516c524c8e4cd53698a40b17c32f02c5",
+        "inet_listener": "sha256:bf37a1037cae49c580a1b1e66a6eadf5516c524c8e4cd53698a40b17c32f02c5"
+      },
+      "rows_input": 1,
+      "rows_affected": 0,
+      "rows_returned": 1,
+      "selected_physical_path": "baseline_result_equivalence_only",
+      "fallback_reasons": []
+    }
+  ],
+  "plan_shape_comparator": {
+    "search_key": "ODF-002-PLAN-SHAPE-COMPARATOR",
+    "required_fields": [
+      "candidate_id",
+      "candidate_kind",
+      "candidates_seen",
+      "selected_access_path",
+      "estimated_rows",
+      "actual_rows",
+      "fallback_statistics_used",
+      "rejected_reasons",
+      "mga_visibility_recheck",
+      "security_redaction_recheck"
+    ],
+    "comparison_pairs": [
+      {
+        "pair_id": "legacy_current_sql_point_lookup",
+        "legacy_candidate_count": 2,
+        "current_candidate_count": 2,
+        "selected_access_path": "row_uuid_or_unique_index",
+        "estimated_rows": 1,
+        "actual_rows": 1,
+        "fallback_statistics_used": false,
+        "rejected_reasons": [
+          "table_scan_higher_cost"
+        ],
+        "mga_visibility_recheck": true,
+        "security_redaction_recheck": true
+      },
+      {
+        "pair_id": "legacy_current_kv_exact_get",
+        "legacy_candidate_count": 2,
+        "current_candidate_count": 2,
+        "selected_access_path": "exact_key_provider",
+        "estimated_rows": 1,
+        "actual_rows": 1,
+        "fallback_statistics_used": false,
+        "rejected_reasons": [
+          "descriptor_scan_forbidden"
+        ],
+        "mga_visibility_recheck": true,
+        "security_redaction_recheck": true
+      }
+    ]
+  },
+  "performance_kill_gates": [
+    {
+      "gate_id": "ODF-KILL-INDEXED-UPDATE-SCAN",
+      "operation_family": "sql_dml",
+      "bad_condition": "indexed_update_visible_rows_scanned_gt_candidate_rows",
+      "metric_field": "visible_rows_scanned",
+      "bad_sample": 25000,
+      "allowed_max": 1,
+      "expected_diagnostic": "ODF.PERF.INDEXED_UPDATE_SCAN_FORBIDDEN"
+    },
+    {
+      "gate_id": "ODF-KILL-BULK-RETAIL-INSERT",
+      "operation_family": "copy_bulk",
+      "bad_condition": "native_bulk_delegates_to_retail_insert",
+      "metric_field": "retail_insert_delegations",
+      "bad_sample": 50000,
+      "allowed_max": 0,
+      "expected_diagnostic": "ODF.PERF.BULK_RETAIL_INSERT_FORBIDDEN"
+    },
+    {
+      "gate_id": "ODF-KILL-NOSQL-EXACT-LOOKUP-SCAN",
+      "operation_family": "nosql_kv",
+      "bad_condition": "nosql_exact_lookup_descriptor_scan",
+      "metric_field": "descriptor_rows_scanned",
+      "bad_sample": 10000,
+      "allowed_max": 1,
+      "expected_diagnostic": "ODF.PERF.NOSQL_EXACT_LOOKUP_SCAN_FORBIDDEN"
+    }
+  ],
+  "latency_budget_attribution": {
+    "search_key": "ODF-004-LATENCY-BUDGET",
+    "required_layers": [
+      "parser_us",
+      "transport_us",
+      "sblr_lowering_us",
+      "plan_us",
+      "bind_us",
+      "storage_us",
+      "visibility_us",
+      "result_evidence_us",
+      "driver_formatting_us"
+    ],
+    "budget_contract": {
+      "all_layers_required": true,
+      "missing_layer_diagnostic": "ODF.LATENCY_LAYER.MISSING",
+      "sum_must_not_exceed_elapsed_plus_overhead_percent": 2
+    }
+  },
+  "binary_evidence_ring": {
+    "search_key": "ODF-005-BINARY-EVIDENCE-RING",
+    "counter_encoding": "binary_little_endian_fixed_record_v1",
+    "deferred_string_rendering": true,
+    "benchmark_clean_trace_controls": {
+      "hot_path_trace_compiled": false,
+      "exec_profile_trace_compiled": false,
+      "prepared_trace_compiled": false,
+      "debug_logs_compiled": false
+    },
+    "required_counters": [
+      "route_id",
+      "operation_family",
+      "selected_access_path",
+      "rows_input",
+      "rows_affected",
+      "rows_returned",
+      "visible_rows_scanned",
+      "index_probes",
+      "storage_page_reads",
+      "storage_page_writes",
+      "fallback_reason_code"
+    ],
+    "forbidden_hot_path_fields": [
+      "formatted_sql_text",
+      "principal_name",
+      "document_payload",
+      "redacted_value_plaintext"
+    ]
+  },
+  "rollback_disable_matrix": [
+    {
+      "optimization_id": "sql_access_path_optimizer",
+      "feature_flag": "optimizer.sql_access_paths.enabled",
+      "disable_behavior": "force_baseline_scan_with_exact_refusal_reason",
+      "diagnostic": "ODF.ROLLBACK.SQL_ACCESS_PATH_DISABLED",
+      "baseline_fallback_test": "ODF-ROLLBACK-SQL-ACCESS-PATH"
+    },
+    {
+      "optimization_id": "dml_target_row_stream",
+      "feature_flag": "optimizer.dml_target_stream.enabled",
+      "disable_behavior": "force_baseline_visible_scan_with_counter",
+      "diagnostic": "ODF.ROLLBACK.DML_TARGET_STREAM_DISABLED",
+      "baseline_fallback_test": "ODF-ROLLBACK-DML-TARGET-STREAM"
+    },
+    {
+      "optimization_id": "copy_native_bulk_lane",
+      "feature_flag": "bulk.copy_native_lane.enabled",
+      "disable_behavior": "force_safe_retail_insert_with_counter_and_speed_claim_refusal",
+      "diagnostic": "ODF.ROLLBACK.COPY_NATIVE_LANE_DISABLED",
+      "baseline_fallback_test": "ODF-ROLLBACK-COPY-NATIVE-LANE"
+    },
+    {
+      "optimization_id": "nosql_exact_provider",
+      "feature_flag": "nosql.exact_provider.enabled",
+      "disable_behavior": "force_baseline_provider_with_exact_scan_counter",
+      "diagnostic": "ODF.ROLLBACK.NOSQL_EXACT_PROVIDER_DISABLED",
+      "baseline_fallback_test": "ODF-ROLLBACK-NOSQL-EXACT-PROVIDER"
+    }
+  ],
+  "persisted_format_upgrade_rebuild_gate": {
+    "search_key": "ODF-007-PERSISTED-FORMAT-GATE",
+    "ctest_name": "dpc_persisted_format_restricted_open_gate",
+    "required_fields": [
+      "format_version",
+      "feature_bit",
+      "rebuild_path",
+      "incompatible_open_refusal",
+      "support_bundle_evidence"
+    ]
+  },
+  "physical_structure_fault_injection_matrix": {
+    "search_key": "ODF-008-FAULT-INJECTION-GATE",
+    "ctest_name": "dpc_failure_injection_crash_matrix_gate",
+    "required_phases": [
+      "create",
+      "populate",
+      "publish",
+      "disable",
+      "rebuild",
+      "cleanup",
+      "crash",
+      "reopen",
+      "recovery_classification"
+    ]
+  },
+  "security_redaction_privilege_gate": {
+    "search_key": "ODF-009-SECURITY-REDACTION-GATE",
+    "ctest_name": "dpc_security_privilege_gate",
+    "required_routes": [
+      "parser",
+      "api",
+      "driver",
+      "wire",
+      "ipc",
+      "binary",
+      "nosql"
+    ],
+    "required_invariants": [
+      "session_authorization_identical_to_baseline",
+      "row_visibility_identical_to_baseline",
+      "redaction_policy_identical_to_baseline",
+      "denial_diagnostics_identical_to_baseline"
+    ]
+  },
+  "required_existing_ctests": [
+    "dpc_workload_corpus_closure_gate",
+    "dpc_persisted_format_restricted_open_gate",
+    "dpc_failure_injection_crash_matrix_gate",
+    "dpc_security_privilege_gate",
+    "cdp_performance_metric_schema_gate",
+    "dpc_standalone_ctest_independence_gate"
+  ]
+}

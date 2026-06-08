@@ -1,0 +1,3404 @@
+# SEARCH_KEY: SB_ENGINE_INTERNAL_API_SURFACE_REGISTRY
+registry:
+  name: engine_internal_api_surface
+  status: validated
+  authority: engine
+  naming_rule: Engine<OperationName>
+  request_type_rule: Engine<OperationName>Request
+  result_type_rule: Engine<OperationName>Result
+  operation_id_rule: lowercase dotted family.operation_name
+  security_note: embedded mode is trusted in-process and is not a security boundary
+
+schema_fields:
+  - operation_id
+  - scope_status
+  - closure_slice
+  - function_name
+  - request_type
+  - result_type
+  - family
+  - authority_domain
+  - header
+  - implementation
+  - implementation_status
+  - default_diagnostic
+  - cluster_only
+  - accepts_names
+  - requires_transaction_context
+  - sblr_mapping_required
+  - requires_cluster_authority
+  - requires_security_context
+  - notes
+
+operations:
+  - operation_id: agents.request_page_preallocation
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineRequestPagePreallocation
+    request_type: EngineRequestPagePreallocationRequest
+    result_type: EngineRequestPagePreallocationResult
+    family: agents
+    authority_domain: agent_action_hook
+    header: agents/agent_action_hooks_api.hpp
+    implementation: agents/agent_action_hooks_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: engine-owned request hook; does not allocate pages directly
+  - operation_id: agents.request_page_relocation
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineRequestPageRelocation
+    request_type: EngineRequestPageRelocationRequest
+    result_type: EngineRequestPageRelocationResult
+    family: agents
+    authority_domain: agent_action_hook
+    header: agents/agent_action_hooks_api.hpp
+    implementation: agents/agent_action_hooks_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: engine-owned request hook; movement remains blocked by safety fences
+  - operation_id: agents.request_filespace_growth
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineRequestFilespaceGrowth
+    request_type: EngineRequestFilespaceGrowthRequest
+    result_type: EngineRequestFilespaceGrowthResult
+    family: agents
+    authority_domain: agent_action_hook
+    header: agents/agent_action_hooks_api.hpp
+    implementation: agents/agent_action_hooks_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: engine-owned request hook; filespace lifecycle APIs retain physical authority
+  - operation_id: agents.notify_filespace_shrink_readiness
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineNotifyFilespaceShrinkReadiness
+    request_type: EngineNotifyFilespaceShrinkReadinessRequest
+    result_type: EngineNotifyFilespaceShrinkReadinessResult
+    family: agents
+    authority_domain: agent_action_hook
+    header: agents/agent_action_hooks_api.hpp
+    implementation: agents/agent_action_hooks_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: page agent readiness notification only; filespace agent still owns shrink request
+  - operation_id: agents.request_index_delta_merge
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineRequestIndexDeltaMerge
+    request_type: EngineRequestIndexDeltaMergeRequest
+    result_type: EngineRequestIndexDeltaMergeResult
+    family: agents
+    authority_domain: agent_action_hook
+    header: agents/agent_action_hooks_api.hpp
+    implementation: agents/agent_action_hooks_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: request hook only; index publication remains transactional
+  - operation_id: agents.request_index_rebuild_or_shadow_build
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineRequestIndexRebuildOrShadowBuild
+    request_type: EngineRequestIndexRebuildOrShadowBuildRequest
+    result_type: EngineRequestIndexRebuildOrShadowBuildResult
+    family: agents
+    authority_domain: agent_action_hook
+    header: agents/agent_action_hooks_api.hpp
+    implementation: agents/agent_action_hooks_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: request hook only; rebuild/shadow-build execution remains engine-owned
+  - operation_id: agents.list
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineListAgents
+    request_type: EngineListAgentsRequest
+    result_type: EngineListAgentsResult
+    family: agents
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: local agent registry inspection; engine security filters authority
+  - operation_id: agents.show
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineShowAgent
+    request_type: EngineShowAgentRequest
+    result_type: EngineShowAgentResult
+    family: agents
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: local agent descriptor inspection by agent_type option
+  - operation_id: agents.start
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineStartAgent
+    request_type: EngineStartAgentRequest
+    result_type: EngineStartAgentResult
+    family: agents
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: local agent control; persists evidence before success
+  - operation_id: agents.stop
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineStopAgent
+    request_type: EngineStopAgentRequest
+    result_type: EngineStopAgentResult
+    family: agents
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: local agent stop control; persists evidence before success
+  - operation_id: agents.pause
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EnginePauseAgent
+    request_type: EnginePauseAgentRequest
+    result_type: EnginePauseAgentResult
+    family: agents
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: local agent pause control; persists evidence before success
+  - operation_id: agents.resume
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineResumeAgent
+    request_type: EngineResumeAgentRequest
+    result_type: EngineResumeAgentResult
+    family: agents
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: local agent resume control; persists evidence before success
+  - operation_id: agents.configure
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineConfigureAgent
+    request_type: EngineConfigureAgentRequest
+    result_type: EngineConfigureAgentResult
+    family: agents
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: local agent configuration control; policy authority remains engine-owned
+  - operation_id: agents.run
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineRunAgent
+    request_type: EngineRunAgentRequest
+    result_type: EngineRunAgentResult
+    family: agents
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: local agent run request; engine gates policy, metrics, feature availability, and evidence
+  - operation_id: agents.dry_run
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineDryRunAgent
+    request_type: EngineDryRunAgentRequest
+    result_type: EngineDryRunAgentResult
+    family: agents
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: dry-run control path for rollout and operator validation
+  - operation_id: agents.override
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineOverrideAgent
+    request_type: EngineOverrideAgentRequest
+    result_type: EngineOverrideAgentResult
+    family: agents
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: explicit operator override path requiring OBS_AGENT_OVERRIDE
+  - operation_id: sys.agents
+    scope_status: noncluster_required
+    closure_slice: NCE-1402
+    function_name: EngineSysAgents
+    request_type: EngineSysAgentsRequest
+    result_type: EngineSysAgentsResult
+    family: observability
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: noncluster sys.agents surface; hides cluster-only agent rows
+  - operation_id: cluster.sys.agents
+    scope_status: cluster_mapping_unavailable
+    closure_slice: NCE-1402
+    function_name: EngineClusterSysAgents
+    request_type: EngineClusterSysAgentsRequest
+    result_type: EngineClusterSysAgentsResult
+    family: observability
+    authority_domain: agent_management
+    header: agents/agent_management_api.hpp
+    implementation: agents/agent_management_api.cpp
+    implementation_status: fail_closed_cluster_mapping_unavailable
+    default_diagnostic: SB_AGENT_CLUSTER.AUTHORITY_REQUIRED
+    cluster_only: true
+    requires_security_context: true
+    requires_cluster_authority: true
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: cluster surface is visible only when cluster authority is present
+  - operation_id: artifact.export_catalog
+    scope_status: noncluster_required
+    closure_slice: NCE-0503
+    function_name: EngineExportCatalogArtifacts
+    request_type: EngineExportCatalogArtifactsRequest
+    result_type: EngineExportCatalogArtifactsResult
+    family: artifact
+    authority_domain: catalog_artifact
+    header: artifacts/artifact_api.hpp
+    implementation: artifacts/artifact_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: exports canonical UUID-authoritative catalog artifacts; Git is not runtime authority
+  - operation_id: artifact.import_catalog
+    scope_status: noncluster_required
+    closure_slice: NCE-0503
+    function_name: EngineImportCatalogArtifacts
+    request_type: EngineImportCatalogArtifactsRequest
+    result_type: EngineImportCatalogArtifactsResult
+    family: artifact
+    authority_domain: catalog_artifact
+    header: artifacts/artifact_api.hpp
+    implementation: artifacts/artifact_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: imports canonical artifacts with explicit UUID preserve/remap rules and conflict diagnostics
+  - operation_id: dml.execute_import_rows
+    category: dml
+    function_name: EngineExecuteImportRows
+    request_type: EngineExecuteImportRowsRequest
+    result_type: EngineExecuteImportRowsResult
+    header: dml/import_execution_api.hpp
+    implementation: dml/import_execution_api.cpp
+    authority_domain: import_execution
+    closure_slice: PID-010
+    implementation_status: behavior_implemented
+    requires_transaction_context: true
+    requires_security_context: true
+    accepts_names: false
+    sblr_mapping_required: true
+    cluster_only: false
+    notes:
+      - Executes imports only from canonical row envelopes after parser decoding and UUID binding.
+      - Normalizes import plan reject model and checkpoint model before delegating to dml.insert_rows.
+      - Does not contain an ad hoc import row writer; insert batch and strict bulk-load policy remain authoritative.
+
+  - operation_id: dml.normalize_import_checkpoint_model
+    category: dml
+    function_name: EngineNormalizeImportCheckpointModel
+    request_type: EngineNormalizeImportCheckpointRequest
+    result_type: EngineNormalizeImportCheckpointResult
+    header: dml/import_resume_checkpoint.hpp
+    implementation: dml/import_resume_checkpoint.cpp
+    authority_domain: import_checkpoint_recovery
+    closure_slice: PID-009
+    implementation_status: behavior_implemented
+    requires_transaction_context: true
+    requires_security_context: true
+    accepts_names: false
+    sblr_mapping_required: true
+    cluster_only: false
+    notes:
+      - Normalizes disabled periodic_rows periodic_bytes periodic_time and manual checkpoint policies.
+      - Resume from checkpoint requires source fingerprint source position checkpoint target UUID and idempotent replay.
+      - Import execution slices must write checkpoint evidence before reporting resumable progress.
+
+  - operation_id: dml.normalize_import_reject_model
+    category: dml
+    function_name: EngineNormalizeImportRejectModel
+    request_type: EngineNormalizeImportRejectModelRequest
+    result_type: EngineNormalizeImportRejectModelResult
+    header: dml/import_reject_model.hpp
+    implementation: dml/import_reject_model.cpp
+    authority_domain: import_reject_policy
+    closure_slice: PID-008
+    implementation_status: behavior_implemented
+    requires_transaction_context: true
+    requires_security_context: true
+    accepts_names: false
+    sblr_mapping_required: true
+    cluster_only: false
+    notes:
+      - Normalizes fail-fast reject-row reject-table and quarantine behavior before import execution.
+      - Defines canonical error-row schema diagnostics redaction payload-reference and audit evidence rules.
+      - Import execution slices must call this model before accepting dirty-row handling policies.
+
+  - operation_id: dml.plan_import_rows
+    category: dml
+    function_name: EnginePlanImportRows
+    request_type: EnginePlanImportRowsRequest
+    result_type: EnginePlanImportRowsResult
+    header: dml/import_api.hpp
+    implementation: dml/import_api.cpp
+    authority_domain: row_import_planning
+    closure_slice: PID-007
+    implementation_status: behavior_implemented
+    requires_transaction_context: true
+    requires_security_context: true
+    accepts_names: false
+    sblr_mapping_required: true
+    cluster_only: false
+    notes:
+      - Parsers decode client import syntax, bulk APIs, and source handles before this boundary.
+      - Engine accepts only UUID-bound target objects, descriptor mappings, source/format envelopes, and policy envelopes.
+      - This operation plans import execution; PID-010 wires row ingestion through insert and bulk-load execution.
+
+  - operation_id: ddl.create_database
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCreateDatabase
+    request_type: EngineCreateDatabaseRequest
+    result_type: EngineCreateDatabaseResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: false
+    notes: non-cluster GPU inspect/admission behavior implemented with policy gates materialized-batch reference kernels CPU fallback metric emission and deterministic diagnostics; no hardware GPU release claim is implied
+  - operation_id: ddl.create_schema
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCreateSchema
+    request_type: EngineCreateSchemaRequest
+    result_type: EngineCreateSchemaResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: optional GPU capability inspection and active-profile behavior implemented with provider detection workload gates inactive fail-closed refusal metrics and authority-boundary evidence
+  - operation_id: ddl.create_table
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCreateTable
+    request_type: EngineCreateTableRequest
+    result_type: EngineCreateTableResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: ddl.create_index
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QP
+    function_name: EngineCreateIndex
+    request_type: EngineCreateIndexRequest
+    result_type: EngineCreateIndexResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA table-visibility proof, index descriptor evidence, and scoped name-registry evidence
+  - operation_id: ddl.create_index_template
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QQ
+    function_name: EngineCreateIndexTemplate
+    request_type: EngineCreateIndexTemplateRequest
+    result_type: EngineCreateIndexTemplateResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA behavior-record evidence, template descriptor evidence, and scoped name-registry evidence
+  - operation_id: ddl.create_statistics
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QL
+    function_name: EngineCreateStatistics
+    request_type: EngineCreateStatisticsRequest
+    result_type: EngineCreateStatisticsResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA table-visibility proof, statistics descriptor evidence, and name-registry evidence
+  - operation_id: ddl.create_domain
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QO
+    function_name: EngineCreateDomain
+    request_type: EngineCreateDomainRequest
+    result_type: EngineCreateDomainResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA domain descriptor evidence, base type descriptor evidence, and name-registry evidence
+  - operation_id: ddl.create_sequence
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QM
+    function_name: EngineCreateSequence
+    request_type: EngineCreateSequenceRequest
+    result_type: EngineCreateSequenceResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence, sequence descriptor evidence, and name-registry evidence
+  - operation_id: ddl.create_view
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020R-QN
+    function_name: EngineCreateView
+    request_type: EngineCreateViewRequest
+    result_type: EngineCreateViewResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence, view descriptor evidence, and name-registry evidence
+  - operation_id: ddl.create_synonym
+    scope_status: noncluster_required
+    closure_slice: SBSFC-020
+    function_name: EngineCreateSynonym
+    request_type: EngineCreateSynonymRequest
+    result_type: EngineCreateSynonymResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: synonym object identity is UUID-backed; target UUID and kind are resolved before engine catalog mutation
+  - operation_id: ddl.constraint.create
+    scope_status: noncluster_required
+    closure_slice: SBSFC-021R-X
+    function_name: EngineCreateConstraint
+    request_type: EngineCreateConstraintRequest
+    result_type: EngineCreateConstraintResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: applies UUID-resolved constraint descriptors to a UUID-resolved owner object through sys.constraint_descriptor and MGA catalog lifecycle events
+  - operation_id: ddl.create_function
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCreateFunction
+    request_type: EngineCreateFunctionRequest
+    result_type: EngineCreateFunctionResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: ddl.create_procedure
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCreateProcedure
+    request_type: EngineCreateProcedureRequest
+    result_type: EngineCreateProcedureResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: ddl.create_trigger
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCreateTrigger
+    request_type: EngineCreateTriggerRequest
+    result_type: EngineCreateTriggerResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/create_api.hpp
+    implementation: ddl/create_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: ddl.alter_object
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineAlterObject
+    request_type: EngineAlterObjectRequest
+    result_type: EngineAlterObjectResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/alter_api.hpp
+    implementation: ddl/alter_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: ddl.constraint.alter
+    scope_status: noncluster_required
+    closure_slice: SBSFC-021R-X
+    function_name: EngineAlterConstraint
+    request_type: EngineAlterConstraintRequest
+    result_type: EngineAlterConstraintResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/alter_api.hpp
+    implementation: ddl/alter_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: applies UUID-resolved constraint descriptor changes to a UUID-resolved owner object through sys.constraint_descriptor and MGA catalog lifecycle events
+  - operation_id: ddl.drop_object
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineDropObject
+    request_type: EngineDropObjectRequest
+    result_type: EngineDropObjectResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/drop_api.hpp
+    implementation: ddl/drop_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: ddl.constraint.drop
+    scope_status: noncluster_required
+    closure_slice: SBSFC-021R-X
+    function_name: EngineDropConstraint
+    request_type: EngineDropConstraintRequest
+    result_type: EngineDropConstraintResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/drop_api.hpp
+    implementation: ddl/drop_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: drops a UUID-resolved constraint object through catalog lifecycle tombstone events and sys.constraint_descriptor route evidence
+  - operation_id: ddl.comment_on_object
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCommentOnObject
+    request_type: EngineCommentOnObjectRequest
+    result_type: EngineCommentOnObjectResult
+    family: ddl
+    authority_domain: catalog_ddl
+    header: ddl/comment_api.hpp
+    implementation: ddl/comment_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: dml.insert_rows
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineInsertRows
+    request_type: EngineInsertRowsRequest
+    result_type: EngineInsertRowsResult
+    family: dml
+    authority_domain: row_storage_mga
+    header: dml/insert_api.hpp
+    implementation: dml/insert_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: dml.select_rows
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineSelectRows
+    request_type: EngineSelectRowsRequest
+    result_type: EngineSelectRowsResult
+    family: dml
+    authority_domain: row_storage_mga
+    header: dml/select_api.hpp
+    implementation: dml/select_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: dml.update_rows
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineUpdateRows
+    request_type: EngineUpdateRowsRequest
+    result_type: EngineUpdateRowsResult
+    family: dml
+    authority_domain: row_storage_mga
+    header: dml/update_api.hpp
+    implementation: dml/update_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: dml.delete_rows
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineDeleteRows
+    request_type: EngineDeleteRowsRequest
+    result_type: EngineDeleteRowsResult
+    family: dml
+    authority_domain: row_storage_mga
+    header: dml/delete_api.hpp
+    implementation: dml/delete_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: dml.merge_rows
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineMergeRows
+    request_type: EngineMergeRowsRequest
+    result_type: EngineMergeRowsResult
+    family: dml
+    authority_domain: row_storage_mga
+    header: dml/merge_api.hpp
+    implementation: dml/merge_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: query.bind_expression
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineBindExpression
+    request_type: EngineBindExpressionRequest
+    result_type: EngineBindExpressionResult
+    family: query
+    authority_domain: expression_runtime
+    header: query/expression_api.hpp
+    implementation: query/expression_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: LLVM JIT/AOT compile runtime implemented with SBLR-only input validation cache keys fallback/refusal diagnostics metrics and lifecycle evidence
+  - operation_id: query.bind_predicate
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineBindPredicate
+    request_type: EngineBindPredicateRequest
+    result_type: EngineBindPredicateResult
+    family: query
+    authority_domain: binding_planning
+    header: query/predicate_api.hpp
+    implementation: query/predicate_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: query.bind_projection
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineBindProjection
+    request_type: EngineBindProjectionRequest
+    result_type: EngineBindProjectionResult
+    family: query
+    authority_domain: binding_planning
+    header: query/projection_api.hpp
+    implementation: query/projection_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: query.evaluate_projection
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineEvaluateProjection
+    request_type: EngineEvaluateProjectionRequest
+    result_type: EngineEvaluateProjectionResult
+    family: query
+    authority_domain: expression_runtime
+    header: query/projection_api.hpp
+    implementation: query/projection_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: engine-owned scalar constant projection evaluation for SELECT without FROM; parser text is not execution authority
+  - operation_id: query.plan_operation
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EnginePlanOperation
+    request_type: EnginePlanOperationRequest
+    result_type: EnginePlanOperationResult
+    family: query
+    authority_domain: binding_planning
+    header: query/plan_api.hpp
+    implementation: query/plan_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: transaction.begin
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineBeginTransaction
+    request_type: EngineBeginTransactionRequest
+    result_type: EngineBeginTransactionResult
+    family: transaction
+    authority_domain: local_transaction_mga
+    header: transaction/transaction_api.hpp
+    implementation: transaction/transaction_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: transaction.set_characteristics
+    scope_status: noncluster_required
+    closure_slice: SBSFC-022R-E
+    function_name: EngineSetTransactionCharacteristics
+    request_type: EngineSetTransactionCharacteristicsRequest
+    result_type: EngineSetTransactionCharacteristicsResult
+    family: transaction
+    authority_domain: local_transaction_mga
+    header: transaction/transaction_api.hpp
+    implementation: transaction/transaction_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster SET TRANSACTION session characteristics route updates session defaults through server admission and engine evidence without parser finality
+  - operation_id: transaction.commit
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCommitTransaction
+    request_type: EngineCommitTransactionRequest
+    result_type: EngineCommitTransactionResult
+    family: transaction
+    authority_domain: local_transaction_mga
+    header: transaction/transaction_api.hpp
+    implementation: transaction/transaction_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: transaction.rollback
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineRollbackTransaction
+    request_type: EngineRollbackTransactionRequest
+    result_type: EngineRollbackTransactionResult
+    family: transaction
+    authority_domain: local_transaction_mga
+    header: transaction/transaction_api.hpp
+    implementation: transaction/transaction_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: transaction.prepare
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EnginePrepareTransaction
+    request_type: EnginePrepareTransactionRequest
+    result_type: EnginePrepareTransactionResult
+    family: transaction
+    authority_domain: local_transaction_mga
+    header: transaction/transaction_api.hpp
+    implementation: transaction/transaction_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: transaction.create_savepoint
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCreateSavepoint
+    request_type: EngineCreateSavepointRequest
+    result_type: EngineCreateSavepointResult
+    family: transaction
+    authority_domain: local_transaction_mga
+    header: transaction/savepoint_api.hpp
+    implementation: transaction/savepoint_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: transaction.release_savepoint
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineReleaseSavepoint
+    request_type: EngineReleaseSavepointRequest
+    result_type: EngineReleaseSavepointResult
+    family: transaction
+    authority_domain: local_transaction_mga
+    header: transaction/savepoint_api.hpp
+    implementation: transaction/savepoint_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: transaction.rollback_to_savepoint
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineRollbackToSavepoint
+    request_type: EngineRollbackToSavepointRequest
+    result_type: EngineRollbackToSavepointResult
+    family: transaction
+    authority_domain: local_transaction_mga
+    header: transaction/savepoint_api.hpp
+    implementation: transaction/savepoint_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: catalog.resolve_name
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineResolveName
+    request_type: EngineResolveNameRequest
+    result_type: EngineResolveNameResult
+    family: catalog
+    authority_domain: catalog_visibility
+    header: catalog/name_resolution_api.hpp
+    implementation: catalog/name_resolution_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: false
+    notes: parser-facing name-to-UUID mapper; implementation must call ResolveNameRegistryPublic and never expose private resolver candidates
+  - operation_id: catalog.map_uuid_to_name
+    scope_status: noncluster_required
+    closure_slice: CNSR-0308
+    function_name: EngineMapUuidToName
+    request_type: EngineMapUuidToNameRequest
+    result_type: EngineMapUuidToNameResult
+    family: catalog
+    authority_domain: catalog_visibility
+    header: catalog/name_resolution_api.hpp
+    implementation: catalog/name_resolution_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: parser-facing UUID-to-name mapper; implementation must call MapNameRegistryUuidToNamePublic and apply metadata visibility before rendering names
+  - operation_id: catalog.lookup_object
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineLookupObject
+    request_type: EngineLookupObjectRequest
+    result_type: EngineLookupObjectResult
+    family: catalog
+    authority_domain: catalog_visibility
+    header: catalog/catalog_lookup_api.hpp
+    implementation: catalog/catalog_lookup_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: catalog.list_children
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineListCatalogChildren
+    request_type: EngineListCatalogChildrenRequest
+    result_type: EngineListCatalogChildrenResult
+    family: catalog
+    authority_domain: catalog_visibility
+    header: catalog/schema_tree_api.hpp
+    implementation: catalog/schema_tree_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: catalog.get_descriptor
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineGetDescriptor
+    request_type: EngineGetDescriptorRequest
+    result_type: EngineGetDescriptorResult
+    family: catalog
+    authority_domain: catalog_visibility
+    header: catalog/descriptor_api.hpp
+    implementation: catalog/descriptor_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: catalog.get_dependencies
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineGetDependencies
+    request_type: EngineGetDependenciesRequest
+    result_type: EngineGetDependenciesResult
+    family: catalog
+    authority_domain: catalog_visibility
+    header: catalog/catalog_lookup_api.hpp
+    implementation: catalog/catalog_lookup_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: security.create_identity
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCreateIdentity
+    request_type: EngineCreateIdentityRequest
+    result_type: EngineCreateIdentityResult
+    family: security
+    authority_domain: engine_security
+    header: security/identity_api.hpp
+    implementation: security/identity_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: security.alter_identity
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineAlterIdentity
+    request_type: EngineAlterIdentityRequest
+    result_type: EngineAlterIdentityResult
+    family: security
+    authority_domain: engine_security
+    header: security/identity_api.hpp
+    implementation: security/identity_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: security.grant_right
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineGrantRight
+    request_type: EngineGrantRightRequest
+    result_type: EngineGrantRightResult
+    family: security
+    authority_domain: engine_security
+    header: security/grant_api.hpp
+    implementation: security/grant_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: security.revoke_right
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineRevokeRight
+    request_type: EngineRevokeRightRequest
+    result_type: EngineRevokeRightResult
+    family: security
+    authority_domain: engine_security
+    header: security/grant_api.hpp
+    implementation: security/grant_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: security.privilege.grant
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023
+    function_name: EngineSecurityGrantPrivilege
+    request_type: EngineSecurityGrantPrivilegeRequest
+    result_type: EngineSecurityGrantPrivilegeResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound privilege grant; names must be resolved before engine ingress and MGA evidence is required before success
+  - operation_id: security.privilege.revoke
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023
+    function_name: EngineSecurityRevokePrivilege
+    request_type: EngineSecurityRevokePrivilegeRequest
+    result_type: EngineSecurityRevokePrivilegeResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound privilege revoke; names must be resolved before engine ingress and MGA evidence is required before success
+  - operation_id: security.session.set_role
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023R-C
+    function_name: EngineSecuritySetRole
+    request_type: EngineSecuritySetRoleRequest
+    result_type: EngineSecuritySetRoleResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: UUID-bound session role activation; names must be resolved before engine ingress and role membership is engine-validated
+  - operation_id: security.principal.create
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023R-D
+    function_name: EngineSecurityCreatePrincipal
+    request_type: EngineSecurityCreatePrincipalRequest
+    result_type: EngineSecurityCreatePrincipalResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound principal creation persists engine-owned security lifecycle, audit, protected-material redaction, and cache invalidation evidence
+  - operation_id: security.principal.alter
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023R-D
+    function_name: EngineSecurityAlterPrincipal
+    request_type: EngineSecurityAlterPrincipalRequest
+    result_type: EngineSecurityAlterPrincipalResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound principal alteration persists lifecycle state, audit, protected-material redaction, and cache invalidation evidence through the engine security API
+  - operation_id: security.policy.create
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023R-D
+    function_name: EngineSecurityCreatePolicy
+    request_type: EngineSecurityCreatePolicyRequest
+    result_type: EngineSecurityCreatePolicyResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound policy creation persists engine-owned policy rows, audit, and cache invalidation evidence
+  - operation_id: security.policy.alter
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023R-D
+    function_name: EngineSecurityAlterPolicy
+    request_type: EngineSecurityAlterPolicyRequest
+    result_type: EngineSecurityAlterPolicyResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound policy alteration persists lifecycle/effect changes, audit, and cache invalidation evidence through the engine security API
+  - operation_id: security.policy.attach
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023R-C
+    function_name: EngineSecurityAttachPolicy
+    request_type: EngineSecurityAttachPolicyRequest
+    result_type: EngineSecurityAttachPolicyResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound policy attachment persists security policy binding evidence and cache invalidation through the engine security lifecycle API
+  - operation_id: security.policy.activate
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023R-C
+    function_name: EngineSecurityActivatePolicy
+    request_type: EngineSecurityActivatePolicyRequest
+    result_type: EngineSecurityActivatePolicyResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound policy activation persists engine security lifecycle and cache invalidation evidence
+  - operation_id: security.policy.deactivate
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023R-C
+    function_name: EngineSecurityDeactivatePolicy
+    request_type: EngineSecurityDeactivatePolicyRequest
+    result_type: EngineSecurityDeactivatePolicyResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: UUID-bound policy deactivation persists engine security lifecycle and cache invalidation evidence
+  - operation_id: security.policy.validate
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023R-C
+    function_name: EngineSecurityValidatePolicy
+    request_type: EngineSecurityValidatePolicyRequest
+    result_type: EngineSecurityValidatePolicyResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: UUID-bound policy validation checks current engine security lifecycle state and stale policy/cache generations
+  - operation_id: security.policy.show
+    scope_status: noncluster_required
+    closure_slice: SBSFC-023R-C
+    function_name: EngineSecurityShowPolicy
+    request_type: EngineSecurityShowPolicyRequest
+    result_type: EngineSecurityShowPolicyResult
+    family: security
+    authority_domain: engine_security
+    header: security/security_principal_lifecycle.hpp
+    implementation: security/security_principal_lifecycle.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: UUID-bound policy inspection returns engine-owned policy lifecycle rows without parser-side rendering or SQL execution
+  - operation_id: security.evaluate_visibility
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineEvaluateVisibility
+    request_type: EngineEvaluateVisibilityRequest
+    result_type: EngineEvaluateVisibilityResult
+    family: security
+    authority_domain: engine_security
+    header: security/visibility_api.hpp
+    implementation: security/visibility_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: security.evaluate_policy
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineEvaluatePolicy
+    request_type: EngineEvaluatePolicyRequest
+    result_type: EngineEvaluatePolicyResult
+    family: security
+    authority_domain: engine_security
+    header: security/policy_api.hpp
+    implementation: security/policy_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: security.evaluate_deep_enforcement
+    scope_status: noncluster_required
+    closure_slice: SECDEEP-001
+    function_name: EngineEvaluateDeepSecurity
+    request_type: EngineEvaluateDeepSecurityRequest
+    result_type: EngineEvaluateDeepSecurityResult
+    family: security
+    authority_domain: engine_security
+    header: security/deep_enforcement_api.hpp
+    implementation: security/deep_enforcement_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: unified executor/storage/catalog/UDR security enforcement seam; combines rights, discovery visibility, masking/RLS, audit-before-success, and zero-side-effect refusal proof
+  - operation_id: observability.show_version
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowVersion
+    request_type: EngineShowVersionRequest
+    result_type: EngineShowVersionResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: observability.show_database
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowDatabase
+    request_type: EngineShowDatabaseRequest
+    result_type: EngineShowDatabaseResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: observability.show_system
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowSystem
+    request_type: EngineShowSystemRequest
+    result_type: EngineShowSystemResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: observability.show_catalog
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowCatalog
+    request_type: EngineShowCatalogRequest
+    result_type: EngineShowCatalogResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: observability.show_sessions
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowSessions
+    request_type: EngineShowSessionsRequest
+    result_type: EngineShowSessionsResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: observability.show_transactions
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowTransactions
+    request_type: EngineShowTransactionsRequest
+    result_type: EngineShowTransactionsResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: observability.show_locks
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowLocks
+    request_type: EngineShowLocksRequest
+    result_type: EngineShowLocksResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: observability.show_statements
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowStatements
+    request_type: EngineShowStatementsRequest
+    result_type: EngineShowStatementsResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: observability.show_jobs
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowJobs
+    request_type: EngineShowJobsRequest
+    result_type: EngineShowJobsResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local scheduler visibility evidence and deterministic diagnostics
+  - operation_id: observability.show_management
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowManagement
+    request_type: EngineShowManagementRequest
+    result_type: EngineShowManagementResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local catalog/security/resource epoch evidence and deterministic diagnostics
+  - operation_id: observability.show_diagnostics
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowDiagnostics
+    request_type: EngineShowDiagnosticsRequest
+    result_type: EngineShowDiagnosticsResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with current diagnostic context evidence and deterministic diagnostics
+  - operation_id: observability.show_diagnostics_extended
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowDiagnosticsExtended
+    request_type: EngineShowDiagnosticsExtendedRequest
+    result_type: EngineShowDiagnosticsExtendedResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with current diagnostic and trace context evidence and deterministic diagnostics
+  - operation_id: observability.show_archive_replication
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowArchiveReplication
+    request_type: EngineShowArchiveReplicationRequest
+    result_type: EngineShowArchiveReplicationResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA inventory and archive/replication channel evidence
+  - operation_id: observability.show_agents_extended
+    scope_status: noncluster_required
+    closure_slice: SBSFC-024R-I
+    function_name: EngineShowAgentsExtended
+    request_type: EngineShowAgentsExtendedRequest
+    result_type: EngineShowAgentsExtendedResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with frontend-safe canonical agent registry evidence and cluster boundary status
+  - operation_id: observability.show_filespace_extended
+    scope_status: noncluster_required
+    closure_slice: SBSFC-024R-I
+    function_name: EngineShowFilespaceExtended
+    request_type: EngineShowFilespaceExtendedRequest
+    result_type: EngineShowFilespaceExtendedResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with engine-owned database/filespace scope and MGA finality authority evidence
+  - operation_id: observability.show_decision_service
+    scope_status: noncluster_required
+    closure_slice: SBSFC-024R-I
+    function_name: EngineShowDecisionService
+    request_type: EngineShowDecisionServiceRequest
+    result_type: EngineShowDecisionServiceResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: reports standalone decision-service status and compile-gated cluster provider boundary without invoking private cluster execution
+  - operation_id: observability.show_acceleration
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowAcceleration
+    request_type: EngineShowAccelerationRequest
+    result_type: EngineShowAccelerationResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local acceleration provider evidence and deterministic diagnostics
+  - operation_id: observability.show_acceleration_extended
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowAccelerationExtended
+    request_type: EngineShowAccelerationExtendedRequest
+    result_type: EngineShowAccelerationExtendedResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/show_api.hpp
+    implementation: observability/show_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local acceleration provider detail evidence and deterministic diagnostics
+  - operation_id: observability.show_metrics
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineShowMetrics
+    request_type: EngineShowMetricsRequest
+    result_type: EngineShowMetricsResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/metrics_api.hpp
+    implementation: observability/metrics_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: observability.explain_operation
+    scope_status: noncluster_required
+    closure_slice: NCE-1001
+    function_name: EngineExplainOperation
+    request_type: EngineExplainOperationRequest
+    result_type: EngineExplainOperationResult
+    family: observability
+    authority_domain: observability_inspect
+    header: observability/explain_api.hpp
+    implementation: observability/explain_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: management.inspect_config
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineInspectConfig
+    request_type: EngineInspectConfigRequest
+    result_type: EngineInspectConfigResult
+    family: management
+    authority_domain: management_control
+    header: management/config_api.hpp
+    implementation: management/config_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: management.set_config
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineSetConfig
+    request_type: EngineSetConfigRequest
+    result_type: EngineSetConfigResult
+    family: management
+    authority_domain: management_control
+    header: management/config_api.hpp
+    implementation: management/config_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: management.reset_config
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineResetConfig
+    request_type: EngineResetConfigRequest
+    result_type: EngineResetConfigResult
+    family: management
+    authority_domain: management_control
+    header: management/config_api.hpp
+    implementation: management/config_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: management.inspect_runtime
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineInspectManagementRuntime
+    request_type: EngineInspectManagementRuntimeRequest
+    result_type: EngineInspectManagementRuntimeResult
+    family: management
+    authority_domain: management_control
+    header: management/management_api.hpp
+    implementation: management/management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: management.control_runtime
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineControlManagementRuntime
+    request_type: EngineControlManagementRuntimeRequest
+    result_type: EngineControlManagementRuntimeResult
+    family: management
+    authority_domain: management_control
+    header: management/management_api.hpp
+    implementation: management/management_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: management.prepare_support_bundle
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EnginePrepareSupportBundle
+    request_type: EnginePrepareSupportBundleRequest
+    result_type: EnginePrepareSupportBundleResult
+    family: management
+    authority_domain: management_control
+    header: management/support_bundle_api.hpp
+    implementation: management/support_bundle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: lifecycle.create_database
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineCreateLifecycle
+    request_type: EngineCreateLifecycleRequest
+    result_type: EngineCreateLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: engine-owned lifecycle create with durable database and filespace identity bootstrap policy gates evidence and deterministic diagnostics
+  - operation_id: lifecycle.open_database
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineOpenLifecycle
+    request_type: EngineOpenLifecycleRequest
+    result_type: EngineOpenLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: engine-owned lifecycle open with read-write read-only restricted mode profile gates startup recovery evidence and metrics
+  - operation_id: lifecycle.attach_database
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineAttachLifecycle
+    request_type: EngineAttachLifecycleRequest
+    result_type: EngineAttachLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: attach requires security context and records deterministic lifecycle evidence
+  - operation_id: lifecycle.detach_database
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineDetachLifecycle
+    request_type: EngineDetachLifecycleRequest
+    result_type: EngineDetachLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: detach requires security context and records deterministic lifecycle evidence
+  - operation_id: lifecycle.enter_maintenance
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineEnterMaintenanceLifecycle
+    request_type: EngineEnterMaintenanceLifecycleRequest
+    result_type: EngineEnterMaintenanceLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: maintenance mode is read-only and fenced through explicit policy and security authority
+  - operation_id: lifecycle.exit_maintenance
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineExitMaintenanceLifecycle
+    request_type: EngineExitMaintenanceLifecycleRequest
+    result_type: EngineExitMaintenanceLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: exit maintenance verifies safe state before write-admission fence removal and records lifecycle diagnostics
+  - operation_id: lifecycle.enter_restricted_open
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineEnterRestrictedOpenLifecycle
+    request_type: EngineEnterRestrictedOpenLifecycleRequest
+    result_type: EngineEnterRestrictedOpenLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: restricted-open mode is read-only fenced and available only through explicit lifecycle authority
+  - operation_id: lifecycle.exit_restricted_open
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineExitRestrictedOpenLifecycle
+    request_type: EngineExitRestrictedOpenLifecycleRequest
+    result_type: EngineExitRestrictedOpenLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: exit restricted-open verifies recovery and policy state before returning to ordinary lifecycle admission
+  - operation_id: lifecycle.inspect_database
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineInspectLifecycle
+    request_type: EngineInspectLifecycleRequest
+    result_type: EngineInspectLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: read-only lifecycle diagnostic surface with engine-owned redaction evidence and refusal diagnostics
+  - operation_id: lifecycle.verify_database
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineVerifyLifecycle
+    request_type: EngineVerifyLifecycleRequest
+    result_type: EngineVerifyLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: lifecycle verification reports structural catalog security resource MGA and filespace evidence without repair side effects
+  - operation_id: lifecycle.repair_database
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineRepairLifecycle
+    request_type: EngineRepairLifecycleRequest
+    result_type: EngineRepairLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: engine.lifecycle owns repair-plan refusal diagnostics and bounded-repair evidence; no silent repair or unplanned storage mutation is authorized by this row
+  - operation_id: lifecycle.shutdown_database
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineShutdownLifecycle
+    request_type: EngineShutdownLifecycleRequest
+    result_type: EngineShutdownLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: shutdown marks clean shutdown and fences write admission before reporting success
+  - operation_id: lifecycle.shutdown_force
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineForceShutdownLifecycle
+    request_type: EngineForceShutdownLifecycleRequest
+    result_type: EngineForceShutdownLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: engine.lifecycle owns explicit-force refusal diagnostics target-scope isolation and termination evidence; cross-database termination is not authorized
+  - operation_id: lifecycle.shutdown_acknowledge
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineAcknowledgeShutdownLifecycle
+    request_type: EngineAcknowledgeShutdownLifecycleRequest
+    result_type: EngineAcknowledgeShutdownLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: engine.lifecycle owns target-scope shutdown acknowledgement receipt drain and timeout diagnostics
+  - operation_id: lifecycle.drop_database
+    scope_status: noncluster_required
+    closure_slice: DBLC-002
+    function_name: EngineDropLifecycle
+    request_type: EngineDropLifecycleRequest
+    result_type: EngineDropLifecycleResult
+    family: lifecycle
+    authority_domain: engine_lifecycle
+    header: lifecycle/engine_lifecycle_api.hpp
+    implementation: lifecycle/engine_lifecycle_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: engine.lifecycle owns drop-blocker refusal diagnostics ownership validation and quarantine or removal evidence; destructive removal requires policy-authorized safe state
+  - operation_id: cluster.inspect_state
+    scope_status: cluster_only_fail_closed
+    closure_slice: cluster_provider_boundary
+    function_name: EngineInspectClusterState
+    request_type: EngineInspectClusterStateRequest
+    result_type: EngineInspectClusterStateResult
+    family: cluster
+    authority_domain: private_cluster_authority
+    header: cluster/cluster_inspect_api.hpp
+    implementation: cluster/cluster_inspect_api.cpp
+    implementation_status: compile_gated_provider_boundary_fail_closed
+    default_diagnostic: SBLR.CLUSTER.SUPPORT_NOT_ENABLED
+    cluster_only: true
+    requires_security_context: false
+    requires_cluster_authority: true
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: compile-time provider boundary; public default and stub builds fail closed without private cluster execution
+  - operation_id: cluster.inspect_routing_plan
+    scope_status: cluster_only_fail_closed
+    closure_slice: cluster_provider_boundary
+    function_name: EngineInspectClusterRoutingPlan
+    request_type: EngineInspectClusterRoutingPlanRequest
+    result_type: EngineInspectClusterRoutingPlanResult
+    family: cluster
+    authority_domain: private_cluster_authority
+    header: cluster/cluster_inspect_api.hpp
+    implementation: cluster/cluster_inspect_api.cpp
+    implementation_status: compile_gated_provider_boundary_fail_closed
+    default_diagnostic: SBLR.CLUSTER.SUPPORT_NOT_ENABLED
+    cluster_only: true
+    requires_security_context: false
+    requires_cluster_authority: true
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: compile-time provider boundary; public default and stub builds fail closed without private cluster execution
+  - operation_id: cluster.control_cluster
+    scope_status: cluster_only_fail_closed
+    closure_slice: cluster_provider_boundary
+    function_name: EngineControlCluster
+    request_type: EngineControlClusterRequest
+    result_type: EngineControlClusterResult
+    family: cluster
+    authority_domain: private_cluster_authority
+    header: cluster/cluster_control_api.hpp
+    implementation: cluster/cluster_control_api.cpp
+    implementation_status: compile_gated_provider_boundary_fail_closed
+    default_diagnostic: SBLR.CLUSTER.SUPPORT_NOT_ENABLED
+    cluster_only: true
+    requires_security_context: false
+    requires_cluster_authority: true
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: compile-time provider boundary; public default and stub builds fail closed without private cluster execution
+  - operation_id: cluster.inspect_provider
+    scope_status: noncluster_required
+    closure_slice: cluster_provider_boundary
+    function_name: InspectClusterProvider
+    request_type: ClusterProviderRequest
+    result_type: EngineApiResult
+    family: cluster
+    authority_domain: engine_capability_inspect
+    header: cluster_provider/cluster_provider.hpp
+    implementation: cluster_provider/no_cluster_provider.cpp;cluster_provider_stub/stub_cluster_provider.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: compile-time cluster provider boundary probe; returns provider name type version and support status in both no-cluster and cluster-enabled builds without entering private cluster execution
+  - operation_id: cluster.prepare_remote_participant_insert
+    category: cluster
+    function_name: EnginePrepareRemoteParticipantInsert
+    request_type: EngineRemoteParticipantInsertRequest
+    result_type: EngineRemoteParticipantInsertResult
+    header: cluster/remote_participant_insert_api.hpp
+    implementation: cluster/remote_participant_insert_api.cpp
+    authority_domain: cluster_remote_participant_insert
+    closure_slice: PID-013
+    implementation_status: compile_gated_provider_boundary_fail_closed
+    requires_transaction_context: true
+    requires_security_context: true
+    accepts_names: false
+    sblr_mapping_required: true
+    cluster_only: true
+    notes:
+      - Validates remote participant insert request UUID route epoch participant identity idempotency retry policy and canonical rows.
+      - Does not execute remote writes; valid public cluster routes fail closed at the compile-time provider boundary unless an admitted provider is linked.
+      - Participant local mutation must eventually delegate to dml.insert_rows or an equivalent engine-owned participant wrapper.
+
+  - operation_id: cluster.validate_insert_route_fence
+    category: cluster
+    function_name: EngineValidateClusterInsertRouteFence
+    request_type: EngineClusterInsertRouteFenceRequest
+    result_type: EngineClusterInsertRouteFenceResult
+    header: cluster/cluster_insert_route_api.hpp
+    implementation: cluster/cluster_insert_route_api.cpp
+    authority_domain: cluster_insert_route_fence
+    closure_slice: PID-012
+    implementation_status: compile_gated_provider_boundary_fail_closed
+    requires_transaction_context: true
+    requires_security_context: true
+    accepts_names: false
+    sblr_mapping_required: true
+    cluster_only: true
+    notes:
+      - Validates route epoch owner node participant identity policy snapshot idempotency and finality-service inputs.
+      - Activation remains fail-closed at the compile-time provider boundary unless an admitted provider is linked.
+      - This operation never performs remote writes or route publication.
+
+  - operation_id: cluster.place_object
+    scope_status: cluster_only_fail_closed
+    closure_slice: cluster_provider_boundary
+    function_name: EnginePlaceClusterObject
+    request_type: EnginePlaceClusterObjectRequest
+    result_type: EnginePlaceClusterObjectResult
+    family: cluster
+    authority_domain: private_cluster_authority
+    header: cluster/placement_api.hpp
+    implementation: cluster/placement_api.cpp
+    implementation_status: compile_gated_provider_boundary_fail_closed
+    default_diagnostic: SBLR.CLUSTER.SUPPORT_NOT_ENABLED
+    cluster_only: true
+    requires_security_context: false
+    requires_cluster_authority: true
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: compile-time provider boundary; public default and stub builds fail closed without private cluster execution
+  - operation_id: cluster.inspect_replication
+    scope_status: cluster_only_fail_closed
+    closure_slice: cluster_provider_boundary
+    function_name: EngineInspectReplication
+    request_type: EngineInspectReplicationRequest
+    result_type: EngineInspectReplicationResult
+    family: cluster
+    authority_domain: private_cluster_authority
+    header: cluster/replication_api.hpp
+    implementation: cluster/replication_api.cpp
+    implementation_status: compile_gated_provider_boundary_fail_closed
+    default_diagnostic: SBLR.CLUSTER.SUPPORT_NOT_ENABLED
+    cluster_only: true
+    requires_security_context: false
+    requires_cluster_authority: true
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: compile-time provider boundary; public default and stub builds fail closed without private cluster execution
+  - operation_id: extensibility.register_udr_package
+    scope_status: noncluster_required
+    closure_slice: NCE-1301
+    function_name: EngineRegisterUdrPackage
+    request_type: EngineRegisterUdrPackageRequest
+    result_type: EngineRegisterUdrPackageResult
+    family: extensibility
+    authority_domain: extension_control
+    header: extensibility/udr_api.hpp
+    implementation: extensibility/udr_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster UDR registration requires manage_udr permission trusted C++ profile supported ABI dependency checks audit evidence metrics and authority-bypass refusal
+  - operation_id: extensibility.load_udr_package
+    scope_status: noncluster_required
+    closure_slice: NCE-1301
+    function_name: EngineLoadUdrPackage
+    request_type: EngineLoadUdrPackageRequest
+    result_type: EngineLoadUdrPackageResult
+    family: extensibility
+    authority_domain: extension_control
+    header: extensibility/udr_api.hpp
+    implementation: extensibility/udr_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: loads a registered UDR package only after manage_udr permission supported ABI dependency validation and authority-bypass refusal
+  - operation_id: extensibility.unload_udr_package
+    scope_status: noncluster_required
+    closure_slice: NCE-1301
+    function_name: EngineUnloadUdrPackage
+    request_type: EngineUnloadUdrPackageRequest
+    result_type: EngineUnloadUdrPackageResult
+    family: extensibility
+    authority_domain: extension_control
+    header: extensibility/udr_api.hpp
+    implementation: extensibility/udr_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: unloads a registered UDR package with manage_udr permission and durable lifecycle evidence
+  - operation_id: extensibility.inspect_udr_packages
+    scope_status: noncluster_required
+    closure_slice: NCE-1301
+    function_name: EngineInspectUdrPackages
+    request_type: EngineInspectUdrPackageRequest
+    result_type: EngineInspectUdrPackageResult
+    family: extensibility
+    authority_domain: extension_inspect
+    header: extensibility/udr_api.hpp
+    implementation: extensibility/udr_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: returns permission-filtered UDR lifecycle records and emits inspect/audit/metric evidence
+  - operation_id: extensibility.invoke_udr_package
+    scope_status: noncluster_required
+    closure_slice: EDEEP-040
+    function_name: EngineInvokeUdrPackage
+    request_type: EngineInvokeUdrPackageRequest
+    result_type: EngineInvokeUdrPackageResult
+    family: extensibility
+    authority_domain: extension_invocation
+    header: extensibility/udr_api.hpp
+    implementation: extensibility/udr_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: admits loaded trusted C++ UDR entrypoints only through SBLR_UDR_INVOKE authority with invoke_udr permission resource-budget checks audit evidence metrics and no MGA/SBLR/catalog/security/transaction bypass
+  - operation_id: extensibility.register_parser_package
+    scope_status: noncluster_required
+    closure_slice: NCE-1301
+    function_name: EngineRegisterParserPackage
+    request_type: EngineRegisterParserPackageRequest
+    result_type: EngineRegisterParserPackageResult
+    family: extensibility
+    authority_domain: extension_control
+    header: extensibility/parser_package_api.hpp
+    implementation: extensibility/parser_package_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: true
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: extensibility.compile_llvm_module
+    scope_status: noncluster_required
+    closure_slice: NCE-1302
+    function_name: EngineCompileLlvmModule
+    request_type: EngineCompileLlvmModuleRequest
+    result_type: EngineCompileLlvmModuleResult
+    family: extensibility
+    authority_domain: extension_control
+    header: extensibility/llvm_api.hpp
+    implementation: extensibility/llvm_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: extensibility.inspect_gpu_capability
+    scope_status: noncluster_required
+    closure_slice: NCE-1303
+    function_name: EngineInspectGpuCapability
+    request_type: EngineInspectGpuCapabilityRequest
+    result_type: EngineInspectGpuCapabilityResult
+    family: extensibility
+    authority_domain: extension_control
+    header: extensibility/gpu_api.hpp
+    implementation: extensibility/gpu_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: nosql.document_insert
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineDocumentInsert
+    request_type: EngineDocumentInsertRequest
+    result_type: EngineDocumentInsertResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/document_api.hpp
+    implementation: nosql/document_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: nosql.document_find
+    scope_status: noncluster_required
+    closure_slice: ODF-072
+    function_name: EngineDocumentFind
+    request_type: EngineDocumentFindRequest
+    result_type: EngineDocumentFindResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/document_api.hpp
+    implementation: nosql/document_api.cpp
+    implementation_status: physical_provider_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: path-qualified document find uses exact path indexes or wildcard shape proof with projected materialization and engine-owned MGA/security recheck evidence
+  - operation_id: nosql.document_update
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineDocumentUpdate
+    request_type: EngineDocumentUpdateRequest
+    result_type: EngineDocumentUpdateResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/document_api.hpp
+    implementation: nosql/document_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: nosql.document_delete
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineDocumentDelete
+    request_type: EngineDocumentDeleteRequest
+    result_type: EngineDocumentDeleteResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/document_api.hpp
+    implementation: nosql/document_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: nosql.graph_query
+    scope_status: noncluster_required
+    closure_slice: ODF-075
+    function_name: EngineGraphQuery
+    request_type: EngineGraphQueryRequest
+    result_type: EngineGraphQueryResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/graph_api.hpp
+    implementation: nosql/graph_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: physical graph requests require NoSQL graph provider proof plus vertex edge adjacency-page frontier batching visited/cycle bidirectional and fusion-seed proofs; empty legacy requests retain local descriptor scan compatibility
+  - operation_id: nosql.key_value_get
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineKeyValueGet
+    request_type: EngineKeyValueGetRequest
+    result_type: EngineKeyValueGetResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/key_value_api.hpp
+    implementation: nosql/key_value_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: nosql.key_value_put
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineKeyValuePut
+    request_type: EngineKeyValuePutRequest
+    result_type: EngineKeyValuePutResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/key_value_api.hpp
+    implementation: nosql/key_value_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: non-cluster behavior implemented with local MGA/event evidence and deterministic diagnostics
+  - operation_id: nosql.key_value_multiget
+    scope_status: noncluster_required
+    closure_slice: ODF-071
+    function_name: EngineKeyValueMultiGet
+    request_type: EngineKeyValueMultiGetRequest
+    result_type: EngineKeyValueMultiGetResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/key_value_api.hpp
+    implementation: nosql/key_value_api.cpp
+    implementation_status: physical_provider_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: KV MultiGet uses exact-key physical provider proof and keeps MGA finality in the engine transaction inventory
+  - operation_id: nosql.key_value_pipeline
+    scope_status: noncluster_required
+    closure_slice: ODF-071
+    function_name: EngineKeyValuePipeline
+    request_type: EngineKeyValuePipelineRequest
+    result_type: EngineKeyValuePipelineResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/key_value_api.hpp
+    implementation: nosql/key_value_api.cpp
+    implementation_status: physical_provider_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: KV pipeline uses batch admission and exact-key provider proof without client-owned transaction finality
+  - operation_id: nosql.key_value_atomic_program
+    scope_status: noncluster_required
+    closure_slice: ODF-071
+    function_name: EngineKeyValueAtomicProgram
+    request_type: EngineKeyValueAtomicProgramRequest
+    result_type: EngineKeyValueAtomicProgramResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/key_value_api.hpp
+    implementation: nosql/key_value_api.cpp
+    implementation_status: physical_provider_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: KV deterministic atomic read-compute-write programs execute under engine-owned MGA transaction authority
+  - operation_id: nosql.time_series_append
+    scope_status: noncluster_required
+    closure_slice: ODF-076
+    function_name: EngineTimeSeriesAppend
+    request_type: EngineTimeSeriesAppendRequest
+    result_type: EngineTimeSeriesAppendResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/time_series_api.hpp
+    implementation: nosql/time_series_api.cpp
+    implementation_status: physical_provider_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: physical time-series appends require NoSQL provider proof plus time+meta bucket columnar page summary rollup and late-arrival delta/merge proofs; empty legacy requests retain persisted append compatibility
+  - operation_id: nosql.family_maintenance_plan
+    scope_status: noncluster_required
+    closure_slice: ODF-077
+    function_name: EnginePlanNoSqlFamilyMaintenance
+    request_type: EnginePlanNoSqlFamilyMaintenanceRequest
+    result_type: EnginePlanNoSqlFamilyMaintenanceResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/nosql_family_maintenance_api.hpp
+    implementation: nosql/nosql_family_maintenance_api.cpp
+    implementation_status: physical_provider_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: NoSQL family maintenance planning/execution emits family-specific TTL compaction merge and generation-retirement actions through the dynamic cleanup debt scheduler using authoritative MGA cleanup horizon evidence
+  - operation_id: nosql.statistics_advisor_plan
+    scope_status: noncluster_required
+    closure_slice: ODF-078
+    function_name: EnginePlanNoSqlStatisticsAdvisor
+    request_type: EnginePlanNoSqlStatisticsAdvisorRequest
+    result_type: EnginePlanNoSqlStatisticsAdvisorResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/nosql_statistics_api.hpp
+    implementation: nosql/nosql_statistics_api.cpp
+    implementation_status: physical_provider_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: NoSQL family statistics/advisor planning emits physical family statistics, creates invisible adaptive index candidates, and promotes only with fresh authoritative stats plus security and MGA recheck proof
+  - operation_id: nosql.backpressure_debt_plan
+    scope_status: noncluster_required
+    closure_slice: ODF-079
+    function_name: EnginePlanNoSqlBackpressureDebt
+    request_type: EnginePlanNoSqlBackpressureDebtRequest
+    result_type: EnginePlanNoSqlBackpressureDebtResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/nosql_backpressure_debt_api.hpp
+    implementation: nosql/nosql_backpressure_debt_api.cpp
+    implementation_status: physical_provider_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: true
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: NoSQL backpressure/debt planning records family-specific refresh merge generation-build payload slowdown strict-bulk redirect and result-suppression debt with explicit stale over-budget unsafe suppression diagnostics and engine-owned MGA/security evidence
+  - operation_id: nosql.vector_search
+    scope_status: noncluster_required
+    closure_slice: ODF-074
+    function_name: EngineVectorSearch
+    request_type: EngineVectorSearchRequest
+    result_type: EngineVectorSearchResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/vector_api.hpp
+    implementation: nosql/vector_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: physical vector requests require NoSQL provider proof plus exact HNSW IVF PQ DiskANN-like generation filtered-planner hybrid dense+sparse and exact-rerank proofs; empty legacy requests retain exact fallback compatibility
+  - operation_id: nosql.search_query
+    scope_status: noncluster_required
+    closure_slice: ODF-073
+    function_name: EngineSearchQuery
+    request_type: EngineSearchQueryRequest
+    result_type: EngineSearchQueryResult
+    family: nosql
+    authority_domain: non_sql_surface
+    header: nosql/search_api.hpp
+    implementation: nosql/search_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: physical search requests require NoSQL provider proof plus mutable-buffer sealed-segment BM25 sparse-vector MaxScore-WAND and Bloom-pruning proofs; empty legacy requests retain descriptor fallback compatibility
+  - operation_id: query.cast_value
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCastValue
+    request_type: EngineCastValueRequest
+    result_type: EngineCastValueResult
+    family: query
+    authority_domain: datatype_descriptor
+    header: query/expression_api.hpp
+    implementation: query/expression_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: descriptor-owned cast operation; parser strings are not authority
+  - operation_id: query.extract_value
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineExtractValue
+    request_type: EngineExtractValueRequest
+    result_type: EngineExtractValueResult
+    family: query
+    authority_domain: datatype_descriptor
+    header: query/expression_api.hpp
+    implementation: query/expression_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: descriptor-owned extract operation with deterministic unsupported field diagnostics
+  - operation_id: query.set_operation
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineSetOperation
+    request_type: EngineSetOperationRequest
+    result_type: EngineSetOperationResult
+    family: query
+    authority_domain: datatype_descriptor
+    header: query/expression_api.hpp
+    implementation: query/expression_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: datatype-level set collection operation support
+  - operation_id: query.apply_numeric_operation
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineApplyNumericOperation
+    request_type: EngineApplyNumericOperationRequest
+    result_type: EngineApplyNumericOperationResult
+    family: query
+    authority_domain: datatype_descriptor
+    header: query/expression_api.hpp
+    implementation: query/expression_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: engine-owned decimal decimal-float and real128 numeric operation bridge over mandatory numeric libraries
+  - operation_id: query.canonicalize_document_value
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineCanonicalizeDocumentValue
+    request_type: EngineCanonicalizeDocumentValueRequest
+    result_type: EngineCanonicalizeDocumentValueResult
+    family: query
+    authority_domain: datatype_descriptor
+    header: query/expression_api.hpp
+    implementation: query/expression_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: parser-free JSON XML document and hstore-domain canonicalization with engine diagnostics
+  - operation_id: query.evaluate_advanced_datatype_family
+    scope_status: noncluster_required
+    closure_slice: NCE-1101
+    function_name: EngineEvaluateAdvancedDatatypeFamily
+    request_type: EngineEvaluateAdvancedDatatypeFamilyRequest
+    result_type: EngineEvaluateAdvancedDatatypeFamilyResult
+    family: query
+    authority_domain: datatype_descriptor
+    header: query/expression_api.hpp
+    implementation: query/expression_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: false
+    notes: engine-owned spatial vector search graph and time-series operation/index admission surface
+  - operation_id: query.validate_domain_value
+    scope_status: noncluster_required
+    closure_slice: NCE-0403
+    function_name: EngineValidateDomainValue
+    request_type: EngineValidateDomainValueRequest
+    result_type: EngineValidateDomainValueResult
+    family: query
+    authority_domain: domain_descriptor
+    header: query/expression_api.hpp
+    implementation: query/expression_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: engine-owned domain validation for SBLR/executor and embedded API paths
+  - operation_id: query.invoke_domain_method
+    scope_status: noncluster_required
+    closure_slice: NCE-0403
+    function_name: EngineInvokeDomainMethod
+    request_type: EngineInvokeDomainMethodRequest
+    result_type: EngineInvokeDomainMethodResult
+    family: query
+    authority_domain: domain_descriptor
+    header: query/expression_api.hpp
+    implementation: query/expression_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: engine-owned domain method dispatch for SBLR/internal built-in methods; UDR-backed methods fail closed until UDR bridge support exists
+
+  # SEARCH_KEY: EVN_IMPL_003_ENGINE_NOTIFICATION_API_REGISTRY
+  - operation_id: event.channel.create
+    scope_status: noncluster_required
+    closure_slice: EVN-IMPL-003
+    function_name: EngineCreateEventChannel
+    request_type: EngineCreateEventChannelRequest
+    result_type: EngineCreateEventChannelResult
+    family: event.notification
+    authority_domain: event_notification_policy
+    header: notification/notification_api.hpp
+    implementation: notification/notification_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: local-node event channel create with UUID authority and baseline queue policy
+  - operation_id: event.channel.alter
+    scope_status: noncluster_required
+    closure_slice: EVN-IMPL-003
+    function_name: EngineAlterEventChannel
+    request_type: EngineAlterEventChannelRequest
+    result_type: EngineAlterEventChannelResult
+    family: event.notification
+    authority_domain: event_notification_policy
+    header: notification/notification_api.hpp
+    implementation: notification/notification_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: local-node event channel alteration with policy/catalog evidence
+  - operation_id: event.channel.drop
+    scope_status: noncluster_required
+    closure_slice: EVN-IMPL-003
+    function_name: EngineDropEventChannel
+    request_type: EngineDropEventChannelRequest
+    result_type: EngineDropEventChannelResult
+    family: event.notification
+    authority_domain: event_notification_policy
+    header: notification/notification_api.hpp
+    implementation: notification/notification_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: local-node event channel retirement
+  - operation_id: event.channel.listen
+    scope_status: noncluster_required
+    closure_slice: EVN-IMPL-003
+    function_name: EngineListenNotification
+    request_type: EngineListenNotificationRequest
+    result_type: EngineListenNotificationResult
+    family: event.notification
+    authority_domain: event_notification_policy
+    header: notification/notification_api.hpp
+    implementation: notification/notification_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: false
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: local-node parser/client event subscription admission
+  - operation_id: event.channel.unlisten
+    scope_status: noncluster_required
+    closure_slice: EVN-IMPL-003
+    function_name: EngineUnlistenNotification
+    request_type: EngineUnlistenNotificationRequest
+    result_type: EngineUnlistenNotificationResult
+    family: event.notification
+    authority_domain: event_notification_policy
+    header: notification/notification_api.hpp
+    implementation: notification/notification_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: false
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: local-node event subscription removal
+  - operation_id: event.channel.notify
+    scope_status: noncluster_required
+    closure_slice: EVN-IMPL-003
+    function_name: EngineNotifyEventChannel
+    request_type: EngineNotifyEventChannelRequest
+    result_type: EngineNotifyEventChannelResult
+    family: event.notification
+    authority_domain: event_notification_policy
+    header: notification/notification_api.hpp
+    implementation: notification/notification_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: true
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: local-node pending event publication with MGA finality filtering
+  - operation_id: event.subscription.list
+    scope_status: noncluster_required
+    closure_slice: EVN-IMPL-003
+    function_name: EngineListEventSubscriptions
+    request_type: EngineListEventSubscriptionsRequest
+    result_type: EngineListEventSubscriptionsResult
+    family: event.notification
+    authority_domain: event_notification_policy
+    header: notification/notification_api.hpp
+    implementation: notification/notification_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: false
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: visible local event subscription inspection
+  - operation_id: event.delivery.poll
+    scope_status: noncluster_required
+    closure_slice: EVN-IMPL-003
+    function_name: EnginePollEventDelivery
+    request_type: EnginePollEventDeliveryRequest
+    result_type: EnginePollEventDeliveryResult
+    family: event.notification
+    authority_domain: event_notification_policy
+    header: notification/notification_api.hpp
+    implementation: notification/notification_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: false
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: committed-visible local event delivery polling for sb_server
+  - operation_id: event.delivery.ack
+    scope_status: noncluster_required
+    closure_slice: EVN-IMPL-003
+    function_name: EngineAcknowledgeEventDelivery
+    request_type: EngineAcknowledgeEventDeliveryRequest
+    result_type: EngineAcknowledgeEventDeliveryResult
+    family: event.notification
+    authority_domain: event_notification_policy
+    header: notification/notification_api.hpp
+    implementation: notification/notification_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: false
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: local delivery acknowledgement evidence
+  - operation_id: session.notification.unlisten_all
+    scope_status: noncluster_required
+    closure_slice: EVN-IMPL-003
+    function_name: EngineUnlistenSessionNotifications
+    request_type: EngineUnlistenSessionNotificationsRequest
+    result_type: EngineUnlistenSessionNotificationsResult
+    family: event.notification
+    authority_domain: event_notification_policy
+    header: notification/notification_api.hpp
+    implementation: notification/notification_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    accepts_names: false
+    requires_transaction_context: false
+    sblr_mapping_required: true
+    requires_cluster_authority: false
+    requires_security_context: true
+    notes: current-session event subscription cleanup

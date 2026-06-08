@@ -1,0 +1,99 @@
+# Type System Overview
+
+This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+
+Generation task: `data_types_type_system_overview`
+
+
+## Purpose
+
+SBsql values are descriptor-bound. A textual type name, literal, cast, parameter, or donor-compatible spelling is resolved into a descriptor that controls storage representation, comparison, null behavior, collation, timezone, hashing, indexing, and result rendering.
+
+The type system separates canonical carriers from domains. A carrier says how a value can be stored and operated on. A domain layers null policy, constraints, defaults, masking, donor compatibility, and element addressing on top of that carrier.
+
+The catalog tables `sys.catalog.type_descriptor`, `sys.catalog.domain_descriptor`, and `sys.catalog.type_capability` are the core metadata surfaces for this model.
+
+## Supported Type Families
+
+The public type contract is organized by descriptor family. A descriptor family is the engine-visible carrier class; SQL spellings, donor aliases, and domains bind to one of these families plus a canonical descriptor payload. Exact on-page encoding can change only through descriptor and file-format versioning. SQL-visible comparison, cast, null, collation, timezone, and indexing behavior must remain stable for a descriptor version.
+
+| Descriptor Family | Canonical SBsql Names | Primary Use | Fixed Payload Size | Variable or Policy Bounds |
+| --- | --- | --- | --- | --- |
+| `null_value` | `null` | Unknown or absent value marker | none | Carries no value; target descriptor is inferred from context or must be stated with `cast`. |
+| `boolean` | `boolean`, `bool` | Three-valued logic | 1 byte payload | Values are `true`, `false`, and SQL `null`. |
+| `integer` | `int16`, `smallint`, `int32`, `int`, `integer`, `int64`, `bigint`, `int128` | Exact signed integers | 2, 4, 8, or 16 bytes | Range is fixed by width. Donor profiles may hide widths they do not expose. |
+| `unsigned_integer` | `uint8`, `uint16`, `uint32`, `uint64` | Exact unsigned integers and donor unsigned profiles | 1, 2, 4, or 8 bytes | Not all unsigned names are portable to every donor profile. |
+| `decimal` | `decimal(p,s)`, `numeric(p,s)`, `decfloat(16)`, `decfloat(34)`, `money`, `currency` | Exact base-10 and declared money-like values | descriptor-dependent | Precision, scale, rounding, overflow, and display are descriptor-owned. |
+| `real` | `real`, `float4`, `double precision`, `float8`, `float(p)` | Approximate numeric values | 4 or 8 bytes | IEEE-style finite, infinity, and NaN handling is policy/profile controlled. |
+| `text` | `char(n)`, `character(n)`, `varchar(n)`, `character varying(n)`, `text`, `clob`, `nchar(n)`, `nvarchar(n)`, `nclob` | Character data | descriptor header plus encoded bytes | Character count, byte count, charset, collation, and overflow policy are descriptor-owned. |
+| `binary` | `binary(n)`, `varbinary(n)`, `bytea`, `blob`, `image` | Byte data and large binary objects | descriptor header plus bytes | Length is byte-counted; large values may use overflow storage when admitted. |
+| `temporal` | `date`, `time`, `time with time zone`, `timestamp`, `timestamp with time zone`, `interval` | Calendar, clock, instant, and duration values | 4, 8, 12, or 16 bytes depending on descriptor | Timezone, precision, calendar, and donor rendering are descriptor-owned. |
+| `uuid` | `uuid`, `uuid '<text>'` | Object identity and application UUIDs | 16 bytes | Text rendering is canonical lower-case UUID unless a donor profile explicitly renders otherwise. |
+| `json_document` | `json`, `jsonb`, `document` | JSON/document values and path-indexable payloads | descriptor header plus document bytes | Text-preserving or normalized binary representation is selected by descriptor. |
+| `vector` | `vector<T,n>`, `embedding<T,n>` | Fixed-dimension numerical vectors | `n * element_size` plus descriptor metadata | Element profile, dimension, metric, and exact recheck requirements are descriptor-owned. |
+| `graph` | `graph`, `node`, `edge`, `path` | Graph records and traversal payloads | descriptor-dependent | Node identity, edge identity, path ordering, and traversal result shape are descriptor-owned. |
+| `domain` | user-defined domain names | Named constrained type overlay | underlying carrier size | Domain constraints, defaults, masking, donor aliasing, and null policy are catalog-owned. |
+
+## Canonical Names And Donor Aliases
+
+The canonical descriptor name is what the binder and SBLR envelope carry. Donor spellings are accepted only through that donor parser or profile and are lowered to the same descriptor model without making the donor spelling authoritative.
+
+| Donor or Profile | Examples of Accepted Spellings | Binding Rule |
+| --- | --- | --- |
+| SBsql | `int64`, `decimal(18,2)`, `varchar(200)`, `timestamp with time zone`, `uuid`, `jsonb`, `vector<float32,1536>` | Binds directly to canonical ScratchBird descriptors. |
+| Firebird | `SMALLINT`, `INTEGER`, `BIGINT`, `INT128`, `NUMERIC`, `DECIMAL`, `DECFLOAT(16)`, `DECFLOAT(34)`, `BLOB SUB_TYPE TEXT`, `BLOB SUB_TYPE BINARY`, `DATE`, `TIME`, `TIMESTAMP`, `BOOLEAN`, `UUID` | Binds through the Firebird compatibility profile, preserving Firebird display, collation, null, and numeric rules where those rules differ. |
+| PostgreSQL | `smallint`, `integer`, `bigint`, `numeric`, `real`, `double precision`, `text`, `varchar`, `bytea`, `uuid`, `json`, `jsonb`, array spellings, range spellings where admitted | Binds through the PostgreSQL profile, including PostgreSQL operator-class, collation, array, and JSON behavior where surfaced. |
+| MySQL and MariaDB | signed and unsigned integer widths, `decimal`, `float`, `double`, `char`, `varchar`, `text`, `blob`, `date`, `time`, `datetime`, `timestamp`, `json` | Binds through the MySQL-family profile, including display width compatibility, unsigned behavior, charset defaults, and JSON treatment where surfaced. |
+| SQLite | declared type names with SQLite affinity behavior | Preserves SQLite-style affinity and manifest-typing behavior at the parser/profile boundary while storing values in canonical descriptors. |
+
+## Range And Limit Rules
+
+The fixed-width type ranges are part of the language contract. Variable-width limits are not a single global number because they are governed by row-page size, overflow/TOAST policy, character set, collation keys, stream limits, and database policy.
+
+When a manual table says "policy bounded", the binder must still have a concrete descriptor bound before execution. The engine may refuse a value before execution, during row construction, or during overflow allocation if the descriptor, row, transaction, or storage policy cannot admit it.
+
+## Syntax Productions
+
+```ebnf
+literal                 ::= string_literal | numeric_literal | boolean_literal | null_literal | uuid_ref ;
+```
+
+```ebnf
+expression              ::= expression_atom (binary_operator expression_atom)* ;
+```
+
+## Binding And Execution
+
+- The parser recognizes the syntax and builds a statement or expression tree.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- SBLR admission maps the bound request to an operation family and result shape.
+- The engine rechecks authority before durable state changes or result delivery.
+
+## Related Surface Rows
+
+| Surface | Kind | Family | Lowering | Result Shape |
+| --- | --- | --- | --- | --- |
+| currency | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| FULL | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| POSITION(substringINtext) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| current_server | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| st_x | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| lock_timeout_default | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| bit_count | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| operation_evidence_required | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| USING | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| chr(integer) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| element(multiset<T>) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| st_makepoint | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| REAL | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| sb.special_form.coalesce | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| dearmor | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| regexp_like(string,pattern[,flags]) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| IMAGE | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| CURSOR | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| jsonb_object_keys | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| client_min_messages | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| json_array_elements | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| sb.scalar.nullif | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| cos | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| boolean_cast_from_text | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |

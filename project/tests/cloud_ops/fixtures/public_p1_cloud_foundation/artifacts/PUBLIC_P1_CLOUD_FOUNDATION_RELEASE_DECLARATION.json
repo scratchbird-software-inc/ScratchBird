@@ -1,0 +1,124 @@
+{
+  "schema": "scratchbird.public_p1_cloud_foundation_release_declaration.v1",
+  "search_key": "PUBLIC_P1_CLOUD_FOUNDATION_RELEASE_DECLARATION",
+  "generated_at_utc": "2026-05-10T22:08:16Z",
+  "execution_plan": "project/tests/cloud_ops/fixtures/public_p1_cloud_foundation/public_proof",
+  "source_inventory": {
+    "path": "public_audit_summary",
+    "sha256": "3a8add25cf66d434a07cbde6858ca2a425004f88899e6fc21a2f62a75da8cb44"
+  },
+  "registry": {
+    "json_path": "public_audit_summary",
+    "json_sha256": "b3b36e2c5a1a4fdd47a6d5e8dcb7e2df37aa5fb937be77eb297deab3d9619895",
+    "csv_path": "public_audit_summary",
+    "csv_sha256": "d3ed179a9e38313a2ee3f33f74a38d4fd6d55bd68ee537035cb4d0235ab2f7cf"
+  },
+  "gap_id_authority": {
+    "path": "public_audit_summary",
+    "sha256": "84cc743b0cef75a52c48986d8d4292ad131e0ce749b9ee12cf94e08360f9df1a"
+  },
+  "target_evidence_manifest": {
+    "path": "project/tests/cloud_ops/fixtures/public_p1_cloud_foundation/public_proof/artifacts/TARGET_EVIDENCE_MANIFEST.csv",
+    "sha256": "37e2d7816decd006b223689fbf7d66f138d37877936f07bdc35eec990af0c8df"
+  },
+  "conformance_manifest": {
+    "path": "public_contract_snapshot",
+    "sha256": "8aa2f6f01d17af871e9df06b03600016fed97a4be3ea646a56df3b0a1faa23e7"
+  },
+  "release_gate_records": {
+    "path": "public_contract_snapshot",
+    "sha256": "ae126aecaec7df82967e9a9dba83345c0e15cc6e004b34015a57b3bf4f4271d5"
+  },
+  "public_open_entries_before_closure": 29,
+  "public_open_entries_after_closure": 24,
+  "status_counts_after_closure": {
+    "implemented_in_full": 177,
+    "partial": 24,
+    "private": 20
+  },
+  "target_rows": [
+    {
+      "gap_id": "SB-PUBLIC-GAP-0008",
+      "registry_id": "SB-SPEC-IMPLEMENTATION-0047",
+      "title": "Protected Versioned Material Catalog Family",
+      "status": "implemented_in_full",
+      "ctest_labels": ["protected_material_catalog_gate"],
+      "evidence_artifacts": ["artifacts/PROTECTED_VERSIONED_MATERIAL_CATALOG_MODEL.md", "project/tests/cloud_ops/fixtures/public_p1_cloud_foundation/public_proof/FINAL_AUDIT.md"],
+      "implementation_refs": ["project/src/core/catalog", "project/src/engine/internal_api/security", "project/tests"]
+    },
+    {
+      "gap_id": "SB-PUBLIC-GAP-0168",
+      "registry_id": "SB-SPEC-IMPLEMENTATION-0170",
+      "title": "Cloud Support Architecture and Provider Capability Registry",
+      "status": "implemented_in_full",
+      "ctest_labels": ["cloud_provider_capability_registry_gate"],
+      "evidence_artifacts": ["artifacts/CLOUD_PROVIDER_CAPABILITY_REGISTRY_MODEL.md", "project/tests/cloud_ops/fixtures/public_p1_cloud_foundation/public_proof/FINAL_AUDIT.md"],
+      "implementation_refs": ["project/src/engine/internal_api/cloud", "project/src/engine/internal_api/management", "project/tests"]
+    },
+    {
+      "gap_id": "SB-PUBLIC-GAP-0169",
+      "registry_id": "SB-SPEC-IMPLEMENTATION-0171",
+      "title": "Cloud Identity, KMS, and Secretless Authentication",
+      "status": "implemented_in_full",
+      "ctest_labels": ["cloud_identity_kms_secretless_gate"],
+      "evidence_artifacts": ["artifacts/CLOUD_IDENTITY_KMS_SECRETLESS_MODEL.md", "project/tests/cloud_ops/fixtures/public_p1_cloud_foundation/public_proof/FINAL_AUDIT.md"],
+      "implementation_refs": ["project/src/engine/internal_api/security", "project/src/engine/internal_api/cloud", "project/tests"]
+    },
+    {
+      "gap_id": "SB-PUBLIC-GAP-0170",
+      "registry_id": "SB-SPEC-IMPLEMENTATION-0172",
+      "title": "Kubernetes Operator CRDs and Lifecycle Automation",
+      "status": "implemented_in_full",
+      "ctest_labels": ["kubernetes_operator_lifecycle_gate"],
+      "evidence_artifacts": ["artifacts/KUBERNETES_OPERATOR_LIFECYCLE_MODEL.md", "project/tests/cloud_ops/fixtures/public_p1_cloud_foundation/public_proof/FINAL_AUDIT.md"],
+      "implementation_refs": ["project/cloud/kubernetes", "project/tests/cloud_ops"]
+    },
+    {
+      "gap_id": "SB-PUBLIC-GAP-0173",
+      "registry_id": "SB-SPEC-IMPLEMENTATION-0176",
+      "title": "Edge Cache and CDN Integration and Invalidation",
+      "status": "implemented_in_full",
+      "ctest_labels": ["edge_cache_cdn_invalidation_gate"],
+      "evidence_artifacts": ["artifacts/EDGE_CACHE_CDN_INVALIDATION_MODEL.md", "project/tests/cloud_ops/fixtures/public_p1_cloud_foundation/public_proof/FINAL_AUDIT.md"],
+      "implementation_refs": ["project/src/engine/internal_api/cloud", "project/src/core/events", "project/tests/cloud_ops"]
+    }
+  ],
+  "validation_commands": [
+    "cmake -S project -B build -DSB_BUILD_PUBLIC_SPEC_ZERO_GREY_GATE=ON -DSB_BUILD_PUBLIC_P1_CLOUD_OPS_TESTS=ON",
+    "cmake --build build --target protected_material_catalog_conformance cloud_provider_capability_registry_conformance cloud_identity_kms_secretless_conformance edge_cache_cdn_invalidation_conformance_runtime",
+    "ctest --test-dir build --output-on-failure -R 'protected_material_catalog_gate|protected_material_catalog_conformance|cloud_provider_capability_registry_gate|cloud_provider_capability_registry_conformance|cloud_identity_kms_secretless_gate|cloud_identity_kms_secretless_conformance|kubernetes_operator_lifecycle_gate|kubernetes_operator_lifecycle_runtime_gate|edge_cache_cdn_invalidation_gate|edge_cache_cdn_invalidation_conformance_runtime|public_p1_cloud_management_sblr_abi_gate|public_p1_cloud_operational_hardening_gate|public_p1_cloud_foundation_target_evidence_manifest_gate|public_p1_cloud_foundation_target_zero_grey_gate|public_p1_cloud_foundation_hardening_gate|public_p1_cloud_foundation_full_route_gate|public_spec_gap_registry_sync_gate|public_spec_gap_id_authority_gate|public_spec_closed_execution_plan_regression_gate'",
+    "python3 ${PUBLIC_TOOL_ROOT}/skills/scratchbird-mga-transaction-authority/scripts/mga_policy_gate.py --repo . project/src/engine/internal_api/cloud project/src/engine/internal_api/security/protected_material_api.cpp project/tests/cloud_ops project/tests/cloud_ops/fixtures/public_p1_cloud_foundation/public_proof public_contract_snapshot public_contract_snapshot"
+  ],
+  "validation_result": "passed",
+  "remaining_public_open_rows": [
+    "SB-PUBLIC-GAP-0001",
+    "SB-PUBLIC-GAP-0159",
+    "SB-PUBLIC-GAP-0003",
+    "SB-PUBLIC-GAP-0004",
+    "SB-PUBLIC-GAP-0005",
+    "SB-PUBLIC-GAP-0006",
+    "SB-PUBLIC-GAP-0007",
+    "SB-PUBLIC-GAP-0160",
+    "SB-PUBLIC-GAP-0161",
+    "SB-PUBLIC-GAP-0162",
+    "SB-PUBLIC-GAP-0020",
+    "SB-PUBLIC-GAP-0163",
+    "SB-PUBLIC-GAP-0164",
+    "SB-PUBLIC-GAP-0165",
+    "SB-PUBLIC-GAP-0166",
+    "SB-PUBLIC-GAP-0167",
+    "SB-PUBLIC-GAP-0171",
+    "SB-PUBLIC-GAP-0172",
+    "SB-PUBLIC-GAP-0174",
+    "SB-PUBLIC-GAP-0175",
+    "SB-PUBLIC-GAP-0176",
+    "SB-PUBLIC-GAP-0177",
+    "SB-PUBLIC-GAP-0178",
+    "SB-PUBLIC-GAP-0179"
+  ],
+  "authority_notes": [
+    "MGA remains transaction and recovery authority.",
+    "Cloud, Kubernetes, KMS, CDN, parser, and provider state are evidence or external-effect state only.",
+    "Public single-node Kubernetes assets reject private cluster-only fields."
+  ]
+}

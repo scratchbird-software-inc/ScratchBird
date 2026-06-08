@@ -1,0 +1,40 @@
+schema_version: 1
+search_key: SB_REFERENCE_DONOR_CATALOG_SEED_MARIADB
+seed_manifest_status: draft_requires_exact_row_extraction
+donor_family: mariadb
+donor_profile_title: MariaDB
+donor_exact_version: local_source_snapshot_pending_exact_version_label
+new_database_recipe_id: default_new_database_profile_pending_exact_recipe
+copied_private_reference:
+  catalog_summary: project/tests/donor_regression/donor_emulation_source_summaries/mariadb/50_catalog.md
+  builtins_summary: project/tests/donor_regression/donor_emulation_source_summaries/mariadb/60_builtins.md
+  plugins_special_types_summary: project/tests/donor_regression/donor_emulation_source_summaries/mariadb/70_plugins_and_special_types.md
+catalog_object_inventory: project/tests/donor_regression/donor_catalog_seeds/mariadb/mariadb_catalog_inventory.csv
+builtin_behavior_inventory: project/tests/donor_regression/donor_catalog_seeds/mariadb/mariadb_builtin_inventory.csv
+catalog_object_mapping: project/tests/donor_regression/donor_catalog_seeds/mariadb/mariadb_catalog_object_mapping.csv
+builtin_mapping_status: project/tests/donor_regression/donor_catalog_seeds/mariadb/mariadb_builtin_mapping_status.md
+exact_rowset_extraction_status: project/tests/donor_regression/donor_catalog_seeds/mariadb/mariadb_exact_rowset_extraction_status.md
+required_completion_before_implementation_ready:
+  - exact_new_database_creation_recipe
+  - exact_catalog_columns_for_every_catalog_object
+  - exact_default_rowsets_for_every_seeded_catalog_object
+  - exact_builtin_function_operator_routine_mapping_rows
+  - sql_mode_behavior_matrix
+  - plugin_surface_enablement_matrix
+  - generated_value_redaction_and_emulation_rules
+  - raw_secret_redaction_rules
+  - manifest_hash_and_rowset_hashes
+  - visibility_rules
+  - mutation_rules
+  - scratchbird_uuid_backed_mapping_rows
+  - diagnostics_and_conformance_gates
+invalid_state_behavior:
+  missing_exact_rows: DONOR.MARIADB.CATALOG.EXACT_ROWSET_MISSING
+  missing_columns: DONOR.MARIADB.CATALOG.COLUMN_MISSING
+  raw_secret: DONOR.MARIADB.CATALOG.RAW_SECRET_FORBIDDEN
+  unclassified_generated_value: DONOR.MARIADB.CATALOG.RUNTIME_VALUE_UNCLASSIFIED
+  external_reference: DONOR.MARIADB.CATALOG.EXTERNAL_REFERENCE_FORBIDDEN
+notes:
+  - This draft manifest is a private extraction target, not a completed seed manifest.
+  - MariaDB must not be treated as identical to MySQL because plugin datatypes, SQL modes, wsrep, storage engines, and system tables diverge.
+  - Donor-visible object names must map to ScratchBird UUID-backed catalog objects through the resolver/comment model.

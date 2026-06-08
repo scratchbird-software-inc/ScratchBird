@@ -1,0 +1,31 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "claim_id": "DPC-072-DEFERRED-HOT-UPDATE",
+  "evidence_kind": "benchmark-json",
+  "result_digest_source": {
+    "claim_id": "DPC-072-DEFERRED-HOT-UPDATE",
+    "workloads": [
+      "load",
+      "update",
+      "delete",
+      "hot-row"
+    ],
+    "disabled_equality": "passed",
+    "foreground_index_write_proxy": "reduced",
+    "row_count": "stable",
+    "overlay_merge_validation": "passed"
+  },
+  "result_hash": "e183b184411990521062d3a87bff798d08b6ec3c9ff3d8357958e151cbe2b6db",
+  "retained_logs": {
+    "json_summary": "retained",
+    "csv_results": "retained",
+    "disabled_baseline": "retained"
+  },
+  "authority": {
+    "engine_mga_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_finality_authority": false
+  }
+}

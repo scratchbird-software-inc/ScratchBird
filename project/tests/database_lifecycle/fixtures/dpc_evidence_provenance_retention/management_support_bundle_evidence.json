@@ -1,0 +1,31 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "claim_id": "DPC-072-MANAGEMENT-SUPPORT",
+  "evidence_kind": "support-bundle-json",
+  "result_digest_source": {
+    "claim_id": "DPC-072-MANAGEMENT-SUPPORT",
+    "management_json": "retained",
+    "show_management": "retained",
+    "redaction": "complete",
+    "message_vectors": "retained"
+  },
+  "result_hash": "9f1a8f4a56f46cacc1068a74e9cfaf6500a76f9548a946a4f202dc4aa1d8a06c",
+  "support_bundle": {
+    "retention_policy_ref": "dpc-retain-compact-evidence-v1",
+    "redaction_profile_ref": "dpc-support-redaction-v1",
+    "redaction": {
+      "forbidden_fields_absent": true,
+      "physical_path_redacted": true,
+      "unsafe_payload_redacted": true
+    },
+    "config_metadata_retained": true,
+    "message_vectors_retained": true
+  },
+  "authority": {
+    "engine_mga_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_finality_authority": false
+  }
+}

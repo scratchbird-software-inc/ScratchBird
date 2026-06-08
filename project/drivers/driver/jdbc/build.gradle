@@ -1,0 +1,57 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+group = 'com.scratchbird'
+version = '0.1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+}
+
+jar {
+    manifest {
+        attributes(
+            'Implementation-Title': 'ScratchBird JDBC Driver',
+            'Implementation-Version': version,
+            'Automatic-Module-Name': 'com.scratchbird.jdbc'
+        )
+    }
+}
+
+test {
+    useJUnitPlatform()
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            groupId = project.group
+            artifactId = 'scratchbird-jdbc'
+            version = project.version
+        }
+    }
+}

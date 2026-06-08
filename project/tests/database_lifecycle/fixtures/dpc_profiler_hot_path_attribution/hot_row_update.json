@@ -1,0 +1,96 @@
+{
+  "search_key": "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+  "claim_id": "DPC-073-HOT-ROW-UPDATE",
+  "lane_id": "hot_row_update",
+  "lane_title": "Hot-row update",
+  "claim_status": "accepted",
+  "accepted_optimization_claim": true,
+  "elapsed_time_only": false,
+  "transaction_sensitive": true,
+  "before_profile": {
+    "profile_digest_source": "DPC-073:hot_row_update:before",
+    "profile_digest": "5f64d296addb5603502f93523c0e836a9b2c2056d006a3a00ad0412ee8175c96",
+    "dominant_hot_paths": [
+      {"name": "key_unchanged_index_delete_insert", "share_percent": 31.0},
+      {"name": "version_chain_relink", "share_percent": 20.0}
+    ]
+  },
+  "after_profile": {
+    "profile_digest_source": "DPC-073:hot_row_update:after",
+    "profile_digest": "58151187e808731b8e434ff48d1ae799edfd2d435e5611f4e19b085f08d1dba2",
+    "dominant_hot_paths": [
+      {"name": "hot_update_version_append", "share_percent": 25.0},
+      {"name": "visibility_recheck", "share_percent": 18.0}
+    ]
+  },
+  "changed_hot_paths": [
+    "key_unchanged_index_delete_insert removed from dominant path",
+    "hot_update_version_append became the dominant storage path"
+  ],
+  "delta_explanation": "The before profile is dominated by unnecessary index churn for key-unchanged updates; after profiling attributes cost to version append and visibility checks.",
+  "remaining_bottleneck": "",
+  "measurement_families": {
+    "cpu_samples": {"before": 2280, "after": 1340, "unit": "samples", "attribution": "index churn avoided"},
+    "lock_wait_mutex_hold_timing": {"before": 540, "after": 310, "unit": "microseconds_p95", "attribution": "index latch avoided"},
+    "io_syscall_counts": {"before": 330, "after": 220, "unit": "calls", "attribution": "fewer index page touches"},
+    "allocator_pressure": {"before": 910, "after": 480, "unit": "allocations", "attribution": "version append buffers reused"},
+    "parser_lowering_timing": {"before": 52, "after": 52, "unit": "microseconds", "attribution": "unchanged"},
+    "sblr_admission_dispatch_timing": {"before": 92, "after": 91, "unit": "microseconds", "attribution": "unchanged route"},
+    "plan_cache_hit_miss_invalidation_timing": {"before": 34, "after": 33, "unit": "microseconds", "attribution": "stable plan"},
+    "metadata_cache_hit_miss_timing": {"before": 46, "after": 39, "unit": "microseconds", "attribution": "less index metadata read"},
+    "statistics_epoch_plan_selection_timing": {"before": 24, "after": 24, "unit": "microseconds", "attribution": "stable epoch"},
+    "page_allocation_demand_grant_timing": {"before": 300, "after": 210, "unit": "microseconds", "attribution": "no index split demand"},
+    "index_maintenance_timing_by_family": {"before": 1120, "after": 130, "unit": "microseconds", "attribution": "key unchanged path skips maintenance"},
+    "agent_queue_wake_run_throttle_completion_timing": {"before": 90, "after": 80, "unit": "microseconds", "attribution": "no new cleanup pressure"}
+  },
+  "result_correctness_hash_pointer": {
+    "digest_source": "DPC-073:hot_row_update:result",
+    "digest": "532dddcdedfe276e7853f0c85674ffbeae98b83c6ee6c7508cd12f066960f300",
+    "correctness_anchor": "before-after lookup visibility and rollback equality"
+  },
+  "source_anchor": {
+    "path": "project/tests/database_lifecycle/dpc_hot_update_version_chain_gate.cpp",
+    "search_key": "DPC_HOT_UPDATE_VERSION_CHAIN_GATE"
+  },
+  "route_or_source_anchor": "project/src/engine/internal_api/dml/update_delete_optimized.cpp#DPC_HOT_UPDATE_SHAPE",
+  "ctest_name": "dpc_profiler_hot_path_attribution_gate",
+  "ctest_labels": [
+    "dpc_profiler_hot_path_attribution_gate",
+    "DPC-073",
+    "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+    "DPC_P6_PROFILER_ATTRIBUTION_READY",
+    "DPC_AUDIT_PROFILER_ATTRIBUTION",
+    "DPC_DEP_PROFILER_ATTRIBUTION",
+    "profiler_attribution",
+    "database_lifecycle",
+    "mga_transaction_regression"
+  ],
+  "build_instrumentation": {
+    "build_type": "Release diagnostic",
+    "profiler_mode": "compact-retained-attribution",
+    "hotpath_trace": true,
+    "exec_profile_trace": true,
+    "prepared_trace": true,
+    "source_state": "fixture-retained-source-state"
+  },
+  "agent_metrics": {
+    "bounded": true,
+    "queue_max": 4,
+    "wake_max": 2,
+    "run_budget_ms": 20,
+    "throttle_events_max": 1,
+    "completion_state": "completed"
+  },
+  "authority": {
+    "mga_authority_declaration": "engine_mga_transaction_inventory_authority",
+    "engine_mga_transaction_inventory_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "driver_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_log_finality_authority": false,
+    "timestamp_order_finality_authority": false,
+    "uuid_order_finality_authority": false,
+    "event_stream_finality_authority": false
+  }
+}

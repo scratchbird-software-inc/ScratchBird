@@ -1,0 +1,9 @@
+event,cadence,owner,required_action
+preparation_slice,on_start_and_completion,coordinator,"record source inputs, generated outputs, validation result, tracker/gate status"
+implementation_slice,on_assignment_and_completion,coordinator,"record assigned role, write scope, validation command, failure inventory rule"
+long_running_agent_task,5 minutes,coordinator,"check status, log progress or blocker, and keep dependent slices closed"
+long_running_validation,5 minutes,coordinator,check logs/process state and update failure inventory if failures appear
+validation_failure,immediate,coordinator,"pause new slices, create correction assignment, rerun validation"
+slice_passed,immediate,coordinator,"update tracker, acceptance gates, and execution queue only after evidence exists"
+infrastructure_error,immediate,coordinator,record failure inventory and ensure message-vector diagnostic row/backlog item exists
+write_scope_conflict,immediate,coordinator,"stop overlapping write, serialize file ownership, record conflict in failure inventory"

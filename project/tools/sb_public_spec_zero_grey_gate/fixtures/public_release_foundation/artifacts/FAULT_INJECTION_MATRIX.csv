@@ -1,0 +1,23 @@
+fault_id,target_group,scenario,expected_outcome,required_gate,status
+PRF_FAULT_001,transport_security,Plaintext client connects when TLS is required,Connection refused with engine-visible deny vector,sbwp_tls_negative_policy_gate,pending
+PRF_FAULT_002,transport_security,Client certificate signed by wrong CA,Authentication denied and no session or transaction is created,sbwp_tls_negative_policy_gate,pending
+PRF_FAULT_003,transport_security,Expired client certificate,Authentication denied with stable diagnostic,sbwp_tls_negative_policy_gate,pending
+PRF_FAULT_004,transport_security,Channel binding mismatch after TLS handshake,Authentication denied by engine authority,sbwp_tls_engine_auth_gate,pending
+PRF_FAULT_005,catalog_closure,DDL creates catalog rows then transaction rolls back,No catalog generation is published and provisional descriptors disappear,catalog_generation_mga_gate,pending
+PRF_FAULT_006,catalog_closure,Duplicate name under same parent language and class,Name resolver emits conflict diagnostic and no duplicate authority row is written,catalog_name_comment_resolver_gate,pending
+PRF_FAULT_007,catalog_closure,Dependency edge points to missing target UUID,DDL fails with dependency diagnostic,catalog_dependency_api_gate,pending
+PRF_FAULT_008,catalog_closure,Unauthorized user queries hidden catalog object projection,Projection hides row without leaking existence,sys_catalog_readable_projection_gate,pending
+PRF_FAULT_008A,catalog_closure,Synonym name conflicts with existing object under same parent and language,DDL fails before synonym descriptor or resolver row is published,catalog_synonym_object_gate,pending
+PRF_FAULT_008B,catalog_closure,Synonym chain exceeds five hops,Resolution fails with stable depth diagnostic and no target binding,catalog_synonym_depth_cycle_gate,pending
+PRF_FAULT_008C,catalog_closure,Synonym chain contains a cycle,Resolution fails with stable cycle diagnostic and no target binding,catalog_synonym_depth_cycle_gate,pending
+PRF_FAULT_008D,catalog_closure,Create child object through schema synonym path,Child is parented to the final target schema UUID not the synonym object UUID,catalog_synonym_parent_remap_gate,pending
+PRF_FAULT_009,constraints_keys,NOT NULL violation during insert,Statement fails and no visible row version is published,constraint_dml_enforcement_gate,pending
+PRF_FAULT_010,constraints_keys,Unique key conflict under concurrent transaction,Conflict is detected through backing index and MGA visibility,constraint_transaction_visibility_gate,pending
+PRF_FAULT_011,constraints_keys,Foreign key target rolled back before commit,Referential check fails or defers according to constraint timing,constraint_transaction_visibility_gate,pending
+PRF_FAULT_012,constraints_keys,Savepoint rollback after deferred constraint violation,Savepoint restores constraint workset and diagnostic state,constraint_transaction_visibility_gate,pending
+PRF_FAULT_013,mga_recovery_backup_pitr,Crash after dirty manifest write before checkpoint publication,Recovery ignores or quarantines unproven manifest and remains idempotent,mga_recovery_idempotency_gate,pending
+PRF_FAULT_014,mga_recovery_backup_pitr,Dirty manifest checksum mismatch,Recovery falls back to bounded scan or fail-closed quarantine,mga_recovery_idempotency_gate,pending
+PRF_FAULT_015,mga_recovery_backup_pitr,Backup manifest missing filespace UUID,Restore refused with coverage diagnostic,backup_restore_manifest_proof_gate,pending
+PRF_FAULT_016,mga_recovery_backup_pitr,Delta stream has missing segment,Apply refused with gap classification,mga_delta_coverage_gate,pending
+PRF_FAULT_017,mga_recovery_backup_pitr,PITR target outside coverage range,Restore refused with target coverage diagnostic,pitr_rollforward_gate,pending
+PRF_FAULT_018,mga_recovery_backup_pitr,Allocation map references non-durable page generation,Startup recovery refuses or repairs before visibility,page_durability_ordering_gate,pending

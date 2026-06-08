@@ -1,0 +1,44 @@
+{
+  "artifact_role": "readiness_control_fixture_manifest",
+  "authority_boundary": "Fixture evidence is conformance input only; it is not product behavior authority.",
+  "canonical_sources": [
+    "fixture://execution-plans/udr-implementation-coverage/README.md#Execution_Plan: UDR implementation coverage",
+    "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/UDR_AND_PROCEDURAL_LANGUAGE_HANDOFF_REGISTER.csv#role_id",
+    "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/MESSAGE_VECTOR_SURFACE_MAP.csv#vector_map_id"
+  ],
+  "cases": [
+    {
+      "case_id": "DPR-FIX-011-POS-001",
+      "case_kind": "positive_control",
+      "expected_gate_behavior": "Pass fixture catalog materialization checks only.",
+      "purpose": "Verify the indexed canonical sources and consumer handoff are present before implementation agents start."
+    },
+    {
+      "case_id": "DPR-FIX-011-NEG-001",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "UDR executes SQL text"
+    },
+    {
+      "case_id": "DPR-FIX-011-NEG-002",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "UDR mints identity"
+    },
+    {
+      "case_id": "DPR-FIX-011-NEG-003",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "UDR bypasses SBLR"
+    }
+  ],
+  "consumer_agents": [
+    "parser_support_udr_agent"
+  ],
+  "covered_gates": [
+    "DPR-GATE-012"
+  ],
+  "fixture_family": "parser_support_udr_fixtures",
+  "fixture_id": "DPR-FIX-011",
+  "forbidden_fixture_source": "UDR implementation comment only"
+}

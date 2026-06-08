@@ -1,0 +1,18 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "claim_id": "DPC-072-OPERATOR-UI-DOCS",
+  "evidence_kind": "operator-docs-json",
+  "result_digest_source": {
+    "claim_id": "DPC-072-OPERATOR-UI-DOCS",
+    "docs": "management-interface",
+    "routes": "documented",
+    "examples": "retained"
+  },
+  "result_hash": "4130c26377527bec4c8ced8d43de0729a4d5bf94662874511e3f0b4a35fc9413",
+  "doc_evidence": {
+    "management_surface_reference": "retained",
+    "operator_workflows": "retained",
+    "support_bundle_fields": "retained",
+    "message_vectors": "retained"
+  }
+}

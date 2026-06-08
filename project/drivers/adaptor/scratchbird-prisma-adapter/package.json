@@ -1,0 +1,13 @@
+{
+  "name": "scratchbird-prisma-adapter",
+  "version": "0.1.0",
+  "description": "Deterministic adapter scaffolding for ScratchBird Prisma workflows",
+  "main": "lib/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

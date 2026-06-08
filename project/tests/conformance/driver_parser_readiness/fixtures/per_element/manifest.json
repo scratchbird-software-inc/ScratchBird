@@ -1,0 +1,43 @@
+{
+  "artifact_role": "readiness_control_fixture_manifest",
+  "authority_boundary": "Fixture evidence is conformance input only; it is not product behavior authority.",
+  "canonical_sources": [
+    "fixture://execution-plans/sbsql-per-element-contract-completion/backlog/BACKLOG.csv#surface_id",
+    "fixture://execution-plans/sbsql-per-element-contract-completion/status#surface_id"
+  ],
+  "cases": [
+    {
+      "case_id": "DPR-FIX-002-POS-001",
+      "case_kind": "positive_control",
+      "expected_gate_behavior": "Pass fixture catalog materialization checks only.",
+      "purpose": "Verify the indexed canonical sources and consumer handoff are present before implementation agents start."
+    },
+    {
+      "case_id": "DPR-FIX-002-NEG-001",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "stale in_progress"
+    },
+    {
+      "case_id": "DPR-FIX-002-NEG-002",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "blocked without owner"
+    },
+    {
+      "case_id": "DPR-FIX-002-NEG-003",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "status file missing"
+    }
+  ],
+  "consumer_agents": [
+    "sbsql_surface_spec_agent"
+  ],
+  "covered_gates": [
+    "DPR-GATE-003"
+  ],
+  "fixture_family": "per_element_blocker_fixtures",
+  "fixture_id": "DPR-FIX-002",
+  "forbidden_fixture_source": "agent transcript as authority"
+}

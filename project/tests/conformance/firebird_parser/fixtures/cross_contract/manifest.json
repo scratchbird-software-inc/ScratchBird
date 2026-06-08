@@ -1,0 +1,44 @@
+{
+  "artifact_role": "readiness_control_fixture_manifest",
+  "authority_boundary": "Fixture evidence is conformance input only; it is not product behavior authority.",
+  "canonical_sources": [
+    "fixture://execution-plans/full-firebirdsql-parser-udr-emulation-implementation-closure/TRACKER.csv#slice_id",
+    "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/FIREBIRD_DIALECT_HANDOFF_REGISTER.csv#contract_id",
+    "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/MESSAGE_VECTOR_SURFACE_MAP.csv#vector_map_id"
+  ],
+  "cases": [
+    {
+      "case_id": "DPR-FIX-012-POS-001",
+      "case_kind": "positive_control",
+      "expected_gate_behavior": "Pass fixture catalog materialization checks only.",
+      "purpose": "Verify the indexed canonical sources and consumer handoff are present before implementation agents start."
+    },
+    {
+      "case_id": "DPR-FIX-012-NEG-001",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "raw donor status"
+    },
+    {
+      "case_id": "DPR-FIX-012-NEG-002",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "SBSQL pass-through inherited"
+    },
+    {
+      "case_id": "DPR-FIX-012-NEG-003",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "donor SQL execution"
+    }
+  ],
+  "consumer_agents": [
+    "firebird_parser_agent"
+  ],
+  "covered_gates": [
+    "DPR-GATE-013"
+  ],
+  "fixture_family": "firebird_cross_contract_fixtures",
+  "fixture_id": "DPR-FIX-012",
+  "forbidden_fixture_source": "donor sample as ScratchBird authority"
+}

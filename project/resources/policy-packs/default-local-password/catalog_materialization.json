@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "policy_generation": 1,
+  "create_time_only": true,
+  "materialize_inside_create_transaction": true,
+  "post_create_filesystem_authority": false,
+  "requires_mga_catalog_commit": true,
+  "requires_authorization_for_post_create_mutation": true,
+  "catalog_row_families": [
+    "PolicyPackRecord",
+    "SecurityProviderRecord",
+    "SecurityRoleRecord",
+    "SecurityGroupRecord",
+    "SecurityGrantRecord",
+    "PolicyProfileRecord"
+  ],
+  "catalog_identity_authority": "uuid",
+  "materialization_evidence": {
+    "policy_pack_uuid": "018f7a10-1280-7000-8000-000000000001",
+    "catalog_materialization_transaction_uuid_required": true,
+    "policy_generation_record_required": true
+  }
+}

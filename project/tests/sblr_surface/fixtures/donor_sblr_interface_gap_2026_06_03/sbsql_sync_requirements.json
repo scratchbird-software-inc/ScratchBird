@@ -1,0 +1,341 @@
+{
+  "schema_id": "scratchbird.sblr_surface.sbsql_sync_requirements.v1",
+  "fixture_root": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03",
+  "style_policy": {
+    "accepted_sbsql_styles": [
+      "sbsql_native_normalized"
+    ],
+    "rejected_sbsql_styles": [
+      "donor_dialect_paste_through"
+    ],
+    "valid_style_field": "sbsql_style"
+  },
+  "required_reference_fields": [
+    "sbsql_cst_reference",
+    "ast_sblr_reference",
+    "donor_normalization_reference",
+    "parser_execution_plan_sync_reference"
+  ],
+  "public_release_policy": {
+    "proof_source": "project_tests_manifest_and_generated_matrix",
+    "docs_execution-plans_required_at_runtime": false,
+    "parser_execution_plan_references_recorded_as_handoff_keys": true,
+    "product_completion_claim": false
+  },
+  "full_coverage_policy": {
+    "coverage_model": "row_expanded_by_gate",
+    "minimum_fixture_rows": 700,
+    "required_coverage_scope": "all_rows",
+    "required_sync_status": "sbsql_sync_proven_for_current_engine_listener_surface"
+  },
+  "full_coverage_requirements": [
+    {
+      "coverage_id": "SBLR-SURFACE-FULL-SYNC-DONOR-GAP-SUMMARY",
+      "fixture_file": "DONOR_GAP_SUMMARY.csv",
+      "row_selector_column": "engine_id",
+      "coverage_scope": "all_rows",
+      "change_kind": "donor_gap_summary_route",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/IMPLEMENTATION_HANDOFF_INDEX.csv#DPR-HANDOFF-004"
+    },
+    {
+      "coverage_id": "SBLR-SURFACE-FULL-SYNC-DONOR-PRIVATE-OPCODE",
+      "fixture_file": "DONOR_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
+      "row_selector_column": "token",
+      "coverage_scope": "all_rows",
+      "change_kind": "sblr_opcode_visibility_cleanup",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-008"
+    },
+    {
+      "coverage_id": "SBLR-SURFACE-FULL-SYNC-EXPLICIT-UNSUPPORTED",
+      "fixture_file": "EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv",
+      "row_selector_column": "inventory_id",
+      "coverage_scope": "all_rows",
+      "change_kind": "engine_unsupported_refusal_route",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SERVER_REVALIDATION_CONTRACT_MATRIX.csv#DPR-REVAL-001"
+    },
+    {
+      "coverage_id": "SBLR-SURFACE-FULL-SYNC-EXECUTION_PLAN-SEED",
+      "fixture_file": "IMPLEMENTATION_EXECUTION_PLAN_SEED_MATRIX.csv",
+      "row_selector_column": "finding_id",
+      "coverage_scope": "all_rows",
+      "change_kind": "donor_sblr_seed_row",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
+    },
+    {
+      "coverage_id": "SBLR-SURFACE-FULL-SYNC-NON-DIRECT-FUNCTION",
+      "fixture_file": "NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv",
+      "row_selector_column": "inventory_id",
+      "coverage_scope": "all_rows",
+      "change_kind": "engine_function_surface_route",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DATABASE_FUNCTIONALITY_TO_SBLR_COVERAGE.csv#coverage_id"
+    },
+    {
+      "coverage_id": "SBLR-SURFACE-FULL-SYNC-STALE-ALIAS",
+      "fixture_file": "SBLR_STALE_DEFERRED_ALIAS_CLEANUP_MATRIX.csv",
+      "row_selector_column": "token",
+      "coverage_scope": "all_rows",
+      "change_kind": "sblr_alias_registry_cleanup",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-008"
+    },
+    {
+      "coverage_id": "SBLR-SURFACE-FULL-SYNC-FAMILY-RECONCILIATION",
+      "fixture_file": "SBSQL_SBLR_FAMILY_RECONCILIATION_MATRIX.csv",
+      "row_selector_column": "sbsql_family",
+      "coverage_scope": "all_rows",
+      "change_kind": "sblr_family_reconciliation",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-009"
+    },
+    {
+      "coverage_id": "SBLR-SURFACE-FULL-SYNC-SERVER-AUTHORITY-ROLLUP",
+      "fixture_file": "SERVER_AUTHORITY_ROLLUP.csv",
+      "row_selector_column": "surface_key",
+      "coverage_scope": "all_rows",
+      "change_kind": "engine_server_authority_rollup",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SERVER_REVALIDATION_CONTRACT_MATRIX.csv#DPR-REVAL-001"
+    },
+    {
+      "coverage_id": "SBLR-SURFACE-FULL-SYNC-SERVER-AUTHORITY",
+      "fixture_file": "SERVER_AUTHORITY_SURFACE_MATRIX.csv",
+      "row_selector_column": "decision_id",
+      "coverage_scope": "all_rows",
+      "change_kind": "engine_server_authority_route",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SERVER_REVALIDATION_CONTRACT_MATRIX.csv#DPR-REVAL-001"
+    }
+  ],
+  "engine_sblr_resource_sync_requirements": [
+    {
+      "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-SBLR-OPCODE-REGISTRY",
+      "path": "public_contract_snapshot",
+      "resource_kind": "parser_facing_sblr_opcode_registry",
+      "change_kind": "sblr_opcode_registry_change",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-008"
+    },
+    {
+      "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-ENGINE-OPCODE-REGISTRY",
+      "path": "project/src/engine/sblr/sblr_opcode_registry.cpp",
+      "resource_kind": "engine_sblr_opcode_registry",
+      "change_kind": "engine_sblr_opcode_registry_change",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-008"
+    },
+    {
+      "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-SERVER-ADMISSION",
+      "path": "project/src/server/sblr_admission.cpp",
+      "resource_kind": "server_sblr_admission_surface",
+      "change_kind": "server_sblr_admission_change",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SERVER_REVALIDATION_CONTRACT_MATRIX.csv#DPR-REVAL-001"
+    },
+    {
+      "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-SERVER-DISPATCH",
+      "path": "project/src/server/sblr_dispatch_server.cpp",
+      "resource_kind": "server_sblr_dispatch_surface",
+      "change_kind": "server_sblr_dispatch_change",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/IMPLEMENTATION_HANDOFF_INDEX.csv#DPR-HANDOFF-004"
+    },
+    {
+      "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-STRICT-ROW-COVERAGE",
+      "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
+      "resource_kind": "parser_facing_strict_row_coverage_ledger",
+      "change_kind": "sbsql_sblr_row_coverage_change",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-009"
+    },
+    {
+      "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-SBSQL-SYNC-REQUIREMENTS",
+      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
+      "resource_kind": "parser_facing_sbsql_sync_requirements",
+      "change_kind": "sbsql_sync_manifest_change",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
+    },
+    {
+      "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-PRIMARY-FAMILY-SNAPSHOT",
+      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
+      "resource_kind": "parser_facing_sblr_family_snapshot",
+      "change_kind": "sblr_family_snapshot_change",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-009"
+    },
+    {
+      "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-TRACEABILITY-MANIFEST",
+      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_surface_traceability_manifest.json",
+      "resource_kind": "donor_sblr_traceability_seed",
+      "change_kind": "donor_sblr_traceability_manifest_change",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
+    },
+    {
+      "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-FIXTURE-HASH-MANIFEST",
+      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_surface_fixture_hashes.json",
+      "resource_kind": "donor_sblr_fixture_hash_manifest",
+      "change_kind": "donor_sblr_fixture_hash_manifest_change",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
+    },
+    {
+      "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-PARSER-CONTRACT-FREEZE",
+      "path": "project/tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json",
+      "resource_kind": "parser_facing_contract_freeze_manifest",
+      "change_kind": "parser_facing_contract_freeze_change",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/IMPLEMENTATION_HANDOFF_INDEX.csv#DPR-HANDOFF-004"
+    }
+  ],
+  "rows": [
+    {
+      "sync_id": "SBLR-SURFACE-SYNC-SERVER-AUTHORITY",
+      "fixture_file": "SERVER_AUTHORITY_SURFACE_MATRIX.csv",
+      "row_selector": {
+        "column": "decision_id",
+        "value": "APACHE_IGNITE-AUTHDENY-001"
+      },
+      "change_kind": "engine_server_authority_route",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv"
+    },
+    {
+      "sync_id": "SBLR-SURFACE-SYNC-FUNCTION-LANE",
+      "fixture_file": "NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv",
+      "row_selector": {
+        "column": "inventory_id",
+        "value": "DPEFI-FULL-IGNITE-UDF-00005"
+      },
+      "change_kind": "engine_function_surface_route",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DATABASE_FUNCTIONALITY_TO_SBLR_COVERAGE.csv#coverage_id"
+    },
+    {
+      "sync_id": "SBLR-SURFACE-SYNC-UNSUPPORTED-REFUSAL",
+      "fixture_file": "EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv",
+      "row_selector": {
+        "column": "inventory_id",
+        "value": "DPEFI-FULL-COCKROACH-EXT-00001"
+      },
+      "change_kind": "engine_unsupported_refusal_route",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SERVER_REVALIDATION_CONTRACT_MATRIX.csv"
+    },
+    {
+      "sync_id": "SBLR-SURFACE-SYNC-SBSQL-FAMILY",
+      "fixture_file": "SBSQL_SBLR_FAMILY_RECONCILIATION_MATRIX.csv",
+      "row_selector": {
+        "column": "sbsql_family",
+        "value": "sblr.expression.runtime.v3"
+      },
+      "change_kind": "sblr_family_reconciliation",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-009"
+    },
+    {
+      "sync_id": "SBLR-SURFACE-SYNC-DONOR-PRIVATE-OPCODE",
+      "fixture_file": "DONOR_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
+      "row_selector": {
+        "column": "token",
+        "value": "SBLR_TIKV_RAW_GET"
+      },
+      "change_kind": "sblr_opcode_visibility_cleanup",
+      "normalized_registry_target": "SBLR_DONOR_TIKV_RAW_GET",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv"
+    },
+    {
+      "sync_id": "SBLR-SURFACE-SYNC-STALE-ALIAS",
+      "fixture_file": "SBLR_STALE_DEFERRED_ALIAS_CLEANUP_MATRIX.csv",
+      "row_selector": {
+        "column": "token",
+        "value": "SBLR_BITEMPORAL_AS_OF"
+      },
+      "change_kind": "sblr_alias_registry_cleanup",
+      "normalized_registry_target": "authored opcodes remain canonical; non-opcode placeholders retire to descriptor mappings",
+      "sbsql_style": "sbsql_native_normalized",
+      "sbsql_cst_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot",
+      "donor_normalization_reference": "public_contract_snapshot",
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv"
+    }
+  ]
+}

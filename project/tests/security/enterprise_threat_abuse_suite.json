@@ -1,0 +1,560 @@
+{
+  "schema_version": 1,
+  "marker": "ENTERPRISE_THREAT_ABUSE_SUITE",
+  "suite_id": "scratchbird-public-enterprise-threat-abuse-v1",
+  "authority": "public_release_evidence_only",
+  "policy": {
+    "expected_result": "fail_closed",
+    "stable_diagnostics_required": true,
+    "engine_authority_required": true,
+    "parser_sql_text_authority": false,
+    "uuid_identity_authority": "engine_uuid_v7",
+    "mga_recovery_authority": true,
+    "cluster_public_execution": false,
+    "support_bundle_secret_leakage": false
+  },
+  "cases": [
+    {
+      "case_id": "enterprise_threat_auth_bypass",
+      "category": "auth_bypass",
+      "threat": "Session or security context is missing on a security-sensitive lifecycle route.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "DBLC.THREAT.SESSION_REQUIRED",
+        "DBLC.THREAT.SECURITY_CONTEXT_REQUIRED",
+        "SECURITY.AUTHORIZATION.CONTEXT_REQUIRED"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/server/config_policy_security_lifecycle.cpp",
+          "tokens": [
+            "DBLC.THREAT.SESSION_REQUIRED",
+            "DBLC.THREAT.SECURITY_CONTEXT_REQUIRED",
+            "Lifecycle security-sensitive operations require engine security context."
+          ]
+        },
+        {
+          "path": "project/tests/release/public_authorization_durable_flow_gate.cpp",
+          "tokens": [
+            "SECURITY.AUTHORIZATION.CONTEXT_REQUIRED",
+            "EngineAuthorize must not accept bootstrap or group tags without materialized context"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_privilege_escalation",
+      "category": "privilege_escalation",
+      "threat": "A caller attempts to exercise administrative or backup rights without a materialized authorization grant.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "SECURITY.AUTHORIZATION.DENIED",
+        "SECURITY.POLICY.DENIED"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/engine/internal_api/security/security_model.cpp",
+          "tokens": [
+            "SECURITY.AUTHORIZATION.DENIED",
+            "SECURITY.POLICY.DENIED",
+            "PROTECTED_MATERIAL_RELEASE",
+            "BACKUP_CONTROL"
+          ]
+        },
+        {
+          "path": "project/tests/release/public_authorization_durable_flow_gate.cpp",
+          "tokens": [
+            "SECURITY.AUTHORIZATION.DENIED",
+            "EngineGrantRight should authorize through materialized SEC_GRANT_ADMIN"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_parser_boundary_abuse",
+      "category": "parser_boundary_abuse",
+      "threat": "SQL text, parser state, or parser-generated authority is submitted as engine execution authority.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "SBLR.SQL_TEXT_FORBIDDEN",
+        "DBLC.THREAT.ENGINE_AUTHORITY_REQUIRED"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/server/sblr_admission.cpp",
+          "tokens": [
+            "SBLR.SQL_TEXT_FORBIDDEN",
+            "The engine accepts canonical SBLR only.",
+            "Parser-generated SBLR must resolve names to UUIDs before server admission."
+          ]
+        },
+        {
+          "path": "project/src/server/config_policy_security_lifecycle.cpp",
+          "tokens": [
+            "DBLC.THREAT.ENGINE_AUTHORITY_REQUIRED",
+            "Parser, listener, driver, and manager evidence cannot grant security or finality authority."
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_sblr_tampering",
+      "category": "sblr_tampering",
+      "threat": "SBLR envelope version, fields, or decoded payload are altered after parser lowering.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "PARSER_SERVER_IPC.SBLR_DUPLICATE_FIELD",
+        "PARSER_SERVER_IPC.SBLR_ENVELOPE_VERSION_UNSUPPORTED",
+        "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED",
+        "SB_SBLR_DECODE_REJECTED"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/server/sblr_admission.cpp",
+          "tokens": [
+            "PARSER_SERVER_IPC.SBLR_DUPLICATE_FIELD",
+            "PARSER_SERVER_IPC.SBLR_ENVELOPE_VERSION_UNSUPPORTED",
+            "PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED"
+          ]
+        },
+        {
+          "path": "project/src/engine/sblr/sblr_dispatch.cpp",
+          "tokens": [
+            "SB_SBLR_DECODE_REJECTED",
+            "SB_SBLR_DISPATCH_UNKNOWN_OPERATION"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_uuid_spoofing",
+      "category": "uuid_spoofing",
+      "threat": "A donor/client UUID or malformed UUID is used as durable ScratchBird identity.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "SB-UUID-TYPED-ENGINE-IDENTITY-NOT-V7",
+        "SB-UUID-TYPED-NIL",
+        "SB-UUID-PARSE-VARIANT"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/core/uuid/uuid.cpp",
+          "tokens": [
+            "SB-UUID-TYPED-ENGINE-IDENTITY-NOT-V7",
+            "SB-UUID-TYPED-NIL",
+            "SB-UUID-PARSE-VARIANT"
+          ]
+        },
+        {
+          "path": "project/src/core/uuid/RUNTIME_FOUNDATION.md",
+          "tokens": [
+            "Only UUIDv7 values may be used as ScratchBird engine identity.",
+            "UUIDv1 through UUIDv6 are never ScratchBird engine identity."
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_policy_rollback",
+      "category": "policy_rollback",
+      "threat": "A stale policy generation or post-create filesystem pack attempts to roll back security policy.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "ENGINE.DBLC_STALE_POLICY_REFUSED",
+        "SB-POLICY-PACK-PROVENANCE-INVALID",
+        "SB-POLICY-PACK-AUTHORITY-POLICY-INVALID"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/server/config_policy_security_lifecycle.cpp",
+          "tokens": [
+            "ENGINE.DBLC_STALE_POLICY_REFUSED",
+            "stale_policy_or_security_epoch_refused"
+          ]
+        },
+        {
+          "path": "project/src/storage/database/database_lifecycle.cpp",
+          "tokens": [
+            "SB-POLICY-PACK-PROVENANCE-INVALID",
+            "SB-POLICY-PACK-AUTHORITY-POLICY-INVALID",
+            "post_create_filesystem_authority"
+          ]
+        },
+        {
+          "path": "project/tests/release/public_policy_mutation_boundary_gate.cpp",
+          "tokens": [
+            "policy mutation without POLICY_ADMIN unexpectedly succeeded",
+            "filesystem_policy_pack_authority",
+            "false_after_create"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_support_bundle_leakage",
+      "category": "support_bundle_leakage",
+      "threat": "Support-bundle export attempts to include plaintext secrets, unredacted local paths, or authority-mutating evidence.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "OPS.SUPPORT_BUNDLE.PROTECTED_MATERIAL_FORBIDDEN",
+        "OPS.SUPPORT_BUNDLE.POLICY_REQUIRED",
+        "OPS.SUPPORT_BUNDLE.TRANSACTION_AUTHORITY_CLAIM_REFUSED"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/engine/internal_api/management/support_bundle_api.cpp",
+          "tokens": [
+            "OPS.SUPPORT_BUNDLE.PROTECTED_MATERIAL_FORBIDDEN",
+            "OPS.SUPPORT_BUNDLE.POLICY_REQUIRED",
+            "OPS.SUPPORT_BUNDLE.TRANSACTION_AUTHORITY_CLAIM_REFUSED",
+            "public_safe_summary"
+          ]
+        },
+        {
+          "path": "project/tests/release/public_transaction_support_bundle_gate.cpp",
+          "tokens": [
+            "support JSON must not leak local paths",
+            "OPS.SUPPORT_BUNDLE.TRANSACTION_AUTHORITY_CLAIM_REFUSED"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_cluster_boundary_bypass",
+      "category": "cluster_boundary_bypass",
+      "threat": "A public build attempts local cluster execution, cluster route admission, or cluster mutation without an external provider.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
+        "SBLR.CLUSTER.HANDSHAKE.EXTERNAL_PROVIDER_REQUIRED",
+        "SBLR.CLUSTER.HANDSHAKE.LOCAL_RUNTIME_REFUSED",
+        "SBLR.CAPABILITY.FORBIDDEN"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/cluster_provider/cluster_provider.hpp",
+          "tokens": [
+            "CLUSTER_PROVIDER_BOUNDARY",
+            "SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
+            "SBLR.CLUSTER.HANDSHAKE.EXTERNAL_PROVIDER_REQUIRED",
+            "SBLR.CLUSTER.HANDSHAKE.LOCAL_RUNTIME_REFUSED"
+          ]
+        },
+        {
+          "path": "project/src/server/sblr_admission.cpp",
+          "tokens": [
+            "SBLR.CLUSTER_MAPPING.UNAVAILABLE",
+            "SBLR.CAPABILITY.FORBIDDEN"
+          ]
+        },
+        {
+          "path": "project/tests/release/public_cluster_provider_handshake_gate.cpp",
+          "tokens": [
+            "local runtime cluster execution was accepted",
+            "cluster_provider_handshake"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_management_socket_abuse",
+      "category": "management_socket_abuse",
+      "threat": "An unauthenticated or tampered listener management socket frame attempts privileged lifecycle control.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "LISTENER.MANAGEMENT.ENVELOPE_REQUIRED",
+        "LISTENER.MANAGEMENT.AUTHENTICATOR_INVALID",
+        "LISTENER.MANAGEMENT.RIGHT_DENIED",
+        "LISTENER.MANAGEMENT.ENVELOPE_MALFORMED"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/listener/listener_runtime.cpp",
+          "tokens": [
+            "LISTENER.MANAGEMENT.ENVELOPE_REQUIRED",
+            "LISTENER.MANAGEMENT.AUTHENTICATOR_INVALID",
+            "LISTENER.MANAGEMENT.RIGHT_DENIED",
+            "LISTENER.MANAGEMENT.ENVELOPE_MALFORMED"
+          ]
+        },
+        {
+          "path": "project/tests/engine_listener_enterprise/engine_listener_management_envelope_conformance.cpp",
+          "tokens": [
+            "raw privileged refusal must require SBME envelope",
+            "tampered hmac-sha256 SBME envelope must be refused",
+            "SBME envelope without lifecycle right must be refused",
+            "malformed SBME payload must be refused"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_handoff_race",
+      "category": "handoff_race",
+      "threat": "A parser worker or attacker races DBBT/LPREFACE handoff claims to bind authenticated evidence to the wrong client socket.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "LPREFACE.CLAIM_INVALID",
+        "LISTENER.HANDOFF_SOCKET_AUTH_INVALID",
+        "PARSER_SERVER_IPC.AUTH_HANDOFF_INVALID"
+      ],
+      "evidence": [
+        {
+          "path": "project/tests/engine_listener_enterprise/engine_listener_dbbt_lpreface_binding_conformance.cpp",
+          "tokens": [
+            "out-of-order claim must not steal the first FIFO binding",
+            "matching only the client nonce must not authorize a DBBT/LPREFACE binding",
+            "missing evidence refusal must not consume the binding",
+            "expired binding must not be claimable even with matching evidence"
+          ]
+        },
+        {
+          "path": "project/src/server/session_registry.cpp",
+          "tokens": [
+            "Authentication route association did not match the parser connection.",
+            "Attach route association did not match the authenticated parser connection.",
+            "malformed_auth_payload"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_parser_worker_compromise",
+      "category": "parser_worker_compromise",
+      "threat": "A crashing or compromised parser worker repeatedly faults or attempts to keep listener readiness green without trustworthy handoff evidence.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "LISTENER.HANDOFF_RETRY_BLOCKED"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/listener/parser_pool.cpp",
+          "tokens": [
+            "LISTENER.HANDOFF_RETRY_BLOCKED",
+            "parser worker restart is delayed by pool backoff or quarantine",
+            "quarantine_class"
+          ]
+        },
+        {
+          "path": "project/tests/engine_listener_enterprise/engine_listener_parser_pool_lifecycle_conformance.cpp",
+          "tokens": [
+            "first parser fault must activate restart backoff",
+            "second rapid parser fault must activate quarantine",
+            "quarantined parser pool must fail readiness closed",
+            "fault history must remain available after worker purge"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_malformed_database_open",
+      "category": "malformed_database_open",
+      "threat": "A malformed or tampered database/page body is opened as if it were trusted durable engine state.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "SB-STRUCTURED-PAGE-BODY-CHECKSUM-MISMATCH",
+        "SB-PAGE-CHECKSUM-MISMATCH",
+        "SB-PAGE-BODY-AGREEMENT-UNSUPPORTED-BODY-KIND"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/storage/page/structured_page_body.cpp",
+          "tokens": [
+            "SB-STRUCTURED-PAGE-BODY-CHECKSUM-MISMATCH",
+            "SB-STRUCTURED-PAGE-BODY-FORMAT-UNSUPPORTED",
+            "SB-STRUCTURED-PAGE-BODY-TRUNCATED"
+          ]
+        },
+        {
+          "path": "project/tests/engine_listener_enterprise/engine_listener_page_body_registry_conformance.cpp",
+          "tokens": [
+            "corrupted structured page body parsed successfully",
+            "local page body parser is unavailable",
+            "catalog page parse failed"
+          ]
+        },
+        {
+          "path": "project/tests/release/public_page_body_checksum_agreement_gate.cpp",
+          "tokens": [
+            "fast checksum mismatch should fail closed",
+            "strong checksum profile should use SHA-256",
+            "specialized body family mismatch should fail closed"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_catalog_corruption",
+      "category": "catalog_corruption",
+      "threat": "A local catalog or protected-material catalog is tampered after durable publication.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "SB-CATALOG-PAGE-BODY-CHECKSUM-MISMATCH",
+        "SECURITY.PROTECTED_MATERIAL.DURABLE_CATALOG_INVALID",
+        "SB-CATALOG-RECORD-CODEC-VERSION-UNSUPPORTED"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/storage/page/catalog_page.cpp",
+          "tokens": [
+            "SB-CATALOG-PAGE-BODY-CHECKSUM-MISMATCH",
+            "SB-CATALOG-PAGE-BODY-FORMAT-UNSUPPORTED",
+            "SB-CATALOG-PAGE-BODY-PAYLOAD-CHECKSUM-MISMATCH"
+          ]
+        },
+        {
+          "path": "project/tests/engine_listener_enterprise/engine_listener_protected_material_durable_catalog_conformance.cpp",
+          "tokens": [
+            "tampered protected material catalog did not fail closed",
+            "protected material binary catalog contains plaintext secret marker",
+            "protected material catalog accepted process memory without database path"
+          ]
+        },
+        {
+          "path": "project/tests/release/public_upgrade_migration_gate.cpp",
+          "tokens": [
+            "SB-CATALOG-RECORD-CODEC-VERSION-UNSUPPORTED",
+            "PCR-136 future catalog record version was accepted",
+            "PCR-136 future catalog page format was accepted"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_replay_attack",
+      "category": "replay_attack",
+      "threat": "A previously valid listener management envelope or authentication context is replayed.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "LISTENER.MANAGEMENT.REPLAY_DETECTED",
+        "MCP.DBBT_REPLAY_DETECTED",
+        "SERVER.SESSION_CONTROL.REPLAY_REFUSED"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/listener/listener_runtime.cpp",
+          "tokens": [
+            "LISTENER.MANAGEMENT.REPLAY_DETECTED",
+            "management envelope replay was detected",
+            "MCP.DBBT_REPLAY_DETECTED"
+          ]
+        },
+        {
+          "path": "project/src/server/session_registry.cpp",
+          "tokens": [
+            "auth_context_replay_refused",
+            "binding_sequence_replay",
+            "takeover_sequence_replay"
+          ]
+        },
+        {
+          "path": "project/tests/engine_listener_enterprise/engine_listener_management_envelope_conformance.cpp",
+          "tokens": [
+            "duplicate live SBME envelope must be refused as replay",
+            "duplicate SBME envelope must report replay diagnostic"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_downgrade_attack",
+      "category": "downgrade_attack",
+      "threat": "A client or artifact requests an older TLS, database, catalog, or startup format to bypass current security policy.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "SECURITY.AUTHENTICATION.TLS_DOWNGRADE_REFUSED",
+        "ENGINE.DBLC_FORMAT_DOWNGRADE_REFUSED",
+        "SB-CLUSTER-CATALOG-SCHEMA-DOWNGRADE-REFUSED",
+        "SB-STARTUP-STATE-FORMAT-DOWNGRADE-REFUSED"
+      ],
+      "evidence": [
+        {
+          "path": "project/tests/engine_listener_enterprise/engine_listener_tls_channel_binding_conformance.cpp",
+          "tokens": [
+            "TLS downgrade refusal must be enforced before handoff",
+            "SECURITY.AUTHENTICATION.TLS_DOWNGRADE_REFUSED",
+            "TLS channel binding or downgrade evidence did not survive encode/decode"
+          ]
+        },
+        {
+          "path": "project/tests/release/public_upgrade_migration_gate.cpp",
+          "tokens": [
+            "ENGINE.DBLC_FORMAT_DOWNGRADE_REFUSED",
+            "SB-CLUSTER-CATALOG-SCHEMA-DOWNGRADE-REFUSED",
+            "SB-STARTUP-STATE-FORMAT-DOWNGRADE-REFUSED"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_recovery_authority_spoofing",
+      "category": "recovery_authority_spoofing",
+      "threat": "A backup, archive, cluster, or write-after path claims recovery authority that must remain MGA-owned.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "BACKUP_FORWARD_AUTHORITATIVE_WAL_FORBIDDEN",
+        "BACKUP_UPDATE_AUTHORITATIVE_WAL_FORBIDDEN",
+        "ARCHIVE_MGA_CLEANUP_AUTHORITY_REQUIRED",
+        "BACKUP_FORWARD_CLUSTER_PROVIDER_REQUIRED"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/engine/internal_api/backup_archive/backup_archive_api.cpp",
+          "tokens": [
+            "BACKUP_FORWARD_AUTHORITATIVE_WAL_FORBIDDEN",
+            "BACKUP_UPDATE_AUTHORITATIVE_WAL_FORBIDDEN",
+            "ARCHIVE_MGA_CLEANUP_AUTHORITY_REQUIRED",
+            "write_after_recovery_authority",
+            "cluster_recovery_authority"
+          ]
+        },
+        {
+          "path": "project/tests/release/public_backup_forward_session_gate.cpp",
+          "tokens": [
+            "BACKUP_FORWARD_CLUSTER_PROVIDER_REQUIRED",
+            "BACKUP_FORWARD_AUTHORITATIVE_WAL_FORBIDDEN"
+          ]
+        },
+        {
+          "path": "project/tests/release/public_archive_before_reclaim_gate.cpp",
+          "tokens": [
+            "ARCHIVE_MGA_CLEANUP_AUTHORITY_REQUIRED",
+            "ARCHIVE_CLUSTER_PROVIDER_REQUIRED"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "enterprise_threat_backup_archive_misuse",
+      "category": "backup_archive_misuse",
+      "threat": "Backup, restore, PITR, archive, or delta update requests use untrusted manifests, missing policy, live-file shortcuts, or out-of-coverage targets.",
+      "expected_result": "fail_closed",
+      "diagnostic_codes": [
+        "BACKUP_POLICY_REQUIRED",
+        "BACKUP_ENGINE_OWNED_PATH_REQUIRED",
+        "RESTORE_INSPECTION_OPEN_REQUIRED",
+        "RESTORE_MANIFEST_CHECKSUM_INVALID",
+        "PITR_TARGET_OUTSIDE_COVERAGE"
+      ],
+      "evidence": [
+        {
+          "path": "project/src/engine/internal_api/backup_archive/backup_archive_api.cpp",
+          "tokens": [
+            "BACKUP_POLICY_REQUIRED",
+            "BACKUP_ENGINE_OWNED_PATH_REQUIRED",
+            "RESTORE_INSPECTION_OPEN_REQUIRED",
+            "RESTORE_MANIFEST_CHECKSUM_INVALID",
+            "PITR_TARGET_OUTSIDE_COVERAGE"
+          ]
+        },
+        {
+          "path": "project/tests/release/public_backup_update_coverage_gate.cpp",
+          "tokens": [
+            "PITR_TARGET_OUTSIDE_COVERAGE:transaction",
+            "BACKUP_UPDATE_IDEMPOTENCY_KEY_MISMATCH"
+          ]
+        }
+      ]
+    }
+  ]
+}

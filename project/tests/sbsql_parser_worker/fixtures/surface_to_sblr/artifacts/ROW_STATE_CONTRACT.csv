@@ -1,0 +1,10 @@
+state,allowed_final_state,meaning,required_next_action
+inventory_only,no,Row exists in ledgers but lacks implementation evidence,Implement the row: add parser/binder/lowering/server/engine/function evidence or compile-gated cluster-provider evidence
+lowering_family_mapped,no,Row maps only to an SBLR operation family,Add exact canonical function id or engine API operation id and route fixtures
+parser_bound,no,Parser and bound-AST evidence exists but SBLR/server/engine evidence is incomplete,Complete exact lowering verifier server admission and engine behavior
+sblr_verified,no,SBLR verifies but server/engine route evidence is incomplete,Complete server admission engine behavior result and diagnostic fixtures
+server_admitted,no,Server admits the row but engine/result fixtures are incomplete,Complete engine behavior and result/render fixtures
+engine_runtime_implemented,no,Engine behavior exists but full-route fixture is missing,Add positive or exact-failure full-route CTest
+e2e_passed,yes,Noncluster/profile-scoped row passes complete parser to engine route,Keep regression fixture in published suite
+exact_refusal_passed,conditional,Allowed only for default/open-core cluster-provider unsupported responses on cluster-private rows or rows removed by canonical spec; cluster-enabled builds must route the same cluster rows through the separate provider target and return the provider/stub response,Record diagnostic/provider proof and ensure no direct open-core private-cluster executor reachability
+private_profile_implemented,conditional,Private cluster/profile implementation exists outside public route,Record private-profile evidence and public fail-closed gate

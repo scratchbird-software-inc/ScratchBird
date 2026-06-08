@@ -1,0 +1,27 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# SPDX-License-Identifier: MPL-2.0
+
+Package: scratchbird
+Type: Package
+Title: ScratchBird Native Driver
+Version: 0.1.0
+Authors@R: person("ScratchBird Contributors", email = "dev@scratchbird.local", role = c("aut", "cre"))
+Author: ScratchBird Contributors
+Maintainer: ScratchBird Contributors <dev@scratchbird.local>
+Description: Native ScratchBird driver using the ScratchBird wire protocol.
+SystemRequirements: OpenSSL (libssl, libcrypto)
+License: file LICENSE
+Encoding: UTF-8
+LazyData: true
+Imports:
+    DBI,
+    openssl,
+    jsonlite,
+    methods
+Suggests:
+    testthat

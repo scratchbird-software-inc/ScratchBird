@@ -1,0 +1,27 @@
+{
+  "schema": "scratchbird.beta.performance.baseline.v1",
+  "measurement_policy": {
+    "purpose": "beta readiness severe-regression tripwire",
+    "workload": "single-process core engine SBLR/internal API lifecycle DDL DML query route",
+    "iterations": "bounded deterministic smoke sample",
+    "runtime_output": "build tree only",
+    "execution_plan_artifacts": "not_ctest_inputs"
+  },
+  "platform_scope": {
+    "target": "linux-x86_64-glibc-core",
+    "build_type": "debug_or_release_dev_build",
+    "cluster_mode": "noncluster core; cluster provider boundary is out of this workload"
+  },
+  "thresholds": {
+    "startup_open_latency_ms_max": 5000,
+    "session_begin_commit_latency_ms_max": 2000,
+    "simple_query_latency_ms_max": 1000,
+    "insert_rows_per_second_min": 25,
+    "select_rows_per_second_min": 25,
+    "rss_growth_bytes_max": 268435456,
+    "severe_regression_factor": 4,
+    "repeat_count": 5,
+    "max_relative_variance": 4,
+    "sample_rows": 128
+  }
+}

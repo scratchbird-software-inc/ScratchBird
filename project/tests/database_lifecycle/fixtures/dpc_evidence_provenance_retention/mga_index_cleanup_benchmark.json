@@ -1,0 +1,29 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "claim_id": "DPC-072-MGA-INDEX-CLEANUP",
+  "evidence_kind": "benchmark-json",
+  "result_digest_source": {
+    "claim_id": "DPC-072-MGA-INDEX-CLEANUP",
+    "workloads": [
+      "wl04-update-cleanup",
+      "wl06-delete-update-rollback",
+      "long-transaction-bloat"
+    ],
+    "cleanup_progress": "at-least-half",
+    "visibility_equality": "passed",
+    "authoritative_horizon": "engine-mga"
+  },
+  "result_hash": "f4c4d3378235df61009b2279d46abe5b28c54a0b465b1ada2bd1917a0eb196b5",
+  "retained_logs": {
+    "json_summary": "retained",
+    "csv_results": "retained",
+    "cleanup_diagnostics": "retained"
+  },
+  "authority": {
+    "engine_mga_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_finality_authority": false
+  }
+}

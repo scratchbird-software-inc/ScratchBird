@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "identity_authority": "uuid",
+  "groups": [
+    {
+      "group_uuid": "018f7a10-1280-7000-8000-000000000200",
+      "group_code": "PUBLIC",
+      "description": "Baseline public group with no implicit engine authority."
+    },
+    {
+      "group_uuid": "018f7a10-1280-7000-8000-000000000201",
+      "group_code": "APP",
+      "description": "Application runtime users."
+    },
+    {
+      "group_uuid": "018f7a10-1280-7000-8000-000000000202",
+      "group_code": "DBA",
+      "description": "Local database administrators."
+    },
+    {
+      "group_uuid": "018f7a10-1280-7000-8000-000000000203",
+      "group_code": "SEC",
+      "description": "Security administrators."
+    },
+    {
+      "group_uuid": "018f7a10-1280-7000-8000-000000000204",
+      "group_code": "AUD",
+      "description": "Audit readers."
+    },
+    {
+      "group_uuid": "018f7a10-1280-7000-8000-000000000205",
+      "group_code": "OPS",
+      "description": "Operators."
+    }
+  ],
+  "memberships": [
+    {
+      "member_uuid": "018f7a10-1280-7000-8000-000000000201",
+      "member_kind": "group",
+      "parent_uuid": "018f7a10-1280-7000-8000-000000000100",
+      "parent_kind": "role"
+    },
+    {
+      "member_uuid": "018f7a10-1280-7000-8000-000000000202",
+      "member_kind": "group",
+      "parent_uuid": "018f7a10-1280-7000-8000-000000000101",
+      "parent_kind": "role"
+    },
+    {
+      "member_uuid": "018f7a10-1280-7000-8000-000000000203",
+      "member_kind": "group",
+      "parent_uuid": "018f7a10-1280-7000-8000-000000000102",
+      "parent_kind": "role"
+    },
+    {
+      "member_uuid": "018f7a10-1280-7000-8000-000000000204",
+      "member_kind": "group",
+      "parent_uuid": "018f7a10-1280-7000-8000-000000000103",
+      "parent_kind": "role"
+    },
+    {
+      "member_uuid": "018f7a10-1280-7000-8000-000000000205",
+      "member_kind": "group",
+      "parent_uuid": "018f7a10-1280-7000-8000-000000000104",
+      "parent_kind": "role"
+    }
+  ]
+}

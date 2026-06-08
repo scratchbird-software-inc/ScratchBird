@@ -1,0 +1,96 @@
+{
+  "search_key": "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+  "claim_id": "DPC-073-SEARCH-VECTOR-GENERATION",
+  "lane_id": "search_vector_generation_enabled",
+  "lane_title": "Search and vector generation where enabled",
+  "claim_status": "accepted",
+  "accepted_optimization_claim": true,
+  "elapsed_time_only": false,
+  "transaction_sensitive": true,
+  "before_profile": {
+    "profile_digest_source": "DPC-073:search_vector_generation_enabled:before",
+    "profile_digest": "838932fca1afe76d509218c76958fe8bdf89c64e9b2cf5dcc31840ab3ac6f47d",
+    "dominant_hot_paths": [
+      {"name": "exact_search_candidate_scan", "share_percent": 37.0},
+      {"name": "vector_exact_distance_loop", "share_percent": 27.0}
+    ]
+  },
+  "after_profile": {
+    "profile_digest_source": "DPC-073:search_vector_generation_enabled:after",
+    "profile_digest": "da4746325e96e73b618fe85515cc19042cd08eb6d5cec2b3543fa88a7906f17e",
+    "dominant_hot_paths": [
+      {"name": "published_segment_probe", "share_percent": 24.0},
+      {"name": "sealed_vector_generation_probe", "share_percent": 20.0}
+    ]
+  },
+  "changed_hot_paths": [
+    "exact_search_candidate_scan changed to published_segment_probe",
+    "vector_exact_distance_loop changed to sealed_vector_generation_probe"
+  ],
+  "delta_explanation": "Enabled search and vector generation profiles attribute the improvement to published segment and sealed generation probes while retaining exact fallback correctness.",
+  "remaining_bottleneck": "",
+  "measurement_families": {
+    "cpu_samples": {"before": 3760, "after": 1960, "unit": "samples", "attribution": "candidate comparisons reduced"},
+    "lock_wait_mutex_hold_timing": {"before": 410, "after": 330, "unit": "microseconds_p95", "attribution": "published generations are read stable"},
+    "io_syscall_counts": {"before": 840, "after": 530, "unit": "calls", "attribution": "segment pruning"},
+    "allocator_pressure": {"before": 1330, "after": 720, "unit": "allocations", "attribution": "candidate buffers reused"},
+    "parser_lowering_timing": {"before": 74, "after": 74, "unit": "microseconds", "attribution": "same query route"},
+    "sblr_admission_dispatch_timing": {"before": 110, "after": 100, "unit": "microseconds", "attribution": "same SBLR route with enabled features"},
+    "plan_cache_hit_miss_invalidation_timing": {"before": 69, "after": 51, "unit": "microseconds", "attribution": "feature-qualified plan cache hit"},
+    "metadata_cache_hit_miss_timing": {"before": 88, "after": 57, "unit": "microseconds", "attribution": "generation metadata hit"},
+    "statistics_epoch_plan_selection_timing": {"before": 92, "after": 58, "unit": "microseconds", "attribution": "segment statistics selected"},
+    "page_allocation_demand_grant_timing": {"before": 310, "after": 240, "unit": "microseconds", "attribution": "read lane mostly stable"},
+    "index_maintenance_timing_by_family": {"before": 740, "after": 470, "unit": "microseconds", "attribution": "search and vector family generation accounted"},
+    "agent_queue_wake_run_throttle_completion_timing": {"before": 390, "after": 310, "unit": "microseconds", "attribution": "generation agent bounded"}
+  },
+  "result_correctness_hash_pointer": {
+    "digest_source": "DPC-073:search_vector_generation_enabled:result",
+    "digest": "7f13f423155a9c17c0b2f20175c9ecf8fd2a98463c0fe44ab3758964bb1ad2a8",
+    "correctness_anchor": "exact fallback and enabled generation result equality"
+  },
+  "source_anchor": {
+    "path": "project/tests/database_lifecycle/dpc_specialized_index_benchmark_gate.cpp",
+    "search_key": "DPC_SPECIALIZED_INDEX_BENCHMARK_GATE"
+  },
+  "route_or_source_anchor": "project/tests/database_lifecycle/dpc_vector_generation_publication_gate.cpp#DPC_VECTOR_GENERATION_PUBLICATION_GATE",
+  "ctest_name": "dpc_profiler_hot_path_attribution_gate",
+  "ctest_labels": [
+    "dpc_profiler_hot_path_attribution_gate",
+    "DPC-073",
+    "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+    "DPC_P6_PROFILER_ATTRIBUTION_READY",
+    "DPC_AUDIT_PROFILER_ATTRIBUTION",
+    "DPC_DEP_PROFILER_ATTRIBUTION",
+    "profiler_attribution",
+    "database_lifecycle",
+    "mga_transaction_regression"
+  ],
+  "build_instrumentation": {
+    "build_type": "Release diagnostic",
+    "profiler_mode": "compact-retained-attribution",
+    "hotpath_trace": true,
+    "exec_profile_trace": true,
+    "prepared_trace": true,
+    "source_state": "fixture-retained-source-state"
+  },
+  "agent_metrics": {
+    "bounded": true,
+    "queue_max": 9,
+    "wake_max": 6,
+    "run_budget_ms": 30,
+    "throttle_events_max": 2,
+    "completion_state": "completed"
+  },
+  "authority": {
+    "mga_authority_declaration": "engine_mga_transaction_inventory_authority",
+    "engine_mga_transaction_inventory_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "driver_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_log_finality_authority": false,
+    "timestamp_order_finality_authority": false,
+    "uuid_order_finality_authority": false,
+    "event_stream_finality_authority": false
+  }
+}

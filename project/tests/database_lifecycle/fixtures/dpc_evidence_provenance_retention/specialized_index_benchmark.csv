@@ -1,0 +1,4 @@
+search_key,claim_id,workload,baseline_result,current_result,baseline_proxy,current_proxy,equality_status,result_hash
+DPC_EVIDENCE_PROVENANCE_RETENTION_GATE,DPC-072-SPECIALIZED-INDEX,time-range,disabled-exact,enabled-prune,900,260,passed,6bf64d59c3d818c9e038ec5ec814e243d1f99ded431f615876e57a56fc9d4e98
+DPC_EVIDENCE_PROVENANCE_RETENTION_GATE,DPC-072-SPECIALIZED-INDEX,inverted-search,disabled-exact,segment-search,700,190,passed,08dc58661168f0d70946f9aee58bfcd1b1f83edaf4cfa2cb132a418889e1b2e1
+DPC_EVIDENCE_PROVENANCE_RETENTION_GATE,DPC-072-SPECIALIZED-INDEX,vector-ann,disabled-exact,sealed-ann,640,210,passed,e42014d110911d52fbd9065b7c38f5c83887530d0a98e8bbefe7a632ad03146c

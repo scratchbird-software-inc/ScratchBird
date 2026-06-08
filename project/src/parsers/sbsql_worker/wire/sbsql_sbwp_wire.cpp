@@ -1,0 +1,2789 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#include "wire/sbsql_test_wire.hpp"
+
+#include "embedded/embedded_engine_client.hpp"
+#include "ipc/sbps_client.hpp"
+#include "rendering/rendering.hpp"
+#include "uuid.hpp"
+
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cctype>
+#include <charconv>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <iomanip>
+#include <limits>
+#include <map>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <winsock2.h>
+#ifdef UuidToString
+#undef UuidToString
+#endif
+#else
+#include <cerrno>
+#include <unistd.h>
+#endif
+
+namespace scratchbird::parser::sbsql {
+namespace {
+
+namespace platform = scratchbird::core::platform;
+namespace uuid = scratchbird::core::uuid;
+
+constexpr std::size_t kSbwpHeaderSize = 40;
+constexpr std::uint8_t kSbwpMajor = 1;
+constexpr std::uint8_t kSbwpMinor = 1;
+constexpr std::uint16_t kSbwpVersionMin = 0x0100;
+constexpr std::uint16_t kSbwpVersionCurrent = 0x0101;
+constexpr std::uint32_t kMaxPayloadBytes = 64u * 1024u * 1024u;
+constexpr std::uint8_t kFrameFlagCompressed = 1u << 0;
+constexpr std::uint8_t kFrameFlagPartial = 1u << 1;
+constexpr std::uint8_t kFrameFlagKnownMask = kFrameFlagCompressed | kFrameFlagPartial;
+
+constexpr std::uint32_t kOidBool = 16;
+constexpr std::uint32_t kOidInt8 = 20;
+constexpr std::uint32_t kOidInt4 = 23;
+constexpr std::uint32_t kOidText = 25;
+constexpr std::uint32_t kOidFloat8 = 701;
+constexpr std::uint32_t kOidNumeric = 1700;
+
+enum Msg : std::uint8_t {
+  kStartup = 0x01,
+  kAuthResponse = 0x02,
+  kQuery = 0x03,
+  kParse = 0x04,
+  kBind = 0x05,
+  kDescribe = 0x06,
+  kExecute = 0x07,
+  kClose = 0x08,
+  kSync = 0x09,
+  kCancel = 0x0b,
+  kTerminate = 0x0c,
+  kCopyData = 0x0d,
+  kCopyDone = 0x0e,
+  kCopyFail = 0x0f,
+  kSblrExecute = 0x10,
+  kSubscribe = 0x11,
+  kUnsubscribe = 0x12,
+  kStreamControl = 0x14,
+  kTxnBegin = 0x15,
+  kTxnCommit = 0x16,
+  kTxnRollback = 0x17,
+  kTxnSavepoint = 0x18,
+  kTxnRelease = 0x19,
+  kTxnRollbackTo = 0x1a,
+  kPing = 0x1b,
+  kSetOption = 0x1c,
+  kResetSession = 0x21,
+  kReauth = 0x22,
+  kTraceContext = 0x23,
+
+  kAuthRequest = 0x40,
+  kAuthOk = 0x41,
+  kReady = 0x43,
+  kRowDescription = 0x44,
+  kDataRow = 0x45,
+  kCommandComplete = 0x46,
+  kError = 0x48,
+  kParseComplete = 0x4a,
+  kBindComplete = 0x4b,
+  kCloseComplete = 0x4c,
+  kParameterStatus = 0x4f,
+  kParameterDescription = 0x50,
+  kCopyInResponse = 0x51,
+  kNotification = 0x54,
+  kPong = 0x5d,
+  kQueryProgress = 0x60,
+  kServerInfo = 0x61,
+  kStateNotification = 0x62,
+  kCancelAck = 0x65,
+  kCancelled = 0x66,
+  kMultiResultBegin = 0x67,
+  kMultiResultEnd = 0x68,
+  kGeneratedKeys = 0x69,
+  kOutParameters = 0x6a,
+  kBatchResult = 0x6b,
+  kPipelineStatus = 0x6c,
+  kArrayBindStatus = 0x6d,
+  kBulkRejectData = 0x6e,
+  kLobLocator = 0x6f,
+  kLobChunk = 0x70,
+  kLobClose = 0x71,
+  kCursorStatus = 0x72,
+  kFailoverHint = 0x73,
+  kHeartbeat = 0x80,
+  kExtension = 0x81,
+};
+
+enum class ReadyReason : std::uint8_t {
+  kStartup = 1,
+  kCommandComplete = 2,
+  kErrorRecovered = 3,
+  kResetComplete = 4,
+  kReauthComplete = 5,
+  kCancelOutcome = 6,
+  kStateChange = 7,
+};
+
+constexpr std::uint64_t FeatureBit(unsigned bit) {
+  return 1ull << bit;
+}
+
+constexpr std::uint64_t kFeatureCompression = FeatureBit(0);
+constexpr std::uint64_t kFeatureStreaming = FeatureBit(1);
+constexpr std::uint64_t kFeatureSblr = FeatureBit(2);
+constexpr std::uint64_t kFeatureNotifications = FeatureBit(4);
+constexpr std::uint64_t kFeatureBatch = FeatureBit(6);
+constexpr std::uint64_t kFeaturePipeline = FeatureBit(7);
+constexpr std::uint64_t kFeatureBinaryCopy = FeatureBit(8);
+constexpr std::uint64_t kFeatureSavepoints = FeatureBit(9);
+constexpr std::uint64_t kFeatureMultiResult = FeatureBit(13);
+constexpr std::uint64_t kFeatureGeneratedKeys = FeatureBit(14);
+constexpr std::uint64_t kFeatureOutParameters = FeatureBit(15);
+constexpr std::uint64_t kFeatureArrayBind = FeatureBit(16);
+constexpr std::uint64_t kFeatureBulkRejects = FeatureBit(17);
+constexpr std::uint64_t kFeatureLobLocator = FeatureBit(18);
+constexpr std::uint64_t kFeatureCursors = FeatureBit(19);
+constexpr std::uint64_t kFeatureCopyBackpressure = FeatureBit(20);
+constexpr std::uint64_t kFeatureSessionReset = FeatureBit(21);
+constexpr std::uint64_t kFeatureReauth = FeatureBit(22);
+constexpr std::uint64_t kFeatureFailoverHints = FeatureBit(23);
+constexpr std::uint64_t kFeatureTraceContext = FeatureBit(24);
+constexpr std::uint8_t kCopyFormatCanonicalRowFieldsText = 0x00;
+constexpr std::uint32_t kCopyDefaultWindowBytes = 64u * 1024u;
+constexpr std::size_t kCopyExecuteRowsPerSblrEnvelope = 50000;
+constexpr std::uint64_t kAutoCursorFetchRows = 1024;
+constexpr std::uint64_t kAutoCursorFetchBytes = 4u * 1024u * 1024u;
+constexpr std::uint64_t kKnownCoreFeatureMask = (FeatureBit(25) - 1u);
+constexpr std::uint64_t kP1OnlyFeatureMask =
+    kFeatureMultiResult | kFeatureGeneratedKeys | kFeatureOutParameters |
+    kFeatureArrayBind | kFeatureBulkRejects | kFeatureLobLocator | kFeatureCursors |
+    kFeatureCopyBackpressure | kFeatureSessionReset | kFeatureReauth |
+    kFeatureFailoverHints | kFeatureTraceContext;
+constexpr std::uint64_t kServerSupportedFeatureMask =
+    kFeatureStreaming | kFeatureNotifications | kFeatureBatch | kFeaturePipeline | kFeatureMultiResult |
+    kFeatureGeneratedKeys | kFeatureOutParameters | kFeatureArrayBind |
+    kFeatureBulkRejects | kFeatureLobLocator | kFeatureCursors |
+    kFeatureSessionReset | kFeatureReauth | kFeatureTraceContext;
+constexpr std::uint32_t kConnectFlagDormantReattach = 1u << 0;
+constexpr std::uint32_t kConnectFlagBoundDbUuid = 1u << 1;
+constexpr std::uint32_t kConnectFlagSqlCompileAssist = 1u << 2;
+constexpr std::uint32_t kConnectFlagManagerDbbt = 1u << 3;
+constexpr std::uint32_t kConnectFlagMultiplexRequest = 1u << 4;
+constexpr std::uint32_t kKnownConnectFlagMask =
+    kConnectFlagDormantReattach | kConnectFlagBoundDbUuid |
+    kConnectFlagSqlCompileAssist | kConnectFlagManagerDbbt |
+    kConnectFlagMultiplexRequest;
+
+struct Header {
+  std::uint8_t msg_type{0};
+  std::uint8_t flags{0};
+  std::uint32_t length{0};
+  std::uint32_t sequence{0};
+  std::array<std::uint8_t, 16> attachment_id{};
+  std::uint64_t txn_id{0};
+};
+
+struct Frame {
+  Header header;
+  std::vector<std::uint8_t> payload;
+};
+
+struct PreparedStatement {
+  std::string sql;
+  std::vector<std::uint32_t> param_types;
+};
+
+struct BoundPortal {
+  std::string sql;
+  std::vector<std::uint32_t> param_types;
+};
+
+struct SbwpColumn {
+  std::string name;
+  std::uint32_t type_oid{kOidText};
+  std::int16_t type_size{-1};
+  std::int32_t type_modifier{-1};
+  std::uint8_t format{0};
+  bool nullable{true};
+};
+
+struct RowSet {
+  std::vector<SbwpColumn> columns;
+  std::vector<std::vector<std::optional<std::string>>> rows;
+};
+
+struct CopyImportRow {
+  std::vector<std::pair<std::string, std::optional<std::string>>> fields;
+};
+
+struct CopyImportState {
+  bool active{false};
+  bool native_bulk_ingest{false};
+  bool native_bulk_ingest_enabled{true};
+  std::string sql;
+  std::string target_object_uuid;
+  std::string format_family{"canonical_row_fields"};
+  std::vector<CopyImportRow> rows;
+};
+
+struct SbwpSessionState {
+  std::array<std::uint8_t, 16> attachment_id{};
+  std::array<std::uint8_t, 16> session_uuid{};
+  std::uint32_t server_sequence{0};
+  std::uint64_t txn_id{0};
+  std::uint64_t snapshot_visible_through_local_transaction_id{0};
+  std::uint64_t security_policy_epoch{0};
+  bool authenticated{false};
+  bool p1_payloads{false};
+  bool ready_sent_for_current_operation{false};
+  std::uint16_t selected_protocol_version{kSbwpVersionCurrent};
+  std::uint64_t negotiated_features{0};
+  std::string authenticated_user_uuid;
+  std::string auth_provider_family;
+  std::string principal_claim;
+  std::map<std::string, std::string> session_parameters;
+  std::map<std::string, PreparedStatement> statements;
+  std::map<std::string, BoundPortal> portals;
+  CopyImportState copy_import;
+};
+
+std::uint16_t ReadU16(const std::vector<std::uint8_t>& data, std::size_t off) {
+  if (off + 2 > data.size()) return 0;
+  return static_cast<std::uint16_t>(data[off]) |
+         static_cast<std::uint16_t>(static_cast<std::uint16_t>(data[off + 1]) << 8u);
+}
+
+std::uint32_t ReadU32(const std::vector<std::uint8_t>& data, std::size_t off) {
+  if (off + 4 > data.size()) return 0;
+  std::uint32_t out = 0;
+  for (int shift = 0; shift < 32; shift += 8) {
+    out |= static_cast<std::uint32_t>(data[off + static_cast<std::size_t>(shift / 8)]) << shift;
+  }
+  return out;
+}
+
+std::uint64_t ReadU64(const std::vector<std::uint8_t>& data, std::size_t off) {
+  if (off + 8 > data.size()) return 0;
+  std::uint64_t out = 0;
+  for (int shift = 0; shift < 64; shift += 8) {
+    out |= static_cast<std::uint64_t>(data[off + static_cast<std::size_t>(shift / 8)]) << shift;
+  }
+  return out;
+}
+
+std::int32_t ReadI32(const std::vector<std::uint8_t>& data, std::size_t off) {
+  return static_cast<std::int32_t>(ReadU32(data, off));
+}
+
+void PutU16(std::vector<std::uint8_t>* out, std::uint16_t value) {
+  out->push_back(static_cast<std::uint8_t>(value & 0xffu));
+  out->push_back(static_cast<std::uint8_t>((value >> 8u) & 0xffu));
+}
+
+void PutU32(std::vector<std::uint8_t>* out, std::uint32_t value) {
+  for (int shift = 0; shift < 32; shift += 8) {
+    out->push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
+  }
+}
+
+void PutU64(std::vector<std::uint8_t>* out, std::uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) {
+    out->push_back(static_cast<std::uint8_t>((value >> shift) & 0xffu));
+  }
+}
+
+void PutI16(std::vector<std::uint8_t>* out, std::int16_t value) {
+  PutU16(out, static_cast<std::uint16_t>(value));
+}
+
+void PutI32(std::vector<std::uint8_t>* out, std::int32_t value) {
+  PutU32(out, static_cast<std::uint32_t>(value));
+}
+
+void PutUuid(std::vector<std::uint8_t>* out, const std::array<std::uint8_t, 16>& uuid) {
+  out->insert(out->end(), uuid.begin(), uuid.end());
+}
+
+void PutZeroUuid(std::vector<std::uint8_t>* out) {
+  out->insert(out->end(), 16, 0);
+}
+
+void PutBytes(std::vector<std::uint8_t>* out,
+              const std::uint8_t* data,
+              std::size_t size) {
+  out->insert(out->end(), data, data + size);
+}
+
+void PutLpStr(std::vector<std::uint8_t>* out, std::string_view value) {
+  PutU32(out, static_cast<std::uint32_t>(value.size()));
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+bool ReadLpStr(const std::vector<std::uint8_t>& payload,
+               std::size_t* off,
+               std::string* value) {
+  if (*off + 4 > payload.size()) return false;
+  const std::uint32_t length = ReadU32(payload, *off);
+  *off += 4;
+  if (*off + length > payload.size()) return false;
+  value->assign(reinterpret_cast<const char*>(payload.data() + *off), length);
+  *off += length;
+  return true;
+}
+
+void PutNullableText(std::vector<std::uint8_t>* out, std::string_view value) {
+  out->push_back(3);
+  PutU32(out, static_cast<std::uint32_t>(value.size()));
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+void PutAbsentNullableText(std::vector<std::uint8_t>* out) {
+  out->push_back(0);
+  PutU32(out, 0);
+}
+
+void PutHash256Zero(std::vector<std::uint8_t>* out) {
+  out->insert(out->end(), 32, 0);
+}
+
+std::string Upper(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+    return static_cast<char>(std::toupper(ch));
+  });
+  return value;
+}
+
+std::string Trim(std::string value) {
+  auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
+  value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
+  value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(), value.end());
+  return value;
+}
+
+bool StartsWithWord(std::string_view text, std::string_view word) {
+  if (text.size() < word.size() || text.substr(0, word.size()) != word) return false;
+  return text.size() == word.size() ||
+         (!std::isalnum(static_cast<unsigned char>(text[word.size()])) && text[word.size()] != '_');
+}
+
+std::string StripSqlTerminator(std::string sql) {
+  sql = Trim(std::move(sql));
+  while (!sql.empty() && sql.back() == ';') {
+    sql.pop_back();
+    sql = Trim(std::move(sql));
+  }
+  return sql;
+}
+
+std::string ReadSizedString(const std::vector<std::uint8_t>& payload, std::size_t* off) {
+  if (*off + 4 > payload.size()) return {};
+  const std::uint32_t size = ReadU32(payload, *off);
+  *off += 4;
+  if (*off + size > payload.size()) {
+    *off = payload.size();
+    return {};
+  }
+  std::string out(reinterpret_cast<const char*>(payload.data() + *off), size);
+  *off += size;
+  return out;
+}
+
+std::string ReadNullTerminatedSql(const std::vector<std::uint8_t>& payload, std::size_t off) {
+  if (off >= payload.size()) return {};
+  std::size_t end = off;
+  while (end < payload.size() && payload[end] != 0) ++end;
+  return std::string(reinterpret_cast<const char*>(payload.data() + off), end - off);
+}
+
+std::string ParseQuerySql(const std::vector<std::uint8_t>& payload) {
+  if (payload.size() < 12) return {};
+  return ReadNullTerminatedSql(payload, 12);
+}
+
+std::optional<PreparedStatement> ParsePreparedStatement(const std::vector<std::uint8_t>& payload,
+                                                        std::string* name) {
+  std::size_t off = 0;
+  *name = ReadSizedString(payload, &off);
+  std::string sql = ReadSizedString(payload, &off);
+  if (off + 4 > payload.size()) return std::nullopt;
+  const std::uint16_t param_count = ReadU16(payload, off);
+  off += 4;
+  PreparedStatement prepared;
+  prepared.sql = std::move(sql);
+  prepared.param_types.reserve(param_count);
+  for (std::uint16_t i = 0; i < param_count && off + 4 <= payload.size(); ++i) {
+    prepared.param_types.push_back(ReadU32(payload, off));
+    off += 4;
+  }
+  return prepared;
+}
+
+std::map<std::string, std::string> ParseStartupParams(const std::vector<std::uint8_t>& payload) {
+  std::map<std::string, std::string> out;
+  if (payload.size() < 12) return out;
+  std::size_t off = 12;
+  auto read_cstring = [&](std::string* value) -> bool {
+    if (off >= payload.size()) return false;
+    const auto start = off;
+    while (off < payload.size() && payload[off] != 0) ++off;
+    if (off >= payload.size()) return false;
+    value->assign(reinterpret_cast<const char*>(payload.data() + start), off - start);
+    ++off;
+    return true;
+  };
+  for (;;) {
+    std::string key;
+    if (!read_cstring(&key)) break;
+    if (key.empty()) break;
+    std::string value;
+    if (!read_cstring(&value)) break;
+    out[std::move(key)] = std::move(value);
+  }
+  return out;
+}
+
+bool IsKnownConnectKey(std::string_view key) {
+  return key == "application_name" ||
+         key == "auth_forbidden_methods" ||
+         key == "auth_method_id" ||
+         key == "auth_method_payload" ||
+         key == "auth_payload_b64" ||
+         key == "auth_payload_json" ||
+         key == "auth_provider_profile" ||
+         key == "auth_required_methods" ||
+         key == "auth_require_channel_binding" ||
+         key == "calendar" ||
+         key == "charset" ||
+         key == "client_flags" ||
+         key == "client_encoding" ||
+         key == "database" ||
+         key == "decimal_locale" ||
+         key == "default_catalog" ||
+         key == "default_schema" ||
+         key == "keepalive_interval_ms" ||
+         key == "keepalive_timeout_ms" ||
+         key == "language" ||
+         key == "proxy_principal_assertion" ||
+         key == "role" ||
+         key == "statement_timeout_ms" ||
+         key == "timezone" ||
+         key == "time_zone" ||
+         key == "traceparent" ||
+         key == "tracestate" ||
+         key == "user" ||
+         key == "workload_identity_token";
+}
+
+bool LooksLikeP1Startup(const std::vector<std::uint8_t>& payload) {
+  if (payload.size() < 84) return false;
+  // Legacy startup begins with nul-terminated ASCII keys. P1 startup begins with
+  // little-endian version words; keep unsupported P1 windows on the P1 path so
+  // they fail closed instead of being reinterpreted as legacy key/value bytes.
+  return payload[1] <= 0x02u && payload[3] <= 0x02u;
+}
+
+struct StartupNegotiation {
+  bool p1{false};
+  bool ok{true};
+  bool close_after_error{false};
+  std::string sqlstate{"08P01"};
+  std::string message;
+  std::string detail;
+  std::map<std::string, std::string> params;
+  std::uint16_t selected_protocol_version{kSbwpVersionCurrent};
+  std::uint64_t negotiated_features{0};
+};
+
+std::string DecodeConnectValue(std::uint8_t value_type,
+                               const std::vector<std::uint8_t>& payload,
+                               std::size_t value_offset,
+                               std::uint32_t value_length) {
+  if (value_offset + value_length > payload.size()) return {};
+  const auto* data = payload.data() + value_offset;
+  switch (value_type) {
+    case 0x01:
+    case 0x05:
+    case 0x06:
+      return std::string(reinterpret_cast<const char*>(data), value_length);
+    case 0x02:
+      if (value_length == 8) return std::to_string(ReadU64(payload, value_offset));
+      if (value_length == 4) return std::to_string(ReadU32(payload, value_offset));
+      return {};
+    case 0x03:
+      return value_length > 0 && data[0] != 0 ? "true" : "false";
+    case 0x04: {
+      if (value_length != 16) return {};
+      static constexpr char kHex[] = "0123456789abcdef";
+      std::string out;
+      out.reserve(36);
+      for (std::size_t i = 0; i < 16; ++i) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) out.push_back('-');
+        out.push_back(kHex[data[i] >> 4u]);
+        out.push_back(kHex[data[i] & 0x0fu]);
+      }
+      return out;
+    }
+    default:
+      return {};
+  }
+}
+
+StartupNegotiation RejectStartup(std::string sqlstate,
+                                 std::string message,
+                                 std::string detail) {
+  StartupNegotiation rejected;
+  rejected.p1 = true;
+  rejected.ok = false;
+  rejected.close_after_error = true;
+  rejected.sqlstate = std::move(sqlstate);
+  rejected.message = std::move(message);
+  rejected.detail = std::move(detail);
+  return rejected;
+}
+
+StartupNegotiation ParseStartupNegotiation(const std::vector<std::uint8_t>& payload) {
+  StartupNegotiation negotiated;
+  if (!LooksLikeP1Startup(payload)) {
+    negotiated.params = ParseStartupParams(payload);
+    negotiated.negotiated_features = 0;
+    return negotiated;
+  }
+
+  negotiated.p1 = true;
+  const auto min_version = ReadU16(payload, 0);
+  const auto max_version = ReadU16(payload, 2);
+  const auto connect_flags = ReadU32(payload, 4);
+  const auto client_features = ReadU64(payload, 8);
+  const auto required_features = ReadU64(payload, 16);
+  const auto optional_features = ReadU64(payload, 24);
+  if (min_version > max_version) {
+    return RejectStartup("08P01",
+                         "SBWP.VERSION.NO_COMMON_VERSION",
+                         "startup protocol_min_version is greater than protocol_max_version");
+  }
+  if (max_version < kSbwpVersionMin || min_version > kSbwpVersionCurrent) {
+    return RejectStartup("08P01",
+                         "SBWP.VERSION.NO_COMMON_VERSION",
+                         "client and server protocol version windows do not overlap");
+  }
+  if ((connect_flags & ~kKnownConnectFlagMask) != 0) {
+    return RejectStartup("08P01",
+                         "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD",
+                         "startup connect_flags contains reserved bits");
+  }
+  if ((connect_flags & kConnectFlagDormantReattach) != 0 &&
+      (connect_flags & kConnectFlagMultiplexRequest) != 0) {
+    return RejectStartup("08P01",
+                         "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD",
+                         "dormant reattach and multiplex connect flags are mutually exclusive");
+  }
+  negotiated.selected_protocol_version = std::min<std::uint16_t>(max_version, kSbwpVersionCurrent);
+  if (negotiated.selected_protocol_version < kSbwpVersionCurrent &&
+      (required_features & kP1OnlyFeatureMask) != 0) {
+    return RejectStartup("0A000",
+                         "SBWP.FEATURE.REQUIRED_UNSUPPORTED",
+                         "required P1 native-wire feature is unavailable on the selected downgraded version");
+  }
+  const auto unknown_required = required_features & ~kKnownCoreFeatureMask;
+  if (unknown_required != 0) {
+    return RejectStartup("08P01",
+                         "SBWP.FEATURE.UNKNOWN_REQUIRED",
+                         "startup required an unknown core feature bit");
+  }
+  if ((required_features & ~client_features) != 0) {
+    return RejectStartup("08P01",
+                         "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD",
+                         "startup required a feature absent from client_feature_bitmap");
+  }
+  const auto unsupported_required = required_features & ~kServerSupportedFeatureMask;
+  if (unsupported_required != 0) {
+    return RejectStartup("0A000",
+                         "SBWP.FEATURE.REQUIRED_UNSUPPORTED",
+                         "startup required a core feature this parser route does not support");
+  }
+  std::uint64_t supported = kServerSupportedFeatureMask;
+  if (negotiated.selected_protocol_version < kSbwpVersionCurrent) {
+    supported &= ~kP1OnlyFeatureMask;
+  }
+  negotiated.negotiated_features = client_features & supported;
+  (void)optional_features;
+
+  std::size_t off = 80;
+  const auto connect_key_count = ReadU32(payload, off);
+  off += 4;
+  if (connect_key_count > 256) {
+    return RejectStartup("08P01",
+                         "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD",
+                         "startup connect key count exceeds the protocol limit");
+  }
+  for (std::uint32_t i = 0; i < connect_key_count; ++i) {
+    std::string key;
+    if (!ReadLpStr(payload, &off, &key) || off + 6 > payload.size()) {
+      return RejectStartup("08P01",
+                           "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD",
+                           "startup connect key payload is truncated");
+    }
+    const std::uint8_t value_type = payload[off++];
+    const std::uint8_t redaction_class = payload[off++];
+    const std::uint32_t value_length = ReadU32(payload, off);
+    off += 4;
+    if (off + value_length > payload.size() || !IsKnownConnectKey(key)) {
+      return RejectStartup("08P01",
+                           IsKnownConnectKey(key) ? "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD"
+                                                  : "NATIVE_WIRE.CONNECT_UNKNOWN_KEY",
+                           "startup connect key is malformed or not in the admitted registry");
+    }
+    const auto value = DecodeConnectValue(value_type, payload, off, value_length);
+    off += value_length;
+    if (redaction_class < 3) {
+      negotiated.params[std::move(key)] = value;
+    }
+  }
+  if (off + 4 > payload.size()) {
+    return RejectStartup("08P01",
+                         "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD",
+                         "startup extension offer count is missing");
+  }
+  const auto extension_count = ReadU32(payload, off);
+  off += 4;
+  if (extension_count > 64) {
+    return RejectStartup("08P01",
+                         "SBWP.EXTENSION.REQUIRED_UNSUPPORTED",
+                         "startup extension offer count exceeds the protocol limit");
+  }
+  for (std::uint32_t i = 0; i < extension_count; ++i) {
+    std::string extension_name;
+    if (!ReadLpStr(payload, &off, &extension_name) || off + 10 > payload.size()) {
+      return RejectStartup("08P01",
+                           "SBWP.EXTENSION.REQUIRED_UNSUPPORTED",
+                           "startup extension offer is truncated");
+    }
+    off += 2;  // major
+    off += 2;  // min minor
+    off += 2;  // max minor
+    const auto flags = ReadU32(payload, off);
+    off += 4;
+    const bool required = (flags & 1u) != 0;
+    const bool ignorable = (flags & 2u) != 0;
+    if ((flags & ~3u) != 0 || (required && ignorable)) {
+      return RejectStartup("08P01",
+                           "SBWP.EXTENSION.REQUIRED_UNSUPPORTED",
+                           "startup extension flags are invalid");
+    }
+    if (required) {
+      return RejectStartup("08P01",
+                           "SBWP.EXTENSION.UNKNOWN_REQUIRED",
+                           "startup required an extension with no selected registry row");
+    }
+  }
+  if (off != payload.size()) {
+    return RejectStartup("08P01",
+                         "NATIVE_WIRE.CONNECT_INVALID_PAYLOAD",
+                         "startup payload contains trailing bytes");
+  }
+  return negotiated;
+}
+
+std::array<std::uint8_t, 16> TextToUuidBytes(std::string_view text) {
+  std::array<std::uint8_t, 16> out{};
+  auto hex_value = [](char ch) -> int {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+  };
+  std::size_t nibble = 0;
+  for (const char ch : text) {
+    if (ch == '-') continue;
+    const int value = hex_value(ch);
+    if (value < 0 || nibble >= 32) return {};
+    if ((nibble % 2) == 0) {
+      out[nibble / 2] = static_cast<std::uint8_t>(value << 4);
+    } else {
+      out[nibble / 2] = static_cast<std::uint8_t>(out[nibble / 2] | value);
+    }
+    ++nibble;
+  }
+  return nibble == 32 ? out : std::array<std::uint8_t, 16>{};
+}
+
+bool IsZeroUuid(const std::array<std::uint8_t, 16>& uuid) {
+  return std::all_of(uuid.begin(), uuid.end(), [](std::uint8_t value) { return value == 0; });
+}
+
+bool IsKnownSbwpMessage(std::uint8_t msg_type) {
+  switch (msg_type) {
+    case kStartup:
+    case kAuthResponse:
+    case kQuery:
+    case kParse:
+    case kBind:
+    case kDescribe:
+    case kExecute:
+    case kClose:
+    case kSync:
+    case kCancel:
+    case kTerminate:
+    case kCopyData:
+    case kCopyDone:
+    case kCopyFail:
+    case kSblrExecute:
+    case kSubscribe:
+    case kUnsubscribe:
+    case kStreamControl:
+    case kTxnBegin:
+    case kTxnCommit:
+    case kTxnRollback:
+    case kTxnSavepoint:
+    case kTxnRelease:
+    case kTxnRollbackTo:
+    case kPing:
+    case kSetOption:
+    case kResetSession:
+    case kReauth:
+    case kTraceContext:
+    case kLobClose:
+    case kHeartbeat:
+    case kExtension:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::uint64_t RequiredFeatureForMessage(std::uint8_t msg_type) {
+  switch (msg_type) {
+    case kCopyData:
+    case kCopyDone:
+    case kCopyFail:
+      return kFeatureStreaming;
+    case kSblrExecute:
+      return kFeatureSblr;
+    case kSubscribe:
+    case kUnsubscribe:
+      return kFeatureNotifications;
+    case kStreamControl:
+      return kFeatureCopyBackpressure;
+    case kTxnSavepoint:
+    case kTxnRelease:
+    case kTxnRollbackTo:
+      return kFeatureSavepoints;
+    case kResetSession:
+      return kFeatureSessionReset;
+    case kReauth:
+      return kFeatureReauth;
+    case kTraceContext:
+      return kFeatureTraceContext;
+    case kLobClose:
+      return kFeatureLobLocator;
+    case kExtension:
+      return ~0ull;
+    default:
+      return 0;
+  }
+}
+
+bool FeatureNegotiated(const SbwpSessionState& state, std::uint64_t feature) {
+  if (feature == 0) return true;
+  if (feature == ~0ull) return false;
+  return (state.negotiated_features & feature) == feature;
+}
+
+std::array<std::uint8_t, 16> FallbackAttachmentId(std::string_view seed) {
+  std::array<std::uint8_t, 16> out{};
+  std::uint64_t hash = 1469598103934665603ull;
+  for (unsigned char ch : seed) {
+    hash ^= ch;
+    hash *= 1099511628211ull;
+  }
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    out[i] = static_cast<std::uint8_t>((hash >> ((i % 8u) * 8u)) & 0xffu);
+  }
+  out[6] = static_cast<std::uint8_t>((out[6] & 0x0fu) | 0x70u);
+  out[8] = static_cast<std::uint8_t>((out[8] & 0x3fu) | 0x80u);
+  return out;
+}
+
+std::optional<std::uint64_t> TextLineU64(std::string_view encoded, std::string_view key) {
+  const std::string prefix = std::string(key) + "=";
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const std::size_t end = encoded.find('\n', start);
+    const std::string_view line =
+        encoded.substr(start, end == std::string_view::npos ? encoded.size() - start : end - start);
+    if (line.starts_with(prefix)) {
+      std::uint64_t value = 0;
+      const auto text = line.substr(prefix.size());
+      const auto* begin = text.data();
+      const auto* finish = text.data() + text.size();
+      const auto [ptr, ec] = std::from_chars(begin, finish, value);
+      if (ec == std::errc() && ptr == finish) return value;
+      return std::nullopt;
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return std::nullopt;
+}
+
+std::optional<std::uint64_t> TransactionIdFromResultPayload(std::string_view encoded) {
+  if (const auto replacement = TextLineU64(encoded, "replacement_local_transaction_id")) {
+    return replacement;
+  }
+  return TextLineU64(encoded, "local_transaction_id");
+}
+
+std::string FirstDiagnosticText(const MessageVectorSet& messages) {
+  if (messages.diagnostics.empty()) return "operation rejected";
+  const auto& diagnostic = messages.diagnostics.front();
+  if (!diagnostic.message.empty()) return diagnostic.message;
+  if (!diagnostic.code.empty()) return diagnostic.code;
+  return "operation rejected";
+}
+
+std::string FirstDiagnosticCode(const MessageVectorSet& messages, std::string fallback) {
+  if (!messages.diagnostics.empty() && !messages.diagnostics.front().code.empty()) {
+    return messages.diagnostics.front().code;
+  }
+  return fallback;
+}
+
+std::string DiagnosticFieldValue(const MessageVectorSet& messages, std::string_view field_name) {
+  for (const auto& diagnostic : messages.diagnostics) {
+    for (const auto& field : diagnostic.fields) {
+      if (field.name == field_name) return field.value;
+    }
+  }
+  return {};
+}
+
+bool LooksInteger(std::string_view value) {
+  if (value.empty()) return false;
+  std::size_t i = (value[0] == '-' || value[0] == '+') ? 1 : 0;
+  if (i == value.size()) return false;
+  for (; i < value.size(); ++i) {
+    if (!std::isdigit(static_cast<unsigned char>(value[i]))) return false;
+  }
+  return true;
+}
+
+bool LooksDecimal(std::string_view value) {
+  bool saw_digit = false;
+  bool saw_dot = false;
+  std::size_t i = (!value.empty() && (value[0] == '-' || value[0] == '+')) ? 1 : 0;
+  for (; i < value.size(); ++i) {
+    const char ch = value[i];
+    if (std::isdigit(static_cast<unsigned char>(ch))) {
+      saw_digit = true;
+      continue;
+    }
+    if (ch == '.' && !saw_dot) {
+      saw_dot = true;
+      continue;
+    }
+    return false;
+  }
+  return saw_digit && saw_dot;
+}
+
+std::uint32_t InferTypeOid(std::string_view value) {
+  const auto upper = Upper(std::string(value));
+  if (upper == "TRUE" || upper == "FALSE" || upper == "T" || upper == "F") return kOidBool;
+  if (LooksInteger(value)) return kOidInt8;
+  if (LooksDecimal(value)) return kOidNumeric;
+  return kOidText;
+}
+
+std::vector<std::pair<std::string, std::string>> ParseFieldList(std::string_view body) {
+  std::vector<std::pair<std::string, std::string>> fields;
+  std::size_t start = 0;
+  while (start <= body.size()) {
+    const std::size_t end = body.find(';', start);
+    const std::string_view field =
+        body.substr(start, end == std::string_view::npos ? body.size() - start : end - start);
+    const std::size_t eq = field.find('=');
+    if (eq != std::string_view::npos) {
+      fields.emplace_back(std::string(field.substr(0, eq)), std::string(field.substr(eq + 1)));
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return fields;
+}
+
+std::optional<std::vector<CopyImportRow>> ParseTextCopyRows(
+    const std::vector<std::uint8_t>& payload) {
+  std::vector<CopyImportRow> rows;
+  std::istringstream in{
+      std::string(reinterpret_cast<const char*>(payload.data()), payload.size())};
+  std::string line;
+  while (std::getline(in, line)) {
+    line = Trim(std::move(line));
+    if (line.empty()) continue;
+    const auto parsed = ParseFieldList(line);
+    if (parsed.empty()) return std::nullopt;
+    CopyImportRow row;
+    for (const auto& [name, value] : parsed) {
+      if (name.empty()) return std::nullopt;
+      const auto upper_value = Upper(value);
+      if (upper_value == "NULL") {
+        row.fields.push_back({name, std::nullopt});
+      } else {
+        row.fields.push_back({name, value});
+      }
+    }
+    rows.push_back(std::move(row));
+  }
+  return rows;
+}
+
+std::string GenerateCopyImportRowUuid() {
+  static std::atomic<std::uint64_t> sequence{0};
+  const auto now_millis = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+  const auto generated = uuid::GenerateEngineIdentityV7(
+      platform::UuidKind::row,
+      now_millis + sequence.fetch_add(1, std::memory_order_relaxed));
+  return generated.ok() ? uuid::UuidToString(generated.value.value) : std::string{};
+}
+
+std::string EscapeOperationOperandField(std::string_view value) {
+  std::string out;
+  out.reserve(value.size());
+  for (char ch : value) {
+    if (ch == '\\' || ch == '\t' || ch == '\n' || ch == '\r') out.push_back('\\');
+    if (ch == '\n') {
+      out.push_back('n');
+    } else if (ch == '\r') {
+      out.push_back('r');
+    } else if (ch == '\t') {
+      out.push_back('t');
+    } else {
+      out.push_back(ch);
+    }
+  }
+  return out;
+}
+
+std::string BuildCopyExecuteEnvelope(const CopyImportState& copy,
+                                     std::size_t first_row,
+                                     std::size_t row_count) {
+  const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
+  std::string out;
+  out += "operation_id=dml.execute_import_rows\n";
+  out += "opcode=SBLR_DML_EXECUTE_IMPORT_ROWS\n";
+  out += "sblr_operation_family=sblr.dml.operation.v3\n";
+  out += "result_shape=engine.api.result.v1\n";
+  out += "diagnostic_shape=engine.diagnostic.v1\n";
+  out += "trace_key=sbsql.sbwp.copy_data.execute_import\n";
+  out += "contains_sql_text=false\n";
+  out += "parser_resolved_names_to_uuids=true\n";
+  out += "requires_security_context=true\n";
+  out += "requires_transaction_context=true\n";
+  out += "requires_cluster_authority=false\n";
+  out += "target_object_uuid=" + copy.target_object_uuid + "\n";
+  out += "target_object_kind=table\n";
+  out += "dml_surface_variant=copy_import_export\n";
+  out += "source_kind=csv_stream\n";
+  out += "format_family=csv\n";
+  out += "source_fingerprint=sbwp-copy-data-canonical-row-fields\n";
+  out += "source_position=row:0\n";
+  out += "encoding=utf8\n";
+  out += "line_ending=lf\n";
+  out += "delimiter=,\n";
+  out += "quote=\"\n";
+  out += "escape=\"\n";
+  out += "header_policy=absent\n";
+  out += "estimated_row_count=" + std::to_string(end_row - first_row) + "\n";
+  out += "insert_mode=copy_import\n";
+  out += "reject_mode=reject_row\n";
+  out += "reject_limit_rows=16\n";
+  out += "reject_payload_policy=diagnostic_only\n";
+  out += "resume_policy=fail_closed\n";
+  out += "checkpoint_mode=disabled\n";
+  out += "duplicate_mode=error\n";
+  out += "require_generated_row_uuid=true\n";
+  out += "strict_bulk_load_requested=false\n";
+  out += "operand=text\tfeature.strict_bulk_load\tenabled\n";
+  out += "operand=text\tmemory.spill_allowed\ttrue\n";
+  out += "operand=text\tmemory.context_budget_bytes\t67108864\n";
+  out += "operand=text\tmemory.bulk_load_budget_bytes\t67108864\n";
+  out += "operand=text\tcopy_append_batch_rows\t" + std::to_string(end_row - first_row) + "\n";
+  for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+    const auto& row = copy.rows[row_index];
+    const std::string row_uuid = GenerateCopyImportRowUuid();
+    for (const auto& [name, value] : row.fields) {
+      out += value.has_value() ? "operand=row_field\t" : "operand=row_null_field\t";
+      out += row_uuid;
+      out += "|";
+      out += EscapeOperationOperandField(name);
+      out += "\t";
+      out += value.has_value() ? EscapeOperationOperandField(*value) : "";
+      out += "\n";
+    }
+  }
+  return out;
+}
+
+std::string BuildCopyExecuteEnvelope(const CopyImportState& copy) {
+  return BuildCopyExecuteEnvelope(copy, 0, copy.rows.size());
+}
+
+std::string BuildNativeBulkIngestExecuteEnvelope(const CopyImportState& copy,
+                                                std::size_t first_row,
+                                                std::size_t row_count) {
+  const std::size_t end_row = std::min(copy.rows.size(), first_row + row_count);
+  std::string out;
+  out += "operation_id=dml.execute_native_bulk_ingest\n";
+  out += "opcode=SBLR_DML_EXECUTE_NATIVE_BULK_INGEST\n";
+  out += "sblr_operation_family=sblr.dml.operation.v3\n";
+  out += "result_shape=engine.api.result.v1\n";
+  out += "diagnostic_shape=engine.diagnostic.v1\n";
+  out += "trace_key=cdp041-sb_isql-native-bulk-ingest\n";
+  out += "contains_sql_text=false\n";
+  out += "parser_resolved_names_to_uuids=true\n";
+  out += "requires_security_context=true\n";
+  out += "requires_transaction_context=true\n";
+  out += "requires_cluster_authority=false\n";
+  out += "target_object_uuid=" + copy.target_object_uuid + "\n";
+  out += "target_object_kind=table\n";
+  out += "dml_surface_variant=sb_isql_native_bulk_ingest\n";
+  out += "source_kind=binary_typed_rows\n";
+  out += "format_family=binary_typed_rows\n";
+  out += "source_fingerprint=sb-isql-native-bulk-ingest-canonical-row-fields\n";
+  out += "source_position=row:0\n";
+  out += "estimated_row_count=" + std::to_string(end_row - first_row) + "\n";
+  out += "native_bulk_ingest=true\n";
+  out += std::string("native_bulk_ingest_enabled=") +
+         (copy.native_bulk_ingest_enabled ? "true\n" : "false\n");
+  out += "reject_mode=fail_fast\n";
+  out += "reject_limit_rows=0\n";
+  out += "reject_payload_policy=diagnostic_only\n";
+  out += "result_payload_policy=summary_only\n";
+  out += "resume_policy=fail_closed\n";
+  out += "checkpoint_mode=disabled\n";
+  out += "duplicate_mode=error\n";
+  out += "require_generated_row_uuid=true\n";
+  for (std::size_t row_index = first_row; row_index < end_row; ++row_index) {
+    const auto& row = copy.rows[row_index];
+    const std::string row_uuid = GenerateCopyImportRowUuid();
+    for (const auto& [name, value] : row.fields) {
+      out += value.has_value() ? "operand=row_field:character\t"
+                               : "operand=row_null_field:character\t";
+      out += row_uuid;
+      out += "|";
+      out += EscapeOperationOperandField(name);
+      out += "\t";
+      out += value.has_value() ? EscapeOperationOperandField(*value) : "";
+      out += "\n";
+    }
+  }
+  return out;
+}
+
+std::vector<std::uint8_t> CopyInResponsePayload() {
+  std::vector<std::uint8_t> out;
+  out.push_back(kCopyFormatCanonicalRowFieldsText);
+  PutU32(&out, kCopyDefaultWindowBytes);
+  return out;
+}
+
+std::optional<std::string> JsonObjectTextField(std::string_view object, std::string_view key) {
+  const std::string needle = "\"" + std::string(key) + "\":\"";
+  const auto start = object.find(needle);
+  if (start == std::string_view::npos) return std::nullopt;
+  std::size_t cursor = start + needle.size();
+  std::string out;
+  while (cursor < object.size()) {
+    const char ch = object[cursor++];
+    if (ch == '"') return out;
+    if (ch == '\\' && cursor < object.size()) {
+      out.push_back(object[cursor++]);
+      continue;
+    }
+    out.push_back(ch);
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> JsonObjectU64Field(std::string_view object, std::string_view key) {
+  const std::string needle = "\"" + std::string(key) + "\":";
+  const auto start = object.find(needle);
+  if (start == std::string_view::npos) return std::nullopt;
+  std::size_t cursor = start + needle.size();
+  while (cursor < object.size() && std::isspace(static_cast<unsigned char>(object[cursor]))) ++cursor;
+  const std::size_t begin = cursor;
+  while (cursor < object.size() && std::isdigit(static_cast<unsigned char>(object[cursor]))) ++cursor;
+  if (cursor == begin) return std::nullopt;
+  return std::string(object.substr(begin, cursor - begin));
+}
+
+RowSet ParseSyntheticJsonRowsFromResultPayload(std::string_view payload) {
+  RowSet rowset;
+  const auto rows_start = payload.find("\"rows\":[");
+  if (rows_start == std::string_view::npos) return rowset;
+  rowset.columns.push_back({"operation_id", kOidText, -1, -1, 0, false});
+  rowset.columns.push_back({"row_index", kOidInt8, 8, -1, 0, false});
+  rowset.columns.push_back({"status", kOidText, -1, -1, 0, false});
+
+  std::size_t cursor = rows_start;
+  while (true) {
+    const auto object_start = payload.find("{\"operation_id\"", cursor);
+    if (object_start == std::string_view::npos) break;
+    const auto object_end = payload.find('}', object_start);
+    if (object_end == std::string_view::npos) break;
+    const auto object = payload.substr(object_start, object_end - object_start + 1);
+    const auto operation_id = JsonObjectTextField(object, "operation_id");
+    const auto row_index = JsonObjectU64Field(object, "row_index");
+    const auto status = JsonObjectTextField(object, "status");
+    if (operation_id && row_index && status) {
+      rowset.rows.push_back({*operation_id, *row_index, *status});
+    }
+    cursor = object_end + 1;
+  }
+  if (rowset.rows.empty()) { rowset.columns.clear(); }
+  return rowset;
+}
+
+RowSet ParseRowsFromResultPayload(std::string_view payload) {
+  RowSet rowset;
+  std::map<std::string, std::size_t> column_index;
+  std::istringstream in{std::string(payload)};
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.starts_with("row[")) continue;
+    const auto eq = line.find("]=");
+    if (eq == std::string::npos) continue;
+    const auto fields = ParseFieldList(std::string_view(line).substr(eq + 2));
+    if (fields.empty()) continue;
+    std::vector<std::optional<std::string>> row(rowset.columns.size());
+    for (const auto& [name, value] : fields) {
+      auto found = column_index.find(name);
+      if (found == column_index.end()) {
+        const auto ordinal = rowset.columns.size();
+        column_index[name] = ordinal;
+        SbwpColumn column;
+        column.name = name.empty() ? "column" + std::to_string(ordinal + 1) : name;
+        column.type_oid = InferTypeOid(value);
+        rowset.columns.push_back(std::move(column));
+        for (auto& existing : rowset.rows) existing.resize(rowset.columns.size());
+        row.resize(rowset.columns.size());
+        found = column_index.find(name);
+      }
+      row[found->second] = value;
+    }
+    rowset.rows.push_back(std::move(row));
+  }
+  if (rowset.rows.empty()) {
+    return ParseSyntheticJsonRowsFromResultPayload(payload);
+  }
+  return rowset;
+}
+
+class ClientIo {
+ public:
+  explicit ClientIo(std::intptr_t fd) : fd_(fd) {}
+  ~ClientIo() {
+    if (ssl_ != nullptr) {
+      SSL_shutdown(ssl_);
+      SSL_free(ssl_);
+      ssl_ = nullptr;
+    }
+    if (ctx_ != nullptr) {
+      SSL_CTX_free(ctx_);
+      ctx_ = nullptr;
+    }
+  }
+
+  bool StartTls(const std::string& cert_file, const std::string& key_file) {
+    SSL_load_error_strings();
+    OpenSSL_add_ssl_algorithms();
+    ctx_ = SSL_CTX_new(TLS_server_method());
+    if (ctx_ == nullptr) return false;
+    SSL_CTX_set_min_proto_version(ctx_, TLS1_3_VERSION);
+    SSL_CTX_set_max_proto_version(ctx_, TLS1_3_VERSION);
+    SSL_CTX_set_options(ctx_, SSL_OP_NO_COMPRESSION);
+    if (SSL_CTX_use_certificate_chain_file(ctx_, cert_file.c_str()) != 1) return false;
+    if (SSL_CTX_use_PrivateKey_file(ctx_, key_file.c_str(), SSL_FILETYPE_PEM) != 1) return false;
+    if (SSL_CTX_check_private_key(ctx_) != 1) return false;
+    ssl_ = SSL_new(ctx_);
+    if (ssl_ == nullptr) return false;
+    SSL_set_fd(ssl_, static_cast<int>(fd_));
+    return SSL_accept(ssl_) == 1;
+  }
+
+  bool ReadExact(std::uint8_t* data, std::size_t size) {
+    std::size_t got = 0;
+    while (got < size) {
+      int rc = 0;
+      if (ssl_ != nullptr) {
+        rc = SSL_read(ssl_, data + got, static_cast<int>(size - got));
+        if (rc <= 0) {
+          const int err = SSL_get_error(ssl_, rc);
+          if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
+          return false;
+        }
+      } else {
+#ifndef _WIN32
+        const ssize_t raw = ::read(static_cast<int>(fd_), data + got, size - got);
+        if (raw < 0 && errno == EINTR) continue;
+        if (raw <= 0) return false;
+        rc = static_cast<int>(raw);
+#else
+        const int want = static_cast<int>(std::min<std::size_t>(
+            size - got, static_cast<std::size_t>(std::numeric_limits<int>::max())));
+        rc = ::recv(static_cast<SOCKET>(fd_), reinterpret_cast<char*>(data + got), want, 0);
+        if (rc <= 0) return false;
+#endif
+      }
+      got += static_cast<std::size_t>(rc);
+    }
+    return true;
+  }
+
+  bool WriteAll(const std::uint8_t* data, std::size_t size) {
+    std::size_t written = 0;
+    while (written < size) {
+      int rc = 0;
+      if (ssl_ != nullptr) {
+        rc = SSL_write(ssl_, data + written, static_cast<int>(size - written));
+        if (rc <= 0) {
+          const int err = SSL_get_error(ssl_, rc);
+          if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) continue;
+          return false;
+        }
+      } else {
+#ifndef _WIN32
+        const ssize_t raw = ::write(static_cast<int>(fd_), data + written, size - written);
+        if (raw < 0 && errno == EINTR) continue;
+        if (raw <= 0) return false;
+        rc = static_cast<int>(raw);
+#else
+        const int want = static_cast<int>(std::min<std::size_t>(
+            size - written, static_cast<std::size_t>(std::numeric_limits<int>::max())));
+        rc = ::send(static_cast<SOCKET>(fd_), reinterpret_cast<const char*>(data + written), want, 0);
+        if (rc <= 0) return false;
+#endif
+      }
+      written += static_cast<std::size_t>(rc);
+    }
+    return true;
+  }
+
+ private:
+  std::intptr_t fd_{-1};
+  SSL_CTX* ctx_{nullptr};
+  SSL* ssl_{nullptr};
+};
+
+bool ReadFrame(ClientIo* io, Frame* frame) {
+  std::array<std::uint8_t, kSbwpHeaderSize> header{};
+  if (!io->ReadExact(header.data(), header.size())) return false;
+  if (header[0] != 'S' || header[1] != 'B' || header[2] != 'W' || header[3] != 'P') return false;
+  if (header[4] != kSbwpMajor || header[5] != kSbwpMinor) return false;
+  frame->header.msg_type = header[6];
+  frame->header.flags = header[7];
+  frame->header.length = static_cast<std::uint32_t>(header[8]) |
+                         (static_cast<std::uint32_t>(header[9]) << 8u) |
+                         (static_cast<std::uint32_t>(header[10]) << 16u) |
+                         (static_cast<std::uint32_t>(header[11]) << 24u);
+  if (frame->header.length > kMaxPayloadBytes) return false;
+  frame->header.sequence = static_cast<std::uint32_t>(header[12]) |
+                           (static_cast<std::uint32_t>(header[13]) << 8u) |
+                           (static_cast<std::uint32_t>(header[14]) << 16u) |
+                           (static_cast<std::uint32_t>(header[15]) << 24u);
+  std::copy(header.begin() + 16, header.begin() + 32, frame->header.attachment_id.begin());
+  frame->header.txn_id = 0;
+  for (int shift = 0; shift < 64; shift += 8) {
+    frame->header.txn_id |=
+        static_cast<std::uint64_t>(header[32 + static_cast<std::size_t>(shift / 8)]) << shift;
+  }
+  frame->payload.assign(frame->header.length, 0);
+  return frame->payload.empty() || io->ReadExact(frame->payload.data(), frame->payload.size());
+}
+
+bool SendFrame(ClientIo* io,
+               SbwpSessionState* state,
+               std::uint8_t msg_type,
+               const std::vector<std::uint8_t>& payload) {
+  std::vector<std::uint8_t> out;
+  out.reserve(kSbwpHeaderSize + payload.size());
+  out.push_back('S');
+  out.push_back('B');
+  out.push_back('W');
+  out.push_back('P');
+  out.push_back(kSbwpMajor);
+  out.push_back(kSbwpMinor);
+  out.push_back(msg_type);
+  out.push_back(0);
+  PutU32(&out, static_cast<std::uint32_t>(payload.size()));
+  PutU32(&out, state->server_sequence++);
+  out.insert(out.end(), state->attachment_id.begin(), state->attachment_id.end());
+  PutU64(&out, state->txn_id);
+  out.insert(out.end(), payload.begin(), payload.end());
+  return io->WriteAll(out.data(), out.size());
+}
+
+std::vector<std::uint8_t> AuthRequestPayload() {
+  return {1, 0, 0, 0};
+}
+
+std::vector<std::uint8_t> AuthOkPayload(const SbwpSessionState& state) {
+  std::vector<std::uint8_t> out;
+  out.insert(out.end(), state.attachment_id.begin(), state.attachment_id.end());
+  PutU32(&out, 0);
+  return out;
+}
+
+std::vector<std::uint8_t> ReadyPayload(const SbwpSessionState& state, ReadyReason reason) {
+  if (state.p1_payloads) {
+    std::vector<std::uint8_t> out;
+    out.reserve(76);
+    PutUuid(&out, state.session_uuid);
+    PutUuid(&out, state.attachment_id);
+    PutZeroUuid(&out);
+    PutU64(&out, state.txn_id);
+    out.push_back(state.txn_id == 0 ? 0x52 : 0x54);
+    out.push_back(static_cast<std::uint8_t>(reason));
+    PutU16(&out, state.selected_protocol_version);
+    PutU64(&out, state.negotiated_features);
+    PutU32(&out, 0);
+    PutU32(&out, 0);
+    return out;
+  }
+  std::vector<std::uint8_t> out;
+  out.reserve(20);
+  out.push_back(state.txn_id == 0 ? 0 : 1);
+  out.push_back(0);
+  out.push_back(0);
+  out.push_back(0);
+  PutU64(&out, state.txn_id);
+  PutU64(&out, state.txn_id == 0 ? 0 : state.txn_id);
+  return out;
+}
+
+bool SendReady(ClientIo* io,
+               SbwpSessionState* state,
+               ReadyReason reason = ReadyReason::kCommandComplete) {
+  state->ready_sent_for_current_operation = true;
+  return SendFrame(io, state, kReady, ReadyPayload(*state, reason));
+}
+
+void PutParameterStatusKv(std::vector<std::uint8_t>* out,
+                          std::string_view key,
+                          std::string_view value,
+                          bool defaulted = false) {
+  PutLpStr(out, key);
+  out->push_back(0x01);
+  out->push_back(0);
+  out->push_back(defaulted ? 1 : 0);
+  PutU32(out, static_cast<std::uint32_t>(value.size()));
+  out->insert(out->end(), value.begin(), value.end());
+}
+
+std::vector<std::uint8_t> ParameterStatusPayload(
+    const std::vector<std::pair<std::string, std::string>>& values) {
+  std::vector<std::uint8_t> out;
+  PutU32(&out, static_cast<std::uint32_t>(values.size()));
+  for (const auto& [key, value] : values) PutParameterStatusKv(&out, key, value);
+  return out;
+}
+
+bool SendParameterStatus(ClientIo* io,
+                         SbwpSessionState* state,
+                         const std::vector<std::pair<std::string, std::string>>& values) {
+  if (!state->p1_payloads || values.empty()) return true;
+  return SendFrame(io, state, kParameterStatus, ParameterStatusPayload(values));
+}
+
+std::vector<std::uint8_t> ServerInfoPayload(const SbwpSessionState& state,
+                                            const ParserConfig& config) {
+  std::vector<std::uint8_t> out;
+  PutUuid(&out, state.session_uuid);
+  PutZeroUuid(&out);
+  PutZeroUuid(&out);
+  PutLpStr(&out, "ScratchBird native SBWP P1");
+  PutLpStr(&out, "public-alpha");
+  PutLpStr(&out, config.dialect.empty() ? "sbsql" : config.dialect);
+  PutU64(&out, 1);
+  PutU64(&out, kServerSupportedFeatureMask);
+  PutU64(&out, 1);
+  return out;
+}
+
+bool SendServerInfo(ClientIo* io, SbwpSessionState* state, const ParserConfig& config) {
+  if (!state->p1_payloads) return true;
+  return SendFrame(io, state, kServerInfo, ServerInfoPayload(*state, config));
+}
+
+std::vector<std::pair<std::string, std::string>> StartupParameterStatuses(
+    const SbwpSessionState& state) {
+  std::vector<std::pair<std::string, std::string>> values;
+  values.push_back({"protocol.selected_version",
+                    state.selected_protocol_version == kSbwpVersionCurrent ? "1.1" : "1.0"});
+  values.push_back({"protocol.negotiated_features", std::to_string(state.negotiated_features)});
+  if (!state.authenticated_user_uuid.empty()) {
+    values.push_back({"session.authenticated_user_uuid", state.authenticated_user_uuid});
+  }
+  if (!state.auth_provider_family.empty()) {
+    values.push_back({"session.auth_provider_family", state.auth_provider_family});
+  }
+  if (!state.principal_claim.empty()) {
+    values.push_back({"session.principal_claim", state.principal_claim});
+  }
+  if (state.security_policy_epoch != 0) {
+    values.push_back({"security.generation", std::to_string(state.security_policy_epoch)});
+  }
+  if (state.txn_id != 0) {
+    values.push_back({"current_txn_id", std::to_string(state.txn_id)});
+  }
+  if (state.snapshot_visible_through_local_transaction_id != 0) {
+    values.push_back({"session.snapshot_visible_through_local_transaction_id",
+                      std::to_string(state.snapshot_visible_through_local_transaction_id)});
+  }
+  for (const auto& key : {"client_encoding", "charset", "timezone", "time_zone",
+                          "application_name", "default_schema", "default_catalog"}) {
+    const auto found = state.session_parameters.find(key);
+    if (found != state.session_parameters.end()) values.push_back({key, found->second});
+  }
+  return values;
+}
+
+std::vector<std::uint8_t> ErrorPayload(std::string_view sqlstate,
+                                       std::string_view message,
+                                       std::string_view detail = {}) {
+  std::vector<std::uint8_t> out;
+  auto field = [&](char code, std::string_view value) {
+    if (value.empty()) return;
+    out.push_back(static_cast<std::uint8_t>(code));
+    out.insert(out.end(), value.begin(), value.end());
+    out.push_back(0);
+  };
+  field('S', "ERROR");
+  field('C', sqlstate);
+  field('M', message);
+  field('D', detail);
+  out.push_back(0);
+  return out;
+}
+
+std::vector<std::uint8_t> CommandCompletePayload(std::uint64_t rows, std::string_view tag);
+
+bool SendError(ClientIo* io,
+               SbwpSessionState* state,
+               std::string_view sqlstate,
+               std::string_view message,
+               std::string_view detail = {}) {
+  return SendFrame(io, state, kError, ErrorPayload(sqlstate, message, detail));
+}
+
+bool SendFeatureNotNegotiated(ClientIo* io, SbwpSessionState* state, std::uint8_t msg_type) {
+  return SendError(io,
+                   state,
+                   "08P01",
+                   "SBWP.FEATURE.NOT_NEGOTIATED",
+                   "frame 0x" + std::to_string(msg_type) +
+                       " requires a feature that was not negotiated for this session");
+}
+
+bool SendUnsupportedFeature(ClientIo* io,
+                            SbwpSessionState* state,
+                            std::string_view feature_name) {
+  return SendError(io,
+                   state,
+                   "0A000",
+                   "FEATURE.NOT_IMPLEMENTED_RELEASE_BLOCKING",
+                   std::string(feature_name) + " is fail-closed before side effects in this route");
+}
+
+std::array<std::uint8_t, 16> PayloadUuidOrGenerated(const std::vector<std::uint8_t>& payload) {
+  std::array<std::uint8_t, 16> uuid{};
+  if (payload.size() >= uuid.size()) {
+    std::copy(payload.begin(), payload.begin() + static_cast<std::ptrdiff_t>(uuid.size()), uuid.begin());
+    if (!IsZeroUuid(uuid)) return uuid;
+  }
+  return FallbackAttachmentId("cancel-request");
+}
+
+std::vector<std::uint8_t> CancelAckPayload(const std::array<std::uint8_t, 16>& cancel_uuid) {
+  std::vector<std::uint8_t> out;
+  PutUuid(&out, cancel_uuid);
+  out.push_back(1);
+  return out;
+}
+
+std::vector<std::uint8_t> CancelledPayload(const std::array<std::uint8_t, 16>& cancel_uuid,
+                                           std::string_view outcome_class,
+                                           std::string_view sqlstate,
+                                           std::string_view diagnostic_code,
+                                           std::string_view transaction_effect,
+                                           std::string_view retryability) {
+  std::vector<std::uint8_t> out;
+  PutUuid(&out, cancel_uuid);
+  PutLpStr(&out, outcome_class);
+  PutLpStr(&out, sqlstate);
+  PutLpStr(&out, diagnostic_code);
+  PutLpStr(&out, transaction_effect);
+  PutLpStr(&out, retryability);
+  return out;
+}
+
+bool HandleCancel(ClientIo* io, SbwpSessionState* state, const Frame& frame) {
+  if (!state->authenticated) {
+    return SendError(io,
+                     state,
+                     "28000",
+                     "SECURITY.CANCEL_NOT_AUTHORIZED",
+                     "cancel requires an authenticated owner session");
+  }
+  const auto cancel_uuid = PayloadUuidOrGenerated(frame.payload);
+  if (!SendFrame(io, state, kCancelAck, CancelAckPayload(cancel_uuid))) return false;
+  const bool target_supplied = frame.payload.size() >= 32 &&
+                               !std::all_of(frame.payload.begin() + 16,
+                                            frame.payload.begin() + 32,
+                                            [](std::uint8_t byte) { return byte == 0; });
+  const auto payload = target_supplied
+                           ? CancelledPayload(cancel_uuid,
+                                              "user_statement_cancelled",
+                                              "57014",
+                                              "EXECUTION.QUERY_CANCELLED",
+                                              "statement_aborted_transaction_state_reported_by_engine",
+                                              "application_decision")
+                           : CancelledPayload(cancel_uuid,
+                                              "cancel_target_not_found",
+                                              "57014",
+                                              "EXECUTION.CANCEL_TARGET_NOT_FOUND",
+                                              "no_known_state_change",
+                                              "no");
+  if (!SendFrame(io, state, kCancelled, payload)) return false;
+  return SendReady(io, state, ReadyReason::kCancelOutcome);
+}
+
+bool RollbackForReset(SbsqlTestWireSession* session, SbwpSessionState* state, std::string* detail) {
+  if (state->txn_id == 0) return true;
+  const auto rollback = session->RunPipeline("ROLLBACK", true);
+  if (!rollback.accepted || rollback.messages.has_errors()) {
+    *detail = FirstDiagnosticText(rollback.messages);
+    return false;
+  }
+  const auto replacement = TransactionIdFromResultPayload(rollback.server_result_payload);
+  if (!replacement.has_value() || *replacement == 0) {
+    *detail = "replacement_transaction_missing";
+    return false;
+  }
+  state->txn_id = *replacement;
+  return true;
+}
+
+bool HandleResetSession(SbsqlTestWireSession* session,
+                        ClientIo* io,
+                        SbwpSessionState* state,
+                        const Frame& frame) {
+  if (!FeatureNegotiated(*state, kFeatureSessionReset)) {
+    return SendFeatureNotNegotiated(io, state, frame.header.msg_type);
+  }
+  if (!state->authenticated) {
+    return SendError(io, state, "28000", "authentication required");
+  }
+  const bool rollback_open_transaction = frame.payload.size() > 17 && frame.payload[17] != 0;
+  if (state->txn_id != 0 && !rollback_open_transaction) {
+    if (!SendError(io,
+                   state,
+                   "25001",
+                   "NATIVE_WIRE.RESET_REFUSED_OPEN_TRANSACTION",
+                   "reset_session requires rollback_open_transaction when a transaction is open")) {
+      return false;
+    }
+    return SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  std::string rollback_detail;
+  if (!RollbackForReset(session, state, &rollback_detail)) {
+    if (!SendError(io,
+                   state,
+                   "08006",
+                   "SESSION.RESET_TIMEOUT",
+                   rollback_detail.empty() ? "reset rollback did not complete" : rollback_detail)) {
+      return false;
+    }
+    return SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  if (frame.payload.size() <= 18 || frame.payload[18] != 0) {
+    state->statements.clear();
+    state->portals.clear();
+  }
+  if (frame.payload.size() <= 20 || frame.payload[20] != 0) {
+    state->session_parameters.erase("traceparent");
+    state->session_parameters.erase("tracestate");
+  }
+  if (!SendParameterStatus(io,
+                           state,
+                           {{"session.reset", "complete"},
+                            {"protocol.selected_version",
+                             state->selected_protocol_version == kSbwpVersionCurrent ? "1.1" : "1.0"}})) {
+    return false;
+  }
+  return SendReady(io, state, ReadyReason::kResetComplete);
+}
+
+bool HandleReauth(ClientIo* io, SbwpSessionState* state, const Frame& frame) {
+  if (!FeatureNegotiated(*state, kFeatureReauth)) {
+    return SendFeatureNotNegotiated(io, state, frame.header.msg_type);
+  }
+  if (!state->authenticated || frame.payload.empty()) {
+    if (!SendError(io,
+                   state,
+                   "28000",
+                   frame.payload.empty() ? "SECURITY.REAUTH_TIMEOUT"
+                                         : "NATIVE_WIRE.REAUTH_REQUIRED",
+                   "reauth requires a non-empty engine-verifiable auth payload")) {
+      return false;
+    }
+    return SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  state->session_parameters["security.generation"] = "refreshed";
+  if (!SendParameterStatus(io, state, {{"security.generation", "refreshed"}})) return false;
+  return SendReady(io, state, ReadyReason::kReauthComplete);
+}
+
+bool ValidTraceparent(std::string_view traceparent) {
+  if (traceparent.empty()) return true;
+  if (traceparent.size() != 55) return false;
+  return traceparent[2] == '-' && traceparent[35] == '-' && traceparent[52] == '-';
+}
+
+bool HandleTraceContext(ClientIo* io, SbwpSessionState* state, const Frame& frame) {
+  if (!FeatureNegotiated(*state, kFeatureTraceContext)) {
+    return SendFeatureNotNegotiated(io, state, frame.header.msg_type);
+  }
+  std::size_t off = 16;
+  std::string traceparent;
+  std::string tracestate;
+  if (frame.payload.size() < 18 ||
+      !ReadLpStr(frame.payload, &off, &traceparent) ||
+      !ReadLpStr(frame.payload, &off, &tracestate) ||
+      off + 2 > frame.payload.size() ||
+      !ValidTraceparent(traceparent)) {
+    if (!SendError(io,
+                   state,
+                   "08P01",
+                   "NATIVE_WIRE.TRACE_CONTEXT_INVALID",
+                   "trace context failed W3C shape or payload validation")) {
+      return false;
+    }
+    return SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  state->session_parameters["traceparent"] = traceparent;
+  state->session_parameters["tracestate"] = tracestate.empty() ? "present" : "redacted";
+  return SendParameterStatus(io, state, {{"traceparent", traceparent.empty() ? "absent" : "present"}}) &&
+         SendReady(io, state, ReadyReason::kStateChange);
+}
+
+bool HandleSubscription(ClientIo* io, SbwpSessionState* state, bool subscribe) {
+  if (!FeatureNegotiated(*state, kFeatureNotifications)) {
+    return SendFeatureNotNegotiated(io, state, subscribe ? kSubscribe : kUnsubscribe);
+  }
+  if (!SendFrame(io,
+                 state,
+                 kCommandComplete,
+                 CommandCompletePayload(0, subscribe ? "SUBSCRIBE" : "UNSUBSCRIBE"))) {
+    return false;
+  }
+  if (subscribe) {
+    std::vector<std::uint8_t> payload;
+    PutLpStr(&payload, "session");
+    PutLpStr(&payload, "subscription_active");
+    PutU32(&payload, 0);
+    if (!SendFrame(io, state, kNotification, payload)) return false;
+  }
+  return SendReady(io, state, ReadyReason::kCommandComplete);
+}
+
+std::vector<std::uint8_t> CommandCompletePayload(std::uint64_t rows, std::string_view tag) {
+  std::vector<std::uint8_t> out;
+  out.push_back(1);
+  out.push_back(0);
+  out.push_back(0);
+  out.push_back(0);
+  PutU64(&out, rows);
+  PutU64(&out, 0);
+  out.insert(out.end(), tag.begin(), tag.end());
+  out.push_back(0);
+  return out;
+}
+
+void PutCanonicalTypeRef(std::vector<std::uint8_t>* out, std::uint32_t oid) {
+  std::uint16_t family = 0;
+  std::uint16_t code = 0;
+  switch (oid) {
+    case kOidBool:
+      family = 1;
+      code = 1;
+      break;
+    case kOidInt4:
+      family = 2;
+      code = 3;
+      break;
+    case kOidInt8:
+      family = 2;
+      code = 4;
+      break;
+    case kOidFloat8:
+      family = 6;
+      code = 2;
+      break;
+    case kOidNumeric:
+      family = 4;
+      code = 1;
+      break;
+    case kOidText:
+    default:
+      family = oid == 0 ? 0 : 8;
+      code = oid == 0 ? 0 : 1;
+      break;
+  }
+  PutU16(out, family);
+  PutU16(out, code);
+  PutU16(out, family == 0 ? 0 : 1);
+  PutU16(out, 0);
+  PutZeroUuid(out);
+  PutZeroUuid(out);
+  PutZeroUuid(out);
+  PutU32(out, family == 0 ? 0 : 1);
+  PutU32(out, 0);
+  PutU64(out, 0);
+  PutU64(out, 0);
+  PutU32(out, 0);
+  PutU32(out, 0);
+  PutU64(out, 0);
+  PutU64(out, 0);
+  PutZeroUuid(out);
+  PutZeroUuid(out);
+  PutU16(out, 0);
+  PutU16(out, 0);
+  PutU16(out, 0);
+  PutU16(out, 0);
+}
+
+std::vector<std::uint8_t> ParameterDescriptionPayload(const PreparedStatement& statement,
+                                                      bool p1_payloads,
+                                                      std::uint64_t negotiated_features) {
+  if (p1_payloads) {
+    std::vector<std::uint8_t> out;
+    PutU16(&out, 1);
+    out.push_back(0);
+    out.push_back(1);
+    PutZeroUuid(&out);
+    PutZeroUuid(&out);
+    PutHash256Zero(&out);
+    PutU32(&out, static_cast<std::uint32_t>(statement.param_types.size()));
+    for (std::size_t i = 0; i < statement.param_types.size(); ++i) {
+      PutU32(&out, static_cast<std::uint32_t>(i + 1));
+      out.push_back(0);
+      out.push_back(0);
+      out.push_back(2);
+      out.push_back(0);
+      std::uint64_t parameter_flags = FeatureBit(1) | FeatureBit(2);
+      if ((negotiated_features & kFeatureArrayBind) != 0) parameter_flags |= FeatureBit(3);
+      PutU64(&out, parameter_flags);
+      PutU64(&out, FeatureBit(10));
+      PutCanonicalTypeRef(&out, statement.param_types[i]);
+      out.push_back(0);
+      out.push_back(0);
+      out.push_back(0);
+      out.push_back(0);
+      PutAbsentNullableText(&out);
+    }
+    return out;
+  }
+  std::vector<std::uint8_t> out;
+  const auto count = static_cast<std::uint16_t>(
+      std::min<std::size_t>(statement.param_types.size(), UINT16_MAX));
+  PutU16(&out, count);
+  PutU16(&out, 0);
+  for (std::uint16_t i = 0; i < count; ++i) PutU32(&out, statement.param_types[i]);
+  return out;
+}
+
+std::vector<std::uint8_t> RowDescriptionPayload(const std::vector<SbwpColumn>& columns,
+                                                bool p1_payloads) {
+  if (p1_payloads) {
+    std::vector<std::uint8_t> out;
+    PutU16(&out, 1);
+    out.push_back(0);
+    out.push_back(1);
+    PutU32(&out, static_cast<std::uint32_t>(columns.size()));
+    PutZeroUuid(&out);
+    PutZeroUuid(&out);
+    PutHash256Zero(&out);
+    std::uint32_t ordinal = 1;
+    for (const auto& column : columns) {
+      PutU32(&out, ordinal++);
+      out.push_back(0);
+      out.push_back(column.format == 0 ? 1 : 0);
+      out.push_back(column.nullable ? 1 : 0);
+      out.push_back(0);
+      const std::uint64_t metadata_bitmap = FeatureBit(0) | FeatureBit(10);
+      PutU64(&out, metadata_bitmap);
+      PutCanonicalTypeRef(&out, column.type_oid);
+      PutZeroUuid(&out);
+      PutZeroUuid(&out);
+      PutZeroUuid(&out);
+      PutU32(&out, 0);
+      out.push_back(0);
+      out.push_back(0);
+      PutU16(&out, 0);
+      PutNullableText(&out, column.name);
+    }
+    return out;
+  }
+  std::vector<std::uint8_t> out;
+  PutU16(&out, static_cast<std::uint16_t>(std::min<std::size_t>(columns.size(), UINT16_MAX)));
+  PutU16(&out, 0);
+  std::uint16_t ordinal = 0;
+  for (const auto& column : columns) {
+    PutU32(&out, static_cast<std::uint32_t>(column.name.size()));
+    out.insert(out.end(), column.name.begin(), column.name.end());
+    PutU32(&out, 0);
+    PutU16(&out, ordinal++);
+    PutU32(&out, column.type_oid);
+    PutI16(&out, column.type_size);
+    PutI32(&out, column.type_modifier);
+    out.push_back(column.format);
+    out.push_back(column.nullable ? 1 : 0);
+    PutU16(&out, 0);
+  }
+  return out;
+}
+
+std::vector<std::uint8_t> DataRowPayload(const std::vector<std::optional<std::string>>& values) {
+  std::vector<std::uint8_t> out;
+  PutU16(&out, static_cast<std::uint16_t>(std::min<std::size_t>(values.size(), UINT16_MAX)));
+  const std::size_t null_bytes = (values.size() + 7u) / 8u;
+  PutU16(&out, static_cast<std::uint16_t>(null_bytes));
+  const std::size_t bitmap_offset = out.size();
+  out.resize(out.size() + null_bytes, 0);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    if (!values[i].has_value()) {
+      out[bitmap_offset + (i / 8u)] |= static_cast<std::uint8_t>(1u << (i % 8u));
+      continue;
+    }
+    const auto& value = *values[i];
+    PutI32(&out, static_cast<std::int32_t>(value.size()));
+    out.insert(out.end(), value.begin(), value.end());
+  }
+  return out;
+}
+
+std::string CommandTagFor(std::string_view sql, const PipelineResult& result) {
+  if (!result.server_operation_id.empty()) {
+    if (result.server_operation_id == "transaction.begin") return "BEGIN";
+    if (result.server_operation_id == "transaction.commit") return "COMMIT";
+    if (result.server_operation_id == "transaction.rollback") return "ROLLBACK";
+    if (result.server_operation_id == "dml.execute_native_bulk_ingest") {
+      return "NATIVE_BULK_INGEST " + std::to_string(result.server_row_count);
+    }
+  }
+  const auto normalized = Upper(StripSqlTerminator(std::string(sql)));
+  std::string token;
+  for (char ch : normalized) {
+    if (std::isspace(static_cast<unsigned char>(ch)) || ch == '(') break;
+    token.push_back(ch);
+  }
+  return token.empty() ? "COMMAND" : token;
+}
+
+bool ShouldAutoCursor(std::string_view sql) {
+  return Upper(StripSqlTerminator(std::string(sql))).starts_with("SELECT");
+}
+
+void RefreshWireTransactionStateFromSession(const SbsqlTestWireSession& session,
+                                            SbwpSessionState* state) {
+  if (state == nullptr) return;
+  const auto& context = session.session();
+  if (context.local_transaction_id == 0) return;
+  state->txn_id = context.local_transaction_id;
+  state->snapshot_visible_through_local_transaction_id =
+      context.snapshot_visible_through_local_transaction_id;
+}
+
+bool AdmitFrameTransaction(ClientIo* io,
+                           SbwpSessionState* state,
+                           const Frame& frame,
+                           std::string_view operation) {
+  if (state == nullptr || frame.header.txn_id == 0 || state->txn_id == 0 ||
+      frame.header.txn_id == state->txn_id) {
+    return true;
+  }
+  return SendError(io,
+                   state,
+                   "25000",
+                   "SBWP.TRANSACTION_ID_MISMATCH",
+                   std::string(operation) +
+                       " frame transaction does not match the current engine transaction") &&
+         SendReady(io, state, ReadyReason::kErrorRecovered);
+}
+
+bool NativeBulkIngestRequested(std::string_view sql) {
+  const std::string upper = Upper(StripSqlTerminator(std::string(sql)));
+  return upper.find("NATIVE_BULK_INGEST") != std::string::npos ||
+         upper.find("NATIVE BULK INGEST") != std::string::npos;
+}
+
+bool NativeBulkIngestEnabledRequested(std::string_view sql) {
+  const std::string upper = Upper(StripSqlTerminator(std::string(sql)));
+  return upper.find("NATIVE_BULK_INGEST_ENABLED=FALSE") == std::string::npos &&
+         upper.find("NATIVE_BULK_INGEST_ENABLED FALSE") == std::string::npos &&
+         upper.find("NATIVE_BULK_INGEST_DISABLED") == std::string::npos &&
+         upper.find(" DISABLED") == std::string::npos;
+}
+
+bool IsZeroUuidText(std::string_view value) {
+  bool saw_hex_digit = false;
+  for (char ch : value) {
+    if (ch == '-') continue;
+    if (ch != '0') return false;
+    saw_hex_digit = true;
+  }
+  return saw_hex_digit;
+}
+
+bool SendPipelineResult(ClientIo* io,
+                        SbsqlTestWireSession* session,
+                        SbwpSessionState* state,
+                        std::string_view sql,
+                        const PipelineResult& result) {
+  if (!result.server_cursor_uuid.empty() && !IsZeroUuidText(result.server_cursor_uuid) &&
+      session != nullptr) {
+    bool row_description_sent = false;
+    std::uint64_t emitted_rows = 0;
+    bool end_of_cursor = false;
+    while (!end_of_cursor) {
+      const auto fetched = session->FetchCursorOnRoute(result.server_cursor_uuid,
+                                                       kAutoCursorFetchRows,
+                                                       kAutoCursorFetchBytes);
+      if (!fetched.accepted || fetched.messages.has_errors()) {
+        (void)session->CancelCursorOnRoute(result.server_cursor_uuid);
+        return SendError(io,
+                         state,
+                         "42000",
+                         FirstDiagnosticText(fetched.messages),
+                         FirstDiagnosticCode(fetched.messages,
+                                             "PARSER_SERVER_IPC.FETCH_REJECTED"));
+      }
+      RowSet rowset = ParseRowsFromResultPayload(fetched.row_packet);
+      if (!rowset.rows.empty()) {
+        if (!row_description_sent) {
+          if (!SendFrame(io,
+                         state,
+                         kRowDescription,
+                         RowDescriptionPayload(rowset.columns, state->p1_payloads))) {
+            (void)session->CancelCursorOnRoute(result.server_cursor_uuid);
+            return false;
+          }
+          row_description_sent = true;
+        }
+        for (const auto& row : rowset.rows) {
+          if (!SendFrame(io, state, kDataRow, DataRowPayload(row))) {
+            (void)session->CancelCursorOnRoute(result.server_cursor_uuid);
+            return false;
+          }
+        }
+        emitted_rows += rowset.rows.size();
+      }
+      end_of_cursor = fetched.end_of_cursor;
+      if (fetched.row_count == 0 && fetched.row_packet.empty() && !end_of_cursor) {
+        (void)session->CancelCursorOnRoute(result.server_cursor_uuid);
+        return SendError(io,
+                         state,
+                         "XX000",
+                         "PARSER_SERVER_IPC.EMPTY_CURSOR_BATCH",
+                         "cursor fetch returned no rows without reaching end of cursor");
+      }
+    }
+    const auto closed = session->CloseCursorOnRoute(result.server_cursor_uuid);
+    if (!closed.accepted || closed.messages.has_errors()) {
+      return SendError(io,
+                       state,
+                       "42000",
+                       FirstDiagnosticText(closed.messages),
+                       FirstDiagnosticCode(closed.messages,
+                                           "PARSER_SERVER_IPC.CLOSE_CURSOR_REJECTED"));
+    }
+    return SendFrame(io,
+                     state,
+                     kCommandComplete,
+                     CommandCompletePayload(emitted_rows,
+                                            "SELECT " + std::to_string(emitted_rows)));
+  }
+  RowSet rowset = ParseRowsFromResultPayload(result.server_result_payload);
+  if (!rowset.rows.empty()) {
+    if (!SendFrame(io, state, kRowDescription, RowDescriptionPayload(rowset.columns,
+                                                                     state->p1_payloads))) {
+      return false;
+    }
+    for (const auto& row : rowset.rows) {
+      if (!SendFrame(io, state, kDataRow, DataRowPayload(row))) return false;
+    }
+    if (result.server_operation_id == "dml.execute_import_rows" ||
+        result.server_operation_id == "dml.execute_native_bulk_ingest") {
+      const std::string command_tag =
+          result.server_operation_id == "dml.execute_native_bulk_ingest"
+              ? "NATIVE_BULK_INGEST "
+              : "COPY ";
+      return SendFrame(io,
+                       state,
+                       kCommandComplete,
+                       CommandCompletePayload(result.server_row_count,
+                                              command_tag +
+                                                  std::to_string(result.server_row_count)));
+    }
+    return SendFrame(io,
+                     state,
+                     kCommandComplete,
+                     CommandCompletePayload(rowset.rows.size(),
+                                            "SELECT " + std::to_string(rowset.rows.size())));
+  }
+  return SendFrame(io,
+                   state,
+                   kCommandComplete,
+                   CommandCompletePayload(result.server_row_count, CommandTagFor(sql, result)));
+}
+
+std::string SqlQuote(std::string_view value) {
+  std::string out = "'";
+  for (char ch : value) {
+    if (ch == '\'') out.push_back('\'');
+    out.push_back(ch);
+  }
+  out.push_back('\'');
+  return out;
+}
+
+std::string StripLengthPrefixText(const std::vector<std::uint8_t>& data) {
+  if (data.size() >= 4) {
+    const std::uint32_t length = ReadU32(data, 0);
+    if (length <= data.size() - 4) {
+      return std::string(reinterpret_cast<const char*>(data.data() + 4), length);
+    }
+  }
+  return std::string(reinterpret_cast<const char*>(data.data()), data.size());
+}
+
+std::string DecodeParamLiteral(std::uint32_t oid,
+                               std::uint16_t format,
+                               const std::optional<std::vector<std::uint8_t>>& data) {
+  if (!data.has_value()) return "NULL";
+  if (format == 0) {
+    const std::string text(reinterpret_cast<const char*>(data->data()), data->size());
+    if (oid == kOidInt4 || oid == kOidInt8 || oid == kOidFloat8 || oid == kOidNumeric ||
+        oid == kOidBool) {
+      return text;
+    }
+    return SqlQuote(text);
+  }
+  if (oid == kOidBool && !data->empty()) return (*data)[0] == 0 ? "FALSE" : "TRUE";
+  if (oid == kOidInt4 && data->size() >= 4) {
+    return std::to_string(static_cast<std::int32_t>(ReadU32(*data, 0)));
+  }
+  if (oid == kOidInt8 && data->size() >= 8) {
+    return std::to_string(static_cast<std::int64_t>(ReadU64(*data, 0)));
+  }
+  if (oid == kOidFloat8 && data->size() >= 8) {
+    double value = 0.0;
+    std::memcpy(&value, data->data(), sizeof(value));
+    std::ostringstream out;
+    out << value;
+    return out.str();
+  }
+  const auto text = StripLengthPrefixText(*data);
+  if (oid == kOidNumeric) return text;
+  if (oid == 0 && (LooksInteger(text) || LooksDecimal(text))) return text;
+  return SqlQuote(text);
+}
+
+std::string SubstituteParams(std::string sql, const std::vector<std::string>& literals) {
+  std::string out;
+  out.reserve(sql.size() + literals.size() * 8);
+  bool in_single = false;
+  bool in_double = false;
+  for (std::size_t i = 0; i < sql.size();) {
+    const char ch = sql[i];
+    if (ch == '\'' && !in_double) {
+      in_single = !in_single;
+      out.push_back(ch);
+      ++i;
+      continue;
+    }
+    if (ch == '"' && !in_single) {
+      in_double = !in_double;
+      out.push_back(ch);
+      ++i;
+      continue;
+    }
+    if (!in_single && !in_double && ch == '$' && i + 1 < sql.size() &&
+        std::isdigit(static_cast<unsigned char>(sql[i + 1]))) {
+      std::size_t j = i + 1;
+      std::uint64_t index = 0;
+      while (j < sql.size() && std::isdigit(static_cast<unsigned char>(sql[j]))) {
+        index = index * 10u + static_cast<std::uint64_t>(sql[j] - '0');
+        ++j;
+      }
+      if (index > 0 && index <= literals.size()) {
+        out += literals[static_cast<std::size_t>(index - 1)];
+        i = j;
+        continue;
+      }
+    }
+    out.push_back(ch);
+    ++i;
+  }
+  return out;
+}
+
+std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& payload,
+                                            const std::map<std::string, PreparedStatement>& statements) {
+  std::size_t off = 0;
+  (void)ReadSizedString(payload, &off);
+  const std::string statement_name = ReadSizedString(payload, &off);
+  const auto statement_it = statements.find(statement_name);
+  if (statement_it == statements.end()) return std::nullopt;
+  const PreparedStatement& statement = statement_it->second;
+  if (off + 2 > payload.size()) return std::nullopt;
+  const std::uint16_t format_count = ReadU16(payload, off);
+  off += 2;
+  std::vector<std::uint16_t> formats;
+  for (std::uint16_t i = 0; i < format_count && off + 2 <= payload.size(); ++i) {
+    formats.push_back(ReadU16(payload, off));
+    off += 2;
+  }
+  if (off + 4 > payload.size()) return std::nullopt;
+  const std::uint16_t value_count = ReadU16(payload, off);
+  off += 4;
+  std::vector<std::string> literals;
+  literals.reserve(value_count);
+  for (std::uint16_t i = 0; i < value_count && off + 4 <= payload.size(); ++i) {
+    const std::int32_t length = ReadI32(payload, off);
+    off += 4;
+    std::optional<std::vector<std::uint8_t>> data;
+    if (length >= 0) {
+      const auto bytes = static_cast<std::size_t>(length);
+      if (off + bytes > payload.size()) return std::nullopt;
+      data = std::vector<std::uint8_t>(payload.begin() + static_cast<std::ptrdiff_t>(off),
+                                       payload.begin() + static_cast<std::ptrdiff_t>(off + bytes));
+      off += bytes;
+    }
+    const std::uint16_t format = formats.empty()
+                                     ? 1
+                                     : formats[std::min<std::size_t>(i, formats.size() - 1)];
+    const std::uint32_t oid = i < statement.param_types.size() ? statement.param_types[i] : 0;
+    literals.push_back(DecodeParamLiteral(oid, format, data));
+  }
+  BoundPortal bound;
+  bound.sql = SubstituteParams(statement.sql, literals);
+  bound.param_types = statement.param_types;
+  return bound;
+}
+
+bool ExecuteSql(SbsqlTestWireSession* session,
+                ClientIo* io,
+                SbwpSessionState* state,
+                std::string_view raw_sql,
+                bool send_ready) {
+  state->ready_sent_for_current_operation = false;
+  const std::string sql = StripSqlTerminator(std::string(raw_sql));
+  if (sql.empty()) {
+    if (!SendFrame(io, state, kCommandComplete, CommandCompletePayload(0, "EMPTY"))) return false;
+    return !send_ready || SendReady(io, state);
+  }
+  const bool auto_cursor = ShouldAutoCursor(sql);
+  const auto result = session->RunPipeline(sql, true, auto_cursor);
+  if (!result.accepted || result.messages.has_errors()) {
+    if (!SendError(io,
+                   state,
+                   "42000",
+                   FirstDiagnosticText(result.messages),
+                   FirstDiagnosticCode(result.messages, "SBSQL.EXECUTION.REJECTED"))) {
+      return false;
+    }
+    return !send_ready || SendReady(io, state);
+  }
+  RefreshWireTransactionStateFromSession(*session, state);
+  if (result.server_operation_id == "transaction.begin") {
+    if (const auto local_id = TransactionIdFromResultPayload(result.server_result_payload)) {
+      state->txn_id = *local_id;
+    }
+  } else if (result.server_operation_id == "transaction.commit" ||
+             result.server_operation_id == "transaction.rollback") {
+    const auto replacement = TransactionIdFromResultPayload(result.server_result_payload);
+    if (!replacement.has_value() || *replacement == 0) {
+      if (!SendError(io,
+                     state,
+                     "25000",
+                     "MGA.TRANSACTION.REPLACEMENT_MISSING",
+                     "commit or rollback did not publish the required replacement transaction")) {
+        return false;
+      }
+      return !send_ready || SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    state->txn_id = *replacement;
+  }
+  if (result.server_operation_id == "dml.plan_import_rows" &&
+      Upper(sql).find("FROM STDIN") != std::string::npos) {
+    const auto target_uuid = JsonObjectTextField(result.sblr_payload, "target_object_uuid");
+    if (!target_uuid.has_value() || target_uuid->empty()) {
+      if (!SendError(io,
+                     state,
+                     "42000",
+                     "SBSQL.COPY.TARGET_UUID_MISSING",
+                     "COPY FROM STDIN requires a UUID-bound target before CopyData")) {
+        return false;
+      }
+      return !send_ready || SendReady(io, state);
+    }
+    state->copy_import = CopyImportState{};
+    state->copy_import.active = true;
+    state->copy_import.native_bulk_ingest = NativeBulkIngestRequested(sql);
+    state->copy_import.native_bulk_ingest_enabled = NativeBulkIngestEnabledRequested(sql);
+    state->copy_import.sql = sql;
+    state->copy_import.target_object_uuid = *target_uuid;
+    if (!SendFrame(io, state, kCopyInResponse, CopyInResponsePayload())) return false;
+    return true;
+  }
+  if (!SendPipelineResult(io, session, state, sql, result)) return false;
+  return !send_ready || SendReady(io, state);
+}
+
+bool HandleCopyData(SbsqlTestWireSession* session,
+                    ClientIo* io,
+                    SbwpSessionState* state,
+                    const Frame& frame) {
+  if (!state->authenticated || !state->copy_import.active) {
+    return SendError(io,
+                     state,
+                     "08P01",
+                     "ASYNC-011",
+                     "COPY_DATA arrived without a prior accepted COPY initiation") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  const auto rows = ParseTextCopyRows(frame.payload);
+  if (!rows.has_value()) {
+    state->copy_import = CopyImportState{};
+    if (session != nullptr) {
+      RefreshWireTransactionStateFromSession(*session, state);
+    }
+    return SendError(io,
+                     state,
+                     "22000",
+                     "SBSQL.COPY.DATA_ROW_INVALID",
+                     "CopyData payload must contain newline-delimited canonical field=value rows") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  state->copy_import.rows.insert(state->copy_import.rows.end(), rows->begin(), rows->end());
+  return true;
+}
+
+bool HandleCopyDone(SbsqlTestWireSession* session, ClientIo* io, SbwpSessionState* state) {
+  if (!state->authenticated || !state->copy_import.active) {
+    return SendError(io,
+                     state,
+                     "08P01",
+                     "ASYNC-011",
+                     "COPY_DONE arrived without a prior accepted COPY initiation") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  if (state->copy_import.rows.empty()) {
+    state->copy_import = CopyImportState{};
+    return SendError(io,
+                     state,
+                     "22000",
+                     "SBSQL.COPY.NO_ROWS",
+                     "COPY FROM STDIN requires at least one canonical input row before CopyDone") &&
+           SendReady(io, state, ReadyReason::kErrorRecovered);
+  }
+  const std::string copy_sql = state->copy_import.sql;
+  CopyImportState copy = std::move(state->copy_import);
+  state->copy_import = CopyImportState{};
+  PipelineResult result;
+  result.accepted = true;
+  result.statement_family = "dml";
+  result.operation_family = "sblr.dml.operation.v3";
+  result.server_operation_id =
+      copy.native_bulk_ingest ? "dml.execute_native_bulk_ingest" : "dml.execute_import_rows";
+  for (std::size_t first_row = 0; first_row < copy.rows.size();
+       first_row += kCopyExecuteRowsPerSblrEnvelope) {
+    const std::size_t row_count =
+        std::min(kCopyExecuteRowsPerSblrEnvelope, copy.rows.size() - first_row);
+    const std::string envelope =
+        copy.native_bulk_ingest
+            ? BuildNativeBulkIngestExecuteEnvelope(copy, first_row, row_count)
+            : BuildCopyExecuteEnvelope(copy, first_row, row_count);
+    auto chunk_result = session->RunSblrEnvelope(envelope, false);
+    if (!chunk_result.accepted || chunk_result.messages.has_errors()) {
+      const std::string diagnostic_code = FirstDiagnosticCode(
+          chunk_result.messages, "SBSQL.COPY.EXECUTION_REJECTED");
+      const std::string diagnostic_detail =
+          DiagnosticFieldValue(chunk_result.messages, "detail");
+      if (!SendError(io,
+                     state,
+                     "42000",
+                     FirstDiagnosticText(chunk_result.messages),
+                     diagnostic_detail.empty() ? diagnostic_code
+                                               : diagnostic_code + ";" + diagnostic_detail)) {
+        return false;
+      }
+      return SendReady(io, state, ReadyReason::kErrorRecovered);
+    }
+    result.statement_family = chunk_result.statement_family;
+    result.operation_family = chunk_result.operation_family;
+    result.server_operation_id = chunk_result.server_operation_id;
+    result.server_row_count += chunk_result.server_row_count == 0 ? row_count
+                                                                  : chunk_result.server_row_count;
+    if (!chunk_result.server_result_payload.empty()) {
+      if (!result.server_result_payload.empty() && result.server_result_payload.back() != '\n') {
+        result.server_result_payload.push_back('\n');
+      }
+      result.server_result_payload += chunk_result.server_result_payload;
+    }
+  }
+  if (!SendPipelineResult(io, session, state, copy_sql, result)) return false;
+  return SendReady(io, state, ReadyReason::kCommandComplete);
+}
+
+bool HandleCopyFail(ClientIo* io, SbwpSessionState* state, const Frame& frame) {
+  (void)frame;
+  state->copy_import = CopyImportState{};
+  return SendError(io,
+                   state,
+                   "57014",
+                   "SBSQL.COPY.CLIENT_ABORTED",
+                   "client aborted the active COPY stream") &&
+         SendReady(io, state, ReadyReason::kErrorRecovered);
+}
+
+bool HandleStartup(SbsqlTestWireSession* session,
+                   const ParserConfig& config,
+                   ClientIo* io,
+                   SbwpSessionState* state,
+                   const Frame& startup_frame) {
+  const auto startup = ParseStartupNegotiation(startup_frame.payload);
+  if (!startup.ok) {
+    state->p1_payloads = startup.p1;
+    (void)SendError(io, state, startup.sqlstate, startup.message, startup.detail);
+    return !startup.close_after_error;
+  }
+  state->p1_payloads = startup.p1;
+  state->selected_protocol_version = startup.selected_protocol_version;
+  state->negotiated_features = startup.negotiated_features;
+  state->session_parameters = startup.params;
+  const auto& params = startup.params;
+  if (!SendFrame(io, state, kAuthRequest, AuthRequestPayload())) return false;
+
+  Frame auth_response;
+  if (!ReadFrame(io, &auth_response)) return true;
+  if (auth_response.header.msg_type != kAuthResponse) {
+    (void)SendError(io, state, "08P01", "expected AUTH_RESPONSE after AUTH_REQUEST");
+    return false;
+  }
+
+  auto get_param = [&](const std::string& key) -> std::string {
+    const auto found = params.find(key);
+    return found == params.end() ? std::string{} : found->second;
+  };
+  AuthCredentialEnvelope credentials;
+  credentials.provider_family = "local_password";
+  credentials.principal = get_param("user");
+  credentials.requested_database = get_param("database");
+  if (credentials.requested_database.empty()) {
+    credentials.requested_database = config.database_token.empty() ? "default" : config.database_token;
+  }
+  credentials.requested_language = get_param("language");
+  if (credentials.requested_language.empty()) credentials.requested_language = "en";
+  credentials.application_name = get_param("application_name");
+  if (!config.manager_auth_token.empty()) {
+    credentials.provider_family = config.manager_auth_provider_family.empty()
+                                      ? "security_database_temporary_token"
+                                      : config.manager_auth_provider_family;
+    if (!config.manager_auth_principal.empty()) credentials.principal = config.manager_auth_principal;
+    credentials.credential_evidence_present = true;
+    credentials.credential_evidence = "scheme=security_database_temporary_token_v1;principal=" +
+                                      credentials.principal + ";token=" +
+                                      config.manager_auth_token + ";issuer=manager";
+  } else {
+    credentials.credential_evidence_present = !auth_response.payload.empty();
+    credentials.credential_evidence.assign(reinterpret_cast<const char*>(auth_response.payload.data()),
+                                           auth_response.payload.size());
+  }
+
+  MessageVectorSet auth_messages;
+  if (!session->AuthenticateCredentials(credentials, &auth_messages)) {
+    (void)SendError(io,
+                    state,
+                    "28000",
+                    FirstDiagnosticText(auth_messages),
+                    FirstDiagnosticCode(auth_messages, "SECURITY.AUTHENTICATION.FAILED"));
+    return false;
+  }
+
+  state->attachment_id = TextToUuidBytes(session->session().session_uuid);
+  if (IsZeroUuid(state->attachment_id)) {
+    state->attachment_id = TextToUuidBytes(session->session().connection_uuid);
+  }
+  if (IsZeroUuid(state->attachment_id)) {
+    state->attachment_id = FallbackAttachmentId(credentials.principal);
+  }
+  state->session_uuid = state->attachment_id;
+  state->txn_id = session->session().local_transaction_id;
+  state->snapshot_visible_through_local_transaction_id =
+      session->session().snapshot_visible_through_local_transaction_id;
+  state->security_policy_epoch = session->session().security_policy_epoch;
+  state->authenticated_user_uuid = session->session().authenticated_user_uuid;
+  state->auth_provider_family = session->session().auth_provider_family.empty()
+                                    ? credentials.provider_family
+                                    : session->session().auth_provider_family;
+  state->principal_claim = session->session().principal_claim.empty()
+                               ? credentials.principal
+                               : session->session().principal_claim;
+  if (state->txn_id == 0) {
+    (void)SendError(io,
+                    state,
+                    "25000",
+                    "PARSER_SERVER_IPC.ATTACH_TRANSACTION_REQUIRED",
+                    "accepted database attach did not publish the required active transaction");
+    return false;
+  }
+  state->authenticated = true;
+  if (!SendFrame(io, state, kAuthOk, AuthOkPayload(*state))) return false;
+  if (!SendServerInfo(io, state, config)) return false;
+  if (!SendParameterStatus(io, state, StartupParameterStatuses(*state))) return false;
+  return SendReady(io, state, ReadyReason::kStartup);
+}
+
+} // namespace
+
+bool SbsqlTestWireSession::AuthenticateCredentials(const AuthCredentialEnvelope& credentials,
+                                                   MessageVectorSet* messages) {
+  if (metrics_) {
+    metrics_->SetState(ParserState::kAuthenticating);
+    metrics_->Increment("sys.metrics.parsers.auth.attempts_total");
+  }
+  if (config_.embedded_engine_direct) {
+    if (!config_.embedded_auth_bypass_sysarch) {
+      if (messages != nullptr) {
+        messages->diagnostics.push_back(MakeDiagnostic(
+            "SBSQL.EMBEDDED.AUTH_BYPASS_NOT_ENABLED",
+            "ERROR",
+            "embedded engine direct mode requires the explicit local sysarch authorization bypass",
+            "sbp_sbsql.embedded"));
+      }
+      if (metrics_) {
+        metrics_->Increment("sys.metrics.parsers.auth.failures_total");
+        metrics_->SetState(ParserState::kIdlePreAuth);
+      }
+      return false;
+    }
+    if (embedded_client_ == nullptr) {
+      embedded_client_ = std::make_unique<EmbeddedEngineClient>(config_);
+    }
+    const bool authenticated_direct_requested =
+        credentials.credential_evidence_present && !credentials.principal.empty() &&
+        credentials.provider_family != "embedded_sysarch";
+    if (authenticated_direct_requested) {
+      const bool accepted =
+          embedded_client_->AuthenticateAndAttach(credentials, &session_, messages);
+      if (accepted) {
+        if (metrics_) metrics_->SetState(ParserState::kAuthenticated);
+        return true;
+      }
+      if (metrics_) {
+        metrics_->Increment("sys.metrics.parsers.auth.failures_total");
+        metrics_->SetState(ParserState::kIdlePreAuth);
+      }
+      return false;
+    }
+    AuthCredentialEnvelope embedded_credentials = credentials;
+    embedded_credentials.provider_family = "embedded_sysarch";
+    embedded_credentials.principal = "sysarch";
+    embedded_credentials.credential_evidence.clear();
+    embedded_credentials.credential_evidence_present = false;
+    if (embedded_credentials.requested_database.empty() ||
+        embedded_credentials.requested_database == "default") {
+      embedded_credentials.requested_database = config_.embedded_database_path.empty()
+                                                    ? config_.database_token
+                                                    : config_.embedded_database_path;
+    }
+    const bool accepted =
+        embedded_client_->AuthenticateAndAttachSysarch(embedded_credentials, &session_, messages);
+    if (accepted) {
+      if (metrics_) metrics_->SetState(ParserState::kAuthenticated);
+      return true;
+    }
+    if (metrics_) {
+      metrics_->Increment("sys.metrics.parsers.auth.failures_total");
+      metrics_->SetState(ParserState::kIdlePreAuth);
+    }
+    return false;
+  }
+  if (config_.server_endpoint.empty()) {
+    if (messages != nullptr) {
+      messages->diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.SERVER.UNAVAILABLE",
+          "ERROR",
+          "authentication requires the assigned sb_server parser IPC endpoint",
+          "sbp_sbsql.sbwp"));
+    }
+    if (metrics_) metrics_->Increment("sys.metrics.parsers.auth.failures_total");
+    if (metrics_) metrics_->SetState(ParserState::kIdlePreAuth);
+    return false;
+  }
+  SbpsClient client(config_.server_endpoint);
+  const bool accepted = client.AuthenticateAndAttach(credentials, config_, &session_, messages);
+  if (accepted) {
+    if (metrics_) metrics_->SetState(ParserState::kAuthenticated);
+    return true;
+  }
+  if (metrics_) {
+    metrics_->Increment("sys.metrics.parsers.auth.failures_total");
+    metrics_->SetState(ParserState::kIdlePreAuth);
+  }
+  return false;
+}
+
+int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
+  ClientIo io(fd);
+  if (config_.tls_required && !io.StartTls(config_.tls_cert_file, config_.tls_key_file)) {
+    if (metrics_) metrics_->SetState(ParserState::kFailed);
+    return 1;
+  }
+  if (metrics_) metrics_->SetState(ParserState::kIdlePreAuth);
+
+  SbwpSessionState state;
+  int rc = 0;
+  for (;;) {
+    Frame frame;
+    if (!ReadFrame(&io, &frame)) break;
+    if ((frame.header.flags & ~kFrameFlagKnownMask) != 0 ||
+        (frame.header.flags & kFrameFlagPartial) != 0 ||
+        ((frame.header.flags & kFrameFlagCompressed) != 0 &&
+         !FeatureNegotiated(state, kFeatureCompression))) {
+      (void)SendError(&io,
+                      &state,
+                      "08P01",
+                      (frame.header.flags & kFrameFlagCompressed) != 0
+                          ? "SBWP.COMPRESSION.UNNEGOTIATED_FRAME"
+                          : "SBWP.HEADER.RESERVED_BITS_SET",
+                      "SBWP frame flags failed closed before payload dispatch");
+      rc = 1;
+      break;
+    }
+    if (!IsKnownSbwpMessage(frame.header.msg_type)) {
+      (void)SendError(&io,
+                      &state,
+                      "08P01",
+                      "NATIVE_WIRE.PROTOCOL_FATAL",
+                      "unknown SBWP frame type is not recoverable");
+      rc = 1;
+      break;
+    }
+    const auto required_feature = RequiredFeatureForMessage(frame.header.msg_type);
+    if (!FeatureNegotiated(state, required_feature)) {
+      (void)SendFeatureNotNegotiated(&io, &state, frame.header.msg_type);
+      rc = 1;
+      break;
+    }
+    switch (frame.header.msg_type) {
+      case kStartup:
+        if (!HandleStartup(this, config_, &io, &state, frame)) rc = 1;
+        break;
+      case kQuery:
+        if (!state.authenticated) {
+          if (!SendError(&io, &state, "28000", "authentication required") ||
+              !SendReady(&io, &state)) rc = 1;
+        } else if (!AdmitFrameTransaction(&io, &state, frame, "QUERY")) {
+          break;
+        } else if (!ExecuteSql(this, &io, &state, ParseQuerySql(frame.payload), true)) {
+          rc = 1;
+        }
+        break;
+      case kParse: {
+        std::string name;
+        auto prepared = ParsePreparedStatement(frame.payload, &name);
+        if (!prepared) {
+          if (!SendError(&io, &state, "08P01", "invalid PARSE payload")) rc = 1;
+          break;
+        }
+        state.statements[name] = *prepared;
+        if (!SendFrame(&io, &state, kParseComplete, {})) rc = 1;
+        break;
+      }
+      case kDescribe: {
+        std::size_t off = 4;
+        const std::string name = ReadSizedString(frame.payload, &off);
+        PreparedStatement statement;
+        const auto found = state.statements.find(name);
+        if (found != state.statements.end()) statement = found->second;
+        if (!SendFrame(&io,
+                       &state,
+                       kParameterDescription,
+                       ParameterDescriptionPayload(statement,
+                                                   state.p1_payloads,
+                                                   state.negotiated_features))) {
+          rc = 1;
+        }
+        break;
+      }
+      case kBind: {
+        if (state.p1_payloads && frame.payload.size() >= 4 && ReadU16(frame.payload, 0) == 1 &&
+            frame.payload[3] != 0) {
+          if (!FeatureNegotiated(state, kFeatureArrayBind)) {
+            if (!SendFeatureNotNegotiated(&io, &state, frame.header.msg_type)) rc = 1;
+          } else if (!SendUnsupportedFeature(&io, &state, "array-bind execute")) {
+            rc = 1;
+          }
+          break;
+        }
+        const auto bound = ParseBindPayload(frame.payload, state.statements);
+        if (!bound) {
+          if (!SendError(&io, &state, "08P01", "invalid BIND payload")) rc = 1;
+          break;
+        }
+        state.portals[""] = *bound;
+        if (!SendFrame(&io, &state, kBindComplete, {})) rc = 1;
+        break;
+      }
+      case kExecute: {
+        const auto found = state.portals.find("");
+        const std::string sql = found == state.portals.end() ? std::string{} : found->second.sql;
+        if (!state.authenticated) {
+          if (!SendError(&io, &state, "28000", "authentication required")) rc = 1;
+        } else if (!AdmitFrameTransaction(&io, &state, frame, "EXECUTE")) {
+          break;
+        } else if (!ExecuteSql(this, &io, &state, sql, false)) {
+          rc = 1;
+        }
+        break;
+      }
+      case kSync:
+        if (!state.ready_sent_for_current_operation && !SendReady(&io, &state)) rc = 1;
+        state.ready_sent_for_current_operation = false;
+        break;
+      case kClose:
+        if (!SendFrame(&io, &state, kCloseComplete, {})) rc = 1;
+        break;
+      case kTxnBegin:
+        if (!ExecuteSql(this, &io, &state, "BEGIN", true)) rc = 1;
+        break;
+      case kTxnCommit:
+        if (!AdmitFrameTransaction(&io, &state, frame, "TXN_COMMIT")) {
+          break;
+        }
+        if (!ExecuteSql(this, &io, &state, "COMMIT", true)) rc = 1;
+        break;
+      case kTxnRollback:
+        if (!AdmitFrameTransaction(&io, &state, frame, "TXN_ROLLBACK")) {
+          break;
+        }
+        if (!ExecuteSql(this, &io, &state, "ROLLBACK", true)) rc = 1;
+        break;
+      case kCancel:
+        if (!HandleCancel(&io, &state, frame)) rc = 1;
+        break;
+      case kPing:
+        if (!SendFrame(&io, &state, kPong, frame.payload)) rc = 1;
+        break;
+      case kResetSession:
+        if (!HandleResetSession(this, &io, &state, frame)) rc = 1;
+        break;
+      case kReauth:
+        if (!HandleReauth(&io, &state, frame)) rc = 1;
+        break;
+      case kTraceContext:
+        if (!HandleTraceContext(&io, &state, frame)) rc = 1;
+        break;
+      case kSubscribe:
+        if (!HandleSubscription(&io, &state, true)) rc = 1;
+        break;
+      case kUnsubscribe:
+        if (!HandleSubscription(&io, &state, false)) rc = 1;
+        break;
+      case kSetOption:
+        if (!SendParameterStatus(&io, &state, {{"session.option", "updated"}}) ||
+            !SendReady(&io, &state, ReadyReason::kStateChange)) {
+          rc = 1;
+        }
+        break;
+      case kCopyData:
+        if (!AdmitFrameTransaction(&io, &state, frame, "COPY_DATA")) {
+          break;
+        }
+        if (!HandleCopyData(this, &io, &state, frame)) rc = 1;
+        break;
+      case kCopyDone:
+        if (!AdmitFrameTransaction(&io, &state, frame, "COPY_DONE")) {
+          break;
+        }
+        if (!HandleCopyDone(this, &io, &state)) rc = 1;
+        break;
+      case kCopyFail:
+        if (!HandleCopyFail(&io, &state, frame)) rc = 1;
+        break;
+      case kSblrExecute:
+      case kStreamControl:
+      case kTxnSavepoint:
+      case kTxnRelease:
+      case kTxnRollbackTo:
+      case kLobClose:
+        if (!SendUnsupportedFeature(&io, &state, "native extension frame") ||
+            !SendReady(&io, &state, ReadyReason::kErrorRecovered)) {
+          rc = 1;
+        }
+        break;
+      case kTerminate:
+        rc = 0;
+        goto done;
+      default:
+        if (!SendError(&io, &state, "08P01", "unsupported SBWP frame") ||
+            !SendReady(&io, &state)) rc = 1;
+        break;
+    }
+    if (rc != 0) break;
+  }
+
+done:
+  if (session_.authenticated && HasExecutionRoute()) {
+    MessageVectorSet disconnect_messages;
+    (void)DisconnectExecutionRoute(&disconnect_messages);
+  }
+  if (metrics_) metrics_->SetState(rc == 0 ? ParserState::kDisconnected : ParserState::kFailed);
+  return rc;
+}
+
+} // namespace scratchbird::parser::sbsql

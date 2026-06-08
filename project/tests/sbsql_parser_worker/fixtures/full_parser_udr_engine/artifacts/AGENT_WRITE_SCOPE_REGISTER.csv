@@ -1,0 +1,30 @@
+agent_id_or_role,active_slice,allowed_write_scope,forbidden_write_scope,status
+coordinator,all,"execution_plan status artifacts, generated P0-P0E preparation artifacts, assigned correction patches",unassigned implementation files,complete
+parser_generation_worker,FSPE-001,generated registries and linters after P0E,parser/server/engine behavior files before coordinator assignment,complete
+lexer_worker,FSPE-002,project/src/parsers/sbsql_worker/lexer and generated lexer tests,server engine UDR files,complete
+ast_worker,FSPE-003,project/src/parsers/sbsql_worker/cst and ast plus tests,server engine UDR files,complete
+expression_builtins_worker,FSPE-004,parser expression/builtin files and engine builtin files assigned by coordinator,unassigned DDL/server files,complete
+statement_parser_worker,FSPE-005,parser statement-family files and tests,engine behavior files unless assigned,complete
+binder_catalog_security_worker,FSPE-006,parser binder and resolver client files,server resolver implementation unless assigned,complete
+sblr_worker,FSPE-007,parser lowering SBLR fixtures verifier tests,engine behavior files unless assigned,complete
+udr_worker,FSPE-008,project/src/udr/sbu_sbsql_parser_support and UDR tests,parser runtime server engine files unless assigned,complete
+engine_family_worker,FSPE-009,project/src/engine/internal_api assigned family files,parser lexer runtime files,complete
+server_ipc_worker,FSPE-010,project/src/server assigned IPC/admission files;project/tests/sbsql_parser_worker assigned conformance files,parser grammar engine behavior unless assigned,complete
+diagnostics_rendering_worker,FSPE-010A,diagnostic registries parser rendering templates message-vector tests,unassigned behavior files,complete
+server_parser_runtime_worker,FSPE-010B,streaming/result protocol implementation and tests assigned by coordinator,unassigned parser grammar or engine files,complete
+conformance_worker,FSPE-011F,generated test fixtures and coverage reports,production source unless assigned,complete
+parser_runtime_worker,FSPE-012,parser runtime hardening gates metrics resource-budget tests and assigned source fixes,unassigned engine behavior or cache-epoch files reserved for FSPE-012A,complete
+cache_epoch_worker,FSPE-012A,parser cache key invalidation fixtures and assigned cache/server invalidation tests,unassigned engine behavior files,complete
+parser_server_hardening_worker,FSPE-012B,parser/server malicious-input fixtures fuzz-smoke gates and assigned resource diagnostics,unassigned engine behavior files,complete
+build_repro_worker,FSPE-012C,deterministic generation no-network gates and build-temp reproducibility fixtures,tracked generated outputs unless coordinator assigns update,complete
+platform_worker,FSPE-012D,cross-platform IPC process path fixtures and reports,unassigned parser grammar engine behavior files,complete
+i18n_worker,FSPE-012E,locale charset collation timezone fixtures and reports,unassigned server IPC or engine storage files,complete
+result_shape_worker,FSPE-012F,metadata result-shape compatibility fixtures reports and assigned server metadata fields,unassigned parser grammar or engine behavior files,complete
+upgrade_compatibility_worker,FSPE-012H,upgrade migration compatibility fixtures reports and assigned storage/server/cache compatibility files,unassigned generated registry files unless coordinator assigns update,complete
+spec_coordinator,FSPE-013,spec synchronization audit and documentation maps,unassigned implementation source files,complete
+catalog_parser_registry_worker,FSPE-013A,fixed UUID seed catalog verification fixtures and reports,unassigned migration files unless coordinator assigns update,complete
+benchmark_worker,FSPE-014F,benchmark baseline report and non-tuning measurement fixtures,unassigned optimization or tuning source files,complete
+donor_conformance_worker,FSPE-011B,donor alias profile fixtures and rendering reports,native parser or engine behavior files unless assigned,complete
+persistence_conformance_worker,FSPE-011D,persistence restart fixtures reports and assigned conformance gates,unassigned parser/server/engine behavior files,complete
+transaction_conformance_worker,FSPE-011E,concurrent parser/session transaction fixtures and assigned transaction conformance gates,unassigned parser/server/engine behavior files,complete
+security_conformance_worker,FSPE-012G,security redaction fixtures and assigned security files,unassigned catalog or engine behavior files,complete

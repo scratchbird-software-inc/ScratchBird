@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse version="3.2"?>
+
+<plugin>
+    <extension point="org.eclipse.core.expressions.propertyTesters">
+        <propertyTester
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.ScratchBirdUiPropertyTester"
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.propertyTester"
+            namespace="org.jkiss.dbeaver.ext.scratchbird.ui"
+            properties="canManage,canOpen,canNew,canAlter,canDelete,canTasks,canReports,canSourceStatus,canValidateSql"
+            type="java.lang.Object"/>
+    </extension>
+
+    <extension point="org.eclipse.ui.editors.annotationTypes">
+        <type name="org.jkiss.dbeaver.ext.scratchbird.ui.v3Problem"/>
+    </extension>
+
+    <extension point="org.eclipse.ui.editors.markerAnnotationContract">
+        <contract
+            annotationType="org.jkiss.dbeaver.ext.scratchbird.ui.v3Problem"
+            label="ScratchBird v3 parser diagnostic"
+            textPreferenceKey="ScratchBird.v3.problem.text"
+            textPreferenceValue="true"
+            overviewRulerPreferenceKey="ScratchBird.v3.problem.overview"
+            overviewRulerPreferenceValue="true"
+            verticalRulerPreferenceKey="ScratchBird.v3.problem.vertical"
+            verticalRulerPreferenceValue="true"
+            colorPreferenceKey="ScratchBird.v3.problem.color"
+            colorPreferenceValue="255,128,0"
+            presentationLayer="5"
+            textStylePreferenceKey="ScratchBird.v3.problem.style"
+            textStylePreferenceValue="SQUIGGLES"/>
+    </extension>
+
+    <extension point="org.jkiss.dbeaver.sql.editorAddIns">
+        <addIn
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.sqlEditorAddIn"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.ScratchBirdSqlEditorAddIn"
+            priority="250"/>
+    </extension>
+
+    <extension point="org.jkiss.dbeaver.sql.quickFixProcessors">
+        <quickFixProcessor
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.sqlQuickAssistProcessor"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.ScratchBirdSqlQuickAssistProcessor">
+            <enabledWhen>
+                <with variable="activeEditor">
+                    <adapt type="org.jkiss.dbeaver.ui.editors.sql.SQLEditor">
+                        <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canValidateSql"/>
+                    </adapt>
+                </with>
+            </enabledWhen>
+        </quickFixProcessor>
+    </extension>
+
+    <extension point="org.eclipse.ui.commands">
+        <category
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.category"
+            name="ScratchBird"/>
+        <command
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.open"
+            name="ScratchBird Properties"
+            description="Open the ScratchBird management form for the selected object."
+            categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
+        <command
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.new"
+            name="ScratchBird New"
+            description="Open the ScratchBird create form for the selected scope."
+            categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
+        <command
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.alter"
+            name="ScratchBird Alter"
+            description="Open the ScratchBird alter form for the selected object."
+            categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
+        <command
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.delete"
+            name="ScratchBird Delete"
+            description="Open the ScratchBird destructive action wizard for the selected object."
+            categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
+        <command
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.tasks"
+            name="ScratchBird Tasks"
+            description="Open ScratchBird administrative task launcher for the selected object."
+            categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
+        <command
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.reports"
+            name="ScratchBird Reports"
+            description="Open ScratchBird reports for the selected object."
+            categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
+        <command
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.sourceStatus"
+            name="ScratchBird Source Status"
+            description="Inspect ScratchBird form/report source-surface status."
+            categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
+        <command
+            id="org.jkiss.dbeaver.ext.scratchbird.ui.validateSql"
+            name="Validate ScratchBird v3 SQL"
+            description="Validate the active SQL editor selection or statement with the local ScratchBird v3 parser."
+            categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
+    </extension>
+
+    <extension point="org.eclipse.ui.handlers">
+        <handler
+            commandId="org.eclipse.ui.edit.text.contentAssist.proposals"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.handlers.ScratchBirdSqlContentAssistHandler">
+            <activeWhen>
+                <with variable="activeEditor">
+                    <adapt type="org.jkiss.dbeaver.ui.editors.sql.SQLEditor">
+                        <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canValidateSql"/>
+                    </adapt>
+                </with>
+            </activeWhen>
+        </handler>
+        <handler
+            commandId="org.jkiss.dbeaver.ext.scratchbird.ui.open"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.handlers.ScratchBirdOpenHandler"/>
+        <handler
+            commandId="org.jkiss.dbeaver.ext.scratchbird.ui.new"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.handlers.ScratchBirdNewHandler"/>
+        <handler
+            commandId="org.jkiss.dbeaver.ext.scratchbird.ui.alter"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.handlers.ScratchBirdAlterHandler"/>
+        <handler
+            commandId="org.jkiss.dbeaver.ext.scratchbird.ui.delete"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.handlers.ScratchBirdDeleteHandler"/>
+        <handler
+            commandId="org.jkiss.dbeaver.ext.scratchbird.ui.tasks"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.handlers.ScratchBirdTasksHandler"/>
+        <handler
+            commandId="org.jkiss.dbeaver.ext.scratchbird.ui.reports"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.handlers.ScratchBirdReportsHandler"/>
+        <handler
+            commandId="org.jkiss.dbeaver.ext.scratchbird.ui.sourceStatus"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.handlers.ScratchBirdSourceStatusHandler"/>
+        <handler
+            commandId="org.jkiss.dbeaver.ext.scratchbird.ui.validateSql"
+            class="org.jkiss.dbeaver.ext.scratchbird.ui.handlers.ScratchBirdValidateSqlHandler">
+            <enabledWhen>
+                <with variable="activeEditor">
+                    <adapt type="org.jkiss.dbeaver.ui.editors.sql.SQLEditor">
+                        <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canValidateSql"/>
+                    </adapt>
+                </with>
+            </enabledWhen>
+        </handler>
+    </extension>
+
+    <extension point="org.eclipse.ui.menus">
+        <menuContribution allPopups="false" locationURI="popup:org.jkiss.dbeaver.ui.editors.sql.SQLEditor.EditorContext?after=sql.additions">
+            <menu
+                id="org.jkiss.dbeaver.ext.scratchbird.ui.sqlEditorMenu"
+                label="ScratchBird"
+                icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/scratchbird_icon.png">
+                <visibleWhen>
+                    <with variable="activeEditor">
+                        <adapt type="org.jkiss.dbeaver.ui.editors.sql.SQLEditor">
+                            <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canValidateSql"/>
+                        </adapt>
+                    </with>
+                </visibleWhen>
+                <command commandId="org.jkiss.dbeaver.ext.scratchbird.ui.validateSql"/>
+            </menu>
+        </menuContribution>
+
+        <menuContribution allPopups="false" locationURI="popup:org.eclipse.ui.popup.any?after=additions">
+            <menu
+                id="org.jkiss.dbeaver.ext.scratchbird.ui.menu"
+                label="ScratchBird"
+                icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/scratchbird_icon.png">
+                <visibleWhen>
+                    <with variable="selection">
+                        <count value="1"/>
+                        <iterate operator="and">
+                            <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canManage"/>
+                        </iterate>
+                    </with>
+                </visibleWhen>
+                <command commandId="org.jkiss.dbeaver.ext.scratchbird.ui.open">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="selection">
+                            <count value="1"/>
+                            <iterate operator="and">
+                                <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canOpen"/>
+                            </iterate>
+                        </with>
+                    </visibleWhen>
+                </command>
+                <command commandId="org.jkiss.dbeaver.ext.scratchbird.ui.new">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="selection">
+                            <count value="1"/>
+                            <iterate operator="and">
+                                <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canNew"/>
+                            </iterate>
+                        </with>
+                    </visibleWhen>
+                </command>
+                <command commandId="org.jkiss.dbeaver.ext.scratchbird.ui.alter">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="selection">
+                            <count value="1"/>
+                            <iterate operator="and">
+                                <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canAlter"/>
+                            </iterate>
+                        </with>
+                    </visibleWhen>
+                </command>
+                <command commandId="org.jkiss.dbeaver.ext.scratchbird.ui.delete">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="selection">
+                            <count value="1"/>
+                            <iterate operator="and">
+                                <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canDelete"/>
+                            </iterate>
+                        </with>
+                    </visibleWhen>
+                </command>
+                <separator name="scratchbird-tasks" visible="true"/>
+                <command commandId="org.jkiss.dbeaver.ext.scratchbird.ui.tasks">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="selection">
+                            <count value="1"/>
+                            <iterate operator="and">
+                                <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canTasks"/>
+                            </iterate>
+                        </with>
+                    </visibleWhen>
+                </command>
+                <command commandId="org.jkiss.dbeaver.ext.scratchbird.ui.reports">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="selection">
+                            <count value="1"/>
+                            <iterate operator="and">
+                                <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canReports"/>
+                            </iterate>
+                        </with>
+                    </visibleWhen>
+                </command>
+                <command commandId="org.jkiss.dbeaver.ext.scratchbird.ui.sourceStatus">
+                    <visibleWhen checkEnabled="false">
+                        <with variable="selection">
+                            <count value="1"/>
+                            <iterate operator="and">
+                                <test property="org.jkiss.dbeaver.ext.scratchbird.ui.canSourceStatus"/>
+                            </iterate>
+                        </with>
+                    </visibleWhen>
+                </command>
+            </menu>
+        </menuContribution>
+    </extension>
+</plugin>

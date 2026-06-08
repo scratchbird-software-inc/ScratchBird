@@ -1,0 +1,10 @@
+# ScratchBird Hibernate bootstrap example
+hibernate.connection.url=jdbc:scratchbird://127.0.0.1:3092/main?sslmode=require&binaryTransfer=true
+hibernate.connection.username=sb_admin
+hibernate.connection.password=change_me
+hibernate.dialect=com.scratchbird.hibernate.ScratchBirdDialect
+hibernate.hbm2ddl.auto=validate
+hibernate.show_sql=true
+hibernate.format_sql=true
+hibernate.jdbc.batch_size=64
+hibernate.connection.provider_disables_autocommit=true

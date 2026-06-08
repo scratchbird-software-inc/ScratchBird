@@ -1,0 +1,24 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#include <fstream>
+#include <iostream>
+#include <map>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace {
+struct Row { std::string surface_key; std::string command_family; std::string support_status; std::string grammar_rule; std::string ast_node; std::string bound_ast_node; std::string cluster_behavior; bool source_range=false; bool token_spans=false; bool raw_forbidden=false; bool names_uuid=false; bool descriptors=false; };
+std::string Trim(std::string v){auto f=v.find_first_not_of(" \t\r\n"); if(f==std::string::npos)return{}; auto l=v.find_last_not_of(" \t\r\n"); v=v.substr(f,l-f+1); if(v.size()>=2&&((v.front()=='"'&&v.back()=='"')||(v.front()=='\''&&v.back()=='\'')))v=v.substr(1,v.size()-2); if(v=="''")return{}; return v;}
+bool Starts(const std::string& v,const std::string& p){return v.rfind(p,0)==0;}
+std::string Field(const std::string& line,const std::string& key){return Trim(line.substr(line.find(key+":")+key.size()+1));}
+bool BoolField(const std::string& line,const std::string& key){return Field(line,key)=="true" || Field(line,key)=="forbidden";}
+std::map<std::string,Row> Parse(const std::string& path,std::vector<std::string>* errors){std::ifstream in(path); if(!in){errors->push_back("file_not_readable:"+path); return{};} std::map<std::string,Row> rows; Row cur; bool active=false; std::string line; while(std::getline(in,line)){ if(Starts(line,"  - surface_key:")){ if(active)rows[cur.surface_key]=cur; cur=Row{}; cur.surface_key=Field(line,"surface_key"); active=true; continue;} if(!active)continue; if(Starts(line,"    command_family:"))cur.command_family=Field(line,"command_family"); else if(Starts(line,"    support_status:"))cur.support_status=Field(line,"support_status"); else if(Starts(line,"    grammar_rule:"))cur.grammar_rule=Field(line,"grammar_rule"); else if(Starts(line,"    ast_node:"))cur.ast_node=Field(line,"ast_node"); else if(Starts(line,"    bound_ast_node:"))cur.bound_ast_node=Field(line,"bound_ast_node"); else if(Starts(line,"    cluster_behavior:"))cur.cluster_behavior=Field(line,"cluster_behavior"); else if(Starts(line,"    source_range_required:"))cur.source_range=BoolField(line,"source_range_required"); else if(Starts(line,"    token_spans_required:"))cur.token_spans=BoolField(line,"token_spans_required"); else if(Starts(line,"    raw_command_engine_authority:"))cur.raw_forbidden=BoolField(line,"raw_command_engine_authority"); else if(Starts(line,"    names_must_bind_to_uuid_before_engine:"))cur.names_uuid=BoolField(line,"names_must_bind_to_uuid_before_engine"); else if(Starts(line,"    descriptors_must_bind_before_engine:"))cur.descriptors=BoolField(line,"descriptors_must_bind_before_engine");} if(active)rows[cur.surface_key]=cur; return rows;}
+}
+int main(int argc,char** argv){std::string grammar=argc>1?argv[1]:"docs" "/execution-plans/sbsql-native-v3-full-dialect-support/SBSQL_V3_GRAMMAR_INVENTORY.yaml"; std::string ast=argc>2?argv[2]:"docs" "/execution-plans/sbsql-native-v3-full-dialect-support/SBSQL_V3_AST_NODE_MATRIX.yaml"; std::vector<std::string> errors; auto g=Parse(grammar,&errors); auto a=Parse(ast,&errors); if(g.empty())errors.push_back("grammar_empty"); if(a.empty())errors.push_back("ast_empty"); for(auto& [k,gr]:g){auto it=a.find(k); if(it==a.end()){errors.push_back("ast_row_missing:"+k); continue;} const Row& ar=it->second; if(ar.command_family!=gr.command_family)errors.push_back("family_mismatch:"+k); if(ar.support_status!=gr.support_status)errors.push_back("status_mismatch:"+k); if(ar.grammar_rule!=gr.grammar_rule)errors.push_back("grammar_rule_mismatch:"+k); if(ar.ast_node.empty())errors.push_back("ast_node_missing:"+k); if(ar.bound_ast_node.empty())errors.push_back("bound_ast_node_missing:"+k); if(!ar.source_range)errors.push_back("source_range_not_required:"+k); if(!ar.token_spans)errors.push_back("token_spans_not_required:"+k); if(!ar.raw_forbidden)errors.push_back("raw_command_authority_not_forbidden:"+k); if(!ar.names_uuid)errors.push_back("uuid_binding_not_required:"+k); if(!ar.descriptors)errors.push_back("descriptor_binding_not_required:"+k); if(gr.support_status=="cluster_deferred" && ar.cluster_behavior!="fail_closed_cluster_placeholder")errors.push_back("cluster_behavior_invalid:"+k);} for(auto& [k,ar]:a) if(!g.contains(k)) errors.push_back("extra_ast_row:"+k); std::cout << "{\n  \"ok\": " << (errors.empty()?"true":"false") << ",\n  \"grammar_rows\": " << g.size() << ",\n  \"ast_rows\": " << a.size() << ",\n  \"errors\": ["; for(size_t i=0;i<errors.size();++i){if(i)std::cout<<", "; std::cout<<"\""<<errors[i]<<"\"";} std::cout << "]\n}\n"; return errors.empty()?0:1;}

@@ -1,0 +1,157 @@
+# DATATYPE-LAYOUT-INVENTORY-CONFORMANCE
+suite: datatype_layout_inventory
+status: specified_for_probe
+probe: sb_storage_foundation_probe
+required_registry: BuiltinDatatypeStorageLayouts
+cases:
+  - id: DTYPE-CONF-001
+    name: every canonical datatype has a validated storage layout
+    required_types:
+      - null_type
+      - boolean
+      - int8
+      - int16
+      - int32
+      - int64
+      - int128
+      - uint8
+      - uint16
+      - uint32
+      - uint64
+      - uint128
+      - bfloat16
+      - real16
+      - real32
+      - real64
+      - real128
+      - decimal
+      - decimal_float
+      - uuid
+      - ip_address
+      - network_prefix
+      - mac_address
+      - character
+      - binary
+      - bit_string
+      - date
+      - time
+      - timestamp
+      - interval
+      - blob
+      - document
+      - json_document
+      - binary_json_document
+      - bson_document
+      - xml_document
+      - hstore_document
+      - object_document
+      - flattened_object_document
+      - enum_value
+      - set_value
+      - array
+      - list
+      - map
+      - row
+      - composite
+      - variant
+      - range
+      - multirange
+      - token_stream
+      - search_query
+      - search_rank_feature
+      - search_completion
+      - search_percolator
+      - geometry
+      - geography
+      - point
+      - shape
+      - raster
+      - vector
+      - dense_vector
+      - sparse_vector
+      - binary_vector
+      - quantized_vector
+      - graph_node
+      - graph_edge
+      - graph_path
+      - time_series_value
+      - columnar_segment
+      - aggregate_state
+      - hll_sketch
+      - bloom_filter
+      - quantile_sketch
+      - histogram_sketch
+      - ranking_summary
+      - vector_summary
+      - lob_locator
+      - external_file_locator
+      - remote_object_locator
+      - bridge_handle
+      - cursor_handle
+      - system_reference
+      - opaque_extension
+      - cursor
+      - result_set
+      - table_value
+  - id: DTYPE-CONF-002
+    name: variable and descriptor payload types declare overflow policy
+    expected_overflow_types:
+      - character
+      - binary
+      - bit_string
+      - blob
+      - document
+      - json_document
+      - binary_json_document
+      - bson_document
+      - xml_document
+      - hstore_document
+      - object_document
+      - flattened_object_document
+      - set_value
+      - array
+      - list
+      - map
+      - row
+      - composite
+      - variant
+      - range
+      - multirange
+      - token_stream
+      - search_query
+      - search_rank_feature
+      - search_completion
+      - search_percolator
+      - geometry
+      - geography
+      - point
+      - shape
+      - raster
+      - vector
+      - dense_vector
+      - sparse_vector
+      - binary_vector
+      - quantized_vector
+      - graph_node
+      - graph_edge
+      - graph_path
+      - time_series_value
+      - columnar_segment
+      - aggregate_state
+      - hll_sketch
+      - bloom_filter
+      - quantile_sketch
+      - histogram_sketch
+      - ranking_summary
+      - vector_summary
+      - opaque_extension
+      - table_value
+  - id: DTYPE-CONF-003
+    name: canonical datatype binary envelope round-trips fixed and variable values
+    required_functions:
+      - EncodeDatatypeBinaryValue
+      - DecodeDatatypeBinaryValue
+    expected_diagnostics:
+      invalid_boolean: SB-DATATYPE-BINARY-BOOLEAN-PAYLOAD-INVALID
+      invalid_size: SB-DATATYPE-BINARY-PAYLOAD-SIZE-INVALID
+      invalid_checksum: SB-DATATYPE-BINARY-PAYLOAD-CHECKSUM-MISMATCH

@@ -1,0 +1,23 @@
+{
+  "search_key": "DPC_EVIDENCE_PROVENANCE_RETENTION_GATE",
+  "metadata_kind": "source_state_build_config_profiler",
+  "source_state": {
+    "commit": "fixture-retained-source-state",
+    "branch": "fixture-retained-branch",
+    "dirty_state": "not_applicable_checked_fixture",
+    "source_anchor_policy": "path_plus_search_key"
+  },
+  "build_config": {
+    "build_type": "Release",
+    "instrumentation_mode": "benchmark-clean",
+    "debug_logs": "OFF",
+    "hotpath_trace": "OFF",
+    "exec_profile_trace": "OFF",
+    "prepared_trace": "OFF"
+  },
+  "profiler_metadata": {
+    "profile_kind": "compact-retained-attribution-metadata",
+    "profiler_result_hash": "profile-metadata-fixture-digest",
+    "dpc_073_status": "not_claimed"
+  }
+}

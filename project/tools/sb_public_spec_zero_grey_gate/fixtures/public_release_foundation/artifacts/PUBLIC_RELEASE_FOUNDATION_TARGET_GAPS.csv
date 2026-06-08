@@ -1,0 +1,21 @@
+target_group,gap_id,registry_id,priority,current_status,area,title,closure_gate
+zero_grey_release_authority,SB-PUBLIC-GAP-0143,SB-SPEC-IMPLEMENTATION-0185,P1,not_implemented,14-conformance-and-release-gates,Conformance Manifests and Zero-Grey Release Gates,PRF_G01_RELEASE_GATE_SCHEMA_READY;PRF_G02_TARGET_ZERO_GREY_GATE_READY
+transport_security,SB-PUBLIC-GAP-0066,SB-SPEC-IMPLEMENTATION-0099,P0,drift,security,Transport Security TLS Wire Protection,PRF_G03_TLS_WIRE_SECURITY_READY
+catalog_closure,SB-PUBLIC-GAP-0009,SB-SPEC-IMPLEMENTATION-0034,P2,partial,03-object-identity-and-catalog,Object Identity and UUIDv7 Catalog Model,PRF_G04_CATALOG_AUTHORITY_READY
+catalog_closure,SB-PUBLIC-GAP-0010,SB-SPEC-IMPLEMENTATION-0036,P2,partial,03-object-identity-and-catalog,Centralized Comment and Description Table,PRF_G04_CATALOG_AUTHORITY_READY;PRF_G05_CATALOG_PROJECTIONS_READY
+catalog_closure,SB-PUBLIC-GAP-0011,SB-SPEC-IMPLEMENTATION-0037,P2,partial,catalog-schema,System Catalog Tables sys.catalog Native Catalog Layer,PRF_G04_CATALOG_AUTHORITY_READY
+catalog_closure,SB-PUBLIC-GAP-0012,SB-SPEC-IMPLEMENTATION-0038,P2,partial,catalog-schema,User-Readable Catalog Views sys.catalog_readable,PRF_G05_CATALOG_PROJECTIONS_READY
+catalog_closure,SB-PUBLIC-GAP-0013,SB-SPEC-IMPLEMENTATION-0039,P2,partial,catalog-schema,sys.information Canonical Views and Legacy Synonym Binding,PRF_G05_CATALOG_PROJECTIONS_READY
+catalog_closure,SB-PUBLIC-GAP-0014,SB-SPEC-IMPLEMENTATION-0040,P2,partial,03-object-identity-and-catalog,Catalog Generation and Cache Invalidation,PRF_G04_CATALOG_AUTHORITY_READY
+catalog_closure,SB-PUBLIC-GAP-0015,SB-SPEC-IMPLEMENTATION-0043,P2,partial,03-object-identity-and-catalog,Schema Path Binding and SqlObjectReference,PRF_G04_CATALOG_AUTHORITY_READY
+catalog_closure,SB-PUBLIC-GAP-0016,SB-SPEC-IMPLEMENTATION-0044,P2,partial,03-object-identity-and-catalog,Catalog Lookup and Dependency API,PRF_G04_CATALOG_AUTHORITY_READY
+catalog_closure,SB-PUBLIC-GAP-0017,SB-SPEC-IMPLEMENTATION-0045,P2,partial,catalog-schema,Wire-Level Driver Catalog Metadata,PRF_G04_CATALOG_AUTHORITY_READY
+catalog_closure,SB-PUBLIC-GAP-0018,SB-SPEC-IMPLEMENTATION-0046,P2,partial,03-object-identity-and-catalog,Catalog Diagnostic Vectors and Registries,PRF_G04_CATALOG_AUTHORITY_READY
+constraints_keys,SB-PUBLIC-GAP-0026,SB-SPEC-IMPLEMENTATION-0054,P1,not_implemented,storage,Constraints Keys and Logical Integrity,PRF_G06_CONSTRAINTS_READY
+mga_recovery_backup_pitr,SB-PUBLIC-GAP-0002,SB-SPEC-IMPLEMENTATION-0013,P2,partial,architecture,MGA Archive Replication and Point-in-Time History,PRF_G07_MGA_RECOVERY_READY;PRF_G08_BACKUP_DELTA_PITR_READY
+mga_recovery_backup_pitr,SB-PUBLIC-GAP-0025,SB-SPEC-IMPLEMENTATION-0053,P2,partial,05-recovery-backup-and-rollforward,Storage Backup and Restore Single-Node,PRF_G08_BACKUP_DELTA_PITR_READY
+mga_recovery_backup_pitr,SB-PUBLIC-GAP-0027,SB-SPEC-IMPLEMENTATION-0056,P2,partial,04-storage-mga-and-transactions,MGA Sweep Cleanup Checkpoint Recovery Local,PRF_G07_MGA_RECOVERY_READY
+mga_recovery_backup_pitr,SB-PUBLIC-GAP-0028,SB-SPEC-IMPLEMENTATION-0057,P2,partial,05-recovery-backup-and-rollforward,MGA Backup-Forward Delta and Archive Delta Local,PRF_G08_BACKUP_DELTA_PITR_READY
+mga_recovery_backup_pitr,SB-PUBLIC-GAP-0029,SB-SPEC-IMPLEMENTATION-0058,P1,not_implemented,05-recovery-backup-and-rollforward,Point-in-Time Recovery and Rollforward Local,PRF_G08_BACKUP_DELTA_PITR_READY
+mga_recovery_backup_pitr,SB-PUBLIC-GAP-0030,SB-SPEC-IMPLEMENTATION-0059,P2,partial,mga-transactions,MGA Dirty-Object Manifest and Recovery Acceleration,PRF_G07_MGA_RECOVERY_READY
+mga_recovery_backup_pitr,SB-PUBLIC-GAP-0035,SB-SPEC-IMPLEMENTATION-0066,P2,partial,mga-transactions,Page-Level Durability and Mutation Ordering Local,PRF_G07_MGA_RECOVERY_READY

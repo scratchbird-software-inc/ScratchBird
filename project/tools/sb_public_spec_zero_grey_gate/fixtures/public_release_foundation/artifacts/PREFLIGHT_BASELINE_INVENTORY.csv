@@ -1,0 +1,8 @@
+baseline_id,target_group,artifact,owner,required_before_slice,acceptance,status
+PRF_BASE_001,zero_grey_release_authority,artifacts/BASELINE_RELEASE_GATE_INVENTORY.md,release gate agent,PRF-001,Existing public zero-grey registry CTest labels release-gate tools and missing enforcement seams are inventoried,pending
+PRF_BASE_002,transport_security,artifacts/TLS_DRIFT_BASELINE.md,TLS agent,PRF-010,Existing TLS config fields driver TLS code listener/server gaps and drift diagnostics are inventoried,pending
+PRF_BASE_003,transport_security,artifacts/TLS_THREAT_MODEL.md,TLS agent,PRF-011,Plaintext downgrade wrong CA expired cert mTLS mismatch and channel-binding attacks are mapped to refusal outcomes,pending
+PRF_BASE_004,catalog_closure,artifacts/CATALOG_BASELINE_INVENTORY.md,catalog agent,PRF-020,Existing catalog row kinds bootstrap roots descriptors views diagnostics and metadata seams are inventoried,pending
+PRF_BASE_005,constraints_keys,artifacts/CONSTRAINT_BASELINE_INVENTORY.md,constraint agent,PRF-030,Existing DDL DML index and diagnostic seams for constraints are inventoried,pending
+PRF_BASE_006,mga_recovery_backup_pitr,artifacts/MGA_RECOVERY_BASELINE_INVENTORY.md,MGA recovery agent,PRF-040,Existing transaction recovery checkpoint dirty manifest backup delta PITR and durability seams are inventoried,pending
+PRF_BASE_007,integration,artifacts/FULL_ROUTE_BASELINE_INVENTORY.md,coordinator,PRF-049,Existing client SBWP TLS listener parser IPC server engine route fixtures and gaps are inventoried,pending

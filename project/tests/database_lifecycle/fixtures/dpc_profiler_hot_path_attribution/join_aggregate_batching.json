@@ -1,0 +1,96 @@
+{
+  "search_key": "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+  "claim_id": "DPC-073-JOIN-AGGREGATE-BATCHING",
+  "lane_id": "join_aggregate_batching",
+  "lane_title": "Join and aggregate executor batching",
+  "claim_status": "accepted",
+  "accepted_optimization_claim": true,
+  "elapsed_time_only": false,
+  "transaction_sensitive": true,
+  "before_profile": {
+    "profile_digest_source": "DPC-073:join_aggregate_batching:before",
+    "profile_digest": "94f0be52615f43bdb1de1a7c3505051406dad994eece409c8f2eb6125400496b",
+    "dominant_hot_paths": [
+      {"name": "row_by_row_join_probe", "share_percent": 36.0},
+      {"name": "per_tuple_aggregate_update", "share_percent": 23.0}
+    ]
+  },
+  "after_profile": {
+    "profile_digest_source": "DPC-073:join_aggregate_batching:after",
+    "profile_digest": "497062645f6041147a978eafee1fa3f3a2d77f4ae10c3eddf1fdaf669fd0f264",
+    "dominant_hot_paths": [
+      {"name": "batch_join_vector_probe", "share_percent": 24.0},
+      {"name": "aggregate_batch_accumulate", "share_percent": 18.0}
+    ]
+  },
+  "changed_hot_paths": [
+    "row_by_row_join_probe changed to batch_join_vector_probe",
+    "per_tuple_aggregate_update changed to aggregate_batch_accumulate"
+  ],
+  "delta_explanation": "The profile attributes the executor improvement to batch vector probes and aggregate accumulation rather than elapsed-time-only reporting.",
+  "remaining_bottleneck": "",
+  "measurement_families": {
+    "cpu_samples": {"before": 3880, "after": 2030, "unit": "samples", "attribution": "tuple dispatch reduced"},
+    "lock_wait_mutex_hold_timing": {"before": 240, "after": 220, "unit": "microseconds_p95", "attribution": "executor-local lane"},
+    "io_syscall_counts": {"before": 460, "after": 390, "unit": "calls", "attribution": "fewer repeated scans"},
+    "allocator_pressure": {"before": 1610, "after": 740, "unit": "allocations", "attribution": "batch vectors reused"},
+    "parser_lowering_timing": {"before": 83, "after": 82, "unit": "microseconds", "attribution": "unchanged"},
+    "sblr_admission_dispatch_timing": {"before": 121, "after": 103, "unit": "microseconds", "attribution": "batch dispatch envelope"},
+    "plan_cache_hit_miss_invalidation_timing": {"before": 66, "after": 48, "unit": "microseconds", "attribution": "same plan with batch mode"},
+    "metadata_cache_hit_miss_timing": {"before": 51, "after": 43, "unit": "microseconds", "attribution": "descriptor reuse"},
+    "statistics_epoch_plan_selection_timing": {"before": 62, "after": 45, "unit": "microseconds", "attribution": "batch-capable plan selected"},
+    "page_allocation_demand_grant_timing": {"before": 180, "after": 160, "unit": "microseconds", "attribution": "read dominated lane"},
+    "index_maintenance_timing_by_family": {"before": 90, "after": 85, "unit": "microseconds", "attribution": "not maintenance dominated"},
+    "agent_queue_wake_run_throttle_completion_timing": {"before": 70, "after": 65, "unit": "microseconds", "attribution": "no background queue growth"}
+  },
+  "result_correctness_hash_pointer": {
+    "digest_source": "DPC-073:join_aggregate_batching:result",
+    "digest": "02ca69a97c6291b3fbff8040de6a628bf3630b62dc0707170dd58affc11400bd",
+    "correctness_anchor": "row-by-row and batched output equality"
+  },
+  "source_anchor": {
+    "path": "project/tests/database_lifecycle/dpc_executor_batch_benchmark_gate.cpp",
+    "search_key": "DPC_EXECUTOR_BATCH_BENCHMARK_GATE"
+  },
+  "route_or_source_anchor": "project/tests/database_lifecycle/dpc_executor_batch_scan_filter_projection_aggregate_gate.cpp#DPC_EXECUTOR_BATCH_RELATIONAL_GATE",
+  "ctest_name": "dpc_profiler_hot_path_attribution_gate",
+  "ctest_labels": [
+    "dpc_profiler_hot_path_attribution_gate",
+    "DPC-073",
+    "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+    "DPC_P6_PROFILER_ATTRIBUTION_READY",
+    "DPC_AUDIT_PROFILER_ATTRIBUTION",
+    "DPC_DEP_PROFILER_ATTRIBUTION",
+    "profiler_attribution",
+    "database_lifecycle",
+    "mga_transaction_regression"
+  ],
+  "build_instrumentation": {
+    "build_type": "Release diagnostic",
+    "profiler_mode": "compact-retained-attribution",
+    "hotpath_trace": true,
+    "exec_profile_trace": true,
+    "prepared_trace": true,
+    "source_state": "fixture-retained-source-state"
+  },
+  "agent_metrics": {
+    "bounded": true,
+    "queue_max": 2,
+    "wake_max": 1,
+    "run_budget_ms": 15,
+    "throttle_events_max": 0,
+    "completion_state": "completed"
+  },
+  "authority": {
+    "mga_authority_declaration": "engine_mga_transaction_inventory_authority",
+    "engine_mga_transaction_inventory_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "driver_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_log_finality_authority": false,
+    "timestamp_order_finality_authority": false,
+    "uuid_order_finality_authority": false,
+    "event_stream_finality_authority": false
+  }
+}

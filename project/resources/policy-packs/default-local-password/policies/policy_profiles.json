@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "policy_generation": 1,
+  "profiles": [
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-000000000400",
+      "area": "security_provider_selection",
+      "mode": "local_password_only"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-000000000401",
+      "area": "standard_roles_groups_grants",
+      "mode": "uuid_catalog_seed"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-000000000402",
+      "area": "default_security_posture",
+      "mode": "deny_by_default"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-000000000403",
+      "area": "memory_resource_governance",
+      "mode": "configured_policy_required"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-000000000404",
+      "area": "storage_filespace_page_policy",
+      "mode": "local_durable_fail_closed"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-000000000405",
+      "area": "transaction_mga_cleanup_archive_backup_forward",
+      "mode": "mga_inventory_authority"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-000000000406",
+      "area": "optimizer_statistics_feedback",
+      "mode": "catalog_backed_or_diagnostic_only"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-000000000407",
+      "area": "index_maintenance",
+      "mode": "provider_admission_required"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-000000000408",
+      "area": "agent_policy",
+      "mode": "evidence_not_authority"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-000000000409",
+      "area": "diagnostics",
+      "mode": "stable_redacted_diagnostics"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-00000000040a",
+      "area": "observability",
+      "mode": "redacted_evidence_only"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-00000000040b",
+      "area": "unsupported_feature_behavior",
+      "mode": "deterministic_fail_closed"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-00000000040c",
+      "area": "cluster_boundary",
+      "mode": "external_provider_required"
+    },
+    {
+      "profile_uuid": "018f7a10-1280-7000-8000-00000000040d",
+      "area": "release_default_configuration",
+      "mode": "secure_defaults"
+    }
+  ]
+}

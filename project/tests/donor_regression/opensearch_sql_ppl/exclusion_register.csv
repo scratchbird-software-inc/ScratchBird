@@ -1,0 +1,3 @@
+donor_id,exclusion_id,scope,reason_code,owner,acceptance_rule,status
+opensearch_sql_ppl,OPENSEARCH_SQL_PPL-EXCLUSION-POLICY,all_discovered_upstream_tests,mandatory_reason_code_required_for_any_non_imported_test,donor parser implementation agent,no silent skip; every excluded test row must name support_udr engine_listener physical_engine_only license_excluded or non_applicable,manifest_generated_no_exclusions_accepted_yet
+opensearch_sql_ppl,OPENSEARCH_SQL_PPL-LOCATOR-CORRECTION-001,language-grammar/src/test,upstream_test_path_absent_grammar_sources_inventoried,donor regression extraction controller,language grammar evidence comes from language-grammar/src/main/antlr4 in this acquired source packet,locator_corrected

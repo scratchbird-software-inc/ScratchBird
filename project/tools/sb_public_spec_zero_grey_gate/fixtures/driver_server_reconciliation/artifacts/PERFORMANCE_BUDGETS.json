@@ -1,0 +1,78 @@
+{
+  "schema": "scratchbird.driver_p4.performance_budgets.v1",
+  "dsr": "DSR-043",
+  "invalid_evidence_policy": {
+    "direct_engine_benchmark_evidence": "rejected",
+    "parser_only_benchmark_evidence": "rejected",
+    "reason": "Performance budgets are valid only for the admitted public server route."
+  },
+  "route_profiles": {
+    "sbwp_tls_full_route": {
+      "route_kind": "client_tool_driver_to_sbwp_tls_to_listener_parser_server_engine_auth_mga",
+      "start_actor": "client_tool_driver_or_adaptor",
+      "transport": "sbwp_tls",
+      "admitted_ipc": false,
+      "direct_engine_path": false,
+      "nodes": ["client_tool_driver_or_adaptor", "sbwp_tls_transport", "listener", "parser_pool", "parser_worker", "parser_server_ipc", "sb_server", "engine_auth_policy", "engine_session", "engine_mga_transaction_inventory", "sblr_execution_under_mga", "response_to_client"]
+    }
+  },
+  "budget_profiles": {
+    "p4_real_route_default": {
+      "thresholds": {
+        "latency_p95_ms": {"max": 25.0, "unit": "ms"},
+        "throughput_rows_per_second": {"min": 500.0, "unit": "rows/s"},
+        "tls_handshake_p95_ms": {"max": 150.0, "unit": "ms"},
+        "prepared_statement_p95_ms": {"max": 15.0, "unit": "ms"},
+        "bulk_insert_rows_per_second": {"min": 1000.0, "unit": "rows/s"},
+        "memory_rss_mb": {"max": 256.0, "unit": "MiB"}
+      },
+      "regression_policy": {
+        "fail_ctest_on_regression": true,
+        "compare_against": "last_accepted_real_route_baseline",
+        "direct_engine_baseline_policy": "reject",
+        "latency_regression_percent": 10.0,
+        "throughput_regression_percent": 10.0,
+        "tls_regression_percent": 10.0,
+        "prepared_regression_percent": 10.0,
+        "bulk_regression_percent": 10.0,
+        "memory_regression_percent": 15.0
+      }
+    }
+  },
+  "component_budgets": [
+    {"component_id":"driver:adbc","conformance_ctest_label":"driver_adbc_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_adbc_gate"]},
+    {"component_id":"driver:flightsql","conformance_ctest_label":"driver_flightsql_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_flightsql_gate"]},
+    {"component_id":"driver:julia","conformance_ctest_label":"driver_julia_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_julia_gate"]},
+    {"component_id":"driver:perl","conformance_ctest_label":"driver_perl_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_perl_gate"]},
+    {"component_id":"driver:r2dbc","conformance_ctest_label":"driver_r2dbc_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_r2dbc_gate"]},
+    {"component_id":"adaptor:scratchbird-airbyte","conformance_ctest_label":"adaptor_airbyte_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_airbyte_gate"]},
+    {"component_id":"adaptor:scratchbird-dbt-adapter","conformance_ctest_label":"adaptor_dbt_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_dbt_gate"]},
+    {"component_id":"adaptor:scratchbird-looker","conformance_ctest_label":"adaptor_looker_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_looker_gate"]},
+    {"component_id":"adaptor:scratchbird-powerbi","conformance_ctest_label":"adaptor_powerbi_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_powerbi_gate"]},
+    {"component_id":"adaptor:scratchbird-tableau","conformance_ctest_label":"adaptor_tableau_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_tableau_gate"]},
+    {"component_id":"driver:cpp","conformance_ctest_label":"driver_cpp_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_cpp_gate"]},
+    {"component_id":"driver:dart","conformance_ctest_label":"driver_dart_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_dart_gate"]},
+    {"component_id":"driver:dotnet","conformance_ctest_label":"driver_dotnet_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_dotnet_gate"]},
+    {"component_id":"driver:elixir","conformance_ctest_label":"driver_elixir_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_elixir_gate"]},
+    {"component_id":"driver:go","conformance_ctest_label":"driver_go_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_go_gate"]},
+    {"component_id":"driver:jdbc","conformance_ctest_label":"driver_jdbc_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_jdbc_gate"]},
+    {"component_id":"driver:mojo","conformance_ctest_label":"driver_mojo_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_mojo_gate"]},
+    {"component_id":"driver:node","conformance_ctest_label":"driver_node_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_node_gate"]},
+    {"component_id":"driver:odbc","conformance_ctest_label":"driver_odbc_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_odbc_gate"]},
+    {"component_id":"driver:pascal","conformance_ctest_label":"driver_pascal_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_pascal_gate"]},
+    {"component_id":"driver:php","conformance_ctest_label":"driver_php_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_php_gate"]},
+    {"component_id":"driver:python","conformance_ctest_label":"driver_python_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_python_gate"]},
+    {"component_id":"driver:r","conformance_ctest_label":"driver_r_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_r_gate"]},
+    {"component_id":"driver:ruby","conformance_ctest_label":"driver_ruby_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_ruby_gate"]},
+    {"component_id":"driver:rust","conformance_ctest_label":"driver_rust_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_rust_gate"]},
+    {"component_id":"driver:swift","conformance_ctest_label":"driver_swift_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","driver_swift_gate"]},
+    {"component_id":"adaptor:scratchbird-dbeaver-driver","conformance_ctest_label":"adaptor_dbeaver_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_dbeaver_gate"]},
+    {"component_id":"adaptor:scratchbird-hibernate-dialect","conformance_ctest_label":"adaptor_hibernate_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_hibernate_gate"]},
+    {"component_id":"adaptor:scratchbird-metabase-driver","conformance_ctest_label":"adaptor_metabase_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_metabase_gate"]},
+    {"component_id":"adaptor:scratchbird-prisma-adapter","conformance_ctest_label":"adaptor_prisma_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_prisma_gate"]},
+    {"component_id":"adaptor:scratchbird-sqlalchemy-dialect","conformance_ctest_label":"adaptor_sqlalchemy_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_sqlalchemy_gate"]},
+    {"component_id":"adaptor:scratchbird-superset-driver","conformance_ctest_label":"adaptor_superset_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_superset_gate"]},
+    {"component_id":"adaptor:scratchbird-typeorm-adapter","conformance_ctest_label":"adaptor_typeorm_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","adaptor_typeorm_gate"]},
+    {"component_id":"tool:cli","conformance_ctest_label":"tool_cli_gate","route_profile":"sbwp_tls_full_route","budget_profile":"p4_real_route_default","direct_engine_benchmark_evidence":"rejected","direct_engine_benchmark_evidence_accepted":false,"ctest_labels":["driver","driver_lane_ctest_gate","driver_server_reconciliation","DSR-043","tool_cli_gate"]}
+  ]
+}

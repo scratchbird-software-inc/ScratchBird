@@ -1,0 +1,15 @@
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdDatabase
+metadata:
+  name: ledger
+  namespace: scratchbird
+  generation: 6
+spec:
+  profileRef: local-public
+  securityRef: workload-identity-local
+  auditReason: negative public single-node shutdown missing maintenance window
+  idempotencyKey: pcf041-database-ledger-shutdown-refusal
+  redactionPolicyRef: public-redacted
+  databaseUuid: 018f2d7a-4368-7c01-9000-000000000041
+  lifecycleIntent: shutdown
+  storageClassRef: scratchbird-local-persistent

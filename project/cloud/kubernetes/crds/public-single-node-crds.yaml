@@ -1,0 +1,576 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scratchbirddatabases.cloud.scratchbird.io
+  labels:
+    scratchbird.io/profile: public-single-node
+spec:
+  group: cloud.scratchbird.io
+  scope: Namespaced
+  names:
+    plural: scratchbirddatabases
+    singular: scratchbirddatabase
+    kind: ScratchBirdDatabase
+    shortNames: [sbdb]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          additionalProperties: false
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+              enum: [ScratchBirdDatabase]
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [profileRef, securityRef, auditReason, idempotencyKey, redactionPolicyRef, databaseUuid, lifecycleIntent, storageClassRef]
+              additionalProperties: false
+              properties:
+                profileRef:
+                  type: string
+                securityRef:
+                  type: string
+                auditReason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                maintenanceWindow:
+                  type: string
+                redactionPolicyRef:
+                  type: string
+                databaseUuid:
+                  type: string
+                lifecycleIntent:
+                  type: string
+                  enum: [create_or_open, suspend, resume, shutdown]
+                storageClassRef:
+                  type: string
+                resourceProfileRef:
+                  type: string
+                bootstrapPolicyRef:
+                  type: string
+            status:
+              type: object
+              additionalProperties: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scratchbirdfilespaces.cloud.scratchbird.io
+  labels:
+    scratchbird.io/profile: public-single-node
+spec:
+  group: cloud.scratchbird.io
+  scope: Namespaced
+  names:
+    plural: scratchbirdfilespaces
+    singular: scratchbirdfilespace
+    kind: ScratchBirdFilespace
+    shortNames: [sbfs]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          additionalProperties: false
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+              enum: [ScratchBirdFilespace]
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [profileRef, securityRef, auditReason, idempotencyKey, redactionPolicyRef, databaseRef, filespaceUuid, volumeMode, capacity, storageClassRef, role, lifecycleIntent]
+              additionalProperties: false
+              properties:
+                profileRef:
+                  type: string
+                securityRef:
+                  type: string
+                auditReason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                maintenanceWindow:
+                  type: string
+                redactionPolicyRef:
+                  type: string
+                databaseRef:
+                  type: string
+                filespaceUuid:
+                  type: string
+                volumeMode:
+                  type: string
+                  enum: [Filesystem, Block]
+                capacity:
+                  type: string
+                storageClassRef:
+                  type: string
+                role:
+                  type: string
+                  enum: [primary_data, archive, temporary]
+                lifecycleIntent:
+                  type: string
+                  enum: [attach, expand, retire]
+            status:
+              type: object
+              additionalProperties: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scratchbirdbackups.cloud.scratchbird.io
+  labels:
+    scratchbird.io/profile: public-single-node
+spec:
+  group: cloud.scratchbird.io
+  scope: Namespaced
+  names:
+    plural: scratchbirdbackups
+    singular: scratchbirdbackup
+    kind: ScratchBirdBackup
+    shortNames: [sbbak]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          additionalProperties: false
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+              enum: [ScratchBirdBackup]
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [profileRef, securityRef, auditReason, idempotencyKey, redactionPolicyRef, databaseRef, backupPolicyRef, targetRef, mode, verifyAfterWrite, retentionPolicyRef]
+              additionalProperties: false
+              properties:
+                profileRef:
+                  type: string
+                securityRef:
+                  type: string
+                auditReason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                maintenanceWindow:
+                  type: string
+                redactionPolicyRef:
+                  type: string
+                databaseRef:
+                  type: string
+                backupPolicyRef:
+                  type: string
+                targetRef:
+                  type: string
+                mode:
+                  type: string
+                  enum: [full, incremental]
+                verifyAfterWrite:
+                  type: boolean
+                retentionPolicyRef:
+                  type: string
+            status:
+              type: object
+              additionalProperties: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scratchbirdrestores.cloud.scratchbird.io
+  labels:
+    scratchbird.io/profile: public-single-node
+spec:
+  group: cloud.scratchbird.io
+  scope: Namespaced
+  names:
+    plural: scratchbirdrestores
+    singular: scratchbirdrestore
+    kind: ScratchBirdRestore
+    shortNames: [sbrestore]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          additionalProperties: false
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+              enum: [ScratchBirdRestore]
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [profileRef, securityRef, auditReason, idempotencyKey, redactionPolicyRef, restoreSourceRef, targetDatabaseRef, stagingFilespaceRef, verifyBeforePublish, publicationMode]
+              additionalProperties: false
+              properties:
+                profileRef:
+                  type: string
+                securityRef:
+                  type: string
+                auditReason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                maintenanceWindow:
+                  type: string
+                redactionPolicyRef:
+                  type: string
+                restoreSourceRef:
+                  type: string
+                targetDatabaseRef:
+                  type: string
+                stagingFilespaceRef:
+                  type: string
+                verifyBeforePublish:
+                  type: boolean
+                publicationMode:
+                  type: string
+                  enum: [replace, clone]
+            status:
+              type: object
+              additionalProperties: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scratchbirdcloudproviderprofiles.cloud.scratchbird.io
+  labels:
+    scratchbird.io/profile: public-single-node
+spec:
+  group: cloud.scratchbird.io
+  scope: Namespaced
+  names:
+    plural: scratchbirdcloudproviderprofiles
+    singular: scratchbirdcloudproviderprofile
+    kind: ScratchBirdCloudProviderProfile
+    shortNames: [sbcloudprofile]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          additionalProperties: false
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+              enum: [ScratchBirdCloudProviderProfile]
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [profileRef, securityRef, auditReason, idempotencyKey, redactionPolicyRef, provider, region, capabilities, publicSingleNodeOnly]
+              additionalProperties: false
+              properties:
+                profileRef:
+                  type: string
+                securityRef:
+                  type: string
+                auditReason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                maintenanceWindow:
+                  type: string
+                redactionPolicyRef:
+                  type: string
+                provider:
+                  type: string
+                  enum: [local, aws, azure, gcp]
+                region:
+                  type: string
+                capabilities:
+                  type: array
+                  items:
+                    type: string
+                publicSingleNodeOnly:
+                  type: boolean
+            status:
+              type: object
+              additionalProperties: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scratchbirdkmsprofiles.cloud.scratchbird.io
+  labels:
+    scratchbird.io/profile: public-single-node
+spec:
+  group: cloud.scratchbird.io
+  scope: Namespaced
+  names:
+    plural: scratchbirdkmsprofiles
+    singular: scratchbirdkmsprofile
+    kind: ScratchBirdKmsProfile
+    shortNames: [sbkms]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          additionalProperties: false
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+              enum: [ScratchBirdKmsProfile]
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [profileRef, securityRef, auditReason, idempotencyKey, redactionPolicyRef, providerRef, identityMode, kmsKeyRef, envelopePolicyRef, secretless]
+              additionalProperties: false
+              properties:
+                profileRef:
+                  type: string
+                securityRef:
+                  type: string
+                auditReason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                maintenanceWindow:
+                  type: string
+                redactionPolicyRef:
+                  type: string
+                providerRef:
+                  type: string
+                identityMode:
+                  type: string
+                  enum: [workload_identity, oidc, managed_identity]
+                kmsKeyRef:
+                  type: string
+                envelopePolicyRef:
+                  type: string
+                secretless:
+                  type: boolean
+            status:
+              type: object
+              additionalProperties: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scratchbirdroutepolicies.cloud.scratchbird.io
+  labels:
+    scratchbird.io/profile: public-single-node
+spec:
+  group: cloud.scratchbird.io
+  scope: Namespaced
+  names:
+    plural: scratchbirdroutepolicies
+    singular: scratchbirdroutepolicy
+    kind: ScratchBirdRoutePolicy
+    shortNames: [sbroute]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          additionalProperties: false
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+              enum: [ScratchBirdRoutePolicy]
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [profileRef, securityRef, auditReason, idempotencyKey, redactionPolicyRef, databaseRef, listenerServiceRef, finalitySource, loadBalancing, tlsProfileRef]
+              additionalProperties: false
+              properties:
+                profileRef:
+                  type: string
+                securityRef:
+                  type: string
+                auditReason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                maintenanceWindow:
+                  type: string
+                redactionPolicyRef:
+                  type: string
+                databaseRef:
+                  type: string
+                listenerServiceRef:
+                  type: string
+                finalitySource:
+                  type: string
+                  enum: [local_mga_commit]
+                loadBalancing:
+                  type: string
+                  enum: [single_node]
+                tlsProfileRef:
+                  type: string
+            status:
+              type: object
+              additionalProperties: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scratchbirdsupportbundles.cloud.scratchbird.io
+  labels:
+    scratchbird.io/profile: public-single-node
+spec:
+  group: cloud.scratchbird.io
+  scope: Namespaced
+  names:
+    plural: scratchbirdsupportbundles
+    singular: scratchbirdsupportbundle
+    kind: ScratchBirdSupportBundle
+    shortNames: [sbsupport]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          additionalProperties: false
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+              enum: [ScratchBirdSupportBundle]
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [profileRef, securityRef, auditReason, idempotencyKey, redactionPolicyRef, databaseRef, bundleScope, destinationRef, includeTenantData]
+              additionalProperties: false
+              properties:
+                profileRef:
+                  type: string
+                securityRef:
+                  type: string
+                auditReason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                maintenanceWindow:
+                  type: string
+                redactionPolicyRef:
+                  type: string
+                databaseRef:
+                  type: string
+                bundleScope:
+                  type: string
+                  enum: [operator_status, database_lifecycle]
+                destinationRef:
+                  type: string
+                includeTenantData:
+                  type: boolean
+                  enum: [false]
+            status:
+              type: object
+              additionalProperties: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scratchbirdupgrades.cloud.scratchbird.io
+  labels:
+    scratchbird.io/profile: public-single-node
+spec:
+  group: cloud.scratchbird.io
+  scope: Namespaced
+  names:
+    plural: scratchbirdupgrades
+    singular: scratchbirdupgrade
+    kind: ScratchBirdUpgrade
+    shortNames: [sbupgrade]
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          additionalProperties: false
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+              enum: [ScratchBirdUpgrade]
+            metadata:
+              type: object
+            spec:
+              type: object
+              required: [profileRef, securityRef, auditReason, idempotencyKey, redactionPolicyRef, databaseRef, targetVersion, imageRef, signaturePolicyRef, rolloutMode, requireBackupEvidence]
+              additionalProperties: false
+              properties:
+                profileRef:
+                  type: string
+                securityRef:
+                  type: string
+                auditReason:
+                  type: string
+                idempotencyKey:
+                  type: string
+                maintenanceWindow:
+                  type: string
+                redactionPolicyRef:
+                  type: string
+                databaseRef:
+                  type: string
+                targetVersion:
+                  type: string
+                imageRef:
+                  type: string
+                signaturePolicyRef:
+                  type: string
+                rolloutMode:
+                  type: string
+                  enum: [single_node_ordered]
+                requireBackupEvidence:
+                  type: boolean
+            status:
+              type: object
+              additionalProperties: true

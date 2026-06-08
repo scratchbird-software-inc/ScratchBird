@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.scratchbird.dbeaver</groupId>
+    <artifactId>scratchbird-dbeaver-driver-build</artifactId>
+    <version>1.0.1-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>ScratchBird DBeaver Plugin Build</name>
+
+    <modules>
+        <module>plugins/org.jkiss.dbeaver.ext.scratchbird</module>
+        <module>plugins/org.jkiss.dbeaver.ext.scratchbird.ui</module>
+        <module>features/org.jkiss.dbeaver.ext.scratchbird.feature</module>
+        <module>repository</module>
+    </modules>
+
+    <properties>
+        <tycho.version>4.0.8</tycho.version>
+        <eclipse.version>2025-12</eclipse.version>
+        <repo.p2.eclipse.url>https://download.eclipse.org/releases/${eclipse.version}/</repo.p2.eclipse.url>
+        <repo.p2.dbeaver-update.url>https://dbeaver.io/update/latest/</repo.p2.dbeaver-update.url>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.eclipse.tycho</groupId>
+                    <artifactId>tycho-maven-plugin</artifactId>
+                    <version>${tycho.version}</version>
+                    <extensions>true</extensions>
+                </plugin>
+                <plugin>
+                    <groupId>org.eclipse.tycho</groupId>
+                    <artifactId>target-platform-configuration</artifactId>
+                    <version>${tycho.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.eclipse.tycho</groupId>
+                    <artifactId>tycho-p2-repository-plugin</artifactId>
+                    <version>${tycho.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
+        <plugins>
+            <plugin>
+                <groupId>org.eclipse.tycho</groupId>
+                <artifactId>tycho-maven-plugin</artifactId>
+            </plugin>
+            <plugin>
+                <groupId>org.eclipse.tycho</groupId>
+                <artifactId>target-platform-configuration</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+
+    <repositories>
+        <repository>
+            <id>eclipse-p2-repo</id>
+            <layout>p2</layout>
+            <url>${repo.p2.eclipse.url}</url>
+        </repository>
+        <repository>
+            <id>dbeaver-update-repository</id>
+            <layout>p2</layout>
+            <url>${repo.p2.dbeaver-update.url}</url>
+        </repository>
+    </repositories>
+</project>

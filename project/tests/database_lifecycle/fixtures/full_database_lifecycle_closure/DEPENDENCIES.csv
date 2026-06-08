@@ -1,0 +1,65 @@
+slice_id,depends_on,reason
+DBLC-000,,Root lifecycle authority inventory starts the execution_plan
+DBLC-000A,DBLC-000,State model and no-defer contract require authority inventory
+DBLC-000B,DBLC-000;DBLC-000A,Gap matrix requires authority inventory and lifecycle state vocabulary
+DBLC-000C,DBLC-000B,Validation commands require known gaps and target gates
+DBLC-000D,DBLC-000B,Agent write-scope ownership requires known implementation targets
+DBLC-000E,DBLC-000;DBLC-000A;DBLC-000B,Default policy catalog requires authority inventory state vocabulary and gap matrix
+DBLC-000F,DBLC-000C;DBLC-000E,Policy registry hardening requires validation command materialization and the centralized default policy catalog
+DBLC-001,DBLC-000;DBLC-000A;DBLC-000B;DBLC-000E;DBLC-000F,Canonical spec closure depends on authority gap inventory default policy catalog and registry hardening
+DBLC-002,DBLC-001,Registry and ABI closure requires canonical operation contracts
+DBLC-003,DBLC-001;DBLC-002,Durable state evidence requires lifecycle contracts and registry/API shape
+DBLC-004,DBLC-000E;DBLC-000F;DBLC-003,Create database tx1 bootstrap depends on durable state transaction evidence default policy catalog and generated policy registry hardening
+DBLC-004A,DBLC-003;DBLC-004,Filespace lifecycle identity registration depends on durable state and tx1 create bootstrap
+DBLC-005,DBLC-004;DBLC-004A,First-open tx2 activation depends on successful tx1 bootstrap and filespace registry evidence
+DBLC-006,DBLC-003;DBLC-004;DBLC-004A,Open/reopen recovery requires durable state created database layout and filespace manifest/header validation
+DBLC-007,DBLC-005;DBLC-006,Attach/session auth depends on open database and first activation contracts
+DBLC-008,DBLC-004A;DBLC-007,Transaction admission depends on authenticated session attach state and valid filespace state
+DBLC-009,DBLC-007;DBLC-008,Detach cleanup depends on session and transaction lifecycle hooks
+DBLC-010,DBLC-004A;DBLC-006;DBLC-008,Maintenance restricted diagnostic verify repair require filespace lifecycle open/recovery and transaction admission hooks
+DBLC-011,DBLC-009;DBLC-010,Shutdown must drain sessions and coordinate maintenance/repair state
+DBLC-012,DBLC-004A;DBLC-011,Drop database requires filespace lifecycle shutdown/drain/final ownership semantics
+DBLC-013,DBLC-002;DBLC-007;DBLC-008;DBLC-011,Full route requires registry attach auth transaction and shutdown support
+DBLC-013A,DBLC-001;DBLC-002;DBLC-006;DBLC-011,Manager-family lifecycle requires canonical specs registries database open and shutdown coordination
+DBLC-013B,DBLC-001;DBLC-002;DBLC-011;DBLC-013A,Listener lifecycle requires canonical specs registries shutdown coordination and manager control behavior
+DBLC-013C,DBLC-001;DBLC-002;DBLC-007;DBLC-011;DBLC-013B,Parser-family lifecycle requires canonical specs registries attach admission shutdown coordination and listener parser-pool behavior
+DBLC-013D,DBLC-011;DBLC-013A;DBLC-013B;DBLC-013C,Process association registry requires manager listener parser-family lifecycle and shutdown coordination
+DBLC-013E,DBLC-001;DBLC-002;DBLC-006;DBLC-011;DBLC-013;DBLC-013D,Server daemon lifecycle requires canonical specs registries database open shutdown full route and association registry behavior
+DBLC-013F,DBLC-001;DBLC-002;DBLC-011;DBLC-013D;DBLC-013E,IPC lifecycle requires canonical specs registries shutdown coordination process association and server daemon lifecycle
+DBLC-013G,DBLC-007;DBLC-008;DBLC-009;DBLC-013D;DBLC-013F,Attachment session request cursor lifecycle requires auth transaction detach association and IPC lifecycle behavior
+DBLC-013H,DBLC-005;DBLC-010;DBLC-011;DBLC-013D;DBLC-013E,Database engine lifecycle agent requires first-open activation maintenance shutdown association and server daemon lifecycle behavior
+DBLC-013I,DBLC-004A;DBLC-006;DBLC-011;DBLC-013H,Buffer page-cache checkpoint lifecycle requires filespace open recovery shutdown and database engine agent lifecycle behavior
+DBLC-013J,DBLC-000E;DBLC-000F;DBLC-001;DBLC-007;DBLC-010;DBLC-013H,Configuration policy and security-provider lifecycle requires default policy catalog registry hardening canonical specs attach auth maintenance and database engine agent lifecycle behavior
+DBLC-013K,DBLC-004A;DBLC-006;DBLC-010;DBLC-011;DBLC-013I,Backup archive restore shadow snapshot lifecycle requires filespace open maintenance shutdown and cache checkpoint lifecycle behavior
+DBLC-013L,DBLC-002;DBLC-007;DBLC-011;DBLC-013F;DBLC-013G,UDR extension lifecycle requires registries auth shutdown IPC and session request lifecycle behavior
+DBLC-013M,DBLC-007;DBLC-008;DBLC-010;DBLC-013G;DBLC-013I,Workload resource quota lifecycle requires auth transaction maintenance session and cache lifecycle behavior
+DBLC-013N,DBLC-004A;DBLC-013A;DBLC-013B;DBLC-013C;DBLC-013D;DBLC-013E;DBLC-013F;DBLC-013G;DBLC-013H;DBLC-013I;DBLC-013J;DBLC-013K;DBLC-013L;DBLC-013M;DBLC-013U;DBLC-013U1;DBLC-013V;DBLC-013W;DBLC-013X;DBLC-013Y;DBLC-013Z;DBLC-013AA;DBLC-013AB;DBLC-013AC;DBLC-013AD;DBLC-013AE;DBLC-013AF;DBLC-013AG;DBLC-013AH;DBLC-013AI;DBLC-013AJ;DBLC-013AK,Existing implementation reconciliation requires all lifecycle surface contracts before auditing and modifying existing code
+DBLC-013O,DBLC-001;DBLC-002;DBLC-004A;DBLC-013E;DBLC-013F;DBLC-013G;DBLC-013N,Protocol and persisted-format versioning requires canonical specs registries filespace IPC server session and reconciled implementation behavior
+DBLC-013P,DBLC-002;DBLC-010;DBLC-011;DBLC-012;DBLC-013E;DBLC-013F;DBLC-013G;DBLC-013J;DBLC-013N;DBLC-013O,CLI admin command coverage requires registries maintenance shutdown drop server IPC session policy reconciliation and versioning behavior
+DBLC-013Q,DBLC-013A;DBLC-013B;DBLC-013C;DBLC-013E;DBLC-013F;DBLC-013N;DBLC-013O,Packaging service runtime lifecycle requires manager listener parser server IPC reconciliation and versioned runtime artifacts
+DBLC-013R,DBLC-000A;DBLC-000B;DBLC-000C;DBLC-000F;DBLC-001;DBLC-002;DBLC-013U1;DBLC-013N;DBLC-013O;DBLC-013P;DBLC-013Q;DBLC-013S;DBLC-013T,Traceability generator requires state vocabulary gap matrix validation commands policy registry hardening system catalog index profiles specs registries reconciliation versioning admin CLI packaging migration and threat-model scope
+DBLC-013S,DBLC-003;DBLC-004A;DBLC-006;DBLC-013N;DBLC-013O;DBLC-013Q,Upgrade migration refusal lifecycle requires durable state filespace open recovery reconciliation versioning and runtime artifact behavior
+DBLC-013T,DBLC-007;DBLC-011;DBLC-013F;DBLC-013G;DBLC-013J;DBLC-013K;DBLC-013L;DBLC-013M;DBLC-013N;DBLC-013O;DBLC-013Q;DBLC-013U;DBLC-013U1;DBLC-013V;DBLC-013W;DBLC-013X;DBLC-013Y;DBLC-013Z;DBLC-013AA;DBLC-013AB;DBLC-013AC;DBLC-013AD;DBLC-013AE;DBLC-013AF;DBLC-013AG;DBLC-013AH;DBLC-013AI;DBLC-013AJ;DBLC-013AK,Threat model requires auth shutdown IPC session policy backup UDR resource reconciliation versioning packaging service and all additional lifecycle hardening surfaces
+DBLC-013U,DBLC-001;DBLC-002;DBLC-004;DBLC-008;DBLC-013I;DBLC-013J,Catalog schema object dependency lifecycle requires specs registries bootstrap transaction admission cache and policy behavior
+DBLC-013U1,DBLC-001;DBLC-002;DBLC-004;DBLC-013U,System catalog physical index profiles require canonical specs registries tx1 bootstrap and catalog schema object lifecycle
+DBLC-013V,DBLC-001;DBLC-002;DBLC-004A;DBLC-008;DBLC-013I;DBLC-013U;DBLC-013U1;DBLC-013AA,Index statistics and plan lifecycle requires registries filespace transaction cache catalog physical index profiles and resource seed epochs
+DBLC-013W,DBLC-007;DBLC-008;DBLC-009;DBLC-011;DBLC-013G;DBLC-013M,Lock wait and deadlock lifecycle requires auth transaction detach shutdown session and resource behavior
+DBLC-013X,DBLC-004A;DBLC-008;DBLC-009;DBLC-011;DBLC-013I;DBLC-013M,Temporary workspace lifecycle requires filespace transaction detach shutdown cache and resource behavior
+DBLC-013Y,DBLC-007;DBLC-009;DBLC-011;DBLC-013D;DBLC-013F;DBLC-013G,Event notification lifecycle requires auth detach shutdown process association IPC and session behavior
+DBLC-013Z,DBLC-004A;DBLC-006;DBLC-007;DBLC-011;DBLC-013J,Encryption key lifecycle requires filespace open auth shutdown and security policy behavior
+DBLC-013AA,DBLC-004;DBLC-006;DBLC-013J,Resource seed lifecycle requires tx1 bootstrap open and configuration policy behavior
+DBLC-013AB,DBLC-003;DBLC-006;DBLC-008;DBLC-009;DBLC-011;DBLC-013I;DBLC-013K,MGA garbage collection and history retention require durable transaction state open recovery transaction detach shutdown cache and backup holds
+DBLC-013AC,DBLC-005;DBLC-010;DBLC-011;DBLC-013H;DBLC-013M,Background jobs scheduler lifecycle requires first-open activation maintenance shutdown lifecycle agent and resource behavior
+DBLC-013AD,DBLC-001;DBLC-006;DBLC-008;DBLC-013A;DBLC-013H,Cluster-boundary fail-closed lifecycle requires specs open transaction manager and agent behavior
+DBLC-013AE,DBLC-007;DBLC-013J;DBLC-013U;DBLC-013Z,Security principal role privilege and policy lifecycle requires auth configuration catalog and protected-material behavior
+DBLC-013AF,DBLC-004A;DBLC-006;DBLC-013I;DBLC-013AB,Storage allocation free-space and page-map lifecycle requires filespace open cache checkpoint and MGA cleanup behavior
+DBLC-013AG,DBLC-002;DBLC-007;DBLC-008;DBLC-013L;DBLC-013U;DBLC-013Y,Executable database object lifecycle requires registries auth transaction UDR catalog and event behavior
+DBLC-013AH,DBLC-002;DBLC-008;DBLC-013U;DBLC-013AB,Sequence generator lifecycle requires registries transaction catalog and MGA retention behavior
+DBLC-013AI,DBLC-007;DBLC-011;DBLC-013F;DBLC-013J,Operational log audit support-bundle lifecycle requires auth shutdown IPC and policy behavior
+DBLC-013AJ,DBLC-001;DBLC-002;DBLC-013J;DBLC-013AD,Capability profile feature-gate lifecycle requires specs registries policy and cluster-boundary behavior
+DBLC-013AK,DBLC-007;DBLC-013K;DBLC-013Y;DBLC-013AB;DBLC-013AD;DBLC-013AJ,Replication CDC changefeed lifecycle boundary requires auth backup/archive events retention cluster boundary and capability profile behavior
+DBLC-014,DBLC-002;DBLC-013;DBLC-013C;DBLC-013D;DBLC-013F;DBLC-013G;DBLC-013L;DBLC-013N;DBLC-013O;DBLC-013P;DBLC-013T;DBLC-013U;DBLC-013Y;DBLC-013Z;DBLC-013AA;DBLC-013AD;DBLC-013AE;DBLC-013AG;DBLC-013AH;DBLC-013AJ;DBLC-013AK,Donor mapping requires lifecycle registry full route parser lifecycle association IPC session UDR reconciliation versioning admin path threat catalog events encryption resource seed cluster-boundary security executable object sequence capability and replication gates
+DBLC-015,DBLC-003;DBLC-004;DBLC-004A;DBLC-006;DBLC-011;DBLC-012;DBLC-013E;DBLC-013F;DBLC-013G;DBLC-013H;DBLC-013I;DBLC-013J;DBLC-013K;DBLC-013L;DBLC-013M;DBLC-013N;DBLC-013O;DBLC-013P;DBLC-013Q;DBLC-013R;DBLC-013S;DBLC-013T;DBLC-013U;DBLC-013U1;DBLC-013V;DBLC-013W;DBLC-013X;DBLC-013Y;DBLC-013Z;DBLC-013AA;DBLC-013AB;DBLC-013AC;DBLC-013AD;DBLC-013AE;DBLC-013AF;DBLC-013AG;DBLC-013AH;DBLC-013AI;DBLC-013AJ;DBLC-013AK,Observability requires all transition evidence and outcomes
+DBLC-016,DBLC-004;DBLC-004A;DBLC-005;DBLC-006;DBLC-007;DBLC-008;DBLC-009;DBLC-010;DBLC-011;DBLC-012;DBLC-013;DBLC-013A;DBLC-013B;DBLC-013C;DBLC-013D;DBLC-013E;DBLC-013F;DBLC-013G;DBLC-013H;DBLC-013I;DBLC-013J;DBLC-013K;DBLC-013L;DBLC-013M;DBLC-013N;DBLC-013O;DBLC-013P;DBLC-013Q;DBLC-013R;DBLC-013S;DBLC-013T;DBLC-013U;DBLC-013U1;DBLC-013V;DBLC-013W;DBLC-013X;DBLC-013Y;DBLC-013Z;DBLC-013AA;DBLC-013AB;DBLC-013AC;DBLC-013AD;DBLC-013AE;DBLC-013AF;DBLC-013AG;DBLC-013AH;DBLC-013AI;DBLC-013AJ;DBLC-013AK;DBLC-014;DBLC-015,Exhaustive regression requires implemented lifecycle surfaces
+DBLC-017,DBLC-016;DBLC-013T,Hardening depends on regression suite implementation coverage and threat-model gates
+DBLC-018,DBLC-017,Final audit depends on all implementation validation and hardening gates

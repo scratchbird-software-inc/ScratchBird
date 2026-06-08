@@ -1,0 +1,42 @@
+# RESOURCE-SEED-BOOTSTRAP-CONFORMANCE
+suite: resource_seed_bootstrap
+status: specified_for_probe
+seed_pack_root: project/resources/seed-packs/initial-resource-pack
+cases:
+  - id: RESBOOT-CONF-001
+    name: complete seed pack exposes resource evidence
+    command: sb_database_probe
+    required_args:
+      - --seed-pack-root
+      - project/resources/seed-packs/initial-resource-pack
+    expected:
+      ok: true
+      resource_seed_active: true
+      show_database_resources_rows: 1
+      charset_records_min: 1
+      collation_records_min: 1
+      timezone_records_min: 1
+  - id: RESBOOT-CONF-002
+    name: missing seed pack fails closed
+    command: sb_database_probe
+    required_args:
+      - --seed-pack-root
+      - /path/that/must/not/exist
+    expected_diagnostic: SB_RESOURCE_SEED_MISSING
+  - id: RESBOOT-CONF-003
+    name: corrupt manifest or missing required artifact fails closed
+    command: sb_database_probe
+    fixture: resource_seed_pack_missing_required_artifact
+    expected_diagnostic: SB_RESOURCE_SEED_INCOMPLETE
+  - id: RESBOOT-CONF-004
+    name: minimal bootstrap profile must be explicit
+    command: sb_database_probe
+    required_args:
+      - --minimal-bootstrap-resources
+    expected:
+      degraded_resource_mode: explicit_only
+  - id: RESBOOT-CONF-005
+    name: resource aliases resolve through canonical catalog rows
+    status: pending_final_catalog_body
+    expected:
+      diagnostic_on_ambiguity: SB_RESOURCE_ALIAS_AMBIGUOUS

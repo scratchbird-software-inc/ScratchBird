@@ -1,0 +1,8 @@
+audit_id,artifact,expected_owner,exists_now,ignored_by_git,ignore_source,tracked_or_trackable,manifest_status,duplicate_authority_status,status,notes
+DBLC-P0F-HYGIENE-001,public_input_snapshot,coordinator/policy spec worker,True,False,,trackable,manifest_listed,not_duplicated_by_p0f_artifact,hygiene_passed,existing source packet visible to git hygiene gates
+DBLC-P0F-HYGIENE-002,public_contract_snapshot,P0F worker,True,False,,trackable,manifest_listed,not_duplicated_by_p0f_artifact,hygiene_passed,registry artifact visible to git hygiene gates
+DBLC-P0F-HYGIENE-003,public_contract_snapshot,P0F worker,True,False,,trackable,manifest_listed,not_duplicated_by_p0f_artifact,hygiene_passed,conformance artifact visible to git hygiene gates
+DBLC-P0F-HYGIENE-004,public_contract_snapshot,coordinator,True,False,,tracked,manifest_listed,not_duplicated_by_p0f_artifact,hygiene_passed,coordinator-owned diagnostic registry updated with POLICY rows
+DBLC-P0F-HYGIENE-005,public_contract_snapshot,coordinator,True,False,,trackable,manifest_listed,not_duplicated_by_p0f_artifact,hygiene_passed,coordinator-owned diagnostic shape registry updated with policy shapes
+DBLC-P0F-HYGIENE-006,project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_DEFAULT_POLICY_REGISTRY_AUDIT.csv,P0F worker,True,False,,trackable_untracked,execution_plan_artifact,not_duplicated_by_p0f_artifact,hygiene_passed,audit artifact visible to git hygiene gates
+DBLC-P0F-HYGIENE-007,project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_REPO_HYGIENE_AUDIT.csv,P0F worker,True,False,,trackable_untracked,execution_plan_artifact,not_duplicated_by_p0f_artifact,hygiene_passed,hygiene artifact visible to git hygiene gates

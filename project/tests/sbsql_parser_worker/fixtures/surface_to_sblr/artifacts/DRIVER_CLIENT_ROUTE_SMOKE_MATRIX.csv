@@ -1,0 +1,1 @@
+fixture_id,surface_family,surface_id,canonical_name,client_kind,client_path,wire_profile,transport_security,credential_profile,expected_auth_result,expected_result_shape,expected_diagnostic,ctest_label,route_status

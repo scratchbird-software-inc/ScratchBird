@@ -1,0 +1,96 @@
+{
+  "search_key": "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+  "claim_id": "DPC-073-DEFERRED-INDEX-DML",
+  "lane_id": "deferred_index_dml",
+  "lane_title": "Deferred index load update delete",
+  "claim_status": "accepted",
+  "accepted_optimization_claim": true,
+  "elapsed_time_only": false,
+  "transaction_sensitive": true,
+  "before_profile": {
+    "profile_digest_source": "DPC-073:deferred_index_dml:before",
+    "profile_digest": "f07c1845ebf5243dfd1ece14bba1fd0d1016de5aa31a33b59a7013a79913c6cf",
+    "dominant_hot_paths": [
+      {"name": "foreground_secondary_index_insert", "share_percent": 38.0},
+      {"name": "delete_update_index_churn", "share_percent": 19.0}
+    ]
+  },
+  "after_profile": {
+    "profile_digest_source": "DPC-073:deferred_index_dml:after",
+    "profile_digest": "4060a65b04ef18e133b0c764ead5aa32ce7e6b70130b1079301cc13d80ccbdf2",
+    "dominant_hot_paths": [
+      {"name": "delta_ledger_append", "share_percent": 24.0},
+      {"name": "bounded_delta_merge_agent", "share_percent": 15.0}
+    ]
+  },
+  "changed_hot_paths": [
+    "foreground_secondary_index_insert shifted to delta_ledger_append",
+    "delete_update_index_churn shifted to bounded_delta_merge_agent"
+  ],
+  "delta_explanation": "The profiler attributes the accepted optimization to foreground non-unique index maintenance becoming compact delta ledger append work with bounded merge-agent follow-up.",
+  "remaining_bottleneck": "",
+  "measurement_families": {
+    "cpu_samples": {"before": 3120, "after": 1710, "unit": "samples", "attribution": "foreground index calls reduced"},
+    "lock_wait_mutex_hold_timing": {"before": 890, "after": 360, "unit": "microseconds_p95", "attribution": "shorter index latch holds"},
+    "io_syscall_counts": {"before": 760, "after": 420, "unit": "calls", "attribution": "ledger append batches writes"},
+    "allocator_pressure": {"before": 1420, "after": 650, "unit": "allocations", "attribution": "delta records pooled"},
+    "parser_lowering_timing": {"before": 64, "after": 63, "unit": "microseconds", "attribution": "not material to delta"},
+    "sblr_admission_dispatch_timing": {"before": 118, "after": 103, "unit": "microseconds", "attribution": "same route lower dispatch cost"},
+    "plan_cache_hit_miss_invalidation_timing": {"before": 43, "after": 41, "unit": "microseconds", "attribution": "stable plan cache"},
+    "metadata_cache_hit_miss_timing": {"before": 58, "after": 46, "unit": "microseconds", "attribution": "index family metadata reused"},
+    "statistics_epoch_plan_selection_timing": {"before": 33, "after": 32, "unit": "microseconds", "attribution": "epoch unchanged"},
+    "page_allocation_demand_grant_timing": {"before": 410, "after": 260, "unit": "microseconds", "attribution": "ledger pages amortized"},
+    "index_maintenance_timing_by_family": {"before": 1780, "after": 520, "unit": "microseconds", "attribution": "non-unique family deferred"},
+    "agent_queue_wake_run_throttle_completion_timing": {"before": 330, "after": 280, "unit": "microseconds", "attribution": "merge run bounded"}
+  },
+  "result_correctness_hash_pointer": {
+    "digest_source": "DPC-073:deferred_index_dml:result",
+    "digest": "ffe201bfbbb68c03b64fc8caef40cdc92319783798bc3e0faeedf06940adc5fc",
+    "correctness_anchor": "overlay merge and index validation equality"
+  },
+  "source_anchor": {
+    "path": "project/tests/database_lifecycle/dpc_deferred_index_hot_update_benchmark_gate.cpp",
+    "search_key": "DPC_DEFERRED_INDEX_HOT_UPDATE_BENCHMARK_GATE"
+  },
+  "route_or_source_anchor": "project/tests/database_lifecycle/dpc_secondary_index_delta_write_path_gate.cpp#DPC_SECONDARY_INDEX_DELTA_WRITE_PATH_GATE",
+  "ctest_name": "dpc_profiler_hot_path_attribution_gate",
+  "ctest_labels": [
+    "dpc_profiler_hot_path_attribution_gate",
+    "DPC-073",
+    "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+    "DPC_P6_PROFILER_ATTRIBUTION_READY",
+    "DPC_AUDIT_PROFILER_ATTRIBUTION",
+    "DPC_DEP_PROFILER_ATTRIBUTION",
+    "profiler_attribution",
+    "database_lifecycle",
+    "mga_transaction_regression"
+  ],
+  "build_instrumentation": {
+    "build_type": "Release diagnostic",
+    "profiler_mode": "compact-retained-attribution",
+    "hotpath_trace": true,
+    "exec_profile_trace": true,
+    "prepared_trace": true,
+    "source_state": "fixture-retained-source-state"
+  },
+  "agent_metrics": {
+    "bounded": true,
+    "queue_max": 12,
+    "wake_max": 7,
+    "run_budget_ms": 30,
+    "throttle_events_max": 3,
+    "completion_state": "completed"
+  },
+  "authority": {
+    "mga_authority_declaration": "engine_mga_transaction_inventory_authority",
+    "engine_mga_transaction_inventory_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "driver_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_log_finality_authority": false,
+    "timestamp_order_finality_authority": false,
+    "uuid_order_finality_authority": false,
+    "event_stream_finality_authority": false
+  }
+}

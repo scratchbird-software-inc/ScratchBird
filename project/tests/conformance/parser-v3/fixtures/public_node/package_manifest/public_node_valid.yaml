@@ -1,0 +1,26 @@
+manifest_format_version: 1
+parser_package_uuid: 00000000-0000-7000-8000-000000000001
+parser_package_name: sbp_sbsql_vertical_slice
+parser_package_version: 0.0.1-fixture
+build_uuid: 00000000-0000-7000-8000-000000000002
+package_kind: native_sbsql_parser
+edition_scope: public_node
+registry_snapshot_hash: fixture-snapshot-hash
+generated_artifact_inventory:
+  - grammar/
+  - ast/
+  - bound_ast/
+  - lowering/
+  - diagnostics/
+  - results/
+  - conformance/
+  - trace/
+  - manifests/
+  - package/
+required_libraries: []
+required_parser_support_udrs: []
+supported_parser_modes:
+  - native_sbsql
+supported_donor_modes: []
+supported_result_renderers:
+  - native_sbsql

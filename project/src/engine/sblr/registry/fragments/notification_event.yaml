@@ -1,0 +1,6 @@
+# SBSQL source-layout registry fragment: notification_event
+# This fragment is the future source-of-editing for notification_event registry rows.
+# Existing aggregate registries remain authoritative until a later registry
+# migration execution_plan moves rows into fragments.
+family: notification_event
+rows: []

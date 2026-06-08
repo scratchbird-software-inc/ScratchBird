@@ -1,0 +1,199 @@
+{
+  "row_id": "ORH-900",
+  "gate_id": "ORH-GATE-900",
+  "status": "completed-blocked",
+  "as_of_commit": "a9f99f97",
+  "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_BLOCKED",
+  "benchmark_clean": false,
+  "live_route_closure_claim": false,
+  "performance_superiority_claim": false,
+  "contract_only_evidence": false,
+  "fresh_live_embedded_ipc_inet_benchmark_proof_present": false,
+  "blocker_summary": "No fresh focused embedded IPC and INET ScratchBird benchmark artifacts exist in this workspace that prove live optimized-path consumption after the corrected index-route rebase with route labels, result hashes, timing percentiles, MGA/security evidence, and no benchmark-clean overclaim.",
+  "required_routes": [
+    "embedded",
+    "ipc",
+    "inet"
+  ],
+  "required_cache_phases": [
+    "cold",
+    "warm"
+  ],
+  "required_evidence_fields": [
+    "route_label",
+    "lane_identity",
+    "result_hash",
+    "p50_ms",
+    "p95_ms",
+    "p99_ms",
+    "live_execution",
+    "runtime_consumed",
+    "optimized_path_consumed",
+    "index_route_capability_generation_current",
+    "mga_security_evidence",
+    "parser_client_donor_authority",
+    "benchmark_clean_overclaim"
+  ],
+  "available_artifacts": [
+    {
+      "path": "project/tests/performance/optimizer_runtime_hot_path_orh_125_live_route_gate.py",
+      "classification": "cross_route_equivalence_live_capture",
+      "fresh_live_route_closure_authority": false,
+      "reason": "ORH-125 proves comparable live route rows, diagnostics, session rights, and snapshot evidence; it is not a fresh focused benchmark closure artifact for optimized-path runtime consumption."
+    },
+    {
+      "path": "project/tests/performance/optimizer_runtime_hot_path_orh_270_gate.py",
+      "classification": "donor_dominance_blocker_validator",
+      "fresh_live_route_closure_authority": false,
+      "reason": "ORH-270 records missing fresh ScratchBird and donor-best benchmark lanes and explicitly refuses donor-dominance closure."
+    },
+    {
+      "path": "project/tests/performance/optimizer_runtime_hot_path_orh_287_gate.cpp",
+      "classification": "ab_bisect_infrastructure",
+      "fresh_live_route_closure_authority": false,
+      "reason": "A/B and bisect infrastructure validates methodology and result equivalence but does not execute embedded IPC and INET live route benchmark closure."
+    },
+    {
+      "path": "project/tests/performance/optimizer_runtime_hot_path_orh_288_gate.cpp",
+      "classification": "large_scale_tier_infrastructure",
+      "fresh_live_route_closure_authority": false,
+      "reason": "Large-scale tier infrastructure is completed-blocked for true scale execution and does not prove focused embedded IPC and INET live route closure."
+    },
+    {
+      "path": "project/tests/public_migrated_proof/execution-plans/optimizer-runtime-hot-path-operationalization-closure/artifacts/RUNTIME_WIRING_AUDIT_MATRIX.csv",
+      "classification": "audit_matrix",
+      "fresh_live_route_closure_authority": false,
+      "reason": "The matrix records route wiring expectations and live-closure scope but is not a fresh benchmark artifact with route timing, result hashes, MGA/security evidence, and optimized runtime consumption."
+    },
+    {
+      "path": "project/tests/public_migrated_proof/execution-plans/optimizer-runtime-hot-path-operationalization-closure/artifacts/preimplementation_benchmark_20260525",
+      "classification": "preimplementation_snapshot",
+      "fresh_live_route_closure_authority": false,
+      "reason": "Preimplementation benchmark artifacts predate the corrected index-route rebase and completed ORH hot-path rows."
+    }
+  ],
+  "missing_lanes": [
+    {
+      "lane_id": "orh900:embedded:focused_live_optimized_route:cold_warm",
+      "route_label": "embedded",
+      "lane_identity": "focused_live_route_closure",
+      "cache_phase": "cold_and_warm",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_MISSING.EMBEDDED",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "result_hash": null,
+      "live_execution": false,
+      "runtime_consumed": false,
+      "optimized_path_consumed": false,
+      "index_route_capability_generation_current": false,
+      "mga_security_evidence": false,
+      "parser_client_donor_authority": false,
+      "exact_blocker": "fresh embedded ScratchBird route benchmark missing for post-rebase optimized-path runtime consumption"
+    },
+    {
+      "lane_id": "orh900:ipc:focused_live_optimized_route:cold_warm",
+      "route_label": "ipc",
+      "lane_identity": "focused_live_route_closure",
+      "cache_phase": "cold_and_warm",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_MISSING.IPC",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "result_hash": null,
+      "live_execution": false,
+      "runtime_consumed": false,
+      "optimized_path_consumed": false,
+      "index_route_capability_generation_current": false,
+      "mga_security_evidence": false,
+      "parser_client_donor_authority": false,
+      "exact_blocker": "fresh IPC ScratchBird route benchmark missing for post-rebase optimized-path runtime consumption"
+    },
+    {
+      "lane_id": "orh900:inet:focused_live_optimized_route:cold_warm",
+      "route_label": "inet",
+      "lane_identity": "focused_live_route_closure",
+      "cache_phase": "cold_and_warm",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_MISSING.INET",
+      "p50_ms": null,
+      "p95_ms": null,
+      "p99_ms": null,
+      "result_hash": null,
+      "live_execution": false,
+      "runtime_consumed": false,
+      "optimized_path_consumed": false,
+      "index_route_capability_generation_current": false,
+      "mga_security_evidence": false,
+      "parser_client_donor_authority": false,
+      "exact_blocker": "fresh INET ScratchBird route benchmark missing for post-rebase optimized-path runtime consumption"
+    }
+  ],
+  "negative_controls": [
+    {
+      "case": "stale_artifact",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_STALE_ARTIFACT",
+      "validated": true
+    },
+    {
+      "case": "missing_embedded_live_route",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_MISSING.EMBEDDED",
+      "validated": true
+    },
+    {
+      "case": "missing_ipc_live_route",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_MISSING.IPC",
+      "validated": true
+    },
+    {
+      "case": "missing_inet_live_route",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_MISSING.INET",
+      "validated": true
+    },
+    {
+      "case": "missing_route_label",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_LABEL_MISSING",
+      "validated": true
+    },
+    {
+      "case": "missing_result_hash",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_RESULT_HASH_MISSING",
+      "validated": true
+    },
+    {
+      "case": "missing_mga_security",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_MGA_SECURITY_MISSING",
+      "validated": true
+    },
+    {
+      "case": "contract_only_evidence",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_CONTRACT_ONLY_EVIDENCE",
+      "validated": true
+    },
+    {
+      "case": "parser_client_donor_authority",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_UNSAFE_AUTHORITY",
+      "validated": true
+    },
+    {
+      "case": "benchmark_clean_overclaim",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_BENCHMARK_CLEAN_OVERCLAIM",
+      "validated": true
+    },
+    {
+      "case": "no_runtime_consumption",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_NO_RUNTIME_CONSUMPTION",
+      "validated": true
+    },
+    {
+      "case": "stale_index_route_rebase_evidence",
+      "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_STALE_INDEX_REBASE_EVIDENCE",
+      "validated": true
+    }
+  ],
+  "closure_decision": {
+    "selected_status": "completed-blocked",
+    "completion_allowed": false,
+    "completed_blocked_allowed": true,
+    "reason": "Strict ORH-900 live route closure cannot be met without fresh embedded IPC and INET benchmark runs that prove post-rebase optimized-path runtime consumption with route labels, result hashes, timing fields, and MGA/security evidence."
+  }
+}

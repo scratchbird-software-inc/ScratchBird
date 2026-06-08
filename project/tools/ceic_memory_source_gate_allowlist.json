@@ -1,0 +1,80 @@
+[
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/memory.cpp",
+    "pattern": "::operator new(bytes, std::align_val_t(alignment))",
+    "reason": "Approved MemoryManager allocation backend after explicit manager accounting; CEIC-021 evidence only and not transaction, visibility, security, recovery, parser, donor, WAL, benchmark, optimizer-plan, index-finality, or agent-action authority."
+  },
+  {
+    "category": "direct_delete",
+    "path": "project/src/core/memory/memory.cpp",
+    "pattern": "::operator delete(replacement.pointer, std::align_val_t(replacement.alignment))",
+    "reason": "Approved MemoryManager rollback cleanup for a failed replacement allocation; it releases through the memory backend and does not create hot-path allocation authority."
+  },
+  {
+    "category": "direct_delete",
+    "path": "project/src/core/memory/memory.cpp",
+    "pattern": "::operator delete(pointer, std::align_val_t(record.alignment))",
+    "reason": "Approved MemoryManager deallocation backend for previously accounted records; allocator evidence remains non-authoritative for transaction and recovery decisions."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/typed_arena.hpp",
+    "pattern": "::new (static_cast<void*>(object)) T(std::forward<Args>(args)...)",
+    "reason": "Approved TypedArena placement construction into already reserved arena storage; no raw hot-path allocation authority is introduced."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/typed_arena.hpp",
+    "pattern": "::new (static_cast<void*>(data + constructed)) T()",
+    "reason": "Approved TypedArena placement construction for reserved array storage; construction does not allocate outside the arena."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/typed_arena.hpp",
+    "pattern": "::new (allocation.pointer) typed_arena_detail::DestructorNode()",
+    "reason": "Approved TypedArena metadata placement construction inside reserved arena storage for deterministic cleanup."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/typed_arena.hpp",
+    "pattern": "::new (static_cast<void*>(slot)) T(std::forward<Args>(args)...)",
+    "reason": "Approved TypedArena object placement construction inside a reserved slot; no direct heap allocation is performed."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/typed_slab_pool.hpp",
+    "pattern": "::new (static_cast<void*>(pointer)) T(std::forward<Args>(args)...)",
+    "reason": "Approved typed slab placement construction into reservation-backed slab storage; no raw allocator use occurs on the hot path."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/reservation_backed_memory_resource.cpp",
+    "pattern": "new ReservationBackedMemoryResource(std::move(request), reserved.token)",
+    "reason": "Approved reservation-backed memory API handle construction after CEIC-011 ledger reservation; the handle owns governed release evidence."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/typed_slab_pool.cpp",
+    "pattern": "new SizeClassAllocator(std::move(request),",
+    "reason": "Approved SizeClassAllocator factory construction inside the typed slab subsystem after reservation-backed policy setup."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/thread_local_memory_cache.cpp",
+    "pattern": "new ThreadLocalPerCoreMemoryCache(",
+    "reason": "Approved cache factory construction for the CEIC-014 thread-local per-core cache API; hot hits do not depend on raw allocation."
+  },
+  {
+    "category": "direct_new",
+    "path": "project/src/core/memory/foreign_memory_reservation.cpp",
+    "pattern": "new ForeignMemoryReservation(this, std::move(request), token, state)",
+    "reason": "Approved RAII foreign-memory reservation handle construction after CEIC-011 reservation admission; no provider allocation is authorized by the handle."
+  },
+  {
+    "category": "global_allocator_mutex",
+    "path": "project/src/core/memory/memory.cpp",
+    "pattern": "static std::mutex mutex;",
+    "reason": "Approved process-wide default MemoryManager installation mutex; it protects configuration only and is not an allocator hot-path dependency."
+  }
+]

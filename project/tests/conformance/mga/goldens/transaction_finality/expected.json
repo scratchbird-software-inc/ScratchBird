@@ -1,0 +1,38 @@
+{
+  "artifact_role": "readiness_control_golden_expectation",
+  "covered_gates": [
+    "DPR-GATE-005C",
+    "DPR-GATE-007A",
+    "DPR-GATE-009B"
+  ],
+  "does_not_close_semantic_gates": true,
+  "expected_readiness_state": "fixture_manifest_materialized",
+  "expected_results": [
+    {
+      "case_id": "DPR-FIX-015-POS-001",
+      "expected_boundary": "No parser SQL execution, driver-owned authority, donor authority, or MGA finality shortcut is admitted by this fixture.",
+      "expected_status": "cataloged"
+    },
+    {
+      "case_id": "DPR-FIX-015-NEG-001",
+      "expected_boundary": "No parser SQL execution, driver-owned authority, donor authority, or MGA finality shortcut is admitted by this fixture.",
+      "expected_status": "cataloged"
+    },
+    {
+      "case_id": "DPR-FIX-015-NEG-002",
+      "expected_boundary": "No parser SQL execution, driver-owned authority, donor authority, or MGA finality shortcut is admitted by this fixture.",
+      "expected_status": "cataloged"
+    },
+    {
+      "case_id": "DPR-FIX-015-NEG-003",
+      "expected_boundary": "No parser SQL execution, driver-owned authority, donor authority, or MGA finality shortcut is admitted by this fixture.",
+      "expected_status": "cataloged"
+    }
+  ],
+  "fixture_id": "DPR-FIX-015",
+  "semantic_gate_authority": [
+    "DPR-GATE-005C",
+    "DPR-GATE-007A",
+    "DPR-GATE-009B"
+  ]
+}

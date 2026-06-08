@@ -1,0 +1,5 @@
+generator=project/tools/sb_parser_gen/generate_sbsql_registry.py
+surface_count=2617
+native_now=2580
+native_future=0
+cluster_private=37

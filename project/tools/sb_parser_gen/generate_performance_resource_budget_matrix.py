@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 ScratchBird Software Inc.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# SPDX-License-Identifier: MPL-2.0
+
+"""Generate PERFORMANCE_RESOURCE_BUDGET_MATRIX.csv for the SBsql Surface-to-SBLR execution_plan.
+
+Output:
+  project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/PERFORMANCE_RESOURCE_BUDGET_MATRIX.csv
+
+Declares runtime, memory, fixture count, temporary database size, log
+size, and cleanup expectations for every execution_plan slice and gate. Closed
+slices/gates record `measurement_status=measured` with the wall-clock
+and peak-RSS values observed at slice closure; pending slices record
+`measurement_status=estimated` with conservative upper bounds derived
+from the execution_plan scope.
+
+Architecture invariant compliance: read-only CSV generation; no
+transaction model touched; no engine, parser worker, server, listener,
+storage, or MGA file modified; no WAL surface introduced. MGA copy-on-write
+remains the sole transaction recovery model.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import sys
+from pathlib import Path
+
+
+DEFAULT_ARTIFACT_ROOT = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
+OUTPUT_NAME = "PERFORMANCE_RESOURCE_BUDGET_MATRIX.csv"
+
+
+COLUMNS = [
+    "id",
+    "kind",
+    "title",
+    "runtime_seconds_budget",
+    "memory_mb_budget",
+    "fixture_count_budget",
+    "temp_database_size_mb_budget",
+    "log_size_kb_budget",
+    "cleanup_expectation",
+    "measured_runtime_seconds",
+    "measured_memory_mb",
+    "measurement_status",
+    "notes",
+]
+
+
+# Format: (id, kind, title, runtime_sec, mem_mb, fixture_count, temp_db_mb, log_kb,
+#         cleanup, measured_runtime_sec, measured_mem_mb, measurement_status, notes)
+ROWS: list[tuple] = [
+    # P0
+    ("SBSFC-000", "slice", "Authority baseline and row-count freeze", "5", "100", "0", "0", "5", "no_persistent_state_no_cleanup_required", "0.10", "40", "measured", "Read-only verification across canonical CSV/YAML and generated manifest; runs the coverage gate."),
+    # P1
+    ("SBSFC-001", "slice", "Strict row coverage ledger generation", "5", "100", "0", "0", "5", "regenerates_canonical_csv_in_place_idempotent_no_temp", "0.07", "25", "measured", "Generator writes one 2617-row CSV (~1.5 MB) under execution_plan artifacts; idempotent."),
+    ("SBSFC-002", "slice", "No-grey failing gates for incomplete rows", "5", "100", "0", "0", "5", "no_persistent_state_no_cleanup", "0.03", "19", "measured", "Static gate reads STRICT_ROW_COVERAGE_LEDGER.csv and ROW_STATE_CONTRACT.csv; fails by design at baseline."),
+    # P1A
+    ("SBSFC-003", "slice", "Native-future promotion matrix", "5", "100", "0", "0", "5", "regenerates_canonical_csv_in_place_idempotent_no_temp", "0.04", "19", "measured", "Generator writes one 911-row CSV (~713 KB)."),
+    ("SBSFC-004", "slice", "Function semantic oracle matrix", "10", "100", "0", "0", "5", "regenerates_canonical_csv_in_place_idempotent_no_temp", "0.13", "22", "measured", "Generator joins canonical surface registry with two YAML authority files; writes one 1534-row CSV (~1.35 MB)."),
+    ("SBSFC-005", "slice", "Authenticated full-route matrix", "5", "100", "0", "0", "5", "regenerates_canonical_csv_in_place_idempotent_no_temp", "0.08", "20", "measured", "Generator writes one 2617-row CSV (~5.5 MB) with full route declarations including MGA/no-WAL invariant per row."),
+    ("SBSFC-006", "slice", "SBLR binary round-trip matrix", "10", "100", "0", "0", "5", "regenerates_canonical_csv_in_place_idempotent_no_temp", "0.09", "26", "measured", "Generator joins surface registry with oracle matrix; writes one 2617-row CSV (~4.27 MB) with per-row 9-phase round-trip expectation."),
+    ("SBSFC-007", "slice", "No-stub source and fixture integrity gate", "5", "100", "0", "0", "5", "no_persistent_state_no_cleanup", "0.06", "14", "measured", "Static scanner over execution_plan-owned source/fixture scope; passes baseline cleanly."),
+    ("SBSFC-008", "slice", "Agent heartbeat and recovery controls", "5", "100", "0", "0", "5", "appends_to_tracking_csv_no_persistent_state_outside_execution_plan_artifacts", "0.04", "14", "measured", "CLI module + CTest gate; baseline validate run reads AGENT_STATUS/WRITE_SCOPE/TRACKER and reports zero errors."),
+    # P1B
+    ("SBSFC-009", "slice", "Resume state and interruption recovery manifest", "5", "50", "0", "0", "5", "documentation_only_no_cleanup", "0.05", "10", "measured", "Documentation/manifest-only slice."),
+    ("SBSFC-009A", "slice", "Per-row evidence manifest", "10", "100", "0", "0", "5", "regenerates_canonical_csv_in_place_idempotent_no_temp", "0.14", "50", "measured", "Generator joins surface registry with four prior matrices; writes one 2617-row CSV (~2.43 MB)."),
+    ("SBSFC-009B", "slice", "Status-change authority gate", "5", "100", "0", "0", "5", "no_persistent_state_no_cleanup", "0.13", "57", "measured", "Generator writes 9-row matrix CSV; gate reads canonical registry + 6 execution_plan artifacts and verifies per-row status agreement."),
+    ("SBSFC-009C", "slice", "Deterministic generation and no-network gate", "30", "200", "0", "0", "10", "isolated_regeneration_compares_tracked_artifacts_no_temp_retained", "2.57", "50", "measured", "Gate regenerates the generated registry and differential replay fixtures in isolated work directories; compares tracked artifacts and performs static no-network scan."),
+    ("SBSFC-009D", "slice", "Performance and resource budget matrix", "5", "100", "0", "0", "5", "regenerates_canonical_csv_in_place_idempotent_no_temp", "0.05", "15", "measured", "Generator writes a fixed-row matrix declaring budgets per slice/gate."),
+    ("SBSFC-009E", "slice", "Failure triage taxonomy", "5", "100", "0", "0", "5", "regenerates_canonical_csv_in_place_idempotent_no_temp", "", "", "estimated", "Coordinator-authored taxonomy CSV; expected to be small (<50 row) and quick to generate."),
+    # P2 (estimated)
+    ("SBSFC-010", "slice", "Numeric math cast comparison and bitwise functions", "1800", "1024", "120", "256", "1024", "remove_temp_databases_after_fixture_runs_drop_query_cache", "", "", "estimated", "Implementation slice: function code + descriptor enrichment + fixture authoring + CTest runs across multiple operands."),
+    ("SBSFC-011", "slice", "Text binary regex collation and charset functions", "1800", "1024", "150", "256", "1024", "remove_temp_databases_after_fixture_runs_drop_query_cache", "", "", "estimated", "Implementation slice: function code + descriptor enrichment + fixture authoring + collation/charset variants."),
+    ("SBSFC-012", "slice", "Temporal timezone UUID and session variables", "1800", "1024", "100", "256", "1024", "remove_temp_databases_after_fixture_runs_drop_query_cache_reset_timezone_session", "", "", "estimated", "Implementation slice: temporal + timezone + UUID + session/security context functions."),
+    ("SBSFC-013", "slice", "JSON XML document array map and multimodel expression functions", "1800", "1024", "150", "256", "1024", "remove_temp_databases_after_fixture_runs_drop_query_cache", "", "", "estimated", "Implementation slice: NoSQL/multimodel expression families."),
+    ("SBSFC-014", "slice", "Spatial vector search fuzzy phonetic and special expression forms", "1800", "1024", "120", "256", "1024", "remove_temp_databases_after_fixture_runs_drop_query_cache_unload_specialized_indexes", "", "", "estimated", "Implementation slice: spatial/vector/search/fuzzy/phonetic and exact refusals for policy-blocked surfaces."),
+    ("SBSFC-015", "slice", "Aggregate ordered-set approximate and window functions", "1800", "1024", "150", "256", "1024", "remove_temp_databases_after_fixture_runs_drop_query_cache_reset_window_state", "", "", "estimated", "Implementation slice: aggregate + window + ordered-set + approximate."),
+    ("SBSFC-016", "slice", "Procedural diagnostic cursor and PSQL expression functions", "1800", "1024", "100", "256", "1024", "remove_temp_databases_after_fixture_runs_drop_query_cache_unload_cursors", "", "", "estimated", "Implementation slice: procedural + diagnostic + cursor + PSQL expression forms."),
+    # P3 (estimated)
+    ("SBSFC-020", "slice", "DDL catalog schema name synonym domain table index rows", "3600", "2048", "300", "1024", "2048", "remove_temp_databases_after_fixture_runs_drop_query_cache_drop_test_schemas", "", "", "estimated", "Large implementation slice: catalog object lifecycle through MGA transactions; UUID identity preserved across reboot."),
+    ("SBSFC-021", "slice", "DML query merge upsert copy and bulk rows", "3600", "2048", "300", "2048", "2048", "remove_temp_databases_after_fixture_runs_drop_query_cache_drop_test_tables", "", "", "estimated", "DML + bulk + COPY through MGA copy-on-write; no WAL recovery path."),
+    ("SBSFC-022", "slice", "Transaction MGA lock savepoint and visibility rows", "3600", "2048", "300", "1024", "2048", "remove_temp_databases_after_fixture_runs_drop_query_cache_reset_transaction_inventory", "", "", "estimated", "MGA transaction lifecycle; no-WAL gates must pass; multi-session visibility tests required."),
+    ("SBSFC-023", "slice", "Security auth policy audit and redaction rows", "3600", "2048", "200", "1024", "2048", "remove_temp_databases_after_fixture_runs_revoke_test_grants_clear_audit", "", "", "estimated", "Engine-authority security; redaction; constant-time refusal."),
+    ("SBSFC-024", "slice", "Observability management jobs storage archive and replication rows", "3600", "2048", "300", "2048", "2048", "remove_temp_databases_after_fixture_runs_drop_archives_drop_replication_state", "", "", "estimated", "Management + metrics + jobs + filespace + backup/restore/archive/replication; MGA-derived backup-forward delta only, no WAL."),
+    ("SBSFC-025", "slice", "Cluster-private public fail-closed and private-profile rows", "1800", "1024", "100", "0", "1024", "no_persistent_cluster_state_in_public_build", "", "", "estimated", "Public-fail-closed coverage for 37 cluster_private rows; private-profile evidence is private cluster scope and outside this matrix."),
+    ("SBSFC-026", "slice", "Catalog bootstrap upgrade and UUID seed closure", "1800", "2048", "100", "1024", "2048", "drop_test_databases_after_create_open_restart_cycle", "", "", "estimated", "Database create transaction 1 + first-open transaction 2 + restart + upgrade tests; MGA transaction lifecycle authority."),
+    # P4 (estimated)
+    ("SBSFC-030", "slice", "Exact SBLR lowering and verifier closure", "3600", "2048", "300", "256", "2048", "remove_temp_databases_after_fixture_runs_clear_sblr_cache", "", "", "estimated", "Every accepted row lowers to exact operation/function id; verifier rejects SQL text/names/family-only routing."),
+    ("SBSFC-031", "slice", "Server admission and parser-support UDR route closure", "3600", "2048", "200", "1024", "2048", "remove_temp_databases_after_fixture_runs_unload_udr_packages", "", "", "estimated", "SBPS server admission + parser-support UDR dynamic SQL route; engine authority enforced."),
+    # P5 (estimated)
+    ("SBSFC-040", "slice", "Exhaustive per-row regression publication", "7200", "4096", "2617", "4096", "8192", "shard_results_purge_intermediate_logs_keep_failure_reports", "", "", "estimated", "Full per-row regression suite; sharded CTest runs; failure reports retained."),
+    ("SBSFC-041", "slice", "Donor alias compatibility regression", "1800", "2048", "500", "1024", "2048", "remove_temp_databases_after_fixture_runs_unload_donor_packages", "", "", "estimated", "Donor alias revalidation across families post-SBsql promotion."),
+    ("SBSFC-042", "slice", "Driver and client authenticated route smoke coverage", "1800", "1024", "100", "512", "1024", "stop_test_listener_disconnect_test_drivers_revoke_test_credentials", "", "", "estimated", "Driver/client smoke through sb_isql + at least one maintained driver lane over SBWP/TLS."),
+    ("SBSFC-044", "slice", "Catalog statistics scalar runtime promotion", "120", "512", "10", "64", "128", "remove_temp_database_and_mga_sidecars_after_fixture_runs", "", "", "estimated", "Focused catalog-statistics scalar batch for relation_row_estimate and table_size using engine-owned MGA relation metadata and row/index sidecars; no parser SQL, donor execution, WAL shortcut, or cluster-positive behavior."),
+    ("SBSFC-045", "slice", "Privilege predicate scalar runtime promotion", "120", "512", "16", "64", "128", "remove_temp_database_and_mga_sidecars_after_fixture_runs", "", "", "estimated", "Focused privilege predicate scalar batch for has_table_privilege, has_column_privilege, has_function_privilege, and has_schema_privilege using current SBLR security context plus engine-owned MGA relation/builtin/schema metadata; no parser SQL, donor execution, WAL shortcut, or cluster-positive behavior."),
+    ("SBSFC-046", "slice", "Session-admin scalar runtime promotion", "120", "512", "12", "64", "128", "none", "", "", "estimated", "Focused session-admin scalar batch for set_config, pid, temp_buffers, pg_cancel_backend, and pg_terminate_backend using SBLR local session runtime config and backend-control evidence vectors; no parser SQL, donor execution, WAL shortcut, external process signal, or cluster-positive behavior."),
+    ("SBSFC-047", "slice", "Advisory-lock scalar runtime promotion", "120", "512", "8", "64", "128", "none", "", "", "estimated", "Focused advisory-lock scalar batch for pg_advisory_lock and pg_try_advisory_lock using SBLR local session advisory lock state and acquisition evidence vectors; no parser SQL, donor execution, WAL shortcut, indefinite blocking, or cluster-positive behavior."),
+    ("SBSFC-048", "slice", "Advisory-lock release and xact-lock scalar runtime promotion", "120", "512", "8", "64", "128", "none", "", "", "estimated", "Focused advisory-lock scalar batch for pg_advisory_unlock and pg_advisory_xact_lock using separate SBLR local session and transaction-token advisory lock state/evidence vectors; no parser SQL, donor execution, WAL shortcut, indefinite blocking, transaction-finality shortcut, or cluster-positive behavior."),
+    ("SBSFC-049", "slice", "Unicode text normalization scalar runtime promotion", "120", "512", "8", "64", "128", "none", "", "", "estimated", "Focused Unicode text scalar batch for normalize, unicode_normalize, and is_alpha using ICU-backed SBLR data-scalar runtime functions; no parser SQL, donor execution, WAL shortcut, external service, or cluster-positive behavior."),
+    ("SBSFC-052", "slice", "JSON document construction table aggregate runtime promotion", "120", "512", "16", "64", "128", "none", "", "", "estimated", "Focused JSON/document scalar batch for JSON_TABLE descriptor routes, array_to_json, row_to_json, json_object text arrays, and jsonb_agg scalar-harness coverage using bounded in-core nosql.document helpers; no parser SQL, donor execution, storage scan, WAL shortcut, external service, or cluster-positive behavior."),
+    ("SBSFC-053", "slice", "Rowset table-value set-returning descriptor runtime promotion", "120", "512", "32", "64", "128", "none", "", "", "estimated", "Focused rowset/table-value/set-returning batch for rowset/table_value descriptors, setof, unnest, generate_series, and multiset helpers using bounded in-core rowset.table helpers; no parser SQL, donor execution, storage scan, cursor lifecycle authority, WAL shortcut, external service, or cluster-positive behavior."),
+    ("SBSFC-054", "slice", "Cursor stream handle descriptor runtime promotion", "120", "512", "32", "64", "128", "none", "", "", "estimated", "Focused cursor/stream/handle batch for cursor descriptors, handle attributes, rowset/table_value/stream conversions, current-row locator descriptors, and close/open descriptor helpers using bounded in-core cursor.stream helpers; no parser SQL, donor execution, storage scan, backend cursor lifecycle authority, WAL shortcut, external service, or cluster-positive behavior."),
+    ("SBSFC-055", "slice", "LOB locator descriptor runtime promotion", "120", "512", "32", "64", "128", "none", "", "", "estimated", "Focused LOB/locator batch for lob_create/open/close/read/write/append/truncate, locator conversions, locator validity, and current-row locator marker behavior using bounded in-core lob.locator helpers; no parser SQL, donor execution, storage finality, WAL shortcut, external service, or cluster-positive behavior."),
+    ("SBSFC-056", "slice", "Native surface scalar descriptor runtime promotion", "120", "512", "40", "64", "128", "none", "", "", "estimated", "Focused native surface scalar/descriptor batch for syntax/status/volatility markers, TREAT, accept probes, any_value, collect, at_time_zone, bit_string, bulk_exceptions, domain_stack, donor/private/native markers, match_recognize, integer/void/tabular, NVL, and generic multiset routes; no parser SQL, donor execution, storage finality, WAL shortcut, external service, or cluster-positive behavior."),
+    ("SBSFC-057", "slice", "Crypto hash pgcrypto scalar runtime promotion", "120", "512", "27", "64", "128", "none", "", "", "estimated", "Focused crypto/hash and pgcrypto batch for OpenSSL EVP SHA3/BLAKE2b/HMAC/RAND/scrypt, in-core xxhash64, deterministic armor/dearmor, bounded ScratchBird PGP envelopes that do not claim OpenPGP compatibility, and exact dependency-unavailable fail-closed argon2/bcrypt/blake3/crypt rows; no parser SQL, donor execution, storage finality, WAL shortcut, external service, or cluster-positive behavior."),
+    ("SBSFC-059", "slice", "Expression runtime function cleanup promotion", "120", "512", "7", "64", "128", "none", "", "", "estimated", "Focused expression-runtime cleanup batch for seven remaining month_name/date_sub/epoch/gen_id/day_name/POSITION_REGEX rows using bounded in-core scalar helpers and existing SBLR sequence runtime; no parser SQL, donor execution, storage finality, WAL shortcut, external service, cluster-positive behavior, or transaction finality change."),
+    ("SBSFC-060R-xml-grammar-exact-route", "slice", "XML grammar exact-route promotion", "120", "512", "23", "64", "128", "none", "", "", "estimated", "Focused corrected SBSFC-060R XML grammar batch for the accepted xml_forest_element/xml_root_form rows plus 21 additional XML grammar rows using public SBsql parser/bind/lower, server admission, and EngineEvaluateProjection runtime evidence; no generic replay, exact refusal, parser SQL execution, donor execution, WAL/recovery authority, or cluster-positive behavior."),
+    ("SBSFC-061-json-grammar-exact-route", "slice", "JSON grammar exact-route promotion", "120", "512", "13", "64", "128", "none", "", "", "estimated", "Focused SBSFC-061 JSON grammar batch for JSON_VALUE JSON_QUERY JSON_EXISTS JSON_OBJECT and JSON get operator grammar rows using public SBsql parser/bind/lower, server admission, and EngineEvaluateProjection runtime evidence; no generic replay, exact refusal, parser SQL execution, donor execution, WAL/recovery authority, or cluster-positive behavior."),
+    # P6 (estimated)
+    ("SBSFC-050", "slice", "Final inventory release declaration and closure", "900", "1024", "0", "0", "1024", "no_persistent_state_documentation_and_csv_only", "", "", "estimated", "Inventory/release declaration audit and closure report; documentation-only."),
+    ("SBSFC-051", "slice", "Machine-readable release declaration", "300", "1024", "0", "0", "1024", "regenerates_canonical_csv_and_json_in_place_idempotent_no_temp", "", "", "estimated", "Generate SBSQL_SURFACE_RELEASE_DECLARATION.csv + .json declaring final status per row."),
+    # Gates (always-on closure gates)
+    ("sbsql_surface_to_sblr_function_coverage_gate", "gate", "Static coverage baseline check", "5", "100", "0", "0", "5", "no_persistent_state_no_cleanup", "0.09", "38", "measured", "Reads canonical CSV + coverage YAML + generated registry header/manifest."),
+    ("sbsql_no_grey_row_coverage_gate", "gate", "No-grey row coverage check", "5", "100", "0", "0", "5", "no_persistent_state_no_cleanup", "0.03", "19", "measured", "Reads STRICT_ROW_COVERAGE_LEDGER.csv and ROW_STATE_CONTRACT.csv."),
+    ("sbsql_no_stub_source_integrity_gate", "gate", "No-stub source/fixture scan", "10", "100", "0", "0", "5", "no_persistent_state_no_cleanup", "0.06", "14", "measured", "Static regex scan over execution_plan-owned source/fixture scope."),
+    ("sbsql_agent_heartbeat_recovery_gate", "gate", "Agent control validate", "5", "100", "0", "0", "5", "no_persistent_state_no_cleanup", "0.04", "14", "measured", "Reads AGENT_STATUS/WRITE_SCOPE/TRACKER and validates state machine."),
+    ("sbsql_status_change_authority_gate", "gate", "Cross-artifact status consistency check", "10", "200", "0", "0", "5", "no_persistent_state_no_cleanup", "0.13", "57", "measured", "Reads canonical surface registry + status matrix + operation matrix + 6 execution_plan artifacts + generated registry manifest."),
+    ("sbsql_deterministic_generation_no_network_gate", "gate", "Determinism and no-network check", "60", "200", "0", "0", "10", "in_place_regeneration_heals_tampered_artifacts_to_canonical_state", "0.69", "50", "measured", "Runs all registered generators sequentially and compares md5 before/after; static no-network import scan."),
+]
+
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo-root", required=True)
+    parser.add_argument("--artifact-root", default=DEFAULT_ARTIFACT_ROOT)
+    args = parser.parse_args()
+    root = Path(args.repo_root)
+    artifact_root = Path(args.artifact_root)
+    if not artifact_root.is_absolute():
+        artifact_root = root / artifact_root
+
+    output_path = artifact_root / OUTPUT_NAME
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(COLUMNS)
+        for row in ROWS:
+            writer.writerow(row)
+
+    measured = sum(1 for r in ROWS if r[11] == "measured")
+    estimated = sum(1 for r in ROWS if r[11] == "estimated")
+    slices = sum(1 for r in ROWS if r[1] == "slice")
+    gates = sum(1 for r in ROWS if r[1] == "gate")
+    print(
+        f"performance_resource_budget_matrix=generated rows={len(ROWS)} slices={slices} gates={gates} measured={measured} estimated={estimated}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,96 @@
+{
+  "search_key": "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+  "claim_id": "DPC-073-BULK-NATIVE-INGEST",
+  "lane_id": "bulk_native_ingest",
+  "lane_title": "Bulk load and native ingest",
+  "claim_status": "accepted",
+  "accepted_optimization_claim": true,
+  "elapsed_time_only": false,
+  "transaction_sensitive": true,
+  "before_profile": {
+    "profile_digest_source": "DPC-073:bulk_native_ingest:before",
+    "profile_digest": "4be419655c6abc195abb35a870c2ccd228d2a56913287e4039f772ad5eaacadd",
+    "dominant_hot_paths": [
+      {"name": "row_by_row_tuple_materialize", "share_percent": 34.0},
+      {"name": "per_row_secondary_index_probe", "share_percent": 22.5}
+    ]
+  },
+  "after_profile": {
+    "profile_digest_source": "DPC-073:bulk_native_ingest:after",
+    "profile_digest": "638753200baebf9679dd7152e619e389a76684d3e40b3873e5f080a9343b0380",
+    "dominant_hot_paths": [
+      {"name": "native_bulk_page_append", "share_percent": 26.0},
+      {"name": "bulk_extent_grant_wait", "share_percent": 16.5}
+    ]
+  },
+  "changed_hot_paths": [
+    "row_by_row_tuple_materialize shifted to native_bulk_page_append",
+    "per_row_secondary_index_probe replaced by deferred family accounting"
+  ],
+  "delta_explanation": "Profiler attribution shows CPU moved from row materialization and per-row index probes to page append and bounded extent grant wait, with correctness retained by the result digest.",
+  "remaining_bottleneck": "",
+  "measurement_families": {
+    "cpu_samples": {"before": 3400, "after": 1820, "unit": "samples", "attribution": "tuple materialization reduced"},
+    "lock_wait_mutex_hold_timing": {"before": 620, "after": 410, "unit": "microseconds_p95", "attribution": "shorter index latch window"},
+    "io_syscall_counts": {"before": 910, "after": 370, "unit": "calls", "attribution": "larger page append batches"},
+    "allocator_pressure": {"before": 1800, "after": 620, "unit": "allocations", "attribution": "batch row buffers reused"},
+    "parser_lowering_timing": {"before": 75, "after": 72, "unit": "microseconds", "attribution": "unchanged route lowering"},
+    "sblr_admission_dispatch_timing": {"before": 145, "after": 112, "unit": "microseconds", "attribution": "native ingest route admitted once per batch"},
+    "plan_cache_hit_miss_invalidation_timing": {"before": 38, "after": 36, "unit": "microseconds", "attribution": "not the dominant change"},
+    "metadata_cache_hit_miss_timing": {"before": 70, "after": 54, "unit": "microseconds", "attribution": "fewer relation descriptor lookups"},
+    "statistics_epoch_plan_selection_timing": {"before": 30, "after": 28, "unit": "microseconds", "attribution": "stable epoch"},
+    "page_allocation_demand_grant_timing": {"before": 1180, "after": 460, "unit": "microseconds", "attribution": "extent demand coalesced"},
+    "index_maintenance_timing_by_family": {"before": 1490, "after": 540, "unit": "microseconds", "attribution": "secondary family work deferred"},
+    "agent_queue_wake_run_throttle_completion_timing": {"before": 260, "after": 220, "unit": "microseconds", "attribution": "bounded merge queue wake"}
+  },
+  "result_correctness_hash_pointer": {
+    "digest_source": "DPC-073:bulk_native_ingest:result",
+    "digest": "43914d9f78a37ba6abfe3e9ffd4b9a23dfc39a5bf96f1f941751305569f730b4",
+    "correctness_anchor": "native ingest row-count and visibility equality"
+  },
+  "source_anchor": {
+    "path": "project/src/engine/internal_api/dml/native_bulk_ingest_api.hpp",
+    "search_key": "SB_ENGINE_INTERNAL_API_DML_NATIVE_BULK_INGEST"
+  },
+  "route_or_source_anchor": "project/tests/database_lifecycle/cdp_native_bulk_ingest_api_gate.cpp#CDP-040-NATIVE-BULK-INGEST",
+  "ctest_name": "dpc_profiler_hot_path_attribution_gate",
+  "ctest_labels": [
+    "dpc_profiler_hot_path_attribution_gate",
+    "DPC-073",
+    "DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE",
+    "DPC_P6_PROFILER_ATTRIBUTION_READY",
+    "DPC_AUDIT_PROFILER_ATTRIBUTION",
+    "DPC_DEP_PROFILER_ATTRIBUTION",
+    "profiler_attribution",
+    "database_lifecycle",
+    "mga_transaction_regression"
+  ],
+  "build_instrumentation": {
+    "build_type": "Release diagnostic",
+    "profiler_mode": "compact-retained-attribution",
+    "hotpath_trace": true,
+    "exec_profile_trace": true,
+    "prepared_trace": true,
+    "source_state": "fixture-retained-source-state"
+  },
+  "agent_metrics": {
+    "bounded": true,
+    "queue_max": 8,
+    "wake_max": 5,
+    "run_budget_ms": 25,
+    "throttle_events_max": 2,
+    "completion_state": "completed"
+  },
+  "authority": {
+    "mga_authority_declaration": "engine_mga_transaction_inventory_authority",
+    "engine_mga_transaction_inventory_authority": true,
+    "parser_finality_authority": false,
+    "client_finality_authority": false,
+    "driver_finality_authority": false,
+    "donor_finality_authority": false,
+    "write_ahead_log_finality_authority": false,
+    "timestamp_order_finality_authority": false,
+    "uuid_order_finality_authority": false,
+    "event_stream_finality_authority": false
+  }
+}

@@ -1,0 +1,434 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#include "ddl/alter_api.hpp"
+
+#include "catalog/catalog_object_lifecycle.hpp"
+#include "catalog/name_registry.hpp"
+#include "catalog/schema_tree_api.hpp"
+#include "crud_support/crud_store.hpp"
+#include "domain_support/domain_store.hpp"
+#include "behavior_support/api_behavior_store.hpp"
+
+namespace scratchbird::engine::internal_api {
+namespace {
+
+bool StartsWith(const std::string& value, const std::string& prefix) { return value.rfind(prefix, 0) == 0; }
+
+std::string LocalizedNamesEnvelope(const std::vector<EngineLocalizedName>& names) {
+  std::string out;
+  for (const auto& name : names) {
+    if (!out.empty()) { out.push_back('|'); }
+    out.append(EncodeCrudText(name.language_tag));
+    out.push_back(',');
+    out.append(EncodeCrudText(name.name_class));
+    out.push_back(',');
+    out.append(EncodeCrudText(name.path));
+    out.push_back(',');
+    out.append(EncodeCrudText(name.name));
+    out.push_back(',');
+    out.append(name.default_name ? "1" : "0");
+  }
+  return out;
+}
+
+std::string DefaultLocalizedName(const std::vector<EngineLocalizedName>& names, const std::string& fallback) {
+  for (const auto& name : names) {
+    if (name.default_name && !name.name.empty()) { return name.name; }
+  }
+  for (const auto& name : names) {
+    if (!name.name.empty()) { return name.name; }
+  }
+  return fallback;
+}
+
+void SetDomainValidationHookStatus(DomainRecord* record) {
+  if (!record->default_expression_envelope.empty() || !record->check_constraint_envelope.empty()) {
+    record->validation_hook_status = "engine_builtin";
+    return;
+  }
+  if (!record->cast_policy_envelope.empty() || !record->mutation_policy_envelope.empty() ||
+      !record->masking_policy_envelope.empty() || !record->visibility_policy_envelope.empty() ||
+      !record->encryption_policy_ref.empty() || !record->driver_metadata_envelope.empty() ||
+      !record->wire_metadata_envelope.empty() || !record->element_path_envelope.empty() ||
+      !record->method_binding_envelope.empty() || !record->localized_names_envelope.empty() ||
+      !record->comment_envelope.empty() || !record->donor_alias_envelope.empty()) {
+    record->validation_hook_status = "engine_metadata";
+    return;
+  }
+  record->validation_hook_status = "not_required";
+}
+
+}  // namespace
+
+// SEARCH_KEY: SB_ENGINE_INTERNAL_API_DDL_ALTER_API_BEHAVIOR
+EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& request) {
+  if (request.target_object.object_kind == "schema") {
+    const auto context_status = ValidateApiBehaviorContext(request.context, "ddl.alter_object", true, true);
+    if (context_status.error) {
+      return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", context_status);
+    }
+    if (request.target_object.uuid.canonical.empty()) {
+      return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          MakeInvalidRequestDiagnostic("ddl.alter_object", "target_schema_uuid_required"));
+    }
+    auto existing = FindVisibleSchemaTreeRecord(request.context,
+                                                request.target_object.uuid.canonical,
+                                                request.context.local_transaction_id);
+    if (!existing) {
+      return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          MakeInvalidRequestDiagnostic("ddl.alter_object", "target_schema_not_visible"));
+    }
+    EngineSchemaTreeRecord updated = *existing;
+    updated.creator_tx = request.context.local_transaction_id;
+    if (!request.target_schema.uuid.canonical.empty()) {
+      if (!FindVisibleSchemaTreeRecord(request.context, request.target_schema.uuid.canonical, request.context.local_transaction_id)) {
+        return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            MakeInvalidRequestDiagnostic("ddl.alter_object", "parent_schema_not_visible"));
+      }
+      if (SchemaTreeWouldCreateCycle(request.context,
+                                     request.target_object.uuid.canonical,
+                                     request.target_schema.uuid.canonical,
+                                     request.context.local_transaction_id)) {
+        return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            MakeInvalidRequestDiagnostic("ddl.alter_object", "schema_move_cycle_detected"));
+      }
+      updated.parent_schema_uuid = request.target_schema.uuid.canonical;
+    }
+    if (!request.localized_names.empty()) {
+      updated.localized_names = request.localized_names;
+      updated.default_name = SchemaTreeDefaultName(updated.localized_names, updated.default_name);
+    }
+    for (const auto& option : request.option_envelopes) {
+      if (StartsWith(option, "comment:")) {
+        updated.localized_comments.push_back({"und", option.substr(8)});
+      } else if (StartsWith(option, "localized_comment:")) {
+        const std::string rest = option.substr(18);
+        const auto pos = rest.find(':');
+        if (pos == std::string::npos) {
+          return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "localized_comment_requires_language_and_text"));
+        }
+        updated.localized_comments.push_back({rest.substr(0, pos), rest.substr(pos + 1)});
+      } else {
+        return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            UnsupportedCrudFeatureDiagnostic("ddl.alter_object", "unsupported_schema_alter_option"));
+      }
+    }
+    if (const auto conflict = SchemaTreePathConflict(request.context,
+                                                    updated.schema_uuid,
+                                                    updated.parent_schema_uuid,
+                                                    updated.localized_names,
+                                                    request.context.local_transaction_id)) {
+      return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          MakeInvalidRequestDiagnostic("ddl.alter_object", "schema_path_ambiguous:" + *conflict));
+    }
+    updated.payload = SchemaTreePayload(updated.parent_schema_uuid, updated.localized_names, updated.localized_comments);
+    const auto appended = PersistSchemaTreeRecord(request.context, updated, "ddl.alter_schema");
+    if (appended.error) {
+      return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", appended);
+    }
+    if (!request.localized_names.empty()) {
+      const auto retired = RetireNameRegistryEntriesForObject(request.context,
+                                                             "ddl.alter_schema",
+                                                             updated.schema_uuid);
+      if (retired.error) {
+        return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", retired);
+      }
+      const auto names_appended = PersistNameRegistryEntriesForObject(request.context,
+                                                                     "ddl.alter_schema",
+                                                                     updated.schema_uuid,
+                                                                     "schema",
+                                                                     updated.parent_schema_uuid,
+                                                                     updated.localized_names,
+                                                                     updated.default_name);
+      if (names_appended.error) {
+        return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", names_appended);
+      }
+    }
+    auto result = MakeApiBehaviorSuccess<EngineAlterObjectResult>(request.context, "ddl.alter_object");
+    result.primary_object = request.target_object;
+    result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
+    AddApiBehaviorEvidence(&result, "api_behavior_event", "ddl.alter_schema");
+    AddApiBehaviorEvidence(&result, "schema_identity_preserved", updated.schema_uuid);
+    AddApiBehaviorRow(&result, {{"object_uuid", updated.schema_uuid},
+                                {"object_kind", "schema"},
+                                {"name", updated.default_name},
+                                {"state", updated.state},
+                                {"payload", updated.payload}});
+    return result;
+  }
+  if (request.target_object.object_kind == "domain") {
+    if (request.context.local_transaction_id == 0) {
+      return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          MakeInvalidRequestDiagnostic("ddl.alter_object", "local_transaction_id_required"));
+    }
+    if (request.target_object.uuid.canonical.empty()) {
+      return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          MakeInvalidRequestDiagnostic("ddl.alter_object", "target_domain_uuid_required"));
+    }
+    auto domain = FindVisibleDomain(request.context,
+                                    request.target_object.uuid.canonical,
+                                    request.context.local_transaction_id);
+    if (!domain) {
+      return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+          request.context,
+          "ddl.alter_object",
+          MakeInvalidRequestDiagnostic("ddl.alter_object", "target_domain_not_visible"));
+    }
+    DomainRecord updated = *domain;
+    updated.creator_tx = request.context.local_transaction_id;
+    if (!request.localized_names.empty()) {
+      updated.localized_names_envelope = LocalizedNamesEnvelope(request.localized_names);
+      updated.default_name = DefaultLocalizedName(request.localized_names, updated.default_name);
+    }
+    for (const auto& profile : request.policy_profile.encoded_profiles) {
+      if (profile == "nullable:true") {
+        updated.nullable = true;
+      } else if (profile == "nullable:false") {
+        if (DomainHasCrudDependencies(request.context, updated.domain_uuid, request.context.local_transaction_id)) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "domain_nullable_tightening_requires_dependency_revalidation"));
+        }
+        updated.nullable = false;
+      } else if (StartsWith(profile, "numeric_metadata:")) {
+        updated.numeric_metadata = profile.substr(17);
+      } else if (StartsWith(profile, "domain_cast_policy:")) {
+        updated.cast_policy_envelope = profile.substr(19);
+      } else if (StartsWith(profile, "domain_mutation_policy:")) {
+        updated.mutation_policy_envelope = profile.substr(23);
+      } else if (StartsWith(profile, "domain_masking_policy:")) {
+        updated.masking_policy_envelope = profile.substr(22);
+      } else if (StartsWith(profile, "domain_visibility_policy:")) {
+        updated.visibility_policy_envelope = profile.substr(25);
+      } else if (StartsWith(profile, "domain_encryption_policy:")) {
+        updated.encryption_policy_ref = profile.substr(25);
+      } else if (StartsWith(profile, "domain_donor_alias:")) {
+        if (!updated.donor_alias_envelope.empty()) { updated.donor_alias_envelope.push_back('|'); }
+        updated.donor_alias_envelope.append(profile.substr(19));
+      }
+    }
+    for (const auto& profile : request.compatibility_profile.encoded_profiles) {
+      if (StartsWith(profile, "donor_alias:")) {
+        if (!updated.donor_alias_envelope.empty()) { updated.donor_alias_envelope.push_back('|'); }
+        updated.donor_alias_envelope.append(profile.substr(12));
+      }
+    }
+    for (const auto& option : request.option_envelopes) {
+      if (option == "nullable:true") {
+        updated.nullable = true;
+      } else if (option == "nullable:false") {
+        if (DomainHasCrudDependencies(request.context, updated.domain_uuid, request.context.local_transaction_id)) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "domain_nullable_tightening_requires_dependency_revalidation"));
+        }
+        updated.nullable = false;
+      } else if (option == "drop_default") {
+        updated.default_expression_envelope.clear();
+      } else if (option == "drop_check") {
+        updated.check_constraint_envelope.clear();
+      } else if (StartsWith(option, "default_expression:")) {
+        updated.default_expression_envelope = option.substr(19);
+      } else if (StartsWith(option, "check_constraint:")) {
+        updated.check_constraint_envelope = option.substr(17);
+        if (!IsSupportedDomainCheckEnvelope(updated.check_constraint_envelope)) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              UnsupportedCrudFeatureDiagnostic("ddl.alter_object", "unsupported_domain_check_constraint"));
+        }
+      } else if (StartsWith(option, "collation:")) {
+        updated.charset_or_collation_ref = option.substr(10);
+      } else if (StartsWith(option, "charset:")) {
+        updated.charset_or_collation_ref = option.substr(8);
+      } else if (StartsWith(option, "cast_policy:")) {
+        updated.cast_policy_envelope = option.substr(12);
+      } else if (StartsWith(option, "mutation_policy:")) {
+        updated.mutation_policy_envelope = option.substr(16);
+      } else if (StartsWith(option, "masking_policy:")) {
+        updated.masking_policy_envelope = option.substr(15);
+      } else if (StartsWith(option, "visibility_policy:")) {
+        updated.visibility_policy_envelope = option.substr(18);
+      } else if (StartsWith(option, "encryption_policy:")) {
+        updated.encryption_policy_ref = option.substr(18);
+      } else if (StartsWith(option, "driver_metadata:")) {
+        updated.driver_metadata_envelope = option.substr(16);
+      } else if (StartsWith(option, "wire_metadata:")) {
+        updated.wire_metadata_envelope = option.substr(14);
+      } else if (StartsWith(option, "element_path:")) {
+        updated.element_path_envelope = option.substr(13);
+      } else if (StartsWith(option, "method_binding:")) {
+        updated.method_binding_envelope = option.substr(15);
+      } else if (StartsWith(option, "comment:")) {
+        updated.comment_envelope = option.substr(8);
+      } else if (StartsWith(option, "localized_comment:")) {
+        if (!updated.comment_envelope.empty()) { updated.comment_envelope.push_back('|'); }
+        updated.comment_envelope.append(option.substr(18));
+      } else if (StartsWith(option, "donor_alias:")) {
+        if (!updated.donor_alias_envelope.empty()) { updated.donor_alias_envelope.push_back('|'); }
+        updated.donor_alias_envelope.append(option.substr(12));
+      } else {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            UnsupportedCrudFeatureDiagnostic("ddl.alter_object", "unsupported_domain_alter_option"));
+      }
+    }
+    if (!request.descriptors.empty()) {
+      if (DomainHasCrudDependencies(request.context, updated.domain_uuid, request.context.local_transaction_id)) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+            request.context,
+            "ddl.alter_object",
+            MakeInvalidRequestDiagnostic("ddl.alter_object", "domain_base_change_requires_dependency_revalidation"));
+      }
+      const auto& descriptor = request.descriptors.front();
+      const std::string base_domain_uuid = DomainUuidFromDescriptor(descriptor);
+      if (!base_domain_uuid.empty()) {
+        if (base_domain_uuid == updated.domain_uuid ||
+            DomainChainContainsUuid(request.context, base_domain_uuid, updated.domain_uuid, request.context.local_transaction_id)) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "domain_base_cycle_detected"));
+        }
+        const auto base_domain = FindVisibleDomain(request.context, base_domain_uuid, request.context.local_transaction_id);
+        if (!base_domain) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "base_domain_not_visible"));
+        }
+        if (updated.nullable && !base_domain->nullable) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "domain_chain_cannot_widen_nullability"));
+        }
+        updated.base_descriptor_uuid = base_domain_uuid;
+        updated.base_descriptor_kind = "domain";
+        updated.base_canonical_type_name = base_domain->base_canonical_type_name;
+        updated.base_encoded_descriptor = DomainDescriptor(*base_domain).encoded_descriptor;
+      } else {
+        if (descriptor.canonical_type_name.empty()) {
+          return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
+              request.context,
+              "ddl.alter_object",
+              MakeInvalidRequestDiagnostic("ddl.alter_object", "base_canonical_type_name_required"));
+        }
+        updated.base_descriptor_uuid = descriptor.descriptor_uuid.canonical.empty()
+                                           ? GenerateCrudEngineUuid("object")
+                                           : descriptor.descriptor_uuid.canonical;
+        updated.base_descriptor_kind = descriptor.descriptor_kind.empty() ? "scalar" : descriptor.descriptor_kind;
+        updated.base_canonical_type_name = descriptor.canonical_type_name;
+        updated.base_encoded_descriptor = descriptor.encoded_descriptor;
+      }
+    }
+    SetDomainValidationHookStatus(&updated);
+    updated.creator_tx = request.context.local_transaction_id;
+    const auto appended = AppendDomainEvent(request.context, MakeDomainAlterEvent(updated));
+    if (appended.error) {
+      return MakeCrudDiagnosticResult<EngineAlterObjectResult>(request.context, "ddl.alter_object", appended);
+    }
+    if (!request.localized_names.empty()) {
+      const auto retired = RetireNameRegistryEntriesForObject(request.context,
+                                                             "ddl.alter_object",
+                                                             updated.domain_uuid);
+      if (retired.error) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(request.context, "ddl.alter_object", retired);
+      }
+      const auto names_appended = PersistNameRegistryEntriesForObject(request.context,
+                                                                     "ddl.alter_object",
+                                                                     updated.domain_uuid,
+                                                                     "domain",
+                                                                     updated.schema_uuid,
+                                                                     request.localized_names,
+                                                                     updated.default_name);
+      if (names_appended.error) {
+        return MakeCrudDiagnosticResult<EngineAlterObjectResult>(request.context, "ddl.alter_object", names_appended);
+      }
+    }
+    auto result = MakeCrudSuccessResult<EngineAlterObjectResult>(request.context, "ddl.alter_object");
+    result.primary_object = request.target_object;
+    result.evidence.push_back({"domain_event", "domain_alter"});
+    return result;
+  }
+  auto result = PersistedRecordResult<EngineAlterObjectResult>(request, "ddl.alter_object", "object_alteration", true, "altered");
+  if (!result.ok || request.localized_names.empty() || request.target_object.uuid.canonical.empty()) { return result; }
+  const auto retired = RetireNameRegistryEntriesForObject(request.context,
+                                                         "ddl.alter_object",
+                                                         request.target_object.uuid.canonical);
+  if (retired.error) {
+    return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", retired);
+  }
+  const std::string object_kind = request.target_object.object_kind.empty() ? "object" : request.target_object.object_kind;
+  const std::string fallback_name = request.localized_names.front().name.empty() ? object_kind : request.localized_names.front().name;
+  const auto names_appended = PersistNameRegistryEntriesForObject(request.context,
+                                                                 "ddl.alter_object",
+                                                                 request.target_object.uuid.canonical,
+                                                                 object_kind,
+                                                                 request.target_schema.uuid.canonical,
+                                                                 request.localized_names,
+                                                                 fallback_name);
+  if (names_appended.error) {
+    return MakeApiBehaviorDiagnostic<EngineAlterObjectResult>(request.context, "ddl.alter_object", names_appended);
+  }
+  AddApiBehaviorEvidence(&result, "name_registry", request.target_object.uuid.canonical);
+  return result;
+}
+
+EngineAlterConstraintResult EngineAlterConstraint(const EngineAlterConstraintRequest& request) {
+  constexpr const char* kOperation = "ddl.constraint.alter";
+  EngineCatalogApplyConstraintsRequest catalog_request;
+  static_cast<EngineApiRequest&>(catalog_request) = request;
+  catalog_request.operation_id = kOperation;
+  const auto applied = EngineCatalogApplyConstraintsToObject(catalog_request);
+
+  EngineAlterConstraintResult result;
+  result.ok = applied.ok;
+  result.operation_id = kOperation;
+  result.diagnostics = applied.diagnostics;
+  result.unsupported_features = applied.unsupported_features;
+  result.evidence = applied.evidence;
+  result.result_shape = applied.result_shape;
+  result.primary_object = applied.primary_object;
+  result.catalog_row_uuid = applied.catalog_row_uuid;
+  result.transaction_uuid = applied.transaction_uuid;
+  result.local_transaction_id = applied.local_transaction_id;
+  result.embedded_trust_mode_observed = applied.embedded_trust_mode_observed;
+  result.cluster_authority_required = applied.cluster_authority_required;
+  result.bound_object_identity = applied.bound_object_identity;
+  result.metadata_cache_epoch = applied.metadata_cache_epoch;
+  if (result.ok) {
+    result.evidence.push_back({"ddl_catalog_route", "sys.constraint_descriptor"});
+  }
+  return result;
+}
+
+}  // namespace scratchbird::engine::internal_api

@@ -1,0 +1,46 @@
+{
+  "artifact_role": "readiness_control_fixture_manifest",
+  "authority_boundary": "Fixture evidence is conformance input only; it is not product behavior authority.",
+  "canonical_sources": [
+    "public_input_snapshot",
+    "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DATABASE_FUNCTIONALITY_TO_SBLR_COVERAGE.csv#coverage_id",
+    "public_contract_snapshot"
+  ],
+  "cases": [
+    {
+      "case_id": "DPR-FIX-004-POS-001",
+      "case_kind": "positive_control",
+      "expected_gate_behavior": "Pass fixture catalog materialization checks only.",
+      "purpose": "Verify the indexed canonical sources and consumer handoff are present before implementation agents start."
+    },
+    {
+      "case_id": "DPR-FIX-004-NEG-001",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "family-only mapping"
+    },
+    {
+      "case_id": "DPR-FIX-004-NEG-002",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "missing descriptor"
+    },
+    {
+      "case_id": "DPR-FIX-004-NEG-003",
+      "case_kind": "negative_control",
+      "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
+      "purpose": "private opcode"
+    }
+  ],
+  "consumer_agents": [
+    "native_sbsql_parser_agent",
+    "sblr_engine_agent"
+  ],
+  "covered_gates": [
+    "DPR-GATE-005C",
+    "DPR-GATE-006"
+  ],
+  "fixture_family": "sbsql_lowering_fixtures",
+  "fixture_id": "DPR-FIX-004",
+  "forbidden_fixture_source": "handwritten driver map"
+}

@@ -1,0 +1,6 @@
+# SBSQL source-layout registry fragment: security
+# This fragment is the future source-of-editing for security registry rows.
+# Existing aggregate registries remain authoritative until a later registry
+# migration execution_plan moves rows into fragments.
+family: security
+rows: []

@@ -1,0 +1,97 @@
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdKubernetesOperatorContract
+metadata:
+  name: public-single-node
+profile: public-single-node
+searchKey: SB_K8S_PUBLIC_SINGLE_NODE_OPERATOR_CONTRACT
+authority:
+  specPath: public_contract_snapshot
+  specSearchKey: SB_SPEC_K8S_PUBLIC_SINGLE_NODE_DRY_RUN_AND_IDEMPOTENCY
+requiredKinds:
+  - ScratchBirdDatabase
+  - ScratchBirdFilespace
+  - ScratchBirdBackup
+  - ScratchBirdRestore
+  - ScratchBirdCloudProviderProfile
+  - ScratchBirdKmsProfile
+  - ScratchBirdRoutePolicy
+  - ScratchBirdSupportBundle
+  - ScratchBirdUpgrade
+forbiddenKinds:
+  - ScratchBirdCluster
+  - ScratchBirdNodeSet
+  - ScratchBirdReadReplica
+  - ScratchBirdManagedTenant
+commonRequiredSpecFields:
+  - profileRef
+  - securityRef
+  - auditReason
+  - idempotencyKey
+  - redactionPolicyRef
+forbiddenPrivateClusterFields:
+  - clusterRef
+  - clusterUUID
+  - clusterUuid
+  - clusterEpoch
+  - clusterRouteEpoch
+  - clusterFinality
+  - quorum
+  - quorumPolicyRef
+  - nodeSetRef
+  - nodeSet
+  - nodeSets
+  - readReplica
+  - readReplicaRef
+  - replicas
+  - replicaClass
+  - managedTenant
+  - tenantAuthority
+  - shard
+  - shardMap
+  - participant
+  - participants
+  - fenceToken
+  - routeEpoch
+diagnostics:
+  invalidCrd: SB-K8S-CRD-INVALID
+  clusterFieldRefused: SB-K8S-CLUSTER-FIELD-REFUSED
+  reconcileConflict: SB-K8S-RECONCILE-CONFLICT
+  shutdownRefused: SB-K8S-SHUTDOWN-REFUSED
+  operatorAuthorityForbidden: SB-K8S-OPERATOR-AUTHORITY-FORBIDDEN
+  prerequisiteMissing: SB-K8S-PREREQUISITE-MISSING
+diagnosticShape:
+  retryable: false
+  auditRequired: true
+  finality: no_lifecycle_action
+lifecycleOperations:
+  ScratchBirdDatabase:
+    create_or_open: manager.database.create_or_open
+    suspend: manager.database.suspend
+    resume: manager.database.resume
+    shutdown: manager.database.shutdown
+  ScratchBirdFilespace:
+    default: manager.filespace.attach_or_expand
+  ScratchBirdBackup:
+    default: manager.backup.request
+  ScratchBirdRestore:
+    default: manager.restore.stage_verify_publish
+  ScratchBirdCloudProviderProfile:
+    default: manager.cloud_profile.validate_public_single_node
+  ScratchBirdKmsProfile:
+    default: manager.kms_profile.validate_secretless
+  ScratchBirdRoutePolicy:
+    default: manager.route_policy.apply_local
+  ScratchBirdSupportBundle:
+    default: manager.support_bundle.export_redacted
+  ScratchBirdUpgrade:
+    default: manager.upgrade.preflight_plan_apply
+statusFinality: not_transaction_finality
+localMetricRoot: sys.metrics.kubernetes
+clusterMetricRootPublicBehavior: absent
+fixtures:
+  positive:
+    - project/cloud/kubernetes/manifests/public-single-node/sample-stack.yaml
+    - project/cloud/kubernetes/fixtures/public-single-node/database-shutdown.yaml
+  negative:
+    clusterField: project/cloud/kubernetes/fixtures/public-single-node/database-cluster-field-refused.yaml
+    shutdownRefused: project/cloud/kubernetes/fixtures/public-single-node/database-shutdown-refused.yaml

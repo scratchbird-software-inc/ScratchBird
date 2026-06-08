@@ -1,0 +1,2 @@
+donor_id,evidence_family,required_artifact,authority_rule,status
+foundationdb,parser_goldens,golden_manifest.csv,generated manifest only; accepted proof requires regenerated project test execution,golden_manifest_generated_pending_native_replay_goldens

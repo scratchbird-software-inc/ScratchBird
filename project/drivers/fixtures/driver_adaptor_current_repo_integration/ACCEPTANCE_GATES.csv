@@ -1,0 +1,17 @@
+gate_id,phase,status,requirement,evidence
+DCT_P0_SOURCE_INVENTORY_READY,P0,complete,Every imported driver adaptor and tool has category language build system required status and destination ownership,artifacts/DRIVER_SOURCE_INVENTORY.csv
+DCT_P0_ARTIFACT_ISOLATION_READY,P0,complete,Every build dependency cache test package and benchmark output location is under build/,artifacts/BUILD_ARTIFACT_ISOLATION_POLICY.md
+DCT_P0_PATH_REALIGNMENT_READY,P0,complete,Every old external path or user-local absolute path is inventoried and assigned remediation,artifacts/PATH_REALIGNMENT_BACKLOG.csv
+DCT_P0_TOOLCHAIN_POLICY_READY,P0,complete,Required toolchain detection waiver dependency and cache rules are defined for all ecosystems,artifacts/TOOLCHAIN_AND_DEPENDENCY_POLICY.md
+DCT_P0_CONFORMANCE_READY,P0,complete,Common driver conformance coverage is defined for all required actual drivers,artifacts/DRIVER_COMMON_CONFORMANCE_MATRIX.csv
+DCT_P0_CTEST_MATRIX_READY,P0,complete,All driver adaptor tool labels and targets are assigned with required skip policy,artifacts/CTEST_DRIVER_GATE_MATRIX.csv
+DCT_P0_SERVER_FIXTURE_READY,P0,complete,CTest server fixture lifecycle is defined with runtime files under build/,artifacts/SERVER_FIXTURE_LIFECYCLE_POLICY.md
+DCT_P0_BENCHMARK_READY,P0,complete,Benchmark runner uses current repo driver/tool paths and writes current JSON under build/benchmarks/,artifacts/BENCHMARK_DRIVER_READINESS_POLICY.md
+DCT_P0_RELEASE_POLICY_READY,P0,complete,Packaging install and release claim status rules are defined,artifacts/PACKAGING_INSTALL_GATE_POLICY.md;artifacts/RELEASE_CLAIM_POLICY.md
+DCT_P0_STATIC_HYGIENE_READY,P0,complete,Static hygiene gate policy fails on generated artifacts source-tree writes old paths and unsupported claims,artifacts/STATIC_HYGIENE_GATE_POLICY.md
+DCT_P1_BUILD_SUBSTRATE_READY,P1,complete,CMake/CTest driver orchestration exists without source-tree outputs,driver_build_artifact_isolation_gate;driver_source_tree_write_guard
+DCT_P2_ALL_DRIVERS_READY,P2,complete,Every imported actual driver has current path build test and conformance coverage,driver_python_gate;driver_go_gate;driver_rust_gate;driver_node_gate;driver_jdbc_gate;driver_odbc_gate;driver_cpp_gate;driver_dotnet_gate;driver_dart_gate;driver_elixir_gate;driver_mojo_gate;driver_pascal_gate;driver_php_gate;driver_r_gate;driver_ruby_gate;driver_swift_gate
+DCT_P3_ALL_ADAPTORS_READY,P3,complete,Every imported adaptor builds and tests against current repo paths and allowed driver APIs,adaptor_dbeaver_gate;adaptor_hibernate_gate;adaptor_metabase_gate;adaptor_prisma_gate;adaptor_sqlalchemy_gate;adaptor_superset_gate;adaptor_typeorm_gate
+DCT_P4_TOOLS_READY,P4,complete,Every imported tool builds and tests against current server APIs with outputs under build/,tool_cli_gate
+DCT_P5_CONFORMANCE_AND_BENCHMARK_READY,P5,complete,Server fixture common conformance packaging static hygiene and benchmark readiness gates pass,driver_server_fixture_gate;driver_common_conformance_gate;driver_packaging_install_gate;driver_benchmark_readiness_gate;driver_execution_plan10_runner_gate;driver_static_hygiene_gate
+DCT_P6_FINAL_CLEAN,P6,complete,Aggregate driver suite and final zero drift audit pass,drivers_all;drivers_final_zero_drift_audit

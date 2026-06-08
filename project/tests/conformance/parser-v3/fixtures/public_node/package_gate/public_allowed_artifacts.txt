@@ -1,0 +1,6 @@
+# Public-node candidate artifact list.
+project/include/scratchbird/api/README.md
+project/src/core/common/README.md
+project/src/parsers/native/v3/minimal/README.md
+project/tools/sb_registry_lint/README.md
+project/tests/conformance/parser-v3/fixtures/public_node/show/show_version.yaml

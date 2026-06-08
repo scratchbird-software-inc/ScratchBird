@@ -1,0 +1,39 @@
+gate_name,status,label_group,purpose
+firebird_surface_registry_lint,passing_proof,firebird_p0,All expanded rows have owner status handler diagnostic and test assignment
+firebird_package_boundary_gate,passing_proof,firebird_p0,No cross-dialect dependencies and only Firebird-owned parser/UDR sharing
+firebird_clean_room_provenance_gate,passing_proof,firebird_p0,Firebird source is behavior evidence only and implementation code has clean-room provenance
+firebird_version_profile_gate,passing_proof,firebird_p0,Every supported Firebird version profile difference has implementation or emulation ownership
+firebird_blr_parameter_buffer_conformance,passing_proof,firebird_p0,BLR message BLR SQLDA DPB TPB SPB and BPB surfaces have parser UDR SBLR diagnostic and test coverage
+firebird_agent_orchestration_gate,passing_proof,firebird_p0,Agent execution status refresh test cadence blocker and evidence files are current before implementation proceeds
+firebird_lexer_conformance,passing_proof,firebird_parser,Lexer token literal identifier comment parameter and span coverage
+firebird_cst_ast_conformance,passing_proof,firebird_parser,CST AST valid invalid-input and diagnostic coverage for grammar API and service surfaces
+firebird_binder_descriptor_uuid_conformance,passing_proof,firebird_parser,UUID cache descriptor name folding hidden-vs-missing and cache invalidation coverage
+firebird_datatype_descriptor_conformance,passing_proof,firebird_parser_engine,Datatype domain blob array pseudo-type descriptor bind cast and result coverage
+firebird_expression_builtin_conformance,passing_proof,firebird_parser_engine,Builtin function operator aggregate window context and generator coverage
+firebird_dml_query_conformance,passing_proof,firebird_parser_engine,DML query cursor locking returning merge and update-or-insert coverage
+firebird_ddl_catalog_overlay_conformance,passing_proof,firebird_parser_engine,DDL catalog overlay RDB$ MON$ SEC$ and metadata projection coverage
+firebird_psql_dynamic_sql_conformance,passing_proof,firebird_parser_udr,PSQL routines triggers packages execute block and dynamic SQL coverage
+firebird_non_file_emulation_gate,passing_proof,firebird_emulation,File storage admin service and utility command emulation and authority-violation diagnostic coverage
+firebird_sblr_lowering_verifier,passing_proof,firebird_sblr,BoundAST to SBLR finite subset verifier coverage
+firebird_parser_worker_ipc_conformance,passing_proof,firebird_runtime,sbp_firebird process isolation and parser-server IPC coverage
+firebird_udr_dynamic_sql_conformance,passing_proof,firebird_udr,sbup_firebird Role B dynamic SQL ABI and behavior coverage
+firebird_udr_environment_installer_conformance,passing_proof,firebird_udr,sbup_firebird Role C environment installer coverage
+firebird_upgrade_install_drift_gate,passing_proof,firebird_udr,Install reinstall upgrade verify repair drift and silent-repair diagnostic coverage
+firebird_bridge_service_surface_conformance,passing_proof,firebird_bridge,Role A bridge service wire replication proxy and emulation surface coverage
+firebird_wire_api_scope_gate,passing_proof,firebird_bridge,Every Firebird wire API bridge service replication and proxy surface has an owner and zero unimplemented rows
+firebird_status_vector_diagnostic_conformance,passing_proof,firebird_diagnostics,Firebird status vector SQLCODE SQLSTATE warning and SQLDA rendering coverage
+firebird_donor_tool_build_gate,passing_proof,firebird_donor_native,Builds Firebird donor tools as isolated test-only artifacts
+firebird_donor_tool_sandbox_gate,passing_proof,firebird_donor_native,Donor tools run loopback-only in isolated temp directories with strict timeouts no external network no system install and deterministic cleanup
+firebird_isql_original_regression_gate,passing_proof,firebird_donor_native,Runs SQL/PSQL/query regression through Firebird isql against ScratchBird endpoint
+fbqa_full_original_regression_inventory_gate,passing_proof,firebird_donor_native,Creates row-by-row Firebird QA replay inventory for every candidate test and writes complete evidence records
+fbqa_full_original_regression_final_gate,passing_final,firebird_final,Requires every Firebird QA candidate to replay through ScratchBird endpoint with zero replay evidence gaps
+firebird_service_tool_regression_gate,passing_proof,firebird_donor_native,Runs service utility surfaces through donor-native tools and classifies outcomes
+firebird_original_regression_replay_gate,passing_proof,firebird_donor_native,Replays original Firebird regression cases or records exact classification
+firebird_donor_native_result_normalization_gate,passing_proof,firebird_donor_native,Normalizes timestamps paths page ids transaction ids object ids warnings and environment-specific text
+firebird_donor_tool_diff_oracle_gate,passing_proof,firebird_donor_native,Compares normalized real-Firebird output to ScratchBird output where permitted
+firebird_operational_failure_inventory_gate,passing_proof,firebird_donor_native,Preserves logs normalized outputs failure manifests and rerun commands for every donor-native and E2E failure
+firebird_tool_runtime_isolation_gate,passing_proof,firebird_hardening,Proves donor tools/libs are not linked into ScratchBird runtime/parser/UDR products
+firebird_malicious_input_fuzz_gate,passing_proof,firebird_hardening,SQL BLR wire parameter buffer service and donor-tool fuzz inputs fail safely under resource limits
+firebird_runtime_absence_gate,passing_proof,firebird_hardening,Core and other dialects work when Firebird parser or UDR is absent disabled incompatible untrusted or policy-denied
+firebird_exhaustive_e2e_regression_gate,passing_final,firebird_final,Every surface variation has parser UDR SBLR engine diagnostic donor-native implementation or emulation coverage
+firebird_final_zero_open_surface_audit,passing_final,firebird_final,No implemented emulated diagnostic donor-native or evidence-gap row remains open or unassigned

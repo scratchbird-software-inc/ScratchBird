@@ -1,0 +1,24 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#pragma once
+
+#include "api_types.hpp"
+
+namespace scratchbird::engine::internal_api {
+
+// SEARCH_KEY: SB_ENGINE_INTERNAL_API_CATALOG_CATALOG_LOOKUP_API
+struct EngineLookupObjectRequest : EngineApiRequest {};
+struct EngineLookupObjectResult : EngineApiResult {};
+EngineLookupObjectResult EngineLookupObject(const EngineLookupObjectRequest& request);
+
+struct EngineGetDependenciesRequest : EngineApiRequest {};
+struct EngineGetDependenciesResult : EngineApiResult {};
+EngineGetDependenciesResult EngineGetDependencies(const EngineGetDependenciesRequest& request);
+
+}  // namespace scratchbird::engine::internal_api

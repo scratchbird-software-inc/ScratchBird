@@ -1,0 +1,1548 @@
+{
+  "seed_manifest_uuid": "c86d6f66-4b78-5e8d-8ef9-700980d6aadf",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "foundationdb-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_DONOR_CATALOG_SEED_FOUNDATIONDB_BETA2_FULL",
+  "seed_manifest_status": "profile_derived_private_seed_manifest",
+  "donor_family": "foundationdb",
+  "donor_version_profile_id": "foundationdb_beta2_full",
+  "donor_version_profile_uuid": "2f36da4b-aafb-570f-bf9a-9074f0e02399",
+  "donor_exact_version": "FoundationDB beta2-full compatibility profile",
+  "new_database_recipe_id": "foundationdb_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-05-10T00:00:00Z",
+  "extraction_tool_ref": "docs/specifications/registries/donor-catalog-source-derived-seed-rows.yaml",
+  "normalization_profile_ref": "embedded:SB_DONOR_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "normalkeys",
+      "donor_catalog_object_name": "normalKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_normalkeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "systemkeys",
+      "donor_catalog_object_name": "systemKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_systemkeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "nonmetadatasystemkeys",
+      "donor_catalog_object_name": "nonMetadataSystemKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_nonmetadatasystemkeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "keyserverskeys",
+      "donor_catalog_object_name": "keyServersKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_keyserverskeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "keyserverskeyserverskeys",
+      "donor_catalog_object_name": "keyServersKeyServersKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_keyserverskeyserverskeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "datamovekeys",
+      "donor_catalog_object_name": "dataMoveKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_datamovekeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "cachechangekeys",
+      "donor_catalog_object_name": "cacheChangeKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_cachechangekeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tssmappingkeys",
+      "donor_catalog_object_name": "tssMappingKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_tssmappingkeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tssquarantinekeys",
+      "donor_catalog_object_name": "tssQuarantineKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_tssquarantinekeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tssmismatchkeys",
+      "donor_catalog_object_name": "tssMismatchKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_tssmismatchkeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "servermetadatakeys",
+      "donor_catalog_object_name": "serverMetadataKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_servermetadatakeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "servertagkeys",
+      "donor_catalog_object_name": "serverTagKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_servertagkeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "servertagconflictkeys",
+      "donor_catalog_object_name": "serverTagConflictKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_servertagconflictkeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "servertaghistorykeys",
+      "donor_catalog_object_name": "serverTagHistoryKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_servertaghistorykeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "taglocalitylistkeys",
+      "donor_catalog_object_name": "tagLocalityListKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_taglocalitylistkeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "datacenterreplicaskeys",
+      "donor_catalog_object_name": "datacenterReplicasKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_datacenterreplicaskeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tlogdatacenterskeys",
+      "donor_catalog_object_name": "tLogDatacentersKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_tlogdatacenterskeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "serverlistkeys",
+      "donor_catalog_object_name": "serverListKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_serverlistkeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "processclasskeys",
+      "donor_catalog_object_name": "processClassKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_processclasskeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "configkeys",
+      "donor_catalog_object_name": "configKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_configkeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "excludedserverskeys",
+      "donor_catalog_object_name": "excludedServersKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_excludedserverskeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "excludedlocalitykeys",
+      "donor_catalog_object_name": "excludedLocalityKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_excludedlocalitykeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "failedserverskeys",
+      "donor_catalog_object_name": "failedServersKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_failedserverskeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "failedlocalitykeys",
+      "donor_catalog_object_name": "failedLocalityKeys",
+      "donor_catalog_object_kind": "system_key_range",
+      "namespace_kind": "system_keyspace",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_foundationdb_failedlocalitykeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "diagnostic_code": "DONOR.FOUNDATIONDB.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "column_id": "normalkeys_object_name",
+      "object_ref": "normalkeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "1b45ee3513422cd00c3ecc3e38f832a5330ab499be8753bd1cca74a5df1a5e27"
+    },
+    {
+      "column_id": "normalkeys_object_kind",
+      "object_ref": "normalkeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "e11dc36c9c2474fd1150de0791a8a8e7810606eaca983183d1791d522aa91725"
+    },
+    {
+      "column_id": "normalkeys_source_ref",
+      "object_ref": "normalkeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "c722f794f5d8c9186f9ac5f98a22205f1240679b5fa407a0fad23fe86bb924ef"
+    },
+    {
+      "column_id": "systemkeys_object_name",
+      "object_ref": "systemkeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7f6780ff29777c213fe033c446e8acf0a6ba3bdbaa7418ab0885b7158a2b97f8"
+    },
+    {
+      "column_id": "systemkeys_object_kind",
+      "object_ref": "systemkeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "01a11aed5f06ce6859db28e52c188070914c650f6f2a5232c793c25b982bd2f7"
+    },
+    {
+      "column_id": "systemkeys_source_ref",
+      "object_ref": "systemkeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "a1f02301a0c86cd2168ac4ecf7bc61743ddc900ba2b8905e860e41b784c0bdb2"
+    },
+    {
+      "column_id": "nonmetadatasystemkeys_object_name",
+      "object_ref": "nonmetadatasystemkeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "26cbcb2b4ac333365607bd7018d687d0930f6b4aa7efb88ba597f4d1211632dc"
+    },
+    {
+      "column_id": "nonmetadatasystemkeys_object_kind",
+      "object_ref": "nonmetadatasystemkeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "54cc2f900deaca14fc8c8fd71f0c70edc5eaa024d7db63bfbbe7ecd82c88875e"
+    },
+    {
+      "column_id": "nonmetadatasystemkeys_source_ref",
+      "object_ref": "nonmetadatasystemkeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "c6c8990867b836cc035cbbaa3c8fc1b7571e064550554143b7df8ad867555814"
+    },
+    {
+      "column_id": "keyserverskeys_object_name",
+      "object_ref": "keyserverskeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7b94cd46bc8a3c6a3d23a2a4ecfc738ecdaa304ac8289ac37c42ca86aa8efdce"
+    },
+    {
+      "column_id": "keyserverskeys_object_kind",
+      "object_ref": "keyserverskeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "347476d0b343ef23813b3af12999de78ee3fefc30be56c4afd81a520b6c9513c"
+    },
+    {
+      "column_id": "keyserverskeys_source_ref",
+      "object_ref": "keyserverskeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "cdce285c9a9104274a96d35c7a350bbf1471826434d45e83f5c5b5e69cb2bb5b"
+    },
+    {
+      "column_id": "keyserverskeyserverskeys_object_name",
+      "object_ref": "keyserverskeyserverskeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "99741ed24c6413b8517f6d5e400b550b82a2ae1a9baabc62f04cf2cc25dd1663"
+    },
+    {
+      "column_id": "keyserverskeyserverskeys_object_kind",
+      "object_ref": "keyserverskeyserverskeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "0ebf8b95d698e01097d41d5f65e261d2ff1ed20b1a3adadbf03765bb3cd7918a"
+    },
+    {
+      "column_id": "keyserverskeyserverskeys_source_ref",
+      "object_ref": "keyserverskeyserverskeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "f960049018776a04f4d5a4de2d2fe4527959c611331ea65855b57ab09fa042fd"
+    },
+    {
+      "column_id": "datamovekeys_object_name",
+      "object_ref": "datamovekeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "713b8c31ab15a8caea12d24e18023abecd15bbb63dc9a4d6f2434f4d677679c3"
+    },
+    {
+      "column_id": "datamovekeys_object_kind",
+      "object_ref": "datamovekeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "681b787eb3fb77acb354845821b7f98f727ccfe94cf186ba0fbd02aab6555359"
+    },
+    {
+      "column_id": "datamovekeys_source_ref",
+      "object_ref": "datamovekeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "63e8f4254915b1c5cb7deee37cb3f4bc78f3bd7078c61757c2461acef76c883a"
+    },
+    {
+      "column_id": "cachechangekeys_object_name",
+      "object_ref": "cachechangekeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "e8493d2b199979ffe9acf3dd4b046975e24b48fe203b22a116b7265df0d0bf59"
+    },
+    {
+      "column_id": "cachechangekeys_object_kind",
+      "object_ref": "cachechangekeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "fe510e325e4b4d52e9a8ce47b13864f2b18d5fdc7d3fa752279a0d84f0e2f75f"
+    },
+    {
+      "column_id": "cachechangekeys_source_ref",
+      "object_ref": "cachechangekeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "24ceed66715c26956e52c75ce3001069b4fa10b432b295d23f5e7f74f64d9b5b"
+    },
+    {
+      "column_id": "tssmappingkeys_object_name",
+      "object_ref": "tssmappingkeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "cf3ac6ecb5407b54b5ec413655a4a306bfc2adecf32320e7e8d8db61d4d3f062"
+    },
+    {
+      "column_id": "tssmappingkeys_object_kind",
+      "object_ref": "tssmappingkeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "e0247a717615e9ed69f1df601ee7ec254c6cf9810f5442fde1b2d8806c020589"
+    },
+    {
+      "column_id": "tssmappingkeys_source_ref",
+      "object_ref": "tssmappingkeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "39d8a2609ee09a6faba8197a67b2b41c304ec57320f4f27cd3364e74222329a9"
+    },
+    {
+      "column_id": "tssquarantinekeys_object_name",
+      "object_ref": "tssquarantinekeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6cca191d1d271ee2aee8bc7e4eff19e6023305fac433bbbf7c7e2d258c65295f"
+    },
+    {
+      "column_id": "tssquarantinekeys_object_kind",
+      "object_ref": "tssquarantinekeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4bb1cd386906002fd9d7f3705c4ade7c8b9ce029a5a895fe6ffe4a3bf00a9019"
+    },
+    {
+      "column_id": "tssquarantinekeys_source_ref",
+      "object_ref": "tssquarantinekeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "b9bec8eaff9005a7e693d73fdb3d325bd8f6b0b99232444f49afb87c090c4b9d"
+    },
+    {
+      "column_id": "tssmismatchkeys_object_name",
+      "object_ref": "tssmismatchkeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d8b9dcbc19b1d21bf624a3d1bef593e9ef8c220781a4cd7bf96e216ed1539b33"
+    },
+    {
+      "column_id": "tssmismatchkeys_object_kind",
+      "object_ref": "tssmismatchkeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "153659d6f11bfaf5e5089c433cdbed545be067059f11480a49a2e70105cbed90"
+    },
+    {
+      "column_id": "tssmismatchkeys_source_ref",
+      "object_ref": "tssmismatchkeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "e0daabe121f0c7e4d440d01d19a1b022539f26ce63defd2f8dda8de46403679b"
+    },
+    {
+      "column_id": "servermetadatakeys_object_name",
+      "object_ref": "servermetadatakeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4f031f605e76e529433c04d5b0fc83d85dd43a56c4e032c72603d7a72122f47e"
+    },
+    {
+      "column_id": "servermetadatakeys_object_kind",
+      "object_ref": "servermetadatakeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "74a318ddd15e40e295757a4945988bea606c3405d92886854a0df044c033dba3"
+    },
+    {
+      "column_id": "servermetadatakeys_source_ref",
+      "object_ref": "servermetadatakeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "eba6fd302d51df12ae91f28615ddc2c4a099fb4872a58a0c2268d73f05ef0fa4"
+    },
+    {
+      "column_id": "servertagkeys_object_name",
+      "object_ref": "servertagkeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "01e86fe841d8fd5ac5d979addd4df3154b6251f7a476f6b9fe639a0bb5d7a058"
+    },
+    {
+      "column_id": "servertagkeys_object_kind",
+      "object_ref": "servertagkeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2fcbf7c1f83bd2dcd639c50a8c6b8b77ea671e4ec120e7627197adfeb99d9dbe"
+    },
+    {
+      "column_id": "servertagkeys_source_ref",
+      "object_ref": "servertagkeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "5bb5c4670851a0d8e54e857d4cce09d0468eba3439a0097cbadb00c46c187072"
+    },
+    {
+      "column_id": "servertagconflictkeys_object_name",
+      "object_ref": "servertagconflictkeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d4136763b7d4072c2e72942c01118384f4b53cc064ffe7ce710deb7dcd0abd5d"
+    },
+    {
+      "column_id": "servertagconflictkeys_object_kind",
+      "object_ref": "servertagconflictkeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "49a830048a5539ed2862568b888fe8cc6378936d105a1e2b5c7c9edf55b8ffd6"
+    },
+    {
+      "column_id": "servertagconflictkeys_source_ref",
+      "object_ref": "servertagconflictkeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "be3fd9db32cf1fb89bb523c99745189b0c18e488990fc7566069d215820150a6"
+    },
+    {
+      "column_id": "servertaghistorykeys_object_name",
+      "object_ref": "servertaghistorykeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "a58a99ca992ec06c71636aee1048bd8a5ccb9d3a60d348323a2fcc00f96cf5bb"
+    },
+    {
+      "column_id": "servertaghistorykeys_object_kind",
+      "object_ref": "servertaghistorykeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4dcb844e2c7551a2736aa53d95c65b1d4b22055411babe07f225fc7989375e9a"
+    },
+    {
+      "column_id": "servertaghistorykeys_source_ref",
+      "object_ref": "servertaghistorykeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "d45b02c7ebf93190b2ea8c004c2f8112b9b79fc3a0246b1b4bd77c7abee176f2"
+    },
+    {
+      "column_id": "taglocalitylistkeys_object_name",
+      "object_ref": "taglocalitylistkeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "796e87894ced70e27ce216dc4bd81cc5f387b682e783a4c0a1a915dcee88d8de"
+    },
+    {
+      "column_id": "taglocalitylistkeys_object_kind",
+      "object_ref": "taglocalitylistkeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6db0f7757befe3c9ad7f5aad719c33ef0997696d52c26e6b733355e9b62c420c"
+    },
+    {
+      "column_id": "taglocalitylistkeys_source_ref",
+      "object_ref": "taglocalitylistkeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "2dcae6d0379fe5b560771f69f79daf942b84631b23372f953a6ed29c44b0c5de"
+    },
+    {
+      "column_id": "datacenterreplicaskeys_object_name",
+      "object_ref": "datacenterreplicaskeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b7d35201bf497f5ec7c5f5543c2ad9770a42ff1c25d77fb7e09d2a7e8f2c0771"
+    },
+    {
+      "column_id": "datacenterreplicaskeys_object_kind",
+      "object_ref": "datacenterreplicaskeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "171f9c1a8c00fd91404d75fc6f8af25044a85fb533fd787b3255df907dc2a426"
+    },
+    {
+      "column_id": "datacenterreplicaskeys_source_ref",
+      "object_ref": "datacenterreplicaskeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "cce5681caaf0440ebf86a290963b9a19f02e2357e8c50752b89b172da825a916"
+    },
+    {
+      "column_id": "tlogdatacenterskeys_object_name",
+      "object_ref": "tlogdatacenterskeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "f33820c216bab8e1ae69290d4c5cec56fe47a3ea15d1c2ef6daf67971e698bfb"
+    },
+    {
+      "column_id": "tlogdatacenterskeys_object_kind",
+      "object_ref": "tlogdatacenterskeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d41b05505b48cac4e60359c6864911d99c9d07d1567b4bcc79dba5c077b05d72"
+    },
+    {
+      "column_id": "tlogdatacenterskeys_source_ref",
+      "object_ref": "tlogdatacenterskeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "549c8b5905c10f42a500ba4d8ed7b25a3dadfe39a43f0eee021ebdda00bbe750"
+    },
+    {
+      "column_id": "serverlistkeys_object_name",
+      "object_ref": "serverlistkeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "af26431734fdbba9c1195916363544a96f84ba285f603f63dcb9d158b52f98df"
+    },
+    {
+      "column_id": "serverlistkeys_object_kind",
+      "object_ref": "serverlistkeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "987b30fa244a0981350d643a5ecdd02be252f1a9104c10af429703f1988c45c2"
+    },
+    {
+      "column_id": "serverlistkeys_source_ref",
+      "object_ref": "serverlistkeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "89b28e656abf6dfa4ebbbbb6bacc65c3981e9f3fc82d96ec3717d4614e76eda5"
+    },
+    {
+      "column_id": "processclasskeys_object_name",
+      "object_ref": "processclasskeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "9b9a4ed117f39b07fc3a591e858cc527d1056afe87cf605a2738fd24a4182cf9"
+    },
+    {
+      "column_id": "processclasskeys_object_kind",
+      "object_ref": "processclasskeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2a023e449dc1d2da1445bb267afa249aacf67fec79c66aa10cdf06e2ceb4b1a1"
+    },
+    {
+      "column_id": "processclasskeys_source_ref",
+      "object_ref": "processclasskeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "408a06ad22afa2686449b7ac13d33b7f7d4efbda5c1c90101542bbfe1d0c9c2b"
+    },
+    {
+      "column_id": "configkeys_object_name",
+      "object_ref": "configkeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "badde6a40439211413301346b9e19c02782ee286b31ee84dfc1328de877757cd"
+    },
+    {
+      "column_id": "configkeys_object_kind",
+      "object_ref": "configkeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "90c9d94824619e4293b26251443d41cc387b6890b827ae923cfb08b7cd729d1b"
+    },
+    {
+      "column_id": "configkeys_source_ref",
+      "object_ref": "configkeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "2c0ff7138c7889d1981d5cfc547f26a1ec2030419b8460f49cdeaa97c1c81abe"
+    },
+    {
+      "column_id": "excludedserverskeys_object_name",
+      "object_ref": "excludedserverskeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "cbde8ff98f10e39b0029326b8920153442336e639af5798f962ec0c54db88ec7"
+    },
+    {
+      "column_id": "excludedserverskeys_object_kind",
+      "object_ref": "excludedserverskeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "462988353762f023aa25a7132189539834e558e0c8c62975d7a5978b40045ced"
+    },
+    {
+      "column_id": "excludedserverskeys_source_ref",
+      "object_ref": "excludedserverskeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "093d12e0aa0a291e66067bfbe813369a01fe01160b51114758583bfc6619965a"
+    },
+    {
+      "column_id": "excludedlocalitykeys_object_name",
+      "object_ref": "excludedlocalitykeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7e01f51bd7cdef38380b4b411f51e3ce5213a436c3e318f64b04855f67c94902"
+    },
+    {
+      "column_id": "excludedlocalitykeys_object_kind",
+      "object_ref": "excludedlocalitykeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "62242ec5b99839600e47f157773f26fdbeb9f765a2bc90438be947a6ab276acc"
+    },
+    {
+      "column_id": "excludedlocalitykeys_source_ref",
+      "object_ref": "excludedlocalitykeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "25722d931799a529f2c49d65ab55853b91a2d027b8b2394c0a3342ff2cb53822"
+    },
+    {
+      "column_id": "failedserverskeys_object_name",
+      "object_ref": "failedserverskeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "402536ac6d2b24f975432b611411b8c9c86f9da4dc0d619db55e2d8f08db4570"
+    },
+    {
+      "column_id": "failedserverskeys_object_kind",
+      "object_ref": "failedserverskeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "80732e9699b6a811d599b394c0f96e341375d323aa9d6f17d7e793a8e713ed2a"
+    },
+    {
+      "column_id": "failedserverskeys_source_ref",
+      "object_ref": "failedserverskeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "200da945d6fa430486c12aba66f0950bbd6baf9ae21462ecec057968bb2b9d37"
+    },
+    {
+      "column_id": "failedlocalitykeys_object_name",
+      "object_ref": "failedlocalitykeys",
+      "ordinal": 1,
+      "donor_column_name": "object_name",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "78a6d5ec5a625c973d53337f2fcb1a056488f6e0e72b073bac9c3f54d0700720"
+    },
+    {
+      "column_id": "failedlocalitykeys_object_kind",
+      "object_ref": "failedlocalitykeys",
+      "ordinal": 2,
+      "donor_column_name": "object_kind",
+      "donor_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "a3d526d60adf3994a0807c5f083f568419546787dbaef767140827902dea72ff"
+    },
+    {
+      "column_id": "failedlocalitykeys_source_ref",
+      "object_ref": "failedlocalitykeys",
+      "ordinal": 3,
+      "donor_column_name": "source_ref",
+      "donor_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "5acaae0b3692028ebdd4b0842bef49dd9e66d93fba07b3b2071045eb76a29c0a"
+    }
+  ],
+  "default_row_set": [
+    {
+      "row_id": "foundationdb.seed.normalkeys",
+      "donor_object_ref": "normalkeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "normalKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "ea3b416663933203cc13ae629d031710b12afe079e2525387ad4d041a08e6e1b"
+    },
+    {
+      "row_id": "foundationdb.seed.systemkeys",
+      "donor_object_ref": "systemkeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "systemKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "8039c33a7536dd846525a31b9d3b6d9c3045e4ed9ad989a0042c2bb3fac62979"
+    },
+    {
+      "row_id": "foundationdb.seed.nonmetadatasystemkeys",
+      "donor_object_ref": "nonmetadatasystemkeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "nonMetadataSystemKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "fce93b5163af3022310e6fb33477a25b8058bc56d6ac98d6bcd0b976b4ee5664"
+    },
+    {
+      "row_id": "foundationdb.seed.keyserverskeys",
+      "donor_object_ref": "keyserverskeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "keyServersKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "23fb4d691f793eeaaf6b5e711bb8a7032b39481ec7d073653884619519733539"
+    },
+    {
+      "row_id": "foundationdb.seed.keyserverskeyserverskeys",
+      "donor_object_ref": "keyserverskeyserverskeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "keyServersKeyServersKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "60f345078a340420cc64bc5b217eac3a0d81be5de6df556f0fae7e596b57c120"
+    },
+    {
+      "row_id": "foundationdb.seed.datamovekeys",
+      "donor_object_ref": "datamovekeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "dataMoveKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "4f20084775daaae90ce3202c80b0db777a11b639bfa09794c6efb1fe33974cbe"
+    },
+    {
+      "row_id": "foundationdb.seed.cachechangekeys",
+      "donor_object_ref": "cachechangekeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "cacheChangeKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "a70f7031a4d54463758a43ca1734c12226fb7118dcad3043b4850053376ebabd"
+    },
+    {
+      "row_id": "foundationdb.seed.tssmappingkeys",
+      "donor_object_ref": "tssmappingkeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "tssMappingKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "b8f4f9c1836451530cc01adc94bad10567c1a6675146549402f6ba388d453e59"
+    },
+    {
+      "row_id": "foundationdb.seed.tssquarantinekeys",
+      "donor_object_ref": "tssquarantinekeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "tssQuarantineKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "5a47056f6b429e6f3d0c59da68cc51bbe0b6b43f9c6d23e61f3b300980c17c89"
+    },
+    {
+      "row_id": "foundationdb.seed.tssmismatchkeys",
+      "donor_object_ref": "tssmismatchkeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "tssMismatchKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "9cb79888d57cb2449a460ecbe94f6bb8aa87ea615cbbdb66df10bfd328bb98fd"
+    },
+    {
+      "row_id": "foundationdb.seed.servermetadatakeys",
+      "donor_object_ref": "servermetadatakeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "serverMetadataKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "7a8b2dbaf73ebb3f79ef16823d227d80bcadcdbb837774618f4e27e03bfefa33"
+    },
+    {
+      "row_id": "foundationdb.seed.servertagkeys",
+      "donor_object_ref": "servertagkeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "serverTagKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "bdd97fb0516af62ef5ffc607adbb77d8d8f4ceda8376870670d0d6dc76514407"
+    },
+    {
+      "row_id": "foundationdb.seed.servertagconflictkeys",
+      "donor_object_ref": "servertagconflictkeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "serverTagConflictKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "46b4926ef9ad6d330445da668d81ed203dda519dcfad35c5a020e1962fab7a51"
+    },
+    {
+      "row_id": "foundationdb.seed.servertaghistorykeys",
+      "donor_object_ref": "servertaghistorykeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "serverTagHistoryKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "6149e6d14fb7fed84ea4aaa61497a1da02d1929c3821769d3675caba90935df2"
+    },
+    {
+      "row_id": "foundationdb.seed.taglocalitylistkeys",
+      "donor_object_ref": "taglocalitylistkeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "tagLocalityListKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "31e41ead8620390ffbe400a18a2ce8a7059bf8546bcc638fa9d8d309c1cfb039"
+    },
+    {
+      "row_id": "foundationdb.seed.datacenterreplicaskeys",
+      "donor_object_ref": "datacenterreplicaskeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "datacenterReplicasKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "6c8a15326e1b3743d0fdb5517a0267f5a8e0d7b601113185232d21b092dec424"
+    },
+    {
+      "row_id": "foundationdb.seed.tlogdatacenterskeys",
+      "donor_object_ref": "tlogdatacenterskeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "tLogDatacentersKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "d804af6052c9d1ff3ec684cb3f4afac1ba6c551fba50a4552114acf3dc55e2a0"
+    },
+    {
+      "row_id": "foundationdb.seed.serverlistkeys",
+      "donor_object_ref": "serverlistkeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "serverListKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "7188ca885a18abf58249c4a5f46a6c8264d1867af00b90223d53debe85b40eb1"
+    },
+    {
+      "row_id": "foundationdb.seed.processclasskeys",
+      "donor_object_ref": "processclasskeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "processClassKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "ee3c78ca23c4ec0e268f7ab53d7cc2d99271135dd951761f08c6a2e5ae806130"
+    },
+    {
+      "row_id": "foundationdb.seed.configkeys",
+      "donor_object_ref": "configkeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "configKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "39fd5e579afd0826cb85bb619c685473155af426b98101461e429c70c9b836b2"
+    },
+    {
+      "row_id": "foundationdb.seed.excludedserverskeys",
+      "donor_object_ref": "excludedserverskeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "excludedServersKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "2a84a8377e012a47c13cc81c7f94a9c3c141524d8193b881d759947354695d6f"
+    },
+    {
+      "row_id": "foundationdb.seed.excludedlocalitykeys",
+      "donor_object_ref": "excludedlocalitykeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "excludedLocalityKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "ef77218b8aa47a986314ddb31f65a0baf6a551246b52c70c627a885b8c00021c"
+    },
+    {
+      "row_id": "foundationdb.seed.failedserverskeys",
+      "donor_object_ref": "failedserverskeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "failedServersKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "5284143ebf5551b29059740b3d01902e4e6db633183e6caf1afb22dd47a85122"
+    },
+    {
+      "row_id": "foundationdb.seed.failedlocalitykeys",
+      "donor_object_ref": "failedlocalitykeys",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "donor_visible_name": "failedLocalityKeys",
+      "definition_source_ref": "donor_source_reference:foundationdb/fdbclient/SystemData.cpp",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "38785fa571a477fc2ddbc7e4cd1858ee35440a531973287264a7900f626040d1"
+    }
+  ],
+  "default_metadata_set": [],
+  "default_security_row_set": [
+    {
+      "row_id": "foundationdb.security.default_visibility_policy",
+      "principal": "PUBLIC",
+      "secret_material": "redacted_not_applicable",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "row_hash": "0774d252781e5d8db4a98f3c82902455deb3494361f6ee1a213b92fd6cdb3fda"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "value_id": "foundationdb.runtime.database_identity",
+      "value_class": "instance_generated_uuid",
+      "emulation_rule": "generate ScratchBird UUIDv7 at database/profile create and expose only donor-compatible rendering",
+      "row_hash": "8a3899667d32941bc9f5d5f5fd23c05485bca607161492dd4d6129b0fa3832c6"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "rule_id": "grant_filtered_metadata",
+      "rule": "visible only through donor metadata policy and ScratchBird engine authorization"
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "rule_id": "raw_secret_forbidden",
+      "rule": "raw secrets are never stored in donor seed manifests"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "rule_id": "report_only",
+      "rule": "catalog seed rows are report-only; mutation routes through UUID-backed ScratchBird catalog APIs"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_foundationdb_normalkeys",
+      "donor_object_ref": "normalkeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "9d60a2fa-fce5-57e1-883e-27185ae2507e",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_systemkeys",
+      "donor_object_ref": "systemkeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "99b320f6-1b73-586a-acd0-3be90bb83f97",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_nonmetadatasystemkeys",
+      "donor_object_ref": "nonmetadatasystemkeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "e79d8a43-bd70-5228-bd8d-f7407dfff4e0",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_keyserverskeys",
+      "donor_object_ref": "keyserverskeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "6bd726aa-7a3a-5087-b783-e1e081dd17bd",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_keyserverskeyserverskeys",
+      "donor_object_ref": "keyserverskeyserverskeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "856d0ea9-223f-580f-a871-3016a5269224",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_datamovekeys",
+      "donor_object_ref": "datamovekeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "36fa90b2-a131-5c2d-afac-60ca6928c8d3",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_cachechangekeys",
+      "donor_object_ref": "cachechangekeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "07640089-62a7-56bb-923e-ba0c277508ec",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_tssmappingkeys",
+      "donor_object_ref": "tssmappingkeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "03b852c5-6765-515a-af7e-a822c1af902d",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_tssquarantinekeys",
+      "donor_object_ref": "tssquarantinekeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "6605edfb-2b0e-5170-8419-62ff2a44763e",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_tssmismatchkeys",
+      "donor_object_ref": "tssmismatchkeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "7db40e9d-7d80-5048-a095-df71fcdfc158",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_servermetadatakeys",
+      "donor_object_ref": "servermetadatakeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "17b19e44-24f2-5179-b37d-f6b67403aec4",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_servertagkeys",
+      "donor_object_ref": "servertagkeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "5a26b657-a368-516c-b93a-7a91e28dba7f",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_servertagconflictkeys",
+      "donor_object_ref": "servertagconflictkeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "162518c1-97f7-5237-a8c2-ce826dd7b746",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_servertaghistorykeys",
+      "donor_object_ref": "servertaghistorykeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "9df8f045-c5a6-59e9-89b3-8b681638e6c4",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_taglocalitylistkeys",
+      "donor_object_ref": "taglocalitylistkeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "eaf08ff1-cc12-5d6e-8681-4d66c798d644",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_datacenterreplicaskeys",
+      "donor_object_ref": "datacenterreplicaskeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "e1cea62a-91e4-5af7-8afa-b66057cdcd6a",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_tlogdatacenterskeys",
+      "donor_object_ref": "tlogdatacenterskeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "1b7b9f45-0a09-5455-834d-a3757720694e",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_serverlistkeys",
+      "donor_object_ref": "serverlistkeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "962ee379-6a8c-547f-8765-9f0d99b65d6f",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_processclasskeys",
+      "donor_object_ref": "processclasskeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "5c965937-0749-5c0d-807c-ec75faa11b09",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_configkeys",
+      "donor_object_ref": "configkeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "62ac7955-cb33-5698-8101-0cc443543f08",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_excludedserverskeys",
+      "donor_object_ref": "excludedserverskeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "b4f4e74a-3a0f-51cc-851a-39a117b190d5",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_excludedlocalitykeys",
+      "donor_object_ref": "excludedlocalitykeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "7dc314a4-031a-54f1-99f2-6c94df87ba28",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_failedserverskeys",
+      "donor_object_ref": "failedserverskeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "78b6bc4a-8d4c-53b9-8ab2-2d129608c2a3",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_foundationdb_failedlocalitykeys",
+      "donor_object_ref": "failedlocalitykeys",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "8477e934-c0a8-5791-bd83-4f5567c5a4e1",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "DONOR.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "DONOR.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "DONOR.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "DONOR.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "DONOR.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "DONOR.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "DONOR.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "DONOR.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "DONOR.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "rowset_hashes": {
+    "catalog_object_set": "6c477116d89dbcdc92efb42cde83545b6edd5ee4e2184e7b90ee539c3b70e884",
+    "catalog_column_set": "7ada5b2e8fbdd68137a4ac69e1644811ea471ff8e242fee190362ac00bc2c26b",
+    "default_row_set": "8768ced3c671a62c349097264a0e323168a588c637b8c368d2da6376c95563af",
+    "default_metadata_set": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "default_security_row_set": "3d5cfd9fd49508850f89eeb92a22e80abdcc116dea53ff8d77dcdbb688ef1328",
+    "default_runtime_generated_value_set": "f89545c3ed3faa5812b898c6e540c39bc3cd8923a575653803b5106f354bed81",
+    "visibility_rule_set": "e3d11affebfa8ba62fe7e7f0c2014ac363d6d1ac1ccaa3f47aafd18109cdd20c",
+    "redaction_rule_set": "c081d87b2dadb71687177f97c210a024f823fba2383d3e299998c66deee46f2f",
+    "mutation_rule_set": "8b806b0d95bbd92e3c2aeb3d7d4ecd0fd0abc1aaf9c6a14639f8966080719fed",
+    "scratchbird_mapping_set": "a0dae89235d5247022958e5df2a42ee1deecd7014a5bf1ddb53abef39ec545d9"
+  },
+  "manifest_hash": "181fbb890860222d137fb43be9b635e424f634a844e63d5e52205322e7c22cb5"
+}

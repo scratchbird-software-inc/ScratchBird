@@ -1,0 +1,5 @@
+@PACKAGE_INIT@
+
+include("${CMAKE_CURRENT_LIST_DIR}/scratchbird_odbc-targets.cmake")
+
+check_required_components(scratchbird_odbc)

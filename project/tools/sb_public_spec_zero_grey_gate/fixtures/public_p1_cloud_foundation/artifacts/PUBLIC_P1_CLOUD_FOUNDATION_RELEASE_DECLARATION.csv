@@ -1,0 +1,6 @@
+gap_id,registry_id,title,status,required_ctest_labels,implementation_refs
+SB-PUBLIC-GAP-0008,SB-SPEC-IMPLEMENTATION-0047,Protected Versioned Material Catalog Family,implemented_in_full,protected_material_catalog_gate,project/src/core/catalog;project/src/engine/internal_api/security;project/tests
+SB-PUBLIC-GAP-0168,SB-SPEC-IMPLEMENTATION-0170,Cloud Support Architecture and Provider Capability Registry,implemented_in_full,cloud_provider_capability_registry_gate,project/src/engine/internal_api/cloud;project/src/engine/internal_api/management;project/tests
+SB-PUBLIC-GAP-0169,SB-SPEC-IMPLEMENTATION-0171,"Cloud Identity, KMS, and Secretless Authentication",implemented_in_full,cloud_identity_kms_secretless_gate,project/src/engine/internal_api/security;project/src/engine/internal_api/cloud;project/tests
+SB-PUBLIC-GAP-0170,SB-SPEC-IMPLEMENTATION-0172,Kubernetes Operator CRDs and Lifecycle Automation,implemented_in_full,kubernetes_operator_lifecycle_gate,project/cloud/kubernetes;project/tests/cloud_ops
+SB-PUBLIC-GAP-0173,SB-SPEC-IMPLEMENTATION-0176,Edge Cache and CDN Integration and Invalidation,implemented_in_full,edge_cache_cdn_invalidation_gate,project/src/engine/internal_api/cloud;project/src/core/events;project/tests/cloud_ops

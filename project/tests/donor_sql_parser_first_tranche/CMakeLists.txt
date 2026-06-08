@@ -1,0 +1,817 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# SPDX-License-Identifier: MPL-2.0
+
+find_program(DONOR_SQL_PARSER_PYTHON3 python3 REQUIRED)
+set(DONOR_SQL_ORIGINAL_TOOL_REPLAY_GATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../donor_regression/first_tranche_original_tool_replay_gate.py"
+)
+
+add_executable(donor_sql_parser_first_tranche_probe
+  donor_sql_parser_first_tranche_probe.cpp
+)
+target_compile_features(donor_sql_parser_first_tranche_probe PRIVATE cxx_std_23)
+target_link_libraries(donor_sql_parser_first_tranche_probe PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbl_sqlite_parser_pipeline
+  sbl_mariadb_parser_pipeline
+  sbl_duckdb_parser_pipeline
+  sbl_clickhouse_parser_pipeline
+  sbl_tidb_parser_pipeline
+  sbl_vitess_parser_pipeline
+  sbl_cockroachdb_parser_pipeline
+  sbl_yugabytedb_parser_pipeline
+  sbl_cassandra_parser_pipeline
+  sbl_mongodb_parser_pipeline
+  sbl_redis_parser_pipeline
+  sbl_opensearch_sql_ppl_parser_pipeline
+  sbl_opensearch_parser_pipeline
+  sbl_neo4j_parser_pipeline
+  sbl_influxdb_parser_pipeline
+  sbl_milvus_parser_pipeline
+  sbl_dolt_parser_pipeline
+  sbl_apache_ignite_parser_pipeline
+  sbl_tikv_parser_pipeline
+  sbl_foundationdb_parser_pipeline
+  sbl_immudb_parser_pipeline
+  sbl_xtdb_parser_pipeline
+)
+add_test(
+  NAME donor_sql_parser_first_tranche_probe
+  COMMAND donor_sql_parser_first_tranche_probe
+)
+set_tests_properties(donor_sql_parser_first_tranche_probe PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_enterprise_blocker_truth_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker;donor_parser_surface_conformance;donor_parser_refusal_conformance;mga_transaction_regression"
+)
+
+add_executable(donor_enterprise_readiness_envelope_gate
+  donor_enterprise_readiness_envelope_gate.cpp
+)
+target_compile_features(donor_enterprise_readiness_envelope_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_enterprise_readiness_envelope_gate PRIVATE
+  sbl_donor_parser_common
+)
+add_test(
+  NAME donor_enterprise_readiness_envelope_gate
+  COMMAND donor_enterprise_readiness_envelope_gate
+)
+set_tests_properties(donor_enterprise_readiness_envelope_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_enterprise_readiness_envelope_gate;donor_parser_refusal_conformance;mga_transaction_regression"
+)
+
+add_executable(donor_procedural_source_retention_gate
+  donor_procedural_source_retention_gate.cpp
+)
+target_compile_features(donor_procedural_source_retention_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_procedural_source_retention_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_procedural_source_retention_gate
+  COMMAND donor_procedural_source_retention_gate
+)
+set_tests_properties(donor_procedural_source_retention_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_parser_procedural_body_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression"
+)
+
+add_executable(donor_procedural_functional_encoding_source_span_uuid_gate
+  donor_procedural_functional_encoding_source_span_uuid_gate.cpp
+)
+target_compile_features(donor_procedural_functional_encoding_source_span_uuid_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_procedural_functional_encoding_source_span_uuid_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_procedural_functional_encoding_source_span_uuid_gate
+  COMMAND donor_procedural_functional_encoding_source_span_uuid_gate
+)
+set_tests_properties(donor_procedural_functional_encoding_source_span_uuid_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_parser_procedural_body_gate;donor_parser_functional_encoding_source_span_uuid_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression"
+)
+
+add_executable(donor_first_tranche_procedural_datatype_proof_gate
+  donor_first_tranche_procedural_datatype_proof_gate.cpp
+)
+target_compile_features(donor_first_tranche_procedural_datatype_proof_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_procedural_datatype_proof_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_procedural_datatype_proof_gate
+  COMMAND donor_first_tranche_procedural_datatype_proof_gate
+)
+set_tests_properties(donor_first_tranche_procedural_datatype_proof_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_first_tranche_procedural_datatype_proof;donor_parser_exact_datatype_gate;donor_parser_procedural_body_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression"
+)
+
+add_executable(donor_first_tranche_index_semantic_defaults_gate
+  donor_first_tranche_index_semantic_defaults_gate.cpp
+)
+target_compile_features(donor_first_tranche_index_semantic_defaults_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_index_semantic_defaults_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_index_semantic_defaults_gate
+  COMMAND donor_first_tranche_index_semantic_defaults_gate
+)
+set_tests_properties(donor_first_tranche_index_semantic_defaults_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_first_tranche_index_semantic_defaults_proof;donor_parser_index_semantic_defaults_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression"
+)
+
+add_executable(donor_first_tranche_index_cross_donor_contrast_gate
+  donor_first_tranche_index_cross_donor_contrast_gate.cpp
+)
+target_compile_features(donor_first_tranche_index_cross_donor_contrast_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_index_cross_donor_contrast_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_index_cross_donor_contrast_gate
+  COMMAND donor_first_tranche_index_cross_donor_contrast_gate
+)
+set_tests_properties(donor_first_tranche_index_cross_donor_contrast_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_first_tranche_index_cross_donor_contrast_proof;donor_parser_index_cross_donor_contrast_gate;firebird_parser_worker;postgresql_parser_worker;mga_transaction_regression"
+)
+
+add_executable(donor_first_tranche_constraint_semantic_defaults_gate
+  donor_first_tranche_constraint_semantic_defaults_gate.cpp
+)
+target_compile_features(donor_first_tranche_constraint_semantic_defaults_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_constraint_semantic_defaults_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_constraint_semantic_defaults_gate
+  COMMAND donor_first_tranche_constraint_semantic_defaults_gate
+)
+set_tests_properties(donor_first_tranche_constraint_semantic_defaults_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_first_tranche_constraint_semantic_defaults_proof;donor_parser_constraint_semantic_defaults_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression"
+)
+
+add_executable(donor_first_tranche_identifier_name_resolution_gate
+  donor_first_tranche_identifier_name_resolution_gate.cpp
+)
+target_compile_features(donor_first_tranche_identifier_name_resolution_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_identifier_name_resolution_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_identifier_name_resolution_gate
+  COMMAND donor_first_tranche_identifier_name_resolution_gate
+)
+set_tests_properties(donor_first_tranche_identifier_name_resolution_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_first_tranche_identifier_name_resolution_proof;donor_parser_identifier_name_resolution_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression"
+)
+
+add_executable(donor_first_tranche_sequence_identity_semantic_descriptors_gate
+  donor_first_tranche_sequence_identity_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_sequence_identity_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_sequence_identity_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_sequence_identity_semantic_descriptors_gate
+  COMMAND donor_first_tranche_sequence_identity_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_sequence_identity_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_first_tranche_sequence_identity_semantic_descriptors_proof;donor_parser_sequence_identity_semantic_descriptors_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression"
+)
+
+add_executable(donor_first_tranche_scalar_expression_semantic_descriptors_gate
+  donor_first_tranche_scalar_expression_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_scalar_expression_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_scalar_expression_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_scalar_expression_semantic_descriptors_gate
+  COMMAND donor_first_tranche_scalar_expression_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_scalar_expression_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_first_tranche_scalar_expression_semantic_descriptors_proof;donor_parser_scalar_expression_semantic_descriptors_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression"
+)
+
+add_executable(donor_first_tranche_dml_mutation_semantic_descriptors_gate
+  donor_first_tranche_dml_mutation_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_dml_mutation_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_dml_mutation_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_dml_mutation_semantic_descriptors_gate
+  COMMAND donor_first_tranche_dml_mutation_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_dml_mutation_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression;donor_first_tranche_dml_mutation_semantic_descriptors_proof"
+)
+
+add_executable(donor_first_tranche_transaction_session_semantic_descriptors_gate
+  donor_first_tranche_transaction_session_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_transaction_session_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_transaction_session_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_transaction_session_semantic_descriptors_gate
+  COMMAND donor_first_tranche_transaction_session_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_transaction_session_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression;donor_first_tranche_transaction_session_semantic_descriptors_proof"
+)
+
+add_executable(donor_first_tranche_temporary_session_object_semantic_descriptors_gate
+  donor_first_tranche_temporary_session_object_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_temporary_session_object_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_temporary_session_object_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_temporary_session_object_semantic_descriptors_gate
+  COMMAND donor_first_tranche_temporary_session_object_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_temporary_session_object_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression;donor_first_tranche_temporary_session_object_semantic_descriptors_proof"
+)
+
+add_executable(donor_first_tranche_dependency_bearing_ddl_semantic_descriptors_gate
+  donor_first_tranche_dependency_bearing_ddl_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_dependency_bearing_ddl_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_dependency_bearing_ddl_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_dependency_bearing_ddl_semantic_descriptors_gate
+  COMMAND donor_first_tranche_dependency_bearing_ddl_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_dependency_bearing_ddl_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression;donor_first_tranche_dependency_bearing_ddl_semantic_descriptors_proof"
+)
+
+add_executable(donor_first_tranche_ddl_transaction_behavior_semantic_descriptors_gate
+  donor_first_tranche_ddl_transaction_behavior_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_ddl_transaction_behavior_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_ddl_transaction_behavior_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_ddl_transaction_behavior_semantic_descriptors_gate
+  COMMAND donor_first_tranche_ddl_transaction_behavior_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_ddl_transaction_behavior_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression;donor_first_tranche_ddl_transaction_behavior_semantic_descriptors_proof"
+)
+
+add_executable(donor_first_tranche_resource_text_semantic_descriptors_gate
+  donor_first_tranche_resource_text_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_resource_text_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_resource_text_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_resource_text_semantic_descriptors_gate
+  COMMAND donor_first_tranche_resource_text_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_resource_text_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression;donor_first_tranche_resource_text_semantic_descriptors_proof;donor_parser_resource_text_semantic_descriptors_gate"
+)
+
+add_executable(donor_first_tranche_statistics_optimizer_semantic_descriptors_gate
+  donor_first_tranche_statistics_optimizer_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_statistics_optimizer_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_statistics_optimizer_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_statistics_optimizer_semantic_descriptors_gate
+  COMMAND donor_first_tranche_statistics_optimizer_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_statistics_optimizer_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression;donor_first_tranche_statistics_optimizer_semantic_descriptors_proof;donor_parser_statistics_optimizer_semantic_descriptors_gate"
+)
+
+add_executable(donor_first_tranche_locks_isolation_semantic_descriptors_gate
+  donor_first_tranche_locks_isolation_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_locks_isolation_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_locks_isolation_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_locks_isolation_semantic_descriptors_gate
+  COMMAND donor_first_tranche_locks_isolation_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_locks_isolation_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression;donor_first_tranche_locks_isolation_semantic_descriptors_proof;donor_parser_locks_isolation_semantic_descriptors_gate"
+)
+
+add_executable(donor_first_tranche_system_catalog_defaults_semantic_descriptors_gate
+  donor_first_tranche_system_catalog_defaults_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_system_catalog_defaults_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_system_catalog_defaults_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_system_catalog_defaults_semantic_descriptors_gate
+  COMMAND donor_first_tranche_system_catalog_defaults_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_system_catalog_defaults_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression;donor_first_tranche_system_catalog_defaults_semantic_descriptors_proof;donor_parser_system_catalog_defaults_semantic_descriptors_gate"
+)
+
+add_executable(donor_first_tranche_session_settings_diagnostics_semantic_descriptors_gate
+  donor_first_tranche_session_settings_diagnostics_semantic_descriptors_gate.cpp
+)
+target_compile_features(donor_first_tranche_session_settings_diagnostics_semantic_descriptors_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_first_tranche_session_settings_diagnostics_semantic_descriptors_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+)
+add_test(
+  NAME donor_first_tranche_session_settings_diagnostics_semantic_descriptors_gate
+  COMMAND donor_first_tranche_session_settings_diagnostics_semantic_descriptors_gate
+)
+set_tests_properties(donor_first_tranche_session_settings_diagnostics_semantic_descriptors_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression;donor_first_tranche_session_settings_diagnostics_semantic_descriptors_proof;donor_parser_session_settings_diagnostics_semantic_descriptors_gate"
+)
+
+add_executable(donor_connection_sandbox_dialect_variant_gate
+  donor_connection_sandbox_dialect_variant_gate.cpp
+)
+target_compile_features(donor_connection_sandbox_dialect_variant_gate PRIVATE cxx_std_23)
+target_link_libraries(donor_connection_sandbox_dialect_variant_gate PRIVATE
+  sbl_firebird_parser_pipeline
+  sbl_mysql_parser_pipeline
+  sbl_postgresql_parser_pipeline
+  sbl_sqlite_parser_pipeline
+  sbl_mariadb_parser_pipeline
+  sbl_duckdb_parser_pipeline
+  sbl_clickhouse_parser_pipeline
+  sbl_tidb_parser_pipeline
+  sbl_vitess_parser_pipeline
+  sbl_cockroachdb_parser_pipeline
+  sbl_yugabytedb_parser_pipeline
+  sbl_cassandra_parser_pipeline
+  sbl_mongodb_parser_pipeline
+  sbl_redis_parser_pipeline
+  sbl_opensearch_sql_ppl_parser_pipeline
+  sbl_opensearch_parser_pipeline
+  sbl_neo4j_parser_pipeline
+  sbl_influxdb_parser_pipeline
+  sbl_milvus_parser_pipeline
+  sbl_dolt_parser_pipeline
+  sbl_apache_ignite_parser_pipeline
+  sbl_tikv_parser_pipeline
+  sbl_foundationdb_parser_pipeline
+  sbl_immudb_parser_pipeline
+  sbl_xtdb_parser_pipeline
+)
+add_test(
+  NAME donor_connection_sandbox_dialect_variant_gate
+  COMMAND donor_connection_sandbox_dialect_variant_gate
+)
+set_tests_properties(donor_connection_sandbox_dialect_variant_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_enterprise_blocker_truth_gate;donor_parser_connection_sandbox_gate;donor_parser_dialect_variant_gate;security_auth_gate;catalog_projection_authority_gate;mga_transaction_regression"
+)
+
+add_executable(donor_sql_generated_parser_resource_probe
+  donor_sql_generated_parser_resource_probe.cpp
+)
+target_compile_features(donor_sql_generated_parser_resource_probe PRIVATE cxx_std_23)
+target_include_directories(donor_sql_generated_parser_resource_probe PRIVATE
+  "${PROJECT_SOURCE_DIR}/drivers/tool/cli/include"
+)
+add_test(
+  NAME donor_sql_generated_parser_resource_probe
+  COMMAND donor_sql_generated_parser_resource_probe
+)
+set_tests_properties(donor_sql_generated_parser_resource_probe PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_enterprise_blocker_truth_gate;donor_parser_generated_resource_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker"
+)
+
+add_executable(sbu_donor_sql_parser_support_probe
+  sbu_donor_sql_parser_support_probe.cpp
+)
+target_compile_features(sbu_donor_sql_parser_support_probe PRIVATE cxx_std_23)
+target_link_libraries(sbu_donor_sql_parser_support_probe PRIVATE
+  sbu_firebird_parser_support
+  sbu_mysql_parser_support
+  sbu_postgresql_parser_support
+  sbu_sqlite_parser_support
+  sbu_mariadb_parser_support
+  sbu_duckdb_parser_support
+  sbu_clickhouse_parser_support
+  sbu_tidb_parser_support
+  sbu_vitess_parser_support
+  sbu_cockroachdb_parser_support
+  sbu_yugabytedb_parser_support
+  sbu_cassandra_parser_support
+  sbu_mongodb_parser_support
+  sbu_redis_parser_support
+  sbu_opensearch_sql_ppl_parser_support
+  sbu_opensearch_parser_support
+  sbu_neo4j_parser_support
+  sbu_influxdb_parser_support
+  sbu_milvus_parser_support
+  sbu_dolt_parser_support
+  sbu_apache_ignite_parser_support
+  sbu_tikv_parser_support
+  sbu_foundationdb_parser_support
+  sbu_immudb_parser_support
+  sbu_xtdb_parser_support
+)
+add_test(
+  NAME sbu_donor_sql_parser_support_probe
+  COMMAND sbu_donor_sql_parser_support_probe
+)
+set_tests_properties(sbu_donor_sql_parser_support_probe PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_enterprise_blocker_truth_gate;donor_parser_support_udr_gate;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker;security_auth_gate;mga_transaction_regression"
+)
+
+add_test(
+  NAME donor_sql_parser_first_tranche_cli_evidence_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/donor_sql_parser_cli_evidence_gate.py"
+    --firebird $<TARGET_FILE:sbp_firebird>
+    --mysql $<TARGET_FILE:sbp_mysql>
+    --postgresql $<TARGET_FILE:sbp_postgresql>
+    --sqlite $<TARGET_FILE:sbp_sqlite>
+    --mariadb $<TARGET_FILE:sbp_mariadb>
+    --duckdb $<TARGET_FILE:sbp_duckdb>
+    --clickhouse $<TARGET_FILE:sbp_clickhouse>
+    --tidb $<TARGET_FILE:sbp_tidb>
+    --vitess $<TARGET_FILE:sbp_vitess>
+    --cockroachdb $<TARGET_FILE:sbp_cockroachdb>
+    --yugabytedb $<TARGET_FILE:sbp_yugabytedb>
+    --cassandra $<TARGET_FILE:sbp_cassandra>
+    --mongodb $<TARGET_FILE:sbp_mongodb>
+    --redis $<TARGET_FILE:sbp_redis>
+    --opensearch-sql-ppl $<TARGET_FILE:sbp_opensearch_sql_ppl>
+    --opensearch $<TARGET_FILE:sbp_opensearch>
+    --neo4j $<TARGET_FILE:sbp_neo4j>
+    --influxdb $<TARGET_FILE:sbp_influxdb>
+    --milvus $<TARGET_FILE:sbp_milvus>
+    --dolt $<TARGET_FILE:sbp_dolt>
+    --apache-ignite $<TARGET_FILE:sbp_apache_ignite>
+    --tikv $<TARGET_FILE:sbp_tikv>
+    --foundationdb $<TARGET_FILE:sbp_foundationdb>
+    --immudb $<TARGET_FILE:sbp_immudb>
+    --xtdb $<TARGET_FILE:sbp_xtdb>
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/donor_sql_parser_first_tranche_cli_evidence.json"
+)
+set_tests_properties(donor_sql_parser_first_tranche_cli_evidence_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_enterprise_blocker_truth_gate;donor_parser_cli_gate;donor_parser_release_evidence;public_single_node_full_route_gate;mga_transaction_regression"
+)
+
+add_test(
+  NAME parser_remap_input_readiness_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/parser_remap_input_readiness_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --build-root "${CMAKE_BINARY_DIR}"
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/parser_remap_input_readiness_evidence.json"
+)
+set_tests_properties(parser_remap_input_readiness_gate PROPERTIES
+  LABELS "parser_remap_input_readiness_gate;FPR-P0;donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;parser_remap_scope_gate;mga_transaction_regression"
+)
+
+add_test(
+  NAME parser_remap_noncluster_function_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/parser_remap_noncluster_function_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/parser_remap_noncluster_function_evidence.json"
+)
+set_tests_properties(parser_remap_noncluster_function_gate PROPERTIES
+  LABELS "parser_remap_noncluster_function_gate;FPR-P1;donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;parser_remap_scope_gate;mga_transaction_regression"
+)
+
+add_test(
+  NAME parser_remap_cluster_route_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/parser_remap_cluster_route_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/parser_remap_cluster_route_evidence.json"
+)
+set_tests_properties(parser_remap_cluster_route_gate PROPERTIES
+  LABELS "parser_remap_cluster_route_gate;FPR-P2;donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;parser_remap_scope_gate;mga_transaction_regression"
+)
+
+add_test(
+  NAME parser_remap_ast_boundast_envelope_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/parser_remap_ast_boundast_envelope_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --build-root "${CMAKE_BINARY_DIR}"
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/parser_remap_ast_boundast_envelope_evidence.json"
+)
+set_tests_properties(parser_remap_ast_boundast_envelope_gate PROPERTIES
+  LABELS "parser_remap_ast_boundast_envelope_gate;FPR-P3;donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;parser_remap_scope_gate;mga_transaction_regression"
+)
+
+add_test(
+  NAME parser_refusal_reduction_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/parser_refusal_reduction_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --build-root "${CMAKE_BINARY_DIR}"
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/parser_refusal_reduction_evidence.json"
+)
+set_tests_properties(parser_refusal_reduction_gate PROPERTIES
+  LABELS "parser_refusal_reduction_gate;FPR-P4;donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;parser_remap_scope_gate;mga_transaction_regression"
+)
+
+add_test(
+  NAME parser_dialect_isolation_guard
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/parser_dialect_isolation_guard.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --build-root "${CMAKE_BINARY_DIR}"
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/parser_dialect_isolation_evidence.json"
+)
+set_tests_properties(parser_dialect_isolation_guard PROPERTIES
+  LABELS "parser_dialect_isolation_guard;FPR-P5;donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;parser_remap_scope_gate;donor_parser_standalone_guard;mga_transaction_regression"
+)
+
+add_test(
+  NAME donor_sql_parser_first_tranche_manifest_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/donor_sql_parser_first_tranche_manifest_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/donor_sql_parser_first_tranche_manifest_evidence.json"
+)
+set_tests_properties(donor_sql_parser_first_tranche_manifest_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_enterprise_blocker_truth_gate;donor_parser_manifest_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker;mga_transaction_regression"
+)
+
+add_test(
+  NAME donor_logical_stream_backup_restore_policy_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/donor_logical_stream_backup_restore_policy_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/donor_logical_stream_backup_restore_policy_evidence.json"
+)
+set_tests_properties(donor_logical_stream_backup_restore_policy_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;donor_logical_stream_backup_restore_policy;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker;mga_transaction_regression"
+)
+
+add_test(
+  NAME donor_low_level_utility_unsupported_policy_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/donor_low_level_utility_unsupported_policy_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/donor_low_level_utility_unsupported_policy_evidence.json"
+)
+set_tests_properties(donor_low_level_utility_unsupported_policy_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;donor_low_level_utility_unsupported_policy;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker;mga_transaction_regression"
+)
+
+add_test(
+  NAME donor_cdc_replication_etl_udr_policy_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/donor_cdc_replication_etl_udr_policy_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/donor_cdc_replication_etl_udr_policy_evidence.json"
+)
+set_tests_properties(donor_cdc_replication_etl_udr_policy_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;donor_cdc_replication_etl_udr_policy;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker;mga_transaction_regression"
+)
+
+add_test(
+  NAME donor_sql_parser_standalone_source_guard
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/donor_sql_parser_standalone_source_guard.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/donor_sql_parser_standalone_source_guard_evidence.json"
+)
+set_tests_properties(donor_sql_parser_standalone_source_guard PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_standalone_guard;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker"
+)
+
+add_test(
+  NAME non_sql_donor_sblr_surface_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/non_sql_donor_sblr_surface_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/non_sql_donor_sblr_surface_evidence.json"
+)
+set_tests_properties(non_sql_donor_sblr_surface_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;donor_parser_sblr_surface_gate;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;xtdb_parser_worker;mga_transaction_regression"
+)
+
+add_test(
+  NAME donor_sql_first_tranche_original_tool_replay_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${DONOR_SQL_ORIGINAL_TOOL_REPLAY_GATE}"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --build-root "${PROJECT_SOURCE_DIR}/../build"
+    --firebird-parser $<TARGET_FILE:sbp_firebird>
+    --mysql-parser $<TARGET_FILE:sbp_mysql>
+    --postgresql-parser $<TARGET_FILE:sbp_postgresql>
+    --sqlite-parser $<TARGET_FILE:sbp_sqlite>
+    --mariadb-parser $<TARGET_FILE:sbp_mariadb>
+    --duckdb-parser $<TARGET_FILE:sbp_duckdb>
+    --clickhouse-parser $<TARGET_FILE:sbp_clickhouse>
+    --tidb-parser $<TARGET_FILE:sbp_tidb>
+    --vitess-parser $<TARGET_FILE:sbp_vitess>
+    --cockroachdb-parser $<TARGET_FILE:sbp_cockroachdb>
+    --yugabytedb-parser $<TARGET_FILE:sbp_yugabytedb>
+    --cassandra-parser $<TARGET_FILE:sbp_cassandra>
+    --mongodb-parser $<TARGET_FILE:sbp_mongodb>
+    --redis-parser $<TARGET_FILE:sbp_redis>
+    --opensearch-sql-ppl-parser $<TARGET_FILE:sbp_opensearch_sql_ppl>
+    --opensearch-parser $<TARGET_FILE:sbp_opensearch>
+    --neo4j-parser $<TARGET_FILE:sbp_neo4j>
+    --influxdb-parser $<TARGET_FILE:sbp_influxdb>
+    --milvus-parser $<TARGET_FILE:sbp_milvus>
+    --dolt-parser $<TARGET_FILE:sbp_dolt>
+    --apache-ignite-parser $<TARGET_FILE:sbp_apache_ignite>
+    --tikv-parser $<TARGET_FILE:sbp_tikv>
+    --foundationdb-parser $<TARGET_FILE:sbp_foundationdb>
+    --immudb-parser $<TARGET_FILE:sbp_immudb>
+    --xtdb-parser $<TARGET_FILE:sbp_xtdb>
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_regression/donor_sql_first_tranche_original_tool_replay_evidence.json"
+)
+set_tests_properties(donor_sql_first_tranche_original_tool_replay_gate PROPERTIES
+  LABELS "donor_original_regression_gate;donor_release_regression_gate;donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;sqlite_parser_worker;mariadb_parser_worker;duckdb_parser_worker;clickhouse_parser_worker;tidb_parser_worker;vitess_parser_worker;cockroachdb_parser_worker;yugabytedb_parser_worker;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;dolt_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;immudb_parser_worker;xtdb_parser_worker;mga_transaction_regression"
+)
+
+add_test(
+  NAME parser_donor_replay_proof_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/parser_donor_replay_proof_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --build-root "${CMAKE_BINARY_DIR}"
+    --first-tranche-replay-evidence "${CMAKE_BINARY_DIR}/tests/donor_regression/donor_sql_first_tranche_original_tool_replay_evidence.json"
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/parser_donor_replay_proof_evidence.json"
+)
+set_tests_properties(parser_donor_replay_proof_gate PROPERTIES
+  DEPENDS donor_sql_first_tranche_original_tool_replay_gate
+  LABELS "parser_donor_replay_proof_gate;FPR-P6;donor_original_regression_gate;donor_release_regression_gate;donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;parser_remap_scope_gate;mga_transaction_regression"
+)
+
+add_test(
+  NAME parser_dialect_isolation_audit_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/parser_dialect_isolation_audit_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --build-root "${CMAKE_BINARY_DIR}"
+    --dialect-isolation-evidence "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/parser_dialect_isolation_evidence.json"
+    --donor-replay-proof-evidence "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/parser_donor_replay_proof_evidence.json"
+    --first-tranche-replay-evidence "${CMAKE_BINARY_DIR}/tests/donor_regression/donor_sql_first_tranche_original_tool_replay_evidence.json"
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/parser_dialect_isolation_audit_evidence.json"
+)
+set_tests_properties(parser_dialect_isolation_audit_gate PROPERTIES
+  DEPENDS "parser_remap_input_readiness_gate;parser_remap_noncluster_function_gate;parser_remap_cluster_route_gate;parser_remap_ast_boundast_envelope_gate;parser_refusal_reduction_gate;parser_dialect_isolation_guard;donor_sql_first_tranche_original_tool_replay_gate;parser_donor_replay_proof_gate"
+  LABELS "parser_dialect_isolation_audit_gate;FPR-P7;donor_original_regression_gate;donor_release_regression_gate;donor_sql_parser_first_tranche;donor_parser_beta_gate;donor_parser_release_evidence;parser_remap_scope_gate;donor_parser_standalone_guard;mga_transaction_regression"
+)
+
+add_test(
+  NAME donor_sql_parser_enterprise_completion_truth_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/donor_sql_parser_enterprise_completion_truth_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/donor_sql_parser_enterprise_completion_truth_evidence.json"
+    --first-tranche-replay-evidence "${CMAKE_BINARY_DIR}/tests/donor_regression/donor_sql_first_tranche_original_tool_replay_evidence.json"
+)
+set_tests_properties(donor_sql_parser_enterprise_completion_truth_gate PROPERTIES
+  DEPENDS donor_sql_first_tranche_original_tool_replay_gate
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_parser_enterprise_completion_truth;firebird_parser_worker;mysql_parser_worker;postgresql_parser_worker;mga_transaction_regression"
+)
+
+add_test(
+  NAME donor_procedural_datatype_enterprise_truth_gate
+  COMMAND
+    "${DONOR_SQL_PARSER_PYTHON3}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/donor_procedural_datatype_enterprise_truth_gate.py"
+    --repo-root "${PROJECT_SOURCE_DIR}/.."
+    --evidence-file "${CMAKE_BINARY_DIR}/tests/donor_sql_parser_first_tranche/donor_procedural_datatype_enterprise_truth_evidence.json"
+)
+set_tests_properties(donor_procedural_datatype_enterprise_truth_gate PROPERTIES
+  LABELS "donor_sql_parser_first_tranche;donor_parser_enterprise_blocker_truth_gate;donor_parser_release_evidence;donor_procedural_datatype_enterprise_truth;donor_parser_exact_datatype_gate;donor_parser_procedural_body_gate;mga_transaction_regression"
+)

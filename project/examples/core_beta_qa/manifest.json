@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "pack_id": "scratchbird-core-beta-qa-examples",
+  "support_level": "core_beta_qa_smoke",
+  "engine_execution_boundary": "Engine execution remains SBLR/internal API based; SQL text is parser/client input only and is not runtime authority.",
+  "temporary_output_policy": "Scripts use /tmp or CTest/build-tree locations and remove their own scratch directories on success.",
+  "scripts": [
+    {
+      "id": "admin_lifecycle_smoke",
+      "path": "project/examples/core_beta_qa/admin_lifecycle_smoke.sh",
+      "route": "admin_lifecycle",
+      "evidence": "database_lifecycle_admin_cli_conformance"
+    },
+    {
+      "id": "embedded_public_abi_smoke",
+      "path": "project/examples/core_beta_qa/embedded_public_abi_smoke.sh",
+      "route": "embedded_public_abi_sblr",
+      "evidence": "sb_engine_public_abi_cpp_fixture;sb_engine_public_sblr_admission_fixture"
+    },
+    {
+      "id": "driver_route_smoke",
+      "path": "project/examples/core_beta_qa/driver_route_smoke.sh",
+      "route": "representative_driver_package",
+      "evidence": "driver_package_manifest_gate;driver_python_gate;driver_cpp_gate"
+    }
+  ],
+  "required_ctest_evidence": [
+    "database_lifecycle_admin_cli_conformance",
+    "sb_engine_public_abi_cpp_fixture",
+    "sb_engine_public_sblr_admission_fixture",
+    "driver_package_manifest_gate",
+    "driver_python_gate",
+    "driver_cpp_gate"
+  ]
+}

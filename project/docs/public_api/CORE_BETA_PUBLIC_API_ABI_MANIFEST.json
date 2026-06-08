@@ -1,0 +1,243 @@
+{
+  "manifest_schema": "scratchbird.core_beta.public_api_abi_freeze.v1",
+  "freeze_id": "core_beta_public_api_abi_freeze_2026_05",
+  "status": "frozen_for_core_beta_qa",
+  "architectural_boundaries": {
+    "engine_execution_authority": "engine_sblr_internal_api_only",
+    "sql_text_authoritative": false,
+    "uuid_identity_authoritative": true,
+    "mga_finality_authoritative": true,
+    "cluster_positive_behavior_in_core": false
+  },
+  "abi_version": {
+    "family": "sb_engine_public_abi",
+    "major": 1,
+    "minor": 0,
+    "patch": 0,
+    "packed": 65536,
+    "packed_hex": "0x00010000",
+    "source_header": "project/include/scratchbird/engine/version.h",
+    "macro": "SB_ENGINE_ABI_VERSION_PACKED"
+  },
+  "packaged_include_root": "project/include/scratchbird/engine",
+  "public_headers": [
+    "project/include/scratchbird/engine/descriptor.hpp",
+    "project/include/scratchbird/engine/diagnostic.h",
+    "project/include/scratchbird/engine/engine.h",
+    "project/include/scratchbird/engine/engine.hpp",
+    "project/include/scratchbird/engine/error.h",
+    "project/include/scratchbird/engine/export.h",
+    "project/include/scratchbird/engine/result.hpp",
+    "project/include/scratchbird/engine/sblr/lowering.hpp",
+    "project/include/scratchbird/engine/sblr/raising.hpp",
+    "project/include/scratchbird/engine/sblr_envelope.hpp",
+    "project/include/scratchbird/engine/session.hpp",
+    "project/include/scratchbird/engine/transaction.hpp",
+    "project/include/scratchbird/engine/types.hpp",
+    "project/include/scratchbird/engine/value.hpp",
+    "project/include/scratchbird/engine/version.h"
+  ],
+  "c_api_symbols": [
+    "sb_engine_abi_build_id",
+    "sb_engine_abi_version_packed",
+    "sb_engine_close",
+    "sb_engine_describe_capabilities",
+    "sb_engine_dispatch_sblr",
+    "sb_engine_metric_root",
+    "sb_engine_open",
+    "sb_engine_result_class",
+    "sb_engine_result_completion",
+    "sb_engine_result_diagnostics",
+    "sb_engine_result_next_batch",
+    "sb_engine_result_payload",
+    "sb_engine_result_release",
+    "sb_engine_result_summary",
+    "sb_engine_session_begin",
+    "sb_engine_session_end",
+    "sb_engine_status_name",
+    "sb_engine_transaction_begin",
+    "sb_engine_transaction_commit",
+    "sb_engine_transaction_rollback"
+  ],
+  "surfaces": [
+    {
+      "surface_id": "embedded_engine_c_abi_v1",
+      "classification": "core",
+      "contract_version": "sb_engine_public_abi_1_0_0",
+      "source_paths": [
+        "project/include/scratchbird/engine/engine.h",
+        "project/include/scratchbird/engine/diagnostic.h",
+        "project/include/scratchbird/engine/error.h",
+        "project/include/scratchbird/engine/version.h",
+        "project/src/engine/public_abi.cpp"
+      ],
+      "entry_point_family": "sb_engine_*",
+      "execution_authority": "engine_sblr_internal_api_only"
+    },
+    {
+      "surface_id": "embedded_engine_cpp_wrappers_v1",
+      "classification": "core",
+      "contract_version": "sb_engine_cpp_wrappers_1_0_0",
+      "source_paths": [
+        "project/include/scratchbird/engine/engine.hpp",
+        "project/include/scratchbird/engine/session.hpp",
+        "project/include/scratchbird/engine/transaction.hpp",
+        "project/include/scratchbird/engine/result.hpp",
+        "project/include/scratchbird/engine/types.hpp",
+        "project/include/scratchbird/engine/sblr_envelope.hpp"
+      ],
+      "entry_point_family": "thin_raii_wrappers_over_sb_engine_c_abi",
+      "execution_authority": "engine_sblr_internal_api_only"
+    },
+    {
+      "surface_id": "driver_package_manifest_v1",
+      "classification": "core_driver_tool_adaptor",
+      "contract_version": "driver_package_manifest_v1",
+      "source_paths": [
+        "project/drivers/DriverPackageManifest.csv"
+      ],
+      "entry_point_family": "driver_package_manifest_rows",
+      "execution_authority": "driver_requests_engine_sblr_or_server_routes"
+    },
+    {
+      "surface_id": "sbsql_parser_package_v3",
+      "classification": "core_parser_package",
+      "contract_version": "sb_parser_package_v3",
+      "source_paths": [
+        "project/src/server/parser_package_registry.hpp",
+        "project/src/parsers/native/v3/package/native_v3_parser_package.hpp"
+      ],
+      "entry_point_family": "parser_package_to_sblr_envelope",
+      "execution_authority": "parser_translation_only_engine_dispatch_required"
+    },
+    {
+      "surface_id": "sbsql_parser_support_udr_v1",
+      "classification": "core_parser_udr_package",
+      "contract_version": "sb_udr_v1",
+      "source_paths": [
+        "project/src/udr/sbu_sbsql_parser_support/sbu_sbsql_parser_support.hpp",
+        "project/src/udr/runtime/sb_udr_runtime.hpp"
+      ],
+      "entry_point_family": "sbu_sbsql_parser_support_entrypoints",
+      "execution_authority": "trusted_udr_runtime_descriptor_dispatch"
+    },
+    {
+      "surface_id": "trusted_cpp_udr_runtime_v1",
+      "classification": "core_udr_runtime",
+      "contract_version": "sb_udr_v1",
+      "source_paths": [
+        "project/src/udr/runtime/sb_udr_runtime.hpp"
+      ],
+      "entry_point_family": "UdrPackageDescriptor",
+      "execution_authority": "engine_sblr_internal_api_only"
+    },
+    {
+      "surface_id": "cluster_provider_boundary_v1",
+      "classification": "non_core_cluster_boundary",
+      "contract_version": "sb_cluster_provider_v1",
+      "source_paths": [
+        "project/src/cluster_provider/cluster_provider.hpp",
+        "project/src/cluster_provider/no_cluster_provider.cpp",
+        "project/src/cluster_provider_stub/stub_cluster_provider.cpp"
+      ],
+      "entry_point_family": "cluster_provider_inspect_execute_boundary",
+      "execution_authority": "external_or_stub_provider_required",
+      "non_cluster_refusal_code": "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"
+    }
+  ],
+  "driver_manifest": {
+    "path": "project/drivers/DriverPackageManifest.csv",
+    "minimum_rows": 34,
+    "wire_protocol_set": "sbwp_v1_1",
+    "allowed_api_surface_sets": [
+      "adbc_c_api",
+      "ado_net",
+      "application_adapter",
+      "cli_tools",
+      "database_sql",
+      "dbapi_2",
+      "dbi",
+      "dbinterface_tables",
+      "flight_sql_grpc",
+      "jdbc_4_x",
+      "language_binding",
+      "native_cli_c_api",
+      "odbc_3_x",
+      "perl_dbi",
+      "r2dbc_spi"
+    ],
+    "allowed_ingress_modes": [
+      "direct_listener",
+      "driver_embedded_jdbc",
+      "driver_embedded_node",
+      "driver_embedded_python",
+      "manager_proxy"
+    ]
+  },
+  "parser_udr_contract": {
+    "path": "project/src/udr/sbu_sbsql_parser_support/sbu_sbsql_parser_support.hpp",
+    "package_uuid_constant": "kSbuSbsqlPackageUuid",
+    "package_name_constant": "kSbuSbsqlPackageName",
+    "abi_version": "sb_udr_v1",
+    "entrypoints": [
+      "sbu_sbsql_validate_syntax",
+      "sbu_sbsql_parse_to_sblr",
+      "sbu_sbsql_parse_expression",
+      "sbu_sbsql_normalize",
+      "sbu_sbsql_describe_statement",
+      "sbu_sbsql_decompile_sblr",
+      "sbu_sbsql_debug_capabilities"
+    ]
+  },
+  "extension_boundaries": [
+    {
+      "boundary_id": "parser_package.sbsql_v3",
+      "boundary_type": "parser_package",
+      "contract_version": "sb_parser_package_v3",
+      "core_classification": "core",
+      "non_cluster_refusal_code": "none"
+    },
+    {
+      "boundary_id": "parser_package.private_cluster_acceleration",
+      "boundary_type": "parser_package",
+      "contract_version": "sb_parser_package_v3",
+      "core_classification": "non_core_cluster_private",
+      "non_cluster_refusal_code": "cluster_mapping_unavailable"
+    },
+    {
+      "boundary_id": "udr_package.trusted_cpp_v1",
+      "boundary_type": "udr_package",
+      "contract_version": "sb_udr_v1",
+      "core_classification": "core",
+      "non_cluster_refusal_code": "none"
+    },
+    {
+      "boundary_id": "cluster_provider.v1",
+      "boundary_type": "cluster_provider",
+      "contract_version": "sb_cluster_provider_v1",
+      "core_classification": "non_core_cluster",
+      "non_cluster_refusal_code": "SBLR.CLUSTER.SUPPORT_NOT_ENABLED"
+    },
+    {
+      "boundary_id": "cluster_metrics.v1",
+      "boundary_type": "cluster_metrics",
+      "contract_version": "sb_cluster_metrics_v1",
+      "core_classification": "non_core_cluster",
+      "non_cluster_refusal_code": "cluster_metric_path_skipped"
+    },
+    {
+      "boundary_id": "cluster_agents.v1",
+      "boundary_type": "cluster_agents",
+      "contract_version": "sb_cluster_agents_v1",
+      "core_classification": "non_core_cluster",
+      "non_cluster_refusal_code": "cluster_paths_failed_closed"
+    },
+    {
+      "boundary_id": "cluster_manager.v1",
+      "boundary_type": "cluster_manager",
+      "contract_version": "sb_cluster_manager_v1",
+      "core_classification": "non_core_cluster",
+      "non_cluster_refusal_code": "SB_ENGINE_API_CLUSTER_AUTHORITY_UNAVAILABLE"
+    }
+  ]
+}

@@ -1,0 +1,168 @@
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdCloudProviderProfile
+metadata:
+  name: local-public
+  namespace: scratchbird
+  generation: 1
+spec:
+  profileRef: local-public
+  securityRef: workload-identity-local
+  auditReason: public single-node provider capability validation
+  idempotencyKey: pcf041-provider-local-public
+  redactionPolicyRef: public-redacted
+  provider: local
+  region: local
+  capabilities: [persistent_volume, workload_identity, local_listener]
+  publicSingleNodeOnly: true
+---
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdKmsProfile
+metadata:
+  name: local-kms
+  namespace: scratchbird
+  generation: 1
+spec:
+  profileRef: local-public
+  securityRef: workload-identity-local
+  auditReason: public single-node secretless KMS validation
+  idempotencyKey: pcf041-kms-local
+  redactionPolicyRef: public-redacted
+  providerRef: local-public
+  identityMode: workload_identity
+  kmsKeyRef: keyring/public-node/database-key
+  envelopePolicyRef: envelope-public-node
+  secretless: true
+---
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdDatabase
+metadata:
+  name: ledger
+  namespace: scratchbird
+  generation: 3
+spec:
+  profileRef: local-public
+  securityRef: workload-identity-local
+  auditReason: public single-node database create or open
+  idempotencyKey: pcf041-database-ledger-open
+  maintenanceWindow: 2026-05-10T02:00:00Z/2026-05-10T03:00:00Z
+  redactionPolicyRef: public-redacted
+  databaseUuid: 018f2d7a-4368-7c01-9000-000000000041
+  lifecycleIntent: create_or_open
+  storageClassRef: scratchbird-local-persistent
+  resourceProfileRef: small-public-node
+  bootstrapPolicyRef: bootstrap-public-node
+---
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdFilespace
+metadata:
+  name: ledger-primary
+  namespace: scratchbird
+  generation: 2
+spec:
+  profileRef: local-public
+  securityRef: workload-identity-local
+  auditReason: attach public single-node primary filespace
+  idempotencyKey: pcf041-filespace-ledger-primary
+  maintenanceWindow: 2026-05-10T02:00:00Z/2026-05-10T03:00:00Z
+  redactionPolicyRef: public-redacted
+  databaseRef: ledger
+  filespaceUuid: 018f2d7a-4368-7c01-9000-000000000042
+  volumeMode: Filesystem
+  capacity: 20Gi
+  storageClassRef: scratchbird-local-persistent
+  role: primary_data
+  lifecycleIntent: attach
+---
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdBackup
+metadata:
+  name: ledger-daily
+  namespace: scratchbird
+  generation: 1
+spec:
+  profileRef: local-public
+  securityRef: workload-identity-local
+  auditReason: public single-node backup request
+  idempotencyKey: pcf041-backup-ledger-daily
+  maintenanceWindow: 2026-05-10T03:00:00Z/2026-05-10T04:00:00Z
+  redactionPolicyRef: public-redacted
+  databaseRef: ledger
+  backupPolicyRef: daily-retained
+  targetRef: object-store-redacted
+  mode: full
+  verifyAfterWrite: true
+  retentionPolicyRef: pitr-public-node
+---
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdRestore
+metadata:
+  name: ledger-restore-check
+  namespace: scratchbird
+  generation: 1
+spec:
+  profileRef: local-public
+  securityRef: workload-identity-local
+  auditReason: public single-node restore verification
+  idempotencyKey: pcf041-restore-ledger-check
+  maintenanceWindow: 2026-05-10T04:00:00Z/2026-05-10T05:00:00Z
+  redactionPolicyRef: public-redacted
+  restoreSourceRef: backup/ledger-daily
+  targetDatabaseRef: ledger-restored
+  stagingFilespaceRef: restore-staging
+  verifyBeforePublish: true
+  publicationMode: clone
+---
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdRoutePolicy
+metadata:
+  name: ledger-local-route
+  namespace: scratchbird
+  generation: 1
+spec:
+  profileRef: local-public
+  securityRef: workload-identity-local
+  auditReason: public single-node local route policy
+  idempotencyKey: pcf041-route-ledger-local
+  redactionPolicyRef: public-redacted
+  databaseRef: ledger
+  listenerServiceRef: ledger-listener
+  finalitySource: local_mga_commit
+  loadBalancing: single_node
+  tlsProfileRef: workload-identity-local
+---
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdSupportBundle
+metadata:
+  name: ledger-operator-status
+  namespace: scratchbird
+  generation: 1
+spec:
+  profileRef: local-public
+  securityRef: workload-identity-local
+  auditReason: redacted public single-node support bundle
+  idempotencyKey: pcf041-support-ledger-status
+  redactionPolicyRef: public-redacted
+  databaseRef: ledger
+  bundleScope: operator_status
+  destinationRef: support-export-redacted
+  includeTenantData: false
+---
+apiVersion: cloud.scratchbird.io/v1alpha1
+kind: ScratchBirdUpgrade
+metadata:
+  name: ledger-upgrade-preflight
+  namespace: scratchbird
+  generation: 1
+spec:
+  profileRef: local-public
+  securityRef: workload-identity-local
+  auditReason: public single-node upgrade preflight
+  idempotencyKey: pcf041-upgrade-ledger-preflight
+  maintenanceWindow: 2026-05-10T05:00:00Z/2026-05-10T06:00:00Z
+  redactionPolicyRef: public-redacted
+  databaseRef: ledger
+  targetVersion: 0.1.0
+  imageRef: registry.example.invalid/scratchbird/server:0.1.0
+  signaturePolicyRef: public-release-signature
+  rolloutMode: single_node_ordered
+  requireBackupEvidence: true

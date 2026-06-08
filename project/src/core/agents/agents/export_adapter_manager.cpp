@@ -1,0 +1,31 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+#include "agents/export_adapter_manager.hpp"
+
+// CanonicalAgentRegistry/CanonicalAgentManifest owns production exposure;
+// this file provides the local export-adapter workflow handler.
+
+#include <utility>
+
+namespace scratchbird::core::agents::implemented_agents {
+namespace {
+using scratchbird::core::platform::Severity; using scratchbird::core::platform::StatusCode; using scratchbird::core::platform::Subsystem;
+Status OkStatus(){return {StatusCode::ok,Severity::info,Subsystem::engine};}
+Status ErrorStatus(){return {StatusCode::memory_invalid_request,Severity::error,Subsystem::engine};}
+ExportAdapterManagerResult Finish(ExportAdapterManagerDecisionKind d, Status s, std::string c, std::string k, std::string detail, bool f){ExportAdapterManagerResult r; r.status=s; r.decision=d; r.fail_closed=f; r.diagnostic=MakeExportAdapterManagerDiagnostic(r.status,std::move(c),std::move(k),std::move(detail)); r.evidence.push_back({"decision",ExportAdapterManagerDecisionKindName(r.decision)}); r.evidence.push_back({"client_authority","false"}); return r;}
+bool Clean(const ExportAdapterManagerRequest& r){return r.adapter_visible&&r.config_valid&&r.redaction_policy_valid&&r.residency_policy_valid&&r.metadata_authoritative&&!r.cluster_route_requested&&!r.client_authority;}
+AgentLocalWorkflowRequest WorkflowRequest(const ExportAdapterManagerRequest& r,ExportAdapterManagerDecisionKind decision){AgentLocalWorkflowRequest request;request.domain=AgentLocalWorkflowDomain::export_adapter;request.operation_id=ExportAdapterManagerDecisionKindName(decision);request.idempotency_key=r.idempotency_key.empty()?r.adapter_uuid+":"+request.operation_id:r.idempotency_key;request.authority.database_uuid=r.database_uuid;request.authority.principal_uuid=r.principal_uuid;request.authority.subject_uuid=r.adapter_uuid;request.authority.mga_transaction_uuid=r.mga_transaction_uuid;request.authority.evidence_uuid=r.evidence_uuid;request.authority.local_transaction_id=r.local_transaction_id;request.authority.catalog_generation=r.catalog_generation;request.authority.durable_catalog_bound=r.durable_catalog_bound;request.authority.transaction_inventory_bound=r.transaction_inventory_bound;request.authority.metadata_authoritative=r.metadata_authoritative;request.authority.redaction_policy_valid=r.redaction_policy_valid;request.authority.residency_policy_valid=r.residency_policy_valid;request.authority.client_authority=r.client_authority;request.authority.cluster_route_requested=r.cluster_route_requested;request.subsystem_precondition_satisfied=true;request.intended_state_observed=r.intended_state_observed;return request;}
+ExportAdapterManagerResult ApplyWorkflow(AgentLocalWorkflowLedger* ledger,ExportAdapterManagerResult result,const ExportAdapterManagerRequest& request){if(ledger==nullptr||result.fail_closed||result.decision==ExportAdapterManagerDecisionKind::refused)return result;const auto workflow=ledger->Apply(WorkflowRequest(request,result.decision));result.workflow_record=workflow.record;result.workflow_record_written=workflow.ok&&!workflow.idempotent;result.outcome_verified=workflow.record.outcome_verified;result.evidence.push_back({"workflow_uuid",workflow.record.workflow_uuid});result.evidence.push_back({"workflow_state",AgentLocalWorkflowStateName(workflow.record.state)});if(!workflow.ok)return Finish(ExportAdapterManagerDecisionKind::refused,ErrorStatus(),workflow.status.diagnostic_code,"agents.export_adapter.workflow_refused",workflow.status.detail,true);return result;}
+}
+const char* ExportAdapterManagerDecisionKindName(ExportAdapterManagerDecisionKind d){switch(d){case ExportAdapterManagerDecisionKind::enable_export:return "enable_export";case ExportAdapterManagerDecisionKind::disable_export:return "disable_export";case ExportAdapterManagerDecisionKind::shed_export:return "shed_export";case ExportAdapterManagerDecisionKind::refused:return "refused";}return "refused";}
+DiagnosticRecord MakeExportAdapterManagerDiagnostic(Status s,std::string c,std::string k,std::string d){return scratchbird::core::platform::MakeDiagnostic(s.code,s.severity,s.subsystem,std::move(c),std::move(k),{{"detail",std::move(d)}},{},"export_adapter_manager",{});}
+ExportAdapterManagerResult EvaluateExportAdapterManagerRequest(const ExportAdapterManagerRequest& r){return EvaluateExportAdapterManagerRequest(nullptr,r);}
+ExportAdapterManagerResult EvaluateExportAdapterManagerRequest(AgentLocalWorkflowLedger* ledger,const ExportAdapterManagerRequest& r){ExportAdapterManagerResult result;if(r.adapter_uuid.empty())result=Finish(ExportAdapterManagerDecisionKind::refused,ErrorStatus(),"SB_AGENT_EXPORT_ADAPTER_ID_REQUIRED","agents.export_adapter.id_required","adapter identity required",true);else if(!Clean(r))result=Finish(ExportAdapterManagerDecisionKind::refused,ErrorStatus(),"SB_AGENT_EXPORT_ADAPTER_AUTHORITY_UNTRUSTED","agents.export_adapter.untrusted_authority","export requires visible adapter config redaction residency and metadata proof",true);else if(r.disable_requested)result=Finish(ExportAdapterManagerDecisionKind::disable_export,OkStatus(),"SB_AGENT_EXPORT_ADAPTER_DISABLE_READY","agents.export_adapter.disable_ready","adapter visible and disable request valid",false);else if(r.shed_requested||r.queue_depth>0)result=Finish(ExportAdapterManagerDecisionKind::shed_export,OkStatus(),"SB_AGENT_EXPORT_ADAPTER_SHED_READY","agents.export_adapter.shed_ready","export queue pressure can be shed",false);else if(r.enable_requested)result=Finish(ExportAdapterManagerDecisionKind::enable_export,OkStatus(),"SB_AGENT_EXPORT_ADAPTER_ENABLE_READY","agents.export_adapter.enable_ready","adapter configuration is valid",false);else result=Finish(ExportAdapterManagerDecisionKind::refused,ErrorStatus(),"SB_AGENT_EXPORT_ADAPTER_ACTION_REQUIRED","agents.export_adapter.action_required","no export action requested",true);return ApplyWorkflow(ledger,std::move(result),r);}
+const char* export_adapter_manager_implementation_anchor(){return "export_adapter_manager";}
+}  // namespace scratchbird::core::agents::implemented_agents

@@ -1,0 +1,36 @@
+schema_version: 1
+search_key: SB_REFERENCE_DONOR_CATALOG_SEED_MYSQL_MARIADB_MYSQL_8.4
+seed_manifest_status: draft_requires_exact_row_extraction
+donor_family: mysql_mariadb
+donor_profile_title: MySQL 8.4
+donor_exact_version: MySQL 8.4
+new_database_recipe_id: default_new_database_profile_pending_exact_recipe
+copied_private_reference:
+  catalog_summary: project/tests/donor_regression/donor_emulation_source_summaries/mysql-8.4/50_catalog.md
+  builtins_summary: project/tests/donor_regression/donor_emulation_source_summaries/mysql-8.4/60_builtins.md
+catalog_object_inventory: project/tests/donor_regression/donor_catalog_seeds/mysql_mariadb/mysql_8_4_catalog_inventory.csv
+builtin_behavior_inventory: project/tests/donor_regression/donor_catalog_seeds/mysql_mariadb/mysql_8_4_builtin_inventory.csv
+catalog_object_count_from_copied_summary: 29
+builtin_behavior_count_from_copied_summary: 352
+required_completion_before_implementation_ready:
+  - exact_new_database_creation_recipe
+  - exact_catalog_columns_for_every_catalog_object
+  - exact_default_rowsets_for_every_seeded_catalog_object
+  - exact_builtin_function_operator_routine_mapping_rows
+  - generated_value_redaction_and_emulation_rules
+  - raw_secret_redaction_rules
+  - manifest_hash_and_rowset_hashes
+  - visibility_rules
+  - mutation_rules
+  - scratchbird_uuid_backed_mapping_rows
+  - diagnostics_and_conformance_gates
+invalid_state_behavior:
+  missing_exact_rows: DONOR.CATALOG_SEED.ROWSET_MISSING
+  missing_columns: DONOR.CATALOG_SEED.COLUMN_MISSING
+  raw_secret: DONOR.CATALOG_SEED.RAW_SECRET_FORBIDDEN
+  unclassified_generated_value: DONOR.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED
+  external_reference: DONOR.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN
+notes:
+  - This draft manifest is a private extraction target, not a completed seed manifest.
+  - Exact rowsets must be extracted or copied into this private reference tree before donor emulation setup is implementation-ready.
+  - Donor-visible object names must map to ScratchBird UUID-backed catalog objects through the resolver/comment model.

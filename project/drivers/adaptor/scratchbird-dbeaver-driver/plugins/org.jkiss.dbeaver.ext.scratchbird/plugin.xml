@@ -1,0 +1,376 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?eclipse version="3.2"?>
+
+<plugin>
+
+    <extension point="org.jkiss.dbeaver.objectManager">
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdSchemaNodeManager"
+            objectType="org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode"
+            label="ScratchBird schema branch"/>
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdTableManager"
+            objectType="org.jkiss.dbeaver.ext.generic.model.GenericTable"
+            label="ScratchBird table"/>
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdViewManager"
+            objectType="org.jkiss.dbeaver.ext.generic.model.GenericView"
+            label="ScratchBird view"/>
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdTableColumnManager"
+            objectType="org.jkiss.dbeaver.ext.generic.model.GenericTableColumn"
+            label="ScratchBird column or field"/>
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdConstraintManager"
+            objectType="org.jkiss.dbeaver.ext.generic.model.GenericUniqueKey"
+            label="ScratchBird constraint"/>
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdForeignKeyManager"
+            objectType="org.jkiss.dbeaver.ext.generic.model.GenericTableForeignKey"
+            label="ScratchBird foreign key"/>
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdIndexManager"
+            objectType="org.jkiss.dbeaver.ext.generic.model.GenericTableIndex"
+            label="ScratchBird index"/>
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdSequenceManager"
+            objectType="org.jkiss.dbeaver.ext.generic.model.GenericSequence"
+            label="ScratchBird sequence"/>
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdProcedureManager"
+            objectType="org.jkiss.dbeaver.ext.generic.model.GenericProcedure"
+            label="ScratchBird procedure"/>
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdTableTriggerManager"
+            objectType="org.jkiss.dbeaver.ext.generic.model.GenericTableTrigger"
+            label="ScratchBird trigger"/>
+        <manager
+            class="org.jkiss.dbeaver.ext.scratchbird.model.edit.ScratchBirdDomainManager"
+            objectType="org.jkiss.dbeaver.ext.generic.model.GenericDataType"
+            label="ScratchBird domain"/>
+    </extension>
+
+    <extension point="org.jkiss.dbeaver.dataTypeProvider">
+        <provider
+            class="org.jkiss.dbeaver.ext.scratchbird.model.data.ScratchBirdValueHandlerProvider"
+            description="ScratchBird datatype-aware value handlers"
+            id="ScratchBirdValueHandlerProvider"
+            label="ScratchBird data types provider">
+            <datasource id="scratchbird"/>
+            <type name="UUID"/>
+            <type name="UUID_V7"/>
+            <type name="JSON"/>
+            <type name="JSONB"/>
+            <type name="JSONPATH"/>
+            <type name="XML"/>
+            <type name="SQLXML"/>
+            <type name="TSVECTOR"/>
+            <type name="TSQUERY"/>
+            <type name="RANGE_DATE"/>
+            <type name="RANGE_INT4"/>
+            <type name="RANGE_INT8"/>
+            <type name="RANGE_NUM"/>
+            <type name="RANGE_TS"/>
+            <type name="RANGE_TSTZ"/>
+            <type name="VECTOR"/>
+            <type name="GEOMETRY"/>
+            <type name="POINT"/>
+            <type name="LINESTRING"/>
+            <type name="POLYGON"/>
+            <type name="MULTIPOINT"/>
+            <type name="MULTILINESTRING"/>
+            <type name="MULTIPOLYGON"/>
+            <type name="GEOMETRYCOLLECTION"/>
+            <type name="RANGE"/>
+            <type name="INET"/>
+            <type name="CIDR"/>
+            <type name="MACADDR"/>
+            <type name="MACADDR8"/>
+            <type name="BYTEA"/>
+            <type name="BINARY"/>
+            <type name="VARBINARY"/>
+            <type name="BLOB"/>
+            <type name="LOB_REF"/>
+            <type name="HASH256"/>
+            <type name="MONEY"/>
+            <type name="INTERVAL"/>
+            <type name="VARIANT"/>
+            <type name="COMPOSITE"/>
+            <type name="ROW"/>
+            <type name="SET"/>
+            <type name="ENUM"/>
+        </provider>
+    </extension>
+
+    <extension point="org.jkiss.dbeaver.generic.meta">
+        <meta
+            id="scratchbird"
+            class="org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdMetaModel"
+            driverClass="com.scratchbird.jdbc.SBDriver"/>
+    </extension>
+
+    <extension point="org.jkiss.dbeaver.dataSourceProvider">
+        <datasource
+            class="org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdDataSourceProvider"
+            description="ScratchBird JDBC connector"
+            id="scratchbird"
+            parent="generic"
+            inheritProviderProperties="true"
+            label="ScratchBird"
+            icon="icons/scratchbird_icon.png"
+            dialect="scratchbird">
+
+            <treeInjection path="generic/catalog/schema" remove="true"/>
+            <treeInjection path="generic/catalog">
+                <items label="#schema" path="schema" property="schemaTree" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg" optional="true">
+                    <icon if="object.domainBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_domains.svg"/>
+                    <icon if="object.metricsBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_metrics.svg"/>
+                    <icon if="object.scratchBirdSystemPath" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_system.svg"/>
+
+                    <items label="#schema" path="schema" property="childSchemas" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg" recursive="..">
+                        <icon if="object.domainBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_domains.svg"/>
+                        <icon if="object.metricsBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_metrics.svg"/>
+                        <icon if="object.scratchBirdSystemPath" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_system.svg"/>
+                    </items>
+
+                    <items label="%tree.table.node.name" path="table" property="physicalTables" icon="#table" visibleIf="object.tableFoldersVisible">
+                        <icon if="object.externalTable" icon="#table_external"/>
+                        <icon if="object.abstractTable" icon="#table_alias"/>
+                        <icon if="object.sharedTable" icon="#table_shared"/>
+
+                        <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableColumn" label="%tree.columns.node.name" icon="#columns" description="%tree.columns.node.tip">
+                            <items label="%tree.column.node.name" path="attribute" property="attributes" icon="#column"/>
+                        </folder>
+                        <folder type="org.jkiss.dbeaver.ext.generic.model.GenericUniqueKey" label="%tree.uni_keys.node.name" icon="#constraints" description="%tree.uni_keys.node.tip" visibleIf="!object.view &amp;&amp; (object.dataSource.info.supportsReferentialIntegrity() || object.container.dataSource.metaModel.supportsUniqueKeys())">
+                            <items label="%tree.uni_key.node.name" path="uniqueKey" property="constraints" icon="#unique-key">
+                                <items label="%tree.uni_key.columns.node.name" itemLabel="%tree.column.node.name" path="column" property="attributeReferences" navigable="false" inline="true"/>
+                            </items>
+                        </folder>
+                        <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableForeignKey" label="%tree.foreign_keys.node.name" icon="#foreign-keys" description="%tree.foreign_keys.node.tip" visibleIf="!object.view &amp;&amp; object.dataSource.info.supportsReferentialIntegrity()">
+                            <items label="%tree.foreign_key.node.name" path="association" property="associations" icon="#foreign-key">
+                                <items label="%tree.foreign_key_columns.node.name" itemLabel="%tree.column.node.name" path="column" property="attributeReferences" navigable="false" inline="true"/>
+                            </items>
+                        </folder>
+                        <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableIndex" label="%tree.indexes.node.name" icon="#indexes" description="%tree.indexes.node.tip" visibleIf="object.dataSource.info.supportsIndexes()">
+                            <items label="%tree.index.node.name" path="index" property="indexes" icon="#index">
+                                <items label="%tree.index_columns.node.name" path="column" property="attributeReferences" icon="#column" navigable="false" inline="true"/>
+                            </items>
+                        </folder>
+                        <folder label="%tree.references.node.name" icon="#references" description="%tree.references.node.tip" visibleIf="!object.view &amp;&amp; object.dataSource.info.supportsReferentialIntegrity()" virtual="true">
+                            <items label="%tree.reference.node.name" path="reference" property="references" icon="#reference" virtual="true">
+                                <items label="%tree.reference_columns.node.name" itemLabel="%tree.column.node.name" path="column" property="attributeReferences" navigable="false" inline="true" virtual="true"/>
+                            </items>
+                        </folder>
+                        <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableTrigger" label="%tree.triggers.node.name" icon="#triggers" description="%tree.triggers.node.tip" visibleIf="object.dataSource.metaModel.supportsTriggers(object.dataSource)">
+                            <items label="%tree.trigger.node.name" path="trigger" property="triggers" icon="#trigger"/>
+                        </folder>
+                    </items>
+
+                    <items label="%tree.tview.node.name" path="view" property="views" icon="#view" visibleIf="object.viewFoldersVisible &amp;&amp; object.dataSource.metaModel.supportsViews(object.dataSource)">
+                        <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableColumn" label="%tree.columns.node.name" icon="#columns" description="View columns">
+                            <items label="%tree.column.node.name" path="attribute" property="attributes" icon="#column"/>
+                        </folder>
+                    </items>
+
+                    <items label="%tree.uni_key.node.name" path="uniqueKey" property="constraints" icon="#unique-key" visibleIf="object.constraintFoldersVisible &amp;&amp; object.dataSource.info.supportsTableConstraints()">
+                        <items label="%tree.uni_key.columns.node.name" itemLabel="%tree.column.node.name" path="column" property="attributeReferences" navigable="false" inline="true"/>
+                    </items>
+
+                    <items icon="#index" label="%tree.index.node.name" path="index" property="indexes" virtual="true" visibleIf="object.indexFoldersVisible &amp;&amp; object.dataSource.info.supportsIndexes()">
+                        <items icon="#column" label="%tree.index_columns.node.name" itemLabel="%tree.column.node.name" path="column" property="attributeReferences" inline="true" navigable="false" virtual="true"/>
+                    </items>
+
+                    <items label="%tree.dataType.node.name" path="dataType" property="dataTypes" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_domains.svg" visibleIf="object.dataTypesFolderVisible"/>
+
+                    <items label="%tree.sequence.node.name" path="sequence" property="sequences" icon="#sequence" visibleIf="object.sequenceFoldersVisible &amp;&amp; object.dataSource.metaModel.supportsSequences(object.dataSource)"/>
+
+                    <folder type="org.jkiss.dbeaver.ext.generic.model.GenericProcedure" label="%tree.procedures.node.name" icon="#procedures" description="Procedures" visibleIf="object.dataSource.info.supportsStoredCode()">
+                        <items label="%tree.procedures.node.name" itemLabel="%tree.procedure.node.name" path="procedure" property="proceduresOnly" icon="#procedure">
+                            <folder label="%tree.procedure_columns.node.name" icon="#columns" description="Procedure parameters">
+                                <items label="%tree.procedure_columns.node.name" itemLabel="%tree.column.node.name" path="column" property="parameters" navigable="false"/>
+                            </folder>
+                        </items>
+                        <items label="%tree.package.node.name" path="package" property="packages" icon="#package">
+                            <items label="%tree.procedures.node.name" itemLabel="%tree.procedure.node.name" path="procedure" property="procedures" icon="#procedure">
+                                <items label="%tree.procedure_columns.node.name" itemLabel="%tree.column.node.name" path="column" property="parameters" navigable="false" inline="true"/>
+                            </items>
+                        </items>
+                    </folder>
+
+                    <folder label="%tree.functions.node.name" icon="#functions" description="Functions" visibleIf="object.dataSource.info.supportsStoredCode() &amp;&amp; object.dataSource.splitProceduresAndFunctions()">
+                        <items label="%tree.functions.node.name" itemLabel="%tree.function.node.name" path="function" property="functionsOnly" icon="#function">
+                            <items label="%tree.function_columns.node.name" itemLabel="%tree.column.node.name" path="column" property="parameters" navigable="false"/>
+                        </items>
+                    </folder>
+
+                    <folder id="tableTrigger" type="org.jkiss.dbeaver.ext.generic.model.GenericTableTrigger" label="%tree.tableTriggers.node.name" icon="#triggers" description="%tree.tableTriggers.node.tip" visibleIf="object.dataSource.metaModel.supportsTriggers(object.dataSource)">
+                        <items label="%tree.trigger.node.name" path="tableTrigger" property="tableTriggers" icon="#trigger"/>
+                    </folder>
+
+                </items>
+            </treeInjection>
+
+            <drivers managable="true">
+                <driver
+                    id="scratchbird_jdbc"
+                    label="ScratchBird"
+                    icon="icons/scratchbird_icon.png"
+                    iconBig="icons/scratchbird_icon_big.png"
+                    class="com.scratchbird.jdbc.SBDriver"
+                    sampleURL="jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=disable&amp;binary_transfer=true"
+                    defaultPort="3092"
+                    webURL="https://scratchbird.com/"
+                    description="ScratchBird JDBC driver"
+                    supportedConfigurationTypes="MANUAL,URL"
+                    categories="sql">
+
+                    <file type="jar" path="drivers/scratchbird"/>
+
+                    <parameter name="driver-properties" value="connect_timeout,socket_timeout,binary_transfer,application_name,schema,currentSchema,search_path,role,sslmode,sslrootcert,sslcert,sslkey,sslpassword,fetch_size,connect_client_flags,protocol,compression,pooling,min_pool_size,max_pool_size,connection_lifetime,acquire_timeout,rewrite_batched_inserts,loggerLevel,loggerFile,front_door_mode,manager_auth_token,manager_username,manager_database,manager_connection_profile,manager_client_intent,manager_client_flags,manager_auth_fast_path,auth_token,auth_method_id,auth_method_payload,auth_payload_json,auth_payload_b64,auth_provider_profile,auth_required_methods,auth_forbidden_methods,auth_require_channel_binding,workload_identity_token,proxy_principal_assertion,dormant_id,dormant_reattach_token,metadataExpandSchemaParents"/>
+                    <property name="connect_timeout" value="30"/>
+                    <property name="socket_timeout" value="0"/>
+                    <property name="binary_transfer" value="true"/>
+                    <property name="sslmode" value="disable"/>
+                    <property name="application_name" value="dbeaver"/>
+                    <property name="protocol" value="native"/>
+                    <property name="compression" value="off"/>
+                    <parameter name="omit-catalog-name" value="true"/>
+                    <parameter name="omit-single-catalog" value="false"/>
+                    <parameter name="supports-views" value="true"/>
+                    <parameter name="supports-indexes" value="true"/>
+                    <parameter name="supports-references" value="true"/>
+                    <parameter name="supports-table-constraints" value="true"/>
+                    <parameter name="supports-stored-code" value="false"/>
+                    <parameter name="stored-unquoted-case" value="lower"/>
+                </driver>
+
+                <provider-properties drivers="scratchbird_jdbc">
+                    <propertyGroup label="ScratchBird Connection">
+                        <property id="protocol" label="Protocol" type="string" defaultValue="native"/>
+                        <property id="schema" label="Initial Schema" type="string"/>
+                        <property id="currentSchema" label="Current Schema" type="string"/>
+                        <property id="search_path" label="Search Path" type="string"/>
+                        <property id="role" label="Role" type="string"/>
+                        <property id="front_door_mode" label="Ingress Mode" type="string"/>
+                        <property id="manager_auth_token" label="Manager Auth Token" type="string"/>
+                        <property id="manager_username" label="Manager Username" type="string"/>
+                        <property id="manager_database" label="Manager Database" type="string"/>
+                        <property id="manager_connection_profile" label="Manager Connection Profile" type="string"/>
+                        <property id="manager_client_intent" label="Manager Client Intent" type="string"/>
+                        <property id="manager_client_flags" label="Manager Client Flags" type="string"/>
+                        <property id="manager_auth_fast_path" label="Manager Auth Fast Path" type="boolean" defaultValue="false"/>
+                        <property id="auth_token" label="Auth Token" type="string"/>
+                        <property id="auth_method_id" label="Auth Method Id" type="string"/>
+                        <property id="auth_method_payload" label="Auth Method Payload" type="string"/>
+                        <property id="auth_payload_json" label="Auth Payload JSON" type="string"/>
+                        <property id="auth_payload_b64" label="Auth Payload Base64" type="string"/>
+                        <property id="auth_provider_profile" label="Auth Provider Profile" type="string"/>
+                        <property id="auth_required_methods" label="Required Auth Methods" type="string"/>
+                        <property id="auth_forbidden_methods" label="Forbidden Auth Methods" type="string"/>
+                        <property id="auth_require_channel_binding" label="Require Channel Binding" type="boolean" defaultValue="false"/>
+                        <property id="workload_identity_token" label="Workload Identity Token" type="string"/>
+                        <property id="proxy_principal_assertion" label="Proxy Principal Assertion" type="string"/>
+                        <property id="dormant_id" label="Dormant Id" type="string"/>
+                        <property id="dormant_reattach_token" label="Dormant Reattach Token" type="string"/>
+                        <property id="metadataExpandSchemaParents" label="Expand Parent Schema Rows" type="boolean" defaultValue="false"/>
+                    </propertyGroup>
+                    <propertyGroup label="ScratchBird Driver Tuning">
+                        <property id="connect_timeout" label="Connect Timeout Seconds" type="integer" defaultValue="30"/>
+                        <property id="socket_timeout" label="Socket Timeout Seconds" type="integer" defaultValue="0"/>
+                        <property id="binary_transfer" label="Binary Transfer" type="boolean" defaultValue="true"/>
+                        <property id="fetch_size" label="Fetch Size" type="integer" defaultValue="0"/>
+                        <property id="connect_client_flags" label="Connect Client Flags" type="integer" defaultValue="256"/>
+                        <property id="compression" label="Compression" type="string" defaultValue="off"/>
+                        <property id="pooling" label="JDBC Pooling" type="boolean" defaultValue="true"/>
+                        <property id="min_pool_size" label="Minimum Pool Size" type="integer" defaultValue="0"/>
+                        <property id="max_pool_size" label="Maximum Pool Size" type="integer" defaultValue="10"/>
+                        <property id="connection_lifetime" label="Connection Lifetime Seconds" type="integer" defaultValue="30"/>
+                        <property id="acquire_timeout" label="Pool Acquire Timeout Seconds" type="integer" defaultValue="30"/>
+                        <property id="rewrite_batched_inserts" label="Rewrite Batched Inserts" type="boolean" defaultValue="false"/>
+                        <property id="loggerLevel" label="Logger Level" type="string" defaultValue="OFF"/>
+                        <property id="loggerFile" label="Logger File" type="string"/>
+                    </propertyGroup>
+                </provider-properties>
+            </drivers>
+        </datasource>
+    </extension>
+
+    <extension point="org.jkiss.dbeaver.sqlDialect">
+        <dialect
+            id="scratchbird"
+            parent="generic"
+            class="org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSQLDialect"
+            label="ScratchBird"
+            description="ScratchBird SQL dialect."
+            icon="icons/scratchbird_icon.png">
+            <property name="keywords" value="ALTER,ANALYZE,AND,AS,BACKUP,BEGIN,BETWEEN,CALL,CASE,CAST,CHECKPOINT,CLUSTER,COMMENT,COMMIT,CONFIG,CONNECT,CONTAINING,COPY,CREATE,CUBE,DECLARE,DEFAULT,DELETE,DESCRIBE,DISCONNECT,DIV,DOC,DRAIN,DROP,ELSE,END,ERROR,ERRORS,EXCEPT,EXECUTE,EXISTS,EXPLAIN,FALSE,FROM,GLOBAL,GRAPH,GRANT,GROUP,HAVING,HYBRID,IF,IN,INSERT,INSTALL,INTERSECT,INTO,IS,JOIN,LATERAL,LIKE,LIMIT,LOAD,MATCH,MERGE,METRICS,NOT,NULL,OFFSET,ON,OR,ORDER,PREPARE,RECREATE,REDIS,REFRESH,RESET,RESTORE,RESYNC,RESTART,RETURN,REVOKE,ROLLBACK,SAVEPOINT,SEARCH,SECURITY,SELECT,SERVICE,SESSION,SET,SHOW,START,STARTING,STATUS,STOP,SWEEP,THEN,TRUNCATE,TRUE,TS,UDR,UNDRAIN,UNION,UPDATE,USE,USING,VALIDATE,VALUES,VECTOR,WHEN,WHERE,WITH"/>
+            <property name="ddlKeywords" value="CREATE,RECREATE,ALTER,DROP,TRUNCATE,COMMENT,GRANT,REVOKE"/>
+            <property name="execKeywords" value="CALL,ANALYZE,BACKUP,CHECKPOINT,CLUSTER,CONFIG,CONNECT,COPY,CUBE,DESCRIBE,DISCONNECT,DOC,DRAIN,EXECUTE,EXPLAIN,GRAPH,HYBRID,INSTALL,LOAD,MATCH,REDIS,REFRESH,RESET,RESYNC,RESTORE,RESTART,SAVEPOINT,SEARCH,SECURITY,SERVICE,SET,SHOW,START,STOP,SWEEP,TS,UDR,UNDRAIN,USE,VALIDATE,VECTOR"/>
+            <property name="functions" value="CURRENT_DATABASE,CURRENT_SCHEMA,CURRENT_ROLE,CURRENT_USER"/>
+            <property name="types" value="BOOLEAN,SMALLINT,INTEGER,BIGINT,REAL,DOUBLE,NUMERIC,DECIMAL,CHAR,VARCHAR,TEXT,BYTEA,DATE,TIME,TIMESTAMP,TIMESTAMPTZ,INTERVAL,UUID,JSON,JSONB,ARRAY,COMPOSITE,GEOMETRY,VECTOR,MONEY,XML,INET,CIDR,MACADDR,TSVECTOR,TSQUERY,RANGE"/>
+        </dialect>
+    </extension>
+
+    <extension point="org.jkiss.dbeaver.dashboard">
+        <dashboard
+            id="scratchbird.sessions"
+            label="ScratchBird sessions"
+            defaultView="timeseries"
+            group="ScratchBird"
+            updatePeriod="2000"
+            calc="value"
+            value="integer"
+            fetch="columns"
+            showByDefault="true"
+            description="Active ScratchBird session count">
+            <datasource id="scratchbird"/>
+            <query>SELECT COUNT(*) AS "Sessions" FROM sys.sessions</query>
+        </dashboard>
+
+        <dashboard
+            id="scratchbird.transactions"
+            label="ScratchBird transactions"
+            defaultView="timeseries"
+            group="ScratchBird"
+            updatePeriod="2000"
+            calc="value"
+            value="integer"
+            fetch="columns"
+            showByDefault="true"
+            description="Active ScratchBird transaction count">
+            <datasource id="scratchbird"/>
+            <query>SELECT COUNT(*) AS "Transactions" FROM sys.transactions</query>
+        </dashboard>
+
+        <dashboard
+            id="scratchbird.locks"
+            label="ScratchBird locks"
+            defaultView="timeseries"
+            group="ScratchBird"
+            updatePeriod="2000"
+            calc="value"
+            value="integer"
+            fetch="columns"
+            showByDefault="false"
+            description="Current ScratchBird lock count">
+            <datasource id="scratchbird"/>
+            <query>SELECT COUNT(*) AS "Locks" FROM sys.locks</query>
+        </dashboard>
+
+        <dashboard
+            id="scratchbird.performance"
+            label="ScratchBird query latency"
+            defaultView="timeseries"
+            group="ScratchBird"
+            updatePeriod="2000"
+            calc="value"
+            value="integer"
+            fetch="columns"
+            showByDefault="false"
+            description="SBsql metrics snapshot">
+            <datasource id="scratchbird"/>
+            <query>SHOW METRICS</query>
+        </dashboard>
+    </extension>
+
+</plugin>
