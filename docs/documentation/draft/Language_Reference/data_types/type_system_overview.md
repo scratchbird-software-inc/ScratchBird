@@ -1,100 +1,198 @@
 # Type System Overview
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the
+descriptor model behind SBsql values, literals, parameters, columns, domains,
+expressions, rows, streams, and result sets.
 
 Generation task: `data_types_type_system_overview`
 
-
 ## Purpose
 
-SBsql values are descriptor-bound. A textual type name, literal, cast, or parameter is resolved into a descriptor that controls storage representation, comparison, null behavior, collation, timezone, hashing, indexing, and result rendering.
+SBsql values are descriptor-bound. A textual type name, literal, cast,
+parameter marker, column definition, routine argument, stream frame, or result
+column is resolved into a descriptor before engine execution. The descriptor
+controls representation, comparison, ordering, hashing, indexing, null
+behavior, collation, character set, temporal precision, timezone behavior,
+storage admission, overflow behavior, policy, and result rendering.
 
-The type system separates canonical carriers from domains. A carrier says how a value can be stored and operated on. A domain layers null policy, constraints, defaults, masking, metadata rendering, and element addressing on top of that carrier.
+The type system separates carriers from domains:
 
-The catalog tables `sys.catalog.type_descriptor`, `sys.catalog.domain_descriptor`, and `sys.catalog.type_capability` are the core metadata surfaces for this model.
+- a carrier descriptor defines how a value is represented and operated on;
+- a domain is a named policy layer over a carrier or another domain;
+- a descriptor-bound expression can preserve a domain, erase a domain, or bind
+  to a new domain only when an operation policy says so.
+
+The engine receives descriptor identity through SBLR. It does not infer type
+behavior from SQL text after binding.
+
+## Descriptor Binding Flow
+
+```mermaid
+flowchart TD
+    A[Type spelling, literal, parameter, column, or expression] --> B[Parse]
+    B --> C[Resolve type/domain name]
+    C --> D[Bind carrier descriptor]
+    D --> E[Apply domain and policy layers]
+    E --> F[Derive expression or row descriptor]
+    F --> G[Lower descriptor table into SBLR]
+    G --> H[Server admission]
+    H --> I[Engine execution and result rendering]
+```
+
+Descriptor binding happens before execution. If a descriptor cannot be resolved
+or a value cannot fit the descriptor, the statement returns a diagnostic rather
+than allowing implicit best-effort behavior.
 
 ## Supported Type Families
 
-The public type contract is organized by descriptor family. A descriptor family is the engine-visible carrier class; SBsql spellings, aliases, and domains bind to one of these families plus a canonical descriptor payload. Exact on-page encoding can change only through descriptor and file-format versioning. SQL-visible comparison, cast, null, collation, timezone, and indexing behavior must remain stable for a descriptor version.
-
-| Descriptor Family | Canonical SBsql Names | Primary Use | Fixed Payload Size | Variable or Policy Bounds |
-| --- | --- | --- | --- | --- |
-| `null_value` | `null` | Unknown or absent value marker | none | Carries no value; target descriptor is inferred from context or must be stated with `cast`. |
-| `boolean` | `boolean`, `bool` | Three-valued logic | 1 byte payload | Values are `true`, `false`, and SQL `null`. |
-| `integer` | `int16`, `smallint`, `int32`, `int`, `integer`, `int64`, `bigint`, `int128` | Exact signed integers | 2, 4, 8, or 16 bytes | Range is fixed by width. |
-| `unsigned_integer` | `uint8`, `uint16`, `uint32`, `uint64`, `uint128` | Exact unsigned integers | 1, 2, 4, 8, or 16 bytes | Unsigned use must be explicit. |
-| `decimal` | `decimal(p,s)`, `numeric(p,s)`, `decfloat(16)`, `decfloat(34)`, `money`, `currency` | Exact base-10 and declared money-like values | descriptor-dependent | Precision, scale, rounding, overflow, and display are descriptor-owned. |
-| `real` | `real`, `float4`, `double precision`, `float8`, `float(p)` | Approximate numeric values | 4 or 8 bytes | IEEE-style finite, infinity, and NaN handling is descriptor-policy controlled. |
-| `text` | `char(n)`, `character(n)`, `varchar(n)`, `character varying(n)`, `text`, `clob`, `nchar(n)`, `nvarchar(n)`, `nclob` | Character data | descriptor header plus encoded bytes | Character count, byte count, charset, collation, and overflow policy are descriptor-owned. |
-| `binary` | `binary(n)`, `varbinary(n)`, `bytea`, `blob`, `image` | Byte data and large binary objects | descriptor header plus bytes | Length is byte-counted; large values may use overflow storage when admitted. |
-| `temporal` | `date`, `time`, `time with time zone`, `timestamp`, `timestamp with time zone`, `interval` | Calendar, clock, instant, and duration values | 4, 8, 12, or 16 bytes depending on descriptor | Timezone, precision, calendar, and SBsql rendering are descriptor-owned. |
-| `uuid` | `uuid`, `uuid '<text>'` | Object identity and application UUIDs | 16 bytes | Text rendering is canonical lower-case UUID unless an explicit SBsql rendering policy says otherwise. |
-| `json_document` | `json`, `jsonb`, `document` | JSON/document values and path-indexable payloads | descriptor header plus document bytes | Text-preserving or normalized binary representation is selected by descriptor. |
-| `vector` | `vector<T,n>`, `embedding<T,n>` | Fixed-dimension numerical vectors | `n * element_size` plus descriptor metadata | Element profile, dimension, metric, and exact recheck requirements are descriptor-owned. |
-| `graph` | `graph`, `node`, `edge`, `path` | Graph records and traversal payloads | descriptor-dependent | Node identity, edge identity, path ordering, and traversal result shape are descriptor-owned. |
-| `domain` | user-defined domain names | Named constrained type overlay | underlying carrier size | Domain constraints, defaults, masking, type aliasing, and null policy are catalog-owned. |
+| Family | Canonical SBsql Names | Main Use | Fixed Size Or Bounds |
+| --- | --- | --- | --- |
+| Null marker | `null` | Unknown or absent value before contextual typing. | No payload. Requires nullable target or explicit cast context. |
+| Boolean | `boolean`, `bool` | Three-valued logic. | 1 byte logical payload plus null marker. |
+| Signed integer | `int8`, `int16`, `int32`, `int64`, `int128`, `smallint`, `int`, `integer`, `bigint` | Exact signed whole numbers. | 1, 2, 4, 8, or 16 bytes. |
+| Unsigned integer | `uint8`, `uint16`, `uint32`, `uint64`, `uint128` | Exact unsigned whole numbers. | 1, 2, 4, 8, or 16 bytes. |
+| Decimal | `decimal(p,s)`, `numeric(p,s)`, `decfloat(16)`, `decfloat(34)`, `money`, `currency` | Exact base-10, decimal floating, and money-like values. | Precision, scale, rounding, and display are descriptor-owned. |
+| Approximate real | `real`, `float4`, `double precision`, `float8`, `float(p)` | Approximate binary floating values. | 4 or 8 byte descriptors in the portable profile. |
+| Text | `char(n)`, `varchar(n)`, `text`, `clob`, `nchar(n)`, `nvarchar(n)`, `nclob` | Character data. | Character count, byte count, charset, collation, and overflow are descriptor-owned. |
+| Binary | `binary(n)`, `varbinary(n)`, `blob`, `bytea` | Byte-oriented values and binary large values. | Byte count, overflow, and stream policy are descriptor-owned. |
+| UUID | `uuid` | Application UUIDs and catalog identity references. | 16 bytes. |
+| Temporal | `date`, `time(p)`, `time(p) with time zone`, `timestamp(p)`, `timestamp(p) with time zone`, `interval` | Calendar, clock, instant, and duration values. | Precision, calendar, timezone, and range are descriptor-owned. |
+| Document | `json`, `jsonb`, `document` | Structured document values and path-addressable data. | Payload and normalization profile are descriptor-owned. |
+| Collection | `array<T>`, `multiset<T>`, `row(...)`, `record(...)` | Structured values, routine arguments, rowsets, and compound domains. | Element descriptors and shape descriptors own bounds. |
+| Vector | `vector<T,n>`, `embedding<T,n>` | Fixed-dimension numerical vectors. | Dimension multiplied by element size plus descriptor metadata. |
+| Spatial | `geometry`, `geography` | Spatial values, spatial predicates, and spatial indexes. | Shape, coordinate profile, and exact-recheck policy are descriptor-owned. |
+| Graph | `graph`, `node`, `edge`, `path` | Graph data and traversal payloads. | Node, edge, path, and traversal descriptors own shape. |
+| Search | `search_document`, `lexeme`, search-vector descriptors where admitted | Full-text/search payloads. | Tokenization and index profile are descriptor-owned. |
+| Time-series | `timeseries`, `sample`, `bucket` descriptors where admitted | Time-series observations and windows. | Time key, value descriptor, and window profile are descriptor-owned. |
+| Key-value | `kv_key`, `kv_value`, map-like descriptors | Key-value and map payloads. | Key descriptor, value descriptor, and ordering/hash policy are descriptor-owned. |
+| Protected material | `secret_ref`, `protected_blob_ref`, protected descriptors | References to protected values and release-controlled material. | References only unless release policy admits raw access. |
+| Domain | User-defined domain names | Named constraints, defaults, null policy, masks, and operation policy. | Underlying carrier plus domain policy. |
 
 ## Canonical Names And Aliases
 
-The canonical descriptor name is what the binder and SBLR envelope carry. SBsql type spellings and aliases lower to the same descriptor model without making the original text authoritative.
+SBsql can accept aliases, but binding resolves each spelling to a canonical
+descriptor. After binding, the engine uses descriptor identity. The original
+spelling remains useful for diagnostics and source references, not execution
+authority.
 
-| SBsql family | Examples of accepted spellings | Binding rule |
-| --- | --- | --- |
-| Exact numeric | `int64`, `uint128`, `decimal(18,2)`, `numeric(18,2)`, `decfloat(34)` | Binds to signed integer, unsigned integer, decimal, or decimal-floating descriptors. |
-| Approximate numeric | `real`, `float4`, `double precision`, `float8`, `float(p)` | Binds to approximate real descriptors with explicit precision policy. |
-| Text | `char(20)`, `character(20)`, `varchar(200)`, `character varying(200)`, `text`, `clob` | Binds to text descriptors with charset, collation, and overflow policy. |
-| Binary | `binary(16)`, `varbinary(1024)`, `blob` | Binds to byte descriptors. |
-| Temporal | `date`, `time`, `timestamp`, `timestamp with time zone`, `interval` | Binds to temporal descriptors with precision and timezone policy. |
-| Multimodel | `json`, `jsonb`, `document`, `vector<float32,1536>`, `graph`, `node`, `edge`, `path` | Binds to document, vector, graph, or related descriptors. |
+Examples:
 
-## Range And Limit Rules
-
-The fixed-width type ranges are part of the language contract. Variable-width limits are not a single global number because they are governed by row-page size, overflow/TOAST policy, character set, collation keys, stream limits, and database policy.
-
-When a manual table says "policy bounded", the binder must still have a concrete descriptor bound before execution. The engine may refuse a value before execution, during row construction, or during overflow allocation if the descriptor, row, transaction, or storage policy cannot admit it.
-
-## Syntax Productions
-
-```ebnf
-literal                 ::= string_literal | numeric_literal | boolean_literal | null_literal | uuid_ref ;
+```sql
+create table app.example_types (
+    id uuid primary key,
+    exact_count uint128,
+    label varchar(120),
+    payload jsonb,
+    embedding vector<float32,1536>,
+    created_at timestamp(6) with time zone
+);
 ```
 
-```ebnf
-expression              ::= expression_atom (binary_operator expression_atom)* ;
+The table definition creates column descriptors for each column. Inserts,
+updates, defaults, indexes, constraints, masks, and query projections use those
+descriptors.
+
+## Null Behavior
+
+`null` has no standalone carrier. It adopts the target descriptor when the
+target is known and nullable.
+
+| Context | Rule |
+| --- | --- |
+| Assignment to nullable column | `null` is admitted as the target descriptor's null value. |
+| Assignment to non-null target | Refused before storage mutation. |
+| Function argument | Requires an overload that admits null for that argument. |
+| Comparison | Uses three-valued logic unless the operator has explicit null-handling semantics. |
+| Domain assignment | Domain null policy is checked before ordinary constraints. |
+| Array, row, and document values | Element or field null behavior is descriptor-owned. |
+
+Use an explicit cast when the target type cannot be inferred:
+
+```sql
+select cast(null as decimal(18,2)) as empty_amount;
 ```
 
-## Binding And Execution
+## Literal Binding
 
-- The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
-- SBLR admission maps the bound request to an operation family and result shape.
-- The engine rechecks authority before durable state changes or result delivery.
+Literals are parsed text until they bind to descriptors.
 
-## Related Surface Rows
+| Literal Form | Binding Rule |
+| --- | --- |
+| Integer literal | Binds by context or to the smallest admitted exact descriptor that can represent it. |
+| Unsigned literal | Uses an explicit unsigned suffix or contextual unsigned target. |
+| Decimal literal | Binds to an exact decimal descriptor unless context selects another admitted numeric descriptor. |
+| String literal | Binds as text until context, cast, charset introducer, or target descriptor changes it. |
+| Binary literal | Binds as bytes and does not carry charset or collation. |
+| UUID literal | Binds to a 16-byte UUID descriptor. |
+| Temporal literal | Binds only when context or explicit cast states the temporal descriptor. |
+| Document literal | Binds through document/json descriptor rules. |
+| Vector literal | Requires an element descriptor and dimension. |
 
-| Surface | Kind | Family | Lowering | Result Shape |
-| --- | --- | --- | --- | --- |
-| currency | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| FULL | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| POSITION(substringINtext) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| current_server | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| st_x | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| lock_timeout_default | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| bit_count | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| operation_evidence_required | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| USING | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| chr(integer) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| element(multiset<T>) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| st_makepoint | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| REAL | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| sb.special_form.coalesce | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| dearmor | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| regexp_like(string,pattern[,flags]) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| IMAGE | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| CURSOR | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| jsonb_object_keys | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| client_min_messages | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| json_array_elements | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| sb.scalar.nullif | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| cos | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| boolean_cast_from_text | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+Ambiguous or lossy literal binding is refused unless a documented conversion
+policy admits it.
+
+## Storage And Overflow
+
+Descriptor validity is not the same as storage admission. A value can have a
+valid descriptor and still be refused because it cannot fit the row, page,
+overflow, stream, transaction, filespace, or policy limits.
+
+| Concern | Controlled By |
+| --- | --- |
+| Inline row payload | Row descriptor, page size, null map, alignment, and storage policy. |
+| Large values | Overflow/large-value descriptor and transaction policy. |
+| Text byte size | Character set, encoded byte length, collation key policy, and overflow policy. |
+| Binary byte size | Byte descriptor, overflow policy, and stream limits. |
+| Index key size | Index descriptor, collation key, expression descriptor, and index policy. |
+| Stream frames | Stream descriptor, frame limit, backpressure, timeout, and cancellation policy. |
+
+## Type Authority In SBLR
+
+SBLR carries descriptor tables. An execution envelope can include:
+
+- column descriptors;
+- parameter descriptors;
+- literal descriptors;
+- expression result descriptors;
+- row and record descriptors;
+- cursor descriptors;
+- stream descriptors;
+- domain stacks;
+- conversion operations;
+- result shapes;
+- diagnostic shapes.
+
+Server admission rejects malformed, missing, stale, contradictory, or
+unsupported descriptor evidence before engine dispatch.
+
+## Related Pages
+
+- [Numeric Types](numeric_types.md)
+- [Text, Collation, And Charset](text_collation_and_charset.md)
+- [Temporal Types](temporal_types.md)
+- [Binary, UUID, And Protected Values](binary_uuid_and_protected_values.md)
+- [Document, Graph, Vector, And Multimodel Types](document_graph_vector_and_multimodel_types.md)
+- [Domains, Casts, And Coercion](domains_casts_and_coercion.md)
+- [Conversion Matrix](conversion_matrix.md)
+- [Operator Type Result Matrix](../syntax_reference/operator_type_result_matrix.md)
+- [Parser To SBLR Pipeline](../core_paradigms/parser_to_sblr_pipeline.md)
+
+## Verification Checklist
+
+The type-system proof suite should demonstrate:
+
+- every supported type spelling resolves to a canonical descriptor;
+- unsupported aliases are refused rather than accepted as inert text;
+- `null` binds only through a valid nullable target;
+- fixed-width numeric ranges reject overflow and underflow;
+- text length checks use character count while storage uses encoded byte count;
+- collation affects comparison, grouping, ordering, and indexes consistently;
+- temporal precision and timezone policy are descriptor-owned;
+- UUID values store as 16 bytes and do not bypass authorization;
+- protected material is carried by reference unless release policy admits it;
+- document, graph, vector, spatial, search, time-series, and key-value indexes
+  produce candidate evidence only;
+- domains apply null policy, defaults, constraints, and operation policy in the
+  documented order;
+- SBLR envelopes carry descriptors rather than executable type text;
+- stale descriptor or policy epochs invalidate dependent statements and plans.

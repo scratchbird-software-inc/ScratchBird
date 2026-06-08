@@ -1,6 +1,6 @@
 {
   "current_phase": "completed",
-  "last_updated": "2026-06-08T22:08:28Z",
+  "last_updated": "2026-06-08T23:22:50Z",
   "progress_summary": {
     "completed_tasks": 198,
     "percent_complete": 100.0,
@@ -9,19 +9,19 @@
   "source_blueprint_id": "sbsql_complete_ebnf_function_operator_catalog_reference",
   "tasks": [
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T22:55:24Z",
       "id": "core_paradigms_intro_and_mga",
       "status": "completed",
       "target_file": "core_paradigms/intro_and_mga.md"
     },
     {
-      "completed_at": "2026-06-08T18:15:28Z",
+      "completed_at": "2026-06-08T22:17:07Z",
       "id": "core_paradigms_parser_to_sblr",
       "status": "completed",
       "target_file": "core_paradigms/parser_to_sblr_pipeline.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T23:07:50Z",
       "id": "core_paradigms_uuid_catalog_identity",
       "status": "completed",
       "target_file": "core_paradigms/uuid_catalog_identity.md"
@@ -33,49 +33,49 @@
       "target_file": "core_paradigms/transactions_and_recovery.md"
     },
     {
-      "completed_at": "2026-06-08T18:28:28Z",
+      "completed_at": "2026-06-08T23:05:19Z",
       "id": "core_paradigms_security_and_sandboxing",
       "status": "completed",
       "target_file": "core_paradigms/security_and_sandboxing.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T23:11:04Z",
       "id": "core_paradigms_bridge_and_cluster_boundaries",
       "status": "completed",
       "target_file": "core_paradigms/bridge_and_cluster_boundaries.md"
     },
     {
-      "completed_at": "2026-06-08T22:07:02Z",
+      "completed_at": "2026-06-08T23:22:31Z",
       "id": "data_types_type_system_overview",
       "status": "completed",
       "target_file": "data_types/type_system_overview.md"
     },
     {
-      "completed_at": "2026-06-08T22:06:26Z",
+      "completed_at": "2026-06-08T23:15:58Z",
       "id": "data_types_numeric",
       "status": "completed",
       "target_file": "data_types/numeric_types.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T23:22:15Z",
       "id": "data_types_text_collation",
       "status": "completed",
       "target_file": "data_types/text_collation_and_charset.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T23:22:50Z",
       "id": "data_types_temporal",
       "status": "completed",
       "target_file": "data_types/temporal_types.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T23:18:53Z",
       "id": "data_types_binary_uuid_protected",
       "status": "completed",
       "target_file": "data_types/binary_uuid_and_protected_values.md"
     },
     {
-      "completed_at": "2026-06-08T18:13:07Z",
+      "completed_at": "2026-06-08T23:20:02Z",
       "id": "data_types_document_graph_vector",
       "status": "completed",
       "target_file": "data_types/document_graph_vector_and_multimodel_types.md"
@@ -87,7 +87,7 @@
       "target_file": "data_types/domains_casts_and_coercion.md"
     },
     {
-      "completed_at": "2026-06-08T22:07:44Z",
+      "completed_at": "2026-06-08T23:21:14Z",
       "id": "data_types_conversion_matrix",
       "status": "completed",
       "target_file": "data_types/conversion_matrix.md"

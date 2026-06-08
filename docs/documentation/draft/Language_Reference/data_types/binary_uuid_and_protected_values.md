@@ -1,112 +1,246 @@
 # Binary, UUID, And Protected Values
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It defines binary
+descriptors, UUID descriptors, catalog UUID references, large binary values,
+protected-material references, conversion behavior, security behavior, and
+diagnostics.
 
 Generation task: `data_types_binary_uuid_protected`
 
-
 ## Purpose
 
-UUID literals are identity evidence and must match the expected object class. Binary values bind through byte-oriented descriptors and are not interchangeable with text unless an explicit conversion surface admits it.
+Binary values are byte sequences. They do not carry character set, collation, or
+text rendering behavior. UUID values are 16-byte descriptors that can be used as
+application values or as catalog identity references. Protected values are
+security-controlled references to sensitive material and must not be treated as
+ordinary text or binary data.
 
-Protected material uses catalog and security policy. Raw secret material must not be exposed through ordinary parser packets, support bundles, diagnostics, or bridge messages. SBsql can inspect redacted metadata when authorized, but protected value reachability and release remain engine/security decisions.
+The binder must know which of these categories a value belongs to before SBLR
+admission.
+
+## Supported Binary And Identity Types
+
+| Canonical Type | Common Aliases | Unit | Payload | Bounds |
+| --- | --- | --- | --- | --- |
+| `binary(n)` | fixed byte string | bytes | Exactly `n` bytes plus descriptor metadata. | Exactly `n` bytes. |
+| `varbinary(n)` | `binary varying(n)` | bytes | 0 through `n` bytes plus descriptor metadata. | 0 through `n` bytes. |
+| `blob` | `binary large object` | bytes or stream chunks | Binary large-value stream or overflow value. | Policy bounded by row, page, overflow, stream, and transaction limits. |
+| `bytea` | byte array alias where admitted | bytes | Variable byte payload. | Policy bounded. |
+| `uuid` | UUID literal and UUID-valued columns | 16 bytes | RFC-style UUID bytes. | Exactly 16 bytes. |
+| `secret_ref` | protected secret reference | UUID plus metadata | Reference to protected material. | Raw secret is not carried in ordinary values. |
+| `protected_blob_ref` | protected binary reference | UUID plus metadata | Reference to protected binary material. | Raw payload release requires policy. |
+
+## Binary Values
+
+Binary values are byte descriptors. They can be compared, hashed, stored,
+indexed, streamed, and rendered only through binary-aware operations.
+
+| Operation | Rule |
+| --- | --- |
+| Equality | Byte-wise descriptor comparison unless a domain or operation policy overrides it. |
+| Ordering | Byte-ordering only where a binary descriptor admits ordering. |
+| Hashing | Uses binary descriptor hash rules. |
+| Text functions | Refused unless an explicit conversion supplies charset/encoding. |
+| Pattern matching | Requires a binary-pattern operation, not text collation. |
+| Indexing | Uses binary descriptor keys and exact recheck where required. |
+| Large values | Use overflow or stream descriptors; inline row storage is not assumed. |
 
 Example:
 
 ```sql
-comment on table uuid '018f0000-0000-7000-8000-000000000001' is 'stable automation target';
+create table app.file_store (
+    file_id uuid primary key,
+    digest binary(32) not null,
+    payload blob
+);
 ```
 
-## Supported Binary And Identity Types
+## Binary Literals And Encoding
 
-| Canonical Type | Common Aliases | Length Unit | Payload | Value Bounds |
-| --- | --- | --- | --- | --- |
-| `binary(n)` | fixed byte string | bytes | Exactly `n` bytes plus descriptor metadata | Exactly `n` bytes. |
-| `varbinary(n)` | `binary varying(n)` | bytes | 0 through `n` bytes plus descriptor metadata | 0 through `n` bytes. |
-| `blob` | `binary large object`, SBsql `BLOB SUB_TYPE BINARY` where admitted | bytes or stream chunks | Byte LOB/overflow stream | Policy bounded by stream, row, page, overflow, and transaction limits. |
-| `bytea` | SBsql byte array where admitted | bytes | Variable byte payload | Policy bounded; SBsql parser renders SBsql byte syntax. |
-| `image` | SBsql binary/image alias where admitted | bytes or stream chunks | Binary LOB/overflow stream | Policy bounded; not portable outside profiles that admit the alias. |
-| `uuid` | `uuid '<text>'` literal form | 16 bytes | RFC-style UUID bytes | 16 bytes; canonical text form is 36 characters with hyphens. |
-| `secret_ref` | protected value reference | UUID plus metadata | Reference only | Raw secret value is not carried in ordinary parser, diagnostic, bridge, or support-bundle packets. |
-| `protected_blob_ref` | protected binary reference | UUID plus metadata | Reference only | Protected payload release is engine/security authority only. |
+Binary literal syntax binds to byte descriptors. Text literal syntax does not
+become binary without an explicit conversion.
 
-Binary values are byte sequences. They do not carry charset or collation descriptors, so text functions, pattern matching, text indexes, and SBsql text rendering require an explicit conversion or a SBsql rule.
+| Form | Binding Rule |
+| --- | --- |
+| Binary literal | Binds as bytes under the active binary literal profile. |
+| Hex text converted to binary | Requires explicit decode or cast function. |
+| Binary converted to text | Requires explicit encoding or charset conversion. |
+| Large binary stream | Requires a stream descriptor and policy-admitted frame limits. |
 
-## UUID Contract
+Invalid hex, invalid base encoding, unsupported encoding, over-length values,
+and binary/text confusion return diagnostics.
+
+## UUID Values
+
+UUID values store as 16 bytes. Default rendering is canonical lower-case text
+with hyphens.
 
 | Rule | Behavior |
 | --- | --- |
-| Stored size | UUID values store as 16 bytes. |
-| Literal syntax | `uuid '<canonical-text>'` binds a UUID value. A bare string is text until cast or context forces a UUID descriptor. |
-| Object identity | When a UUID references a catalog object, binder and authorization must verify the expected object class. A syntactically valid UUID is only identity evidence. |
-| Rendering | Default rendering is lower-case canonical UUID text. SBsql policies may render compatible text but cannot change the underlying 16-byte identity. |
-| Comparison and indexes | UUID equality and ordering use the descriptor comparison rule and remain subject to MGA and security recheck. |
+| Scalar UUID | Application data value with UUID descriptor. |
+| Catalog UUID reference | Identity evidence for a catalog object. Requires object-class, visibility, sandbox, authorization, and policy checks. |
+| Literal syntax | `uuid '<canonical-text>'` binds a UUID value. |
+| String literal | Remains text until a cast or target descriptor binds it as UUID. |
+| Comparison | Uses UUID descriptor comparison. |
+| Indexing | UUID indexes use UUID descriptor keys and still require MGA/security recheck. |
 
-## Protected Value Contract
+Example:
 
-Protected values are never ordinary binary or text values. SBsql may refer to protected material by authorized reference, but the raw material must not appear in:
+```sql
+select cast('018f0000-0000-7000-8000-000000000001' as uuid) as object_id;
+```
 
-- parser packets;
-- SBLR payloads that are not explicitly protected-value envelopes;
-- bridge messages;
-- support bundles;
-- diagnostics;
-- logs;
-- metadata rendering catalog rows.
+Example catalog reference:
 
-Authorized inspection surfaces may return redacted metadata, reachability, owner, policy, expiry, rotation status, or audit identity. They must not return the raw secret.
+```sql
+describe table uuid '018f0000-0000-7000-8000-000000000001';
+```
 
-## Binary SBsql Profile Notes
+Knowing a UUID does not grant access. The resolved object must be visible and
+authorized.
 
-| SBsql Profile | Binary Compatibility Rule |
+## Protected Values
+
+Protected values are not ordinary binary or text values. They are references to
+material whose release is controlled by security policy.
+
+Protected material can include:
+
+- secrets;
+- credentials;
+- keys;
+- tokens;
+- encrypted payload handles;
+- protected binary values;
+- protected text values;
+- sensitive diagnostic fields;
+- support-bundle evidence references.
+
+Rules:
+
+- raw secret material must not appear in ordinary parser packets;
+- raw secret material must not appear in SBLR payloads except in an explicitly
+  protected envelope admitted by policy;
+- support bundles, logs, diagnostics, catalog display, and bridge messages
+  redact protected material by default;
+- casts from protected material to raw text or raw binary are denied unless an
+  explicit release surface admits them;
+- export, backup, replication, migration, bridge, and stream routes are release
+  surfaces when protected values can cross a boundary;
+- release should produce audit evidence where policy requires it.
+
+## Protected References
+
+A protected reference can be stored or passed without exposing the raw value.
+
+| Reference | Meaning |
 | --- | --- |
-| SBsql | Preserves `BLOB SUB_TYPE BINARY`, segment/stream behavior where surfaced, and denies server-local file access unless a policy-admitted SBsql-only operation explicitly allows it. |
-| SBsql | Preserves `bytea` syntax and binary literal rendering where surfaced. |
-| SBsql | Preserves `BINARY`, `VARBINARY`, `BLOB` family aliases, byte length semantics, and rendering. |
-| SBsql | Preserves BLOB affinity and literal behavior while binding stored values to binary descriptors. |
+| `secret_ref` | Reference to secret material managed by an admitted provider or protected catalog. |
+| `protected_blob_ref` | Reference to protected binary material. |
+| Protected descriptor UUID | Descriptor controlling release, masking, rotation, expiry, and audit behavior. |
+| Policy binding | Rule that decides who can resolve, rotate, release, export, or inspect the protected material. |
+
+Authorized inspection can return redacted metadata such as owner, status,
+rotation time, expiry time, reachability, and policy identity. It must not
+return the raw protected value unless release authority is explicitly admitted.
+
+## Conversion Rules
+
+| Conversion | Default Rule |
+| --- | --- |
+| `binary` to `text` | Explicit encoding or charset conversion required. |
+| `text` to `binary` | Explicit encoding, decode function, or binary assignment policy required. |
+| `text` to `uuid` | Explicit cast or UUID target required; invalid text is diagnostic. |
+| `uuid` to `text` | Explicit cast renders canonical UUID text. |
+| `uuid` to `binary(16)` | Explicit cast required. |
+| `binary(16)` to `uuid` | Explicit cast required and validates UUID descriptor policy. |
+| Protected reference to raw value | Denied unless an explicit release route admits it. |
+| Raw value to protected reference | Requires an admitted protect/store route, not an ordinary cast. |
+
+## Large Binary Values And Streams
+
+Large binary values use overflow or stream descriptors. They are not guaranteed
+to fit inline in a row.
+
+Stream contracts define:
+
+- frame type;
+- maximum frame size;
+- maximum in-flight bytes;
+- timeout;
+- cancellation behavior;
+- retry behavior;
+- checksum or digest policy where required;
+- transaction ownership;
+- protected-material release behavior;
+- completion diagnostics.
+
+## Diagnostics
+
+| Condition | Required Result |
+| --- | --- |
+| Binary length mismatch for `binary(n)` | Assignment diagnostic. |
+| `varbinary(n)` length exceeded | Assignment diagnostic. |
+| Large binary exceeds stream or overflow policy | Stream/storage diagnostic. |
+| Invalid binary literal encoding | Parse or conversion diagnostic. |
+| Binary used as text without conversion | Bind diagnostic. |
+| UUID text invalid | Conversion diagnostic. |
+| UUID object reference wrong class | Bind/admission diagnostic. |
+| UUID object hidden or outside sandbox | Denied or redacted not-visible diagnostic. |
+| Protected material rendered without authority | Denied message vector. |
+| Protected material appears in support output | Test failure; output must be redacted. |
 
 ## Syntax Productions
 
 ```ebnf
+binary_type             ::= fixed_binary_type
+                          | varying_binary_type
+                          | large_binary_type ;
+```
+
+```ebnf
+fixed_binary_type       ::= "binary" "(" length ")" ;
+varying_binary_type     ::= "varbinary" "(" length ")"
+                          | "binary" "varying" "(" length ")" ;
+large_binary_type       ::= "blob"
+                          | "binary" "large" "object"
+                          | "bytea" ;
+```
+
+```ebnf
+uuid_type               ::= "uuid" ;
+uuid_literal            ::= "uuid" string_literal ;
 uuid_ref                ::= "UUID" string_literal ;
 ```
 
 ```ebnf
-literal                 ::= string_literal | numeric_literal | boolean_literal | null_literal | uuid_ref ;
+protected_type          ::= "secret_ref"
+                          | "protected_blob_ref" ;
 ```
 
-## Binding And Execution
+## Related Pages
 
-- The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
-- SBLR admission maps the bound request to an operation family and result shape.
-- The engine rechecks authority before durable state changes or result delivery.
+- [Type System Overview](type_system_overview.md)
+- [UUID Catalog Identity](../core_paradigms/uuid_catalog_identity.md)
+- [Security And Sandboxing](../core_paradigms/security_and_sandboxing.md)
+- [Conversion Matrix](conversion_matrix.md)
+- [COPY Streaming Import And Export](../syntax_reference/copy.md)
+- [Backup, Restore, Replication, And Migration](../syntax_reference/backup_restore_replication_migration.md)
 
-## Related Surface Rows
+## Verification Checklist
 
-| Surface | Kind | Family | Lowering | Result Shape |
-| --- | --- | --- | --- | --- |
-| currency | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| FULL | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| POSITION(substringINtext) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| current_server | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| st_x | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| lock_timeout_default | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| bit_count | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| operation_evidence_required | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| USING | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| chr(integer) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| element(multiset<T>) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| st_makepoint | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| REAL | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| sb.special_form.coalesce | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| dearmor | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| regexp_like(string,pattern[,flags]) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| IMAGE | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| CURSOR | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| jsonb_object_keys | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| client_min_messages | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| json_array_elements | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| sb.scalar.nullif | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| cos | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| boolean_cast_from_text | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+The binary/UUID/protected-value proof suite should demonstrate:
+
+- fixed binary values require exactly the declared byte count;
+- variable binary values reject values above the declared byte count;
+- binary values do not accidentally use text charset or collation;
+- binary-to-text conversion requires an explicit encoding or charset rule;
+- UUID values store and compare as 16-byte descriptors;
+- UUID catalog references require object-class and authorization checks;
+- knowing an object UUID does not bypass sandboxing;
+- large binary streams enforce frame and transaction limits;
+- protected references do not expose raw values in ordinary result sets;
+- logs, diagnostics, support bundles, bridge messages, and catalog projections
+  redact protected material by default;
+- release routes produce explicit authorization and audit evidence where policy
+  requires it.

@@ -1,124 +1,294 @@
 # Conversion Matrix
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It defines descriptor
+conversion behavior for implicit assignment, explicit casts, `try_cast`,
+literal binding, domain validation, lossy conversion, protected values, and
+diagnostics.
 
 Generation task: `data_types_conversion_matrix`
 
-
 ## Purpose
 
-The conversion model is a matrix of source descriptor, target descriptor, cast class, lossiness, null behavior, collation/charset rule, timezone rule, and security policy. SBsql documentation groups these rules by behavior rather than by SBsql spelling.
+The conversion model is a matrix of:
 
-Use explicit casts when a script crosses family boundaries: text to numeric, text to temporal, binary to UUID, JSON scalar to typed scalar, vector element conversion, or protected value rendering. Unsupported or ambiguous conversions must fail before execution.
+- source descriptor;
+- target descriptor;
+- conversion class;
+- null behavior;
+- exactness or lossiness;
+- charset and collation rule;
+- precision, scale, timezone, and dimension rule;
+- domain policy;
+- protected-material policy;
+- diagnostic behavior.
+
+Implicit conversion is intentionally narrow. Explicit casts are how scripts
+cross descriptor-family boundaries in a readable and testable way.
+
+## Conversion Classes
+
+| Class | Meaning |
+| --- | --- |
+| Contextual literal binding | A literal adopts a target descriptor because the surrounding expression supplies one. |
+| Implicit assignment | Safe assignment conversion used for storage, parameters, returns, variables, and generated values. |
+| Explicit cast | User-requested conversion through `cast(value as type)`. |
+| Try-cast | User-requested conversion that returns a documented failure value instead of raising the normal diagnostic. |
+| Named conversion function | Function with explicit conversion semantics, such as decode, encode, rounding, parsing, or formatting. |
+| Domain validation | Conversion to a domain carrier followed by domain null policy and constraints. |
+| Protected release | Policy-controlled release of protected material; not an ordinary cast. |
+
+## Core Matrix
+
+| Source | Target | Implicit Assignment | Explicit Cast | Notes |
+| --- | --- | --- | --- | --- |
+| `null` | nullable target | yes | yes | `null` adopts the target descriptor. Non-nullable targets reject it. |
+| `boolean` | `text` | no | yes | Renders canonical boolean text unless a profile renders otherwise. |
+| `text` | `boolean` | no | yes | Accepted spellings are descriptor-owned. Invalid text is diagnostic. |
+| signed integer | wider signed integer | yes | yes | Refused if value cannot fit. |
+| unsigned integer | wider unsigned integer | yes | yes | Refused if value cannot fit. |
+| signed integer | unsigned integer | no | yes | Negative or out-of-range values are refused. |
+| unsigned integer | signed integer | no | yes | Refused if value cannot fit target signed range. |
+| exact integer | decimal | yes when exact | yes | Target precision and scale must admit the exact value. |
+| decimal | exact integer | no | yes | Fractional values require explicit rounding function; plain cast refuses. |
+| exact numeric | approximate real | policy-dependent | yes | May be lossy. Portable scripts cast explicitly. |
+| approximate real | exact numeric | no | yes | NaN, infinity, out-of-range, or non-exact values are refused unless policy admits them. |
+| numeric | text | no | yes | Rendering is descriptor-owned. |
+| text | numeric | no | yes | Invalid syntax or out-of-range values are diagnostics. |
+| text | temporal | no | yes | Requires valid literal syntax for target descriptor. |
+| temporal | text | no | yes | Rendering uses timezone/profile policy. |
+| temporal | temporal | policy-dependent | yes | Precision, timezone, and calendar loss must be explicit. |
+| binary | text | no | yes | Requires encoding or charset rule. |
+| text | binary | no | yes | Requires encoding or decode rule. |
+| text | UUID | no | yes | Text must be canonical or profile-admitted UUID text. |
+| UUID | text | no | yes | Renders canonical UUID text unless policy says otherwise. |
+| UUID | `binary(16)` | no | yes | Converts to 16-byte representation. |
+| `binary(16)` | UUID | no | yes | Validates UUID descriptor policy. |
+| document scalar | scalar target | no | yes | Extracted value must be scalar and compatible with target descriptor. |
+| scalar | document | no | yes | Creates a document scalar value. |
+| array element | another element descriptor | no | yes | Every element conversion must be admitted. |
+| vector element | another vector element descriptor | no | yes | Dimension must match; quantization/lossiness must be explicit. |
+| protected reference | raw text or binary | no | no ordinary cast | Requires protected release authority. |
+| raw text or binary | protected reference | no | no ordinary cast | Requires admitted protect/store route. |
+| domain | base carrier | policy-dependent | yes | Domain erasure must be admitted. |
+| base carrier | domain | assignment only after validation | yes | Carrier conversion, null policy, and constraints all apply. |
+
+## Implicit Assignment
+
+Implicit assignment is allowed only when conversion is exact, deterministic, and
+does not hide policy-sensitive behavior.
+
+Safe default examples:
+
+| Source | Target | Reason |
+| --- | --- | --- |
+| `int16` | `int32` | Exact widening. |
+| `int32` | `int64` | Exact widening. |
+| `int64` | `int128` | Exact widening. |
+| `uint16` | `uint32` | Exact widening. |
+| `uint64` | `uint128` | Exact widening. |
+| exact integer | `decimal(p,0)` | Exact when precision admits the value. |
+| `null` | nullable target | Null adopts target descriptor. |
+| domain | same domain target | Same domain descriptor. |
+
+Implicit assignment should not silently:
+
+- truncate text or binary values;
+- round decimals;
+- lose timezone;
+- lose fractional temporal precision;
+- convert text to numeric;
+- reinterpret binary as text;
+- erase domain policy;
+- release protected material;
+- change vector dimension;
+- coerce document missing values to null unless the operator says so.
+
+## Explicit Cast
+
+Explicit casts state user intent and make conversion auditable.
+
+```sql
+select cast(:amount_text as decimal(18,2)) as amount;
+
+select cast(:event_text as timestamp(6) with time zone) as event_at;
+
+select cast(:id_text as uuid) as object_id;
+```
+
+An explicit cast still fails when the target descriptor refuses the value.
+Explicit does not mean unsafe.
+
+## Try-Cast
+
+`try_cast` follows the same conversion rules as `cast`, but returns the
+documented failure result instead of raising the ordinary conversion diagnostic.
+The failure result is descriptor-owned and must be distinguishable from a valid
+value when the contract requires it.
 
 Example:
 
 ```sql
-select cast(payload->>'created_at' as timestamp with time zone)
+select try_cast(payload->>'amount' as decimal(18,2)) as parsed_amount
 from app.ingest_document;
 ```
 
-## Core Conversion Matrix
+`try_cast` must not hide protected-material denial, sandbox denial, recovery
+fences, or operation admission failures.
 
-| Source Family | Target Family | Implicit Assignment | Explicit Cast | Notes |
-| --- | --- | --- | --- | --- |
-| `null_value` | any nullable target | yes | yes | `null` adopts the target descriptor. Non-nullable targets reject it. |
-| `boolean` | `text` | policy-dependent | yes | Renders canonical `true`/`false` unless SBsql policy overrides rendering. |
-| `text` | `boolean` | no | yes | Accepted spellings are descriptor controlled. Invalid text is diagnostic. |
-| `integer` | wider signed integer | yes | yes | Refused if the value cannot fit the target width. |
-| `unsigned_integer` | wider unsigned integer | yes | yes | Refused if the value cannot fit the target width. |
-| `integer` | unsigned integer | no | yes | Refused for negative values or out-of-range values. |
-| `unsigned_integer` | signed integer | no | yes | Refused if the unsigned value cannot fit the signed target. |
-| `integer` or `unsigned_integer` | `decimal` | yes when exact | yes | Precision/scale must admit the exact value. |
-| `decimal` | integer | no | yes | Fractional values, overflow, or unsupported rounding are diagnostic. |
-| exact numeric | approximate real | policy-dependent | yes | May be lossy. Portable scripts should cast explicitly. |
-| approximate real | exact numeric | no | yes | NaN, infinity, out-of-range, and non-exact values are diagnostic unless profile admits a policy. |
-| numeric | `text` | no | yes | Rendering is descriptor controlled. |
-| `text` | numeric | no | yes | Parsing is descriptor controlled; invalid text is diagnostic. |
-| `text` | `date`, `time`, `timestamp`, `interval` | no | yes | Requires accepted literal syntax for the target descriptor. |
-| temporal | `text` | no | yes | Rendering is timezone/profile controlled. |
-| temporal | temporal | policy-dependent | yes | Date/time/timestamp conversions require explicit timezone and precision rules when ambiguous. |
-| `binary` | `text` | no | yes | Requires charset or encoding rule. Raw byte reinterpretation is not implicit. |
-| `text` | `binary` | no | yes | Requires encoding rule. |
-| `text` | `uuid` | no | yes | Text must be canonical or profile-admitted UUID text. |
-| `uuid` | `text` | no | yes | Renders canonical UUID text unless profile overrides. |
-| `json`/`jsonb` scalar | scalar target | no | yes | Path extraction must produce a scalar compatible with the target descriptor. |
-| scalar | `json`/`jsonb` | no | yes | Creates a JSON scalar value. |
-| `vector<T,n>` | `vector<U,n>` | no | yes | Dimension must match; element conversion must be admitted and may require quantization proof. |
-| `array<T>` | `array<U>` | no | yes | Every element conversion must be admitted. |
+## Lossy Conversions
 
-## Implicit Conversion Policy
-
-Implicit conversion is intentionally narrow. It exists for safe assignment and overload resolution only when the conversion is exact, deterministic, and cannot hide SBsql-defined behavior.
-
-| Implicitly Safe Class | Examples |
+| Conversion | Default Behavior |
 | --- | --- |
-| Widening exact integer | `int16` to `int32`, `int32` to `int64`, `int64` to `int128`, `uint16` to `uint32`, `uint64` to `uint128`. |
-| Exact integer to admitted decimal | `int32` to `decimal(18,0)`. |
-| `null` to nullable target | `null` assigned to `varchar(30)` or `timestamp`. |
-| Domain to base carrier | A domain value used where its underlying carrier is required, subject to domain policy. |
+| Decimal with fractional part to integer | Refuse. Use explicit rounding/truncation function when intended. |
+| Decimal to lower precision/scale | Refuse unless explicit cast policy admits rounding. |
+| Approximate real to exact numeric | Refuse for non-exact values, NaN, infinity, or out-of-range values. |
+| Timestamp to lower precision | Refuse unless explicit cast policy admits precision loss. |
+| Timestamp with timezone to timestamp without timezone | Refuse unless timezone-loss policy is explicit. |
+| Text to shorter text | Refuse unless explicit truncation function is used. |
+| Text charset conversion with unrepresentable characters | Refuse unless explicit replacement policy is used. |
+| Binary to text with invalid encoded bytes | Refuse. |
+| Vector float32 to int8 | Refuse unless quantization policy is explicit. |
+| Document number to lower-precision numeric | Refuse unless explicit cast policy admits the loss. |
 
-All other family-crossing conversions should be written as `cast(...)`, `try_cast(...)`, a SBsql-defined conversion function, or a named SBsql conversion function.
+## Domain Conversion
 
-## Lossy And Refused Conversions
+Conversion to a domain follows the domain assignment pipeline:
 
-| Conversion | Default Result |
+1. convert value to the domain carrier descriptor;
+2. apply domain null policy;
+3. apply parent domain constraints;
+4. apply target domain constraints;
+5. apply element policy for compound values;
+6. preserve the target domain descriptor where the operation says so.
+
+Example:
+
+```sql
+select cast(:candidate as app.email_text) as email_value;
+```
+
+Domain validation is not optional merely because the carrier conversion
+succeeded.
+
+## Text, Binary, And UUID Conversions
+
+| Conversion | Required Detail |
 | --- | --- |
-| Out-of-range numeric cast | Diagnostic refusal. |
-| Decimal to integer with fractional value | Diagnostic refusal unless an explicit rounding function is used. |
-| Approximate real NaN or infinity to exact numeric | Diagnostic refusal unless a profile explicitly admits a sentinel mapping. |
-| Text to numeric/date/UUID with invalid syntax | Diagnostic refusal. |
-| Text to binary without charset/encoding rule | Diagnostic refusal. |
-| Binary to text with invalid encoded bytes | Diagnostic refusal. |
-| Vector dimension mismatch | Diagnostic refusal. |
-| Protected value to raw text or raw binary | Denied. Protected values require authorized release surfaces and never ordinary casts. |
+| Text to binary | Encoding, decode rule, or binary target policy. |
+| Binary to text | Charset or encoding rule. |
+| Text to UUID | Canonical or admitted UUID text syntax. |
+| UUID to text | Rendering policy, default canonical UUID text. |
+| UUID to binary | Explicit 16-byte representation. |
+| Binary to UUID | Exactly 16 bytes and UUID descriptor validation. |
 
-## SBsql Coercion Rules
+Text is never treated as a byte string without conversion. Binary is never
+treated as text without conversion.
 
-SBsql parsers may accept SBsql-defined implicit casts, literal forms, or assignment behavior, but those rules are local to that SBsql session policy. The parser must lower the SBsql behavior into a canonical descriptor decision before SBLR admission. The engine does not infer coercion from plain SBsql text.
+## Temporal Conversions
+
+| Conversion | Rule |
+| --- | --- |
+| Text to date/time/timestamp/interval | Explicit cast or target context required. Invalid fields are diagnostic. |
+| Timestamp to timestamp with timezone | Requires timezone rule. |
+| Timestamp with timezone to timestamp | Requires explicit timezone-loss rule. |
+| Date to timestamp | Admitted when default time-of-day policy is explicit. |
+| Timestamp to date | Refuses time loss unless explicit cast policy admits it. |
+| Interval to numeric | Requires explicit operation defining units. |
+| Numeric to interval | Requires explicit operation defining units. |
+
+## Document And Collection Conversions
+
+| Conversion | Rule |
+| --- | --- |
+| Document scalar to scalar | Requires path extraction and scalar descriptor compatibility. |
+| Scalar to document scalar | Explicit cast creates document scalar value. |
+| Document object to text | Rendering operation, not ordinary implicit conversion. |
+| Array to array | Element-by-element conversion required. |
+| Row to record | Shape and field descriptor compatibility required. |
+| Record to row | Target field names/order and descriptor compatibility required. |
+| Missing document path | Missing is not null unless the operator descriptor says so. |
+
+## Vector, Spatial, Graph, Search, Time-Series, And Key-Value Conversions
+
+| Conversion | Rule |
+| --- | --- |
+| Vector element type change | Explicit cast; dimension must match; quantization/lossiness must be explicit. |
+| Vector dimension change | Refused unless a named operation defines padding, projection, or embedding conversion. |
+| Geometry/geography conversion | Requires spatial reference and geodetic policy. |
+| Graph node/edge/path conversion | Requires graph descriptor compatibility and identity preservation. |
+| Search document conversion | Requires tokenization profile and rendering policy. |
+| Time-series sample conversion | Requires time key and value descriptor compatibility. |
+| Key-value conversion | Requires key and value descriptor compatibility. |
+
+## Protected Material
+
+Protected material cannot be released through ordinary casts.
+
+| Request | Default Result |
+| --- | --- |
+| Protected reference to text | Denied unless a release surface admits it. |
+| Protected reference to binary | Denied unless a release surface admits it. |
+| Protected value in diagnostic | Redacted. |
+| Protected value in support bundle | Redacted unless release policy admits specific evidence. |
+| Protected value in backup/replication/migration stream | Requires explicit release/export policy. |
 
 ## Syntax Productions
 
 ```ebnf
-expression              ::= expression_atom (binary_operator expression_atom)* ;
+cast_expression         ::= "cast" "(" expression "as" data_type ")" ;
 ```
 
 ```ebnf
-literal                 ::= string_literal | numeric_literal | boolean_literal | null_literal | uuid_ref ;
+try_cast_expression     ::= "try_cast" "(" expression "as" data_type ")" ;
 ```
 
-## Binding And Execution
+```ebnf
+conversion_function     ::= function_call ;
+```
 
-- The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
-- SBLR admission maps the bound request to an operation family and result shape.
-- The engine rechecks authority before durable state changes or result delivery.
+```ebnf
+assignment_conversion   ::= expression target_descriptor ;
+```
 
-## Related Surface Rows
+## Diagnostics
 
-| Surface | Kind | Family | Lowering | Result Shape |
-| --- | --- | --- | --- | --- |
-| currency | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| FULL | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| POSITION(substringINtext) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| current_server | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| st_x | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| lock_timeout_default | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| bit_count | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| operation_evidence_required | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| USING | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| chr(integer) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| element(multiset<T>) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| st_makepoint | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| REAL | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| sb.special_form.coalesce | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| dearmor | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| regexp_like(string,pattern[,flags]) | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| IMAGE | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| CURSOR | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| jsonb_object_keys | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| client_min_messages | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| json_array_elements | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| sb.scalar.nullif | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| cos | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
-| boolean_cast_from_text | function | expression_runtime | yes | rs.sbsql.scalar_value.v1 |
+| Condition | Required Result |
+| --- | --- |
+| Unsupported conversion | Bind diagnostic or unsupported message vector. |
+| Ambiguous conversion | Bind diagnostic requiring explicit cast. |
+| Out-of-range value | Conversion diagnostic. |
+| Lossy conversion without policy | Conversion diagnostic. |
+| Invalid literal syntax | Parse or conversion diagnostic according to phase. |
+| Domain validation failure | Domain diagnostic. |
+| Protected release denied | Denied message vector. |
+| Descriptor stale | Rebind or stale descriptor diagnostic. |
+| Recovery state uncertain | Fail-closed diagnostic before conversion side effects. |
+
+## Related Pages
+
+- [Type System Overview](type_system_overview.md)
+- [Numeric Types](numeric_types.md)
+- [Text, Collation, And Charset](text_collation_and_charset.md)
+- [Temporal Types](temporal_types.md)
+- [Binary, UUID, And Protected Values](binary_uuid_and_protected_values.md)
+- [Document, Graph, Vector, And Multimodel Types](document_graph_vector_and_multimodel_types.md)
+- [Domains, Casts, And Coercion](domains_casts_and_coercion.md)
+- [Operator Type Result Matrix](../syntax_reference/operator_type_result_matrix.md)
+
+## Verification Checklist
+
+The conversion proof suite should demonstrate:
+
+- implicit conversions are limited to exact, deterministic cases;
+- explicit casts do not bypass range, precision, timezone, charset, or policy
+  checks;
+- `try_cast` uses the same validation path as `cast`;
+- decimal, temporal, text, binary, and vector lossy conversions are refused by
+  default;
+- domain conversion applies carrier conversion, null policy, parent checks, and
+  target checks;
+- binary/text conversions require explicit encoding or charset rules;
+- protected material cannot be released by ordinary casts;
+- document missing/null behavior is preserved through conversions;
+- vector dimension mismatches are refused;
+- stale descriptor and security epochs invalidate cached conversion decisions.
