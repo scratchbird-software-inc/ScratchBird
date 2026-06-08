@@ -77,9 +77,9 @@ Audit event rows are retained when protected reference reachability is purged. S
    `sys.type_descriptor.descriptor_uuid`.
 2. `sys.domain_element.domain_uuid` references
    `sys.domain_descriptor.domain_uuid`.
-3. `sys.donor_type_mapping.descriptor_uuid` references
+3. `sys.type_alias_mapping.descriptor_uuid` references
    `sys.type_descriptor.descriptor_uuid` when non-null.
-4. `sys.donor_type_mapping.domain_uuid` references
+4. `sys.type_alias_mapping.domain_uuid` references
    `sys.domain_descriptor.domain_uuid` when non-null.
 5. `sys.type_capability.descriptor_uuid` references
    `sys.type_descriptor.descriptor_uuid`.
@@ -103,20 +103,20 @@ Audit event rows are retained when protected reference reachability is purged. S
 ## Direct Amendment: Catalog Support for Compatibility Domains and Method Translation
 
 
-The system catalog SHALL include catalog structures sufficient to define compatibility domains and donor method translation without depending on donor runtimes. The following logical catalog families are required; physical table names may follow the catalog naming rules for the sys schema.
+The system catalog SHALL include catalog structures sufficient to define compatibility domains and SBsql method translation without depending on SBsql runtimes. The following logical catalog families are required; physical table names may follow the catalog naming rules for the sys schema.
 
 | Catalog family | Required purpose |
 | --- | --- |
-| `TYPE_COMPATIBILITY_PROFILE` | Records donor family, donor version profile, compatibility mode, parser family, render rules, feature gates, and profile status |
+| `TYPE_COMPATIBILITY_PROFILE` | Records SBsql family, SBsql version profile, compatibility mode, parser family, render rules, feature gates, and profile status |
 | `DOMAIN_INTERFACE` | Records object-like, media-like, URI-like, structured, distinct, and opaque domain interfaces |
-| `DOMAIN_ATTRIBUTE` | Records exposed attributes, element paths, types, ordinals, visibility, nullability, and donor names |
+| `DOMAIN_ATTRIBUTE` | Records exposed attributes, element paths, types, ordinals, visibility, nullability, and SBsql names |
 | `DOMAIN_METHOD` | Records method descriptors, constructor descriptors, package routine mappings, argument descriptors, return descriptors, and visibility |
 | `DOMAIN_LOCATOR_POLICY` | Records locator target class, dereference policy, privilege policy, backup/restore policy, replication policy, and external access policy |
 | `DOMAIN_OPAQUE_PAYLOAD_POLICY` | Records serialization identity, validation behavior, comparison behavior, hash behavior, display behavior, and preservation policy |
-| `DONOR_METHOD_BINDING` | Records donor-to-ScratchBird method translation, SBLR lowering, C++ UDR bridge target, inverse rendering, and diagnostic mapping |
+| `SOURCE_METHOD_BINDING` | Records SBsql-to-ScratchBird method translation, SBLR lowering, C++ UDR bridge target, inverse rendering, and diagnostic mapping |
 | `COMPATIBILITY_CONFORMANCE_REF` | Records conformance manifest references for datatype, method, metadata, and diagnostic behavior |
 
-Catalog entries that reference executable behavior SHALL reference ScratchBird-native routines, generated SBLR, or registered C++ UDR packages only. The catalog SHALL NOT contain trusted execution targets for non-C++ donor runtimes.
+Catalog entries that reference executable behavior SHALL reference ScratchBird-native routines, generated SBLR, or registered C++ UDR packages only. The catalog SHALL NOT contain trusted execution targets for non-C++ SBsql runtimes.
 
 
 ## Direct Amendment: MGA Transaction Catalog Tables
@@ -155,7 +155,7 @@ Cluster catalog tables must include standalone absence behavior and must not be 
 ## Direct amendment: zero-grey system catalog table definition contract
 
 
-This appendix controls the logical table-definition layer for local `sys.*` catalog objects. A third-party implementor must be able to create catalog tables, derived views, constraints, dependency edges, cache invalidation records, diagnostics, and conformance tests from this appendix and its cited private specification appendices without inspecting source code or importing donor catalog behavior.
+This appendix controls the logical table-definition layer for local `sys.*` catalog objects. A third-party implementor must be able to create catalog tables, derived views, constraints, dependency edges, cache invalidation records, diagnostics, and conformance tests from this appendix and its cited private specification appendices without inspecting source code or importing SBsql catalog behavior.
 
 ### Table definition completeness rule
 
@@ -243,7 +243,7 @@ Tables whose names begin with `sys.cluster_` in older text must be classified be
 
 `sys.catalog.cluster_type_transport_profile` remains a local type transport compatibility profile unless a cluster authority appendix explicitly creates a `cluster.sys.*` transport table.
 
-`sys.cluster_transaction` and `sys.cluster_transaction_participant` are cluster-authority tables. They must be placed under `cluster.sys.*` when a cluster exists and must be absent in standalone databases. A standalone database may expose local read-only compatibility views that report cluster support absent, but those views must not fabricate cluster rows.
+`sys.cluster_transaction` and `sys.cluster_transaction_participant` are cluster-authority tables. They must be placed under `cluster.sys.*` when a cluster exists and must be absent in standalone databases. A standalone database may expose local read-only catalog projection views that report cluster support absent, but those views must not fabricate cluster rows.
 
 ### Table creation algorithm
 
@@ -265,7 +265,7 @@ If validation fails, no partial table definition may become visible. Bootstrap f
 
 ### Mutation and derived view rules
 
-Base catalog tables are transactionally mutable only through engine-managed catalog operations. Parser SQL text, donor metadata requests, driver metadata requests, support-bundle export, and diagnostics rendering must not mutate base catalog tables directly.
+Base catalog tables are transactionally mutable only through engine-managed catalog operations. Parser SQL text, SBsql metadata requests, driver metadata requests, support-bundle export, and diagnostics rendering must not mutate base catalog tables directly.
 
 Derived views must define:
 
@@ -273,12 +273,12 @@ Derived views must define:
 - join/key rules;
 - redaction behavior;
 - hidden-row behavior;
-- donor rendering profile when applicable;
+- SBsql rendering profile when applicable;
 - stale behavior when source epochs change;
 - diagnostic emitted when rendering cannot preserve semantics;
 - whether trusted UUIDs are exposed.
 
-A donor compatibility view is a rendering surface. It does not become engine identity, transaction authority, recovery authority, or execution authority.
+A metadata rendering view is a rendering surface. It does not become engine identity, transaction authority, recovery authority, or execution authority.
 
 ### Required diagnostics
 
@@ -329,7 +329,7 @@ Catalog table-definition conformance must prove:
 - local `sys.*` and cluster `cluster.sys.*` placement rules are enforced;
 - cluster-authority tables are absent when no cluster exists;
 - derived views preserve base-row UUID authority and redaction policy;
-- donor views cannot become engine authority;
+- SBsql views cannot become engine authority;
 - invalid table definitions fail atomically without partial visibility;
 - parser, driver, and support-bundle surfaces cannot mutate base catalog tables directly;
 - cache invalidation reaches every declared dependent surface.
@@ -343,7 +343,7 @@ A system catalog table is implementation-ready only when it has a complete table
 - Base rows require UUID identity and lifecycle metadata.
 - Visibility is policy controlled and may use redaction.
 - Derived views must preserve base-row authority and must not become engine identity.
-- Donor compatibility projections are rendering surfaces only.
+- catalog projections are rendering surfaces only.
 
 ## Example Inspection
 

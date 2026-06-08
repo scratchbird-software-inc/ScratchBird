@@ -9,7 +9,7 @@ Generation task: `syntax_reference_refusal_vectors`
 
 A recognized command may still be refused. The three high-level refusal classes are unsupported, denied, and unlicensed.
 
-Unsupported means the surface is not available in the active profile or build. Denied means authorization, sandboxing, policy, or safety rules refuse it. Unlicensed means the parser and route are known but the capability is not licensed for the running product profile.
+Unsupported means the surface is not available in the SBsql or build. Denied means authorization, sandboxing, policy, or safety rules refuse it. Unlicensed means the parser and route are known but the capability is not licensed for the running product profile.
 
 Example:
 
@@ -39,7 +39,7 @@ unlicensed_statement    ::= unlicensed_token_sequence ;
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

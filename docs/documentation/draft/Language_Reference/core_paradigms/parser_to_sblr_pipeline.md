@@ -9,7 +9,7 @@ Generation task: `core_paradigms_parser_to_sblr`
 
 The parser pipeline starts with contextual tokenization, builds a lossless parse tree, binds names to UUID catalog identity, attaches descriptor information, and emits an SBLR operation family. The engine verifier then validates the envelope before execution.
 
-This separation is deliberate. It lets SBsql stay expressive and context sensitive while the engine keeps one authoritative binary command language. Parser packages for donor dialects follow the same rule: they translate donor text into ScratchBird authority, not into donor engine authority.
+This separation is deliberate. It lets SBsql stay expressive and context sensitive while the engine keeps one authoritative binary command language. Parser packages for SBsql sessions follow the same rule: they translate SBsql text into ScratchBird authority, not into parser-owned engine authority.
 
 A successful statement therefore has three visible phases: parse success, bind/admission success, and engine execution success. A failure in any phase returns a message vector rather than continuing with guessed behavior.
 
@@ -41,7 +41,7 @@ native_statement        ::= query_statement
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

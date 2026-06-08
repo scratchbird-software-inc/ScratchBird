@@ -1,12 +1,12 @@
 # Procedural SQL
 
-This page is part of the SBsql Language Reference Manual. It is the entry point for SBsql procedural SQL, also called PSQL in generated surface rows and compatibility profiles.
+This page is part of the SBsql Language Reference Manual. It is the entry point for the SBsql procedural block language.
 
 ## Purpose
 
-Procedural SQL is the block language used inside procedures, functions, triggers, execute blocks, migration helpers, and parser-profile routine bodies. It lets a routine declare variables, run SQL statements, branch, loop, use cursors, raise diagnostics, handle exceptions, return values, and capture trigger/event context.
+Procedural SQL is the block language used inside procedures, functions, triggers, execute blocks, migration helpers, and SBsql-session routine bodies. It lets a routine declare variables, run SQL statements, branch, loop, use cursors, raise diagnostics, handle exceptions, return values, and capture trigger/event context.
 
-Procedural SQL text is not runtime authority. The parser accepts the body, the binder resolves names to UUIDs and descriptors, the body is encoded into executable SBLR or trusted UDR metadata, and the original source text is retained as reference text for editing, migration, auditing, and donor compatibility.
+Procedural SQL text is not runtime authority. The parser accepts the body, the binder resolves names to UUIDs and descriptors, the body is encoded into executable SBLR or trusted UDR metadata, and the original source text is retained as reference text for editing, migration, auditing, and metadata rendering.
 
 ## Reference Structure
 
@@ -133,17 +133,17 @@ Triggers run inside engine-defined table or event contexts. They can read transi
 | Diagnostics | `signal`, `resignal`, exception handlers, message vectors | See [procedural_sql_exceptions.md](procedural_sql_exceptions.md). |
 | Trigger/event control | `old`, `new`, transition rows, event payload, `when` filter | See [procedural_sql_triggers_and_events.md](procedural_sql_triggers_and_events.md). |
 
-## Donor Profile Boundary
+## SBsql Procedural Boundary
 
-Donor parsers may accept Firebird PSQL, PostgreSQL PL/pgSQL-like forms, MySQL/MariaDB routine forms, or other donor procedural syntax where that donor supports it. They must lower supported donor behavior into this authority model:
+SBsql procedural bodies must use the SBsql procedural grammar admitted by the active session policy. Any accepted procedural form must lower into this authority model:
 
-- preserve donor syntax as original reference text;
+- preserve the accepted SBsql source as original reference text;
 - bind executable behavior to UUIDs and descriptors;
 - store executable SBLR or trusted UDR metadata;
-- preserve donor-specific null, cursor, exception, trigger, and result-row rules through the donor profile;
-- refuse unsupported donor procedural constructs with a canonical message vector.
+- preserve SBsql-defined null, cursor, exception, trigger, and result-row rules through session policy;
+- refuse unsupported SBsql procedural constructs with a canonical message vector.
 
-SBsql procedural SQL is the common ScratchBird model. It is not a license to mix donor dialects inside one routine unless a parser profile explicitly owns that syntax.
+SBsql procedural SQL is the common ScratchBird model. It is not a license to mix unrelated syntax families inside one routine unless a session policy explicitly owns that syntax.
 
 ## Implementation And Verification Expectations
 
@@ -157,4 +157,4 @@ Every procedural routine should be testable through:
 - diagnostic/message-vector proof;
 - original-source retention proof;
 - executable-body re-open proof;
-- donor-profile compatibility proof where the routine came from a donor parser.
+- SBsql lowering proof where the routine came from a parser route.

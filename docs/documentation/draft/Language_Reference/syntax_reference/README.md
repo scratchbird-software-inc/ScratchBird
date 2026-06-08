@@ -6,7 +6,7 @@ This directory contains SBsql statement, expression, lifecycle, and clause refer
 
 | Topic | File |
 | --- | --- |
-| Operators, precedence, associativity, symbolic forms, and donor-profile aliases | [operators.md](operators.md) |
+| Operators, precedence, associativity, symbolic forms, and SBsql aliases | [operators.md](operators.md) |
 | Operator operand and result descriptor matrix | [operator_type_result_matrix.md](operator_type_result_matrix.md) |
 | Expression EBNF production | [ebnf/expression.md](ebnf/expression.md) |
 | Projection expressions | [projection.md](projection.md) |
@@ -21,6 +21,8 @@ This directory contains SBsql statement, expression, lifecycle, and clause refer
 | UPDATE | [update.md](update.md) |
 | DELETE | [delete.md](delete.md) |
 | WITH and recursive CTEs | [with.md](with.md) |
+| Databases | [database.md](database.md) |
+| Filespaces | [filespace.md](filespace.md) |
 | Tables | [table.md](table.md) |
 | Schema tree, schema variables, name resolution, and sandbox roots | [schema_tree_and_name_resolution.md](schema_tree_and_name_resolution.md) |
 | Indexes | [index.md](index.md) |

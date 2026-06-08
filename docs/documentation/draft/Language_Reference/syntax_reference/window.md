@@ -29,7 +29,7 @@ window_clause           ::= "WINDOW" window_definition_list ;
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

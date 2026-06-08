@@ -48,7 +48,7 @@ Required columns:
 - Base rows require UUID identity and lifecycle metadata.
 - Visibility is policy controlled and may use redaction.
 - Derived views must preserve base-row authority and must not become engine identity.
-- Donor compatibility projections are rendering surfaces only.
+- catalog projections are rendering surfaces only.
 
 ## Example Inspection
 

@@ -51,7 +51,7 @@ kv_statement            ::= "KV" kv_action kv_payload ;
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 
@@ -68,7 +68,7 @@ kv_statement            ::= "KV" kv_action kv_payload ;
 | graph_constraint_stmt | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
 | kv_geo_verb | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
 | graph_traversal_stmt | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
-| opensearch_mapping_clause | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
+| fulltext_mapping_clause | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
 | vector_metric | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
 | timeseries_clause | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
 | kv_verifiable_op | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |

@@ -9,7 +9,7 @@ Generation task: `data_types_text_collation`
 
 Text values carry charset and collation descriptors. Comparisons, pattern matching, ordering, grouping, indexes, and generated columns use those descriptors rather than plain byte ordering.
 
-String length functions distinguish character length from encoded byte length. Donor profiles may render donor-compatible spellings, but the binding target is still a ScratchBird descriptor and operation UUID.
+String length functions distinguish character length from encoded byte length. The binding target is always a ScratchBird descriptor and operation UUID.
 
 Example:
 
@@ -24,9 +24,9 @@ order by name collate default;
 
 | Canonical Type | Common Aliases | Length Unit | Payload | Value Bounds |
 | --- | --- | --- | --- | --- |
-| `char(n)` | `character(n)` | characters | Fixed-length encoded text, padded according to descriptor/profile | Exactly `n` characters after profile padding rules. Byte size depends on charset. |
+| `char(n)` | `character(n)` | characters | Fixed-length encoded text, padded according to the descriptor | Exactly `n` characters after padding rules. Byte size depends on charset. |
 | `varchar(n)` | `character varying(n)` | characters | Variable-length encoded text plus descriptor metadata | 0 through `n` characters. Byte size depends on charset and may be lower than row/page policy. |
-| `text` | donor `text` spellings where admitted | characters | Variable-length encoded text | Policy bounded; large values may use overflow storage. |
+| `text` | none | characters | Variable-length encoded text | Policy bounded; large values may use overflow storage. |
 | `clob` | `character large object` | characters or stream chunks | Character LOB/overflow stream | Policy bounded; stream, page, and transaction limits apply. |
 | `nchar(n)` | national character fixed text | characters | Fixed-length text using the national character descriptor | Exactly `n` characters under the configured national charset. |
 | `nvarchar(n)` | national character varying text | characters | Variable-length national text | 0 through `n` characters under the configured national charset. |
@@ -38,9 +38,9 @@ The declared length of character types is a character count, not a byte count. T
 
 | Charset Class | Contract |
 | --- | --- |
-| Database default charset | Used when a declaration omits `character set` and the active donor profile does not override the default. |
+| Database default charset | Used when a declaration omits `character set`. |
 | Column charset | Stored in the column descriptor and used by comparisons, functions, indexes, and result rendering. |
-| Literal charset introducer | Binds a literal to a specific charset before coercion. Unsupported or lossy literal conversion is refused unless an explicit profile rule admits it. |
+| Literal charset introducer | Binds a literal to a specific charset before coercion. Unsupported or lossy literal conversion is refused unless an explicit SBsql rule admits it. |
 | National character set | Used by `nchar`, `nvarchar`, and `nclob` descriptors. |
 | Binary data | Not a charset. `blob`, `bytea`, `binary`, and `varbinary` values require explicit conversion before text functions may operate on them. |
 
@@ -53,17 +53,8 @@ Collation is part of the descriptor and is therefore part of equality, ordering,
 | Default collation | Applied when neither the column nor expression states a collation. |
 | Explicit `collate` | Overrides the expression collation for that expression and for an index key if used in an index definition. |
 | Case/accent sensitivity | Descriptor-owned. Do not infer byte order from display text. |
-| Deterministic comparison | Required for ordinary equality, uniqueness, grouping, and B-tree ordering. Non-deterministic collations must be refused for features that require stable key order unless a provider-specific proof admits them. |
-| Donor rendering | Donor parsers render donor collation names but bind them to ScratchBird descriptors. A Firebird collation name, PostgreSQL collation name, or MySQL collation name is not authority outside its active donor profile. |
-
-## Text Donor Profile Notes
-
-| Donor Profile | Text Compatibility Rule |
-| --- | --- |
-| Firebird | Preserves Firebird `CHAR`, `VARCHAR`, character set, collation, `BLOB SUB_TYPE TEXT`, fixed-length padding, and comparison behavior for admitted Firebird declarations. |
-| PostgreSQL | Preserves PostgreSQL `text`, `varchar`, `char`, collation-visible ordering, pattern operators, and expression index collation behavior where surfaced. |
-| MySQL and MariaDB | Preserves MySQL-family charset and collation defaults, per-column charset/collation clauses, and text/blob family distinctions. |
-| SQLite | Preserves SQLite declared affinity and collation names where surfaced, while descriptor binding owns execution. |
+| Deterministic comparison | Required for ordinary equality, uniqueness, grouping, and B-tree ordering. Non-deterministic collations must be refused for features that require stable key order unless a provider proof admits them. |
+| Rendering | Collation names in SQL bind to ScratchBird collation descriptors. The text spelling is not runtime authority after binding. |
 
 ## Syntax Productions
 
@@ -74,7 +65,7 @@ expression              ::= expression_atom (binary_operator expression_atom)* ;
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

@@ -15,6 +15,8 @@ grant_statement         ::= "GRANT" grant_payload "TO" principal_ref grant_optio
 
 `grant_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
+Full user-facing semantics for grant targets, privilege classes, role membership, grant option, sandbox behavior, and effective privilege resolution are documented in [../security_and_privilege_statements.md](../security_and_privilege_statements.md).
+
 ## Used By
 
 | Parent Production |

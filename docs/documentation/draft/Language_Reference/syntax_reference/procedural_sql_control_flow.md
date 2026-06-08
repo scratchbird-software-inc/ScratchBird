@@ -36,7 +36,7 @@ end
 
 | Rule | Behavior |
 | --- | --- |
-| Condition descriptor | Must be boolean or explicitly castable to boolean by the active profile. |
+| Condition descriptor | Must be boolean or explicitly castable to boolean by the SBsql. |
 | SQL null | A null condition is treated as not true. Portable code should write explicit `is true`, `is false`, or `is unknown` where needed. |
 | Branch binding | Both branches are parsed and bound before execution. |
 | Authorization | Statements inside both branches must be admissible under routine security policy. |
@@ -54,7 +54,7 @@ case
 end case;
 ```
 
-A searched `CASE` evaluates boolean conditions in order. If no branch matches and no `ELSE` exists, the routine may raise a case-not-found diagnostic where the active profile requires it. The functional reference exposes a procedural case-not-found surface in [../functional_reference/sb_core.md](../functional_reference/sb_core.md).
+A searched `CASE` evaluates boolean conditions in order. If no branch matches and no `ELSE` exists, the routine may raise a case-not-found diagnostic where the SBsql requires it. The functional reference exposes a procedural case-not-found surface in [../functional_reference/sb_core.md](../functional_reference/sb_core.md).
 
 ## Simple CASE
 
@@ -81,7 +81,7 @@ begin
 end
 ```
 
-The condition is evaluated before each iteration. A null condition is not true unless a donor profile explicitly defines a different rule.
+The condition is evaluated before each iteration. A null condition is not true unless a SBsql policy explicitly defines a different rule.
 
 ## REPEAT
 
@@ -93,7 +93,7 @@ until v_attempts >= 3
 end repeat;
 ```
 
-`REPEAT` runs the body before evaluating the condition. Generated surface rows identify `psql_repeat_stmt`; donor profiles may render equivalent syntax differently.
+`REPEAT` runs the body before evaluating the condition. Generated surface rows identify `psql_repeat_stmt`; SBsql policies may render equivalent syntax differently.
 
 ## LOOP
 
@@ -134,7 +134,7 @@ begin
 end
 ```
 
-Counter loops are descriptor-bound integer loops. Step, bounds, overflow, and direction are profile/policy controlled. Use explicit integer descriptors when portability matters.
+Counter loops are descriptor-bound integer loops. Step, bounds, overflow, and direction are policy controlled. Use explicit integer descriptors when portability matters.
 
 ## Cursor FOR
 
@@ -155,9 +155,9 @@ Cursor loops are detailed in [procedural_sql_cursors.md](procedural_sql_cursors.
 | Statement | Contract |
 | --- | --- |
 | `leave` | Exits the innermost loop or the named loop where profile admits labels. |
-| `exit` | Alias or profile-specific exit form. |
+| `exit` | Alias or SBsql-specific exit form. |
 | `continue` | Skips to the next loop iteration where admitted. |
-| labeled exit | Exits the named block or loop if the active profile supports labels. |
+| labeled exit | Exits the named block or loop if the SBsql supports labels. |
 
 Labels are resolver input only. They do not create durable identity.
 
@@ -199,16 +199,16 @@ execute statement :sql_text
   into v_result;
 ```
 
-Dynamic execution is policy-sensitive. If admitted, the dynamic statement is parsed and lowered through the normal SBsql or parser-profile pipeline. It cannot bypass:
+Dynamic execution is policy-sensitive. If admitted, the dynamic statement is parsed and lowered through the normal SBsql or SBsql-session pipeline. It cannot bypass:
 
-- parser profile admission;
+- SBsql session policy admission;
 - UUID name resolution;
 - descriptor checks;
 - materialized authorization;
 - SBLR admission;
 - MGA transaction authority.
 
-Server-local file access, low-level repair/verify behavior, or donor physical-page operations must be refused unless an SBsql-only administrative policy explicitly admits the operation.
+Server-local file access, low-level repair/verify behavior, or SBsql physical-page operations must be refused unless an SBsql-only administrative policy explicitly admits the operation.
 
 ## Transaction Control In Routines
 
@@ -227,8 +227,8 @@ Top-level `commit` and `rollback` inside stored routines are restricted. MGA rem
 | `savepoint` | Admitted inside an active transaction when policy allows. |
 | `rollback to savepoint` | Admitted for local undo inside current transaction. |
 | `release savepoint` | Admitted for local savepoint cleanup. |
-| `commit` | Refused in ordinary stored routines unless a profile/policy admits an autonomous context. |
-| `rollback` | Refused in ordinary stored routines unless a profile/policy admits an autonomous context. |
+| `commit` | Refused in ordinary stored routines unless a policy admits an autonomous context. |
+| `rollback` | Refused in ordinary stored routines unless a policy admits an autonomous context. |
 | autonomous block | Creates a separate transaction context with explicit policy and recovery evidence. |
 
 ## Diagnostics And Proof

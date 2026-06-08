@@ -23,14 +23,14 @@ comment on table uuid '018f0000-0000-7000-8000-000000000001' is 'stable automati
 | --- | --- | --- | --- | --- |
 | `binary(n)` | fixed byte string | bytes | Exactly `n` bytes plus descriptor metadata | Exactly `n` bytes. |
 | `varbinary(n)` | `binary varying(n)` | bytes | 0 through `n` bytes plus descriptor metadata | 0 through `n` bytes. |
-| `blob` | `binary large object`, Firebird `BLOB SUB_TYPE BINARY` where admitted | bytes or stream chunks | Byte LOB/overflow stream | Policy bounded by stream, row, page, overflow, and transaction limits. |
-| `bytea` | PostgreSQL-compatible byte array where admitted | bytes | Variable byte payload | Policy bounded; PostgreSQL parser renders PostgreSQL byte syntax. |
-| `image` | donor-compatible binary/image alias where admitted | bytes or stream chunks | Binary LOB/overflow stream | Policy bounded; not portable outside profiles that admit the alias. |
+| `blob` | `binary large object`, SBsql `BLOB SUB_TYPE BINARY` where admitted | bytes or stream chunks | Byte LOB/overflow stream | Policy bounded by stream, row, page, overflow, and transaction limits. |
+| `bytea` | SBsql byte array where admitted | bytes | Variable byte payload | Policy bounded; SBsql parser renders SBsql byte syntax. |
+| `image` | SBsql binary/image alias where admitted | bytes or stream chunks | Binary LOB/overflow stream | Policy bounded; not portable outside profiles that admit the alias. |
 | `uuid` | `uuid '<text>'` literal form | 16 bytes | RFC-style UUID bytes | 16 bytes; canonical text form is 36 characters with hyphens. |
 | `secret_ref` | protected value reference | UUID plus metadata | Reference only | Raw secret value is not carried in ordinary parser, diagnostic, bridge, or support-bundle packets. |
 | `protected_blob_ref` | protected binary reference | UUID plus metadata | Reference only | Protected payload release is engine/security authority only. |
 
-Binary values are byte sequences. They do not carry charset or collation descriptors, so text functions, pattern matching, text indexes, and donor text rendering require an explicit conversion or a donor-profile rule.
+Binary values are byte sequences. They do not carry charset or collation descriptors, so text functions, pattern matching, text indexes, and SBsql text rendering require an explicit conversion or a SBsql rule.
 
 ## UUID Contract
 
@@ -39,7 +39,7 @@ Binary values are byte sequences. They do not carry charset or collation descrip
 | Stored size | UUID values store as 16 bytes. |
 | Literal syntax | `uuid '<canonical-text>'` binds a UUID value. A bare string is text until cast or context forces a UUID descriptor. |
 | Object identity | When a UUID references a catalog object, binder and authorization must verify the expected object class. A syntactically valid UUID is only identity evidence. |
-| Rendering | Default rendering is lower-case canonical UUID text. Donor profiles may render compatible text but cannot change the underlying 16-byte identity. |
+| Rendering | Default rendering is lower-case canonical UUID text. SBsql policies may render compatible text but cannot change the underlying 16-byte identity. |
 | Comparison and indexes | UUID equality and ordering use the descriptor comparison rule and remain subject to MGA and security recheck. |
 
 ## Protected Value Contract
@@ -52,18 +52,18 @@ Protected values are never ordinary binary or text values. SBsql may refer to pr
 - support bundles;
 - diagnostics;
 - logs;
-- donor compatibility catalog rows.
+- metadata rendering catalog rows.
 
 Authorized inspection surfaces may return redacted metadata, reachability, owner, policy, expiry, rotation status, or audit identity. They must not return the raw secret.
 
-## Binary Donor Profile Notes
+## Binary SBsql Profile Notes
 
-| Donor Profile | Binary Compatibility Rule |
+| SBsql Profile | Binary Compatibility Rule |
 | --- | --- |
-| Firebird | Preserves `BLOB SUB_TYPE BINARY`, segment/stream behavior where surfaced, and denies server-local file access unless a policy-admitted SBsql-only operation explicitly allows it. |
-| PostgreSQL | Preserves `bytea` syntax and binary literal rendering where surfaced. |
-| MySQL and MariaDB | Preserves `BINARY`, `VARBINARY`, `BLOB` family aliases, byte length semantics, and profile rendering. |
-| SQLite | Preserves BLOB affinity and literal behavior while binding stored values to binary descriptors. |
+| SBsql | Preserves `BLOB SUB_TYPE BINARY`, segment/stream behavior where surfaced, and denies server-local file access unless a policy-admitted SBsql-only operation explicitly allows it. |
+| SBsql | Preserves `bytea` syntax and binary literal rendering where surfaced. |
+| SBsql | Preserves `BINARY`, `VARBINARY`, `BLOB` family aliases, byte length semantics, and rendering. |
+| SBsql | Preserves BLOB affinity and literal behavior while binding stored values to binary descriptors. |
 
 ## Syntax Productions
 
@@ -78,7 +78,7 @@ literal                 ::= string_literal | numeric_literal | boolean_literal |
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

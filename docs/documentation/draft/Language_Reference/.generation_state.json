@@ -1,10 +1,10 @@
 {
   "current_phase": "completed",
-  "last_updated": "2026-06-08T13:22:21Z",
+  "last_updated": "2026-06-08T19:42:11Z",
   "progress_summary": {
-    "completed_tasks": 179,
+    "completed_tasks": 183,
     "percent_complete": 100.0,
-    "total_tasks": 179
+    "total_tasks": 183
   },
   "source_blueprint_id": "sbsql_complete_ebnf_function_operator_catalog_reference",
   "tasks": [
@@ -15,7 +15,7 @@
       "target_file": "core_paradigms/intro_and_mga.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T18:15:28Z",
       "id": "core_paradigms_parser_to_sblr",
       "status": "completed",
       "target_file": "core_paradigms/parser_to_sblr_pipeline.md"
@@ -27,13 +27,13 @@
       "target_file": "core_paradigms/uuid_catalog_identity.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T18:39:06Z",
       "id": "core_paradigms_transactions_and_recovery",
       "status": "completed",
       "target_file": "core_paradigms/transactions_and_recovery.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T18:28:28Z",
       "id": "core_paradigms_security_and_sandboxing",
       "status": "completed",
       "target_file": "core_paradigms/security_and_sandboxing.md"
@@ -75,13 +75,13 @@
       "target_file": "data_types/binary_uuid_and_protected_values.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T18:13:07Z",
       "id": "data_types_document_graph_vector",
       "status": "completed",
       "target_file": "data_types/document_graph_vector_and_multimodel_types.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T18:22:35Z",
       "id": "data_types_domains_and_casts",
       "status": "completed",
       "target_file": "data_types/domains_casts_and_coercion.md"
@@ -99,7 +99,7 @@
       "target_file": "syntax_reference/script_tokens_and_identifiers.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T18:09:04Z",
       "id": "syntax_reference_select",
       "status": "completed",
       "target_file": "syntax_reference/select.md"
@@ -147,37 +147,37 @@
       "target_file": "syntax_reference/order_by_limit_offset.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T19:39:24Z",
       "id": "syntax_reference_insert",
       "status": "completed",
       "target_file": "syntax_reference/insert.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T19:39:24Z",
       "id": "syntax_reference_update",
       "status": "completed",
       "target_file": "syntax_reference/update.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T19:39:24Z",
       "id": "syntax_reference_delete",
       "status": "completed",
       "target_file": "syntax_reference/delete.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T19:39:24Z",
       "id": "syntax_reference_merge_upsert",
       "status": "completed",
       "target_file": "syntax_reference/merge_and_upsert.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T18:39:06Z",
       "id": "syntax_reference_transaction_control",
       "status": "completed",
       "target_file": "syntax_reference/transaction_control.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T18:28:28Z",
       "id": "syntax_reference_security_privilege",
       "status": "completed",
       "target_file": "syntax_reference/security_and_privilege_statements.md"
@@ -189,13 +189,13 @@
       "target_file": "syntax_reference/management_and_operations.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T18:15:28Z",
       "id": "syntax_reference_backup_restore_replication_migration",
       "status": "completed",
       "target_file": "syntax_reference/backup_restore_replication_migration.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T18:13:07Z",
       "id": "syntax_reference_multimodel",
       "status": "completed",
       "target_file": "syntax_reference/multimodel_statements.md"
@@ -213,7 +213,7 @@
       "target_file": "syntax_reference/refusal_vectors.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T18:09:04Z",
       "id": "syntax_reference_table_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/table.md"
@@ -225,25 +225,25 @@
       "target_file": "syntax_reference/index.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T18:13:07Z",
       "id": "syntax_reference_schema_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/schema.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T19:02:22Z",
       "id": "syntax_reference_database_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/database.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T19:02:22Z",
       "id": "syntax_reference_filespace_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/filespace.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T18:22:35Z",
       "id": "syntax_reference_domain_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/domain.md"
@@ -261,7 +261,7 @@
       "target_file": "syntax_reference/sequence.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T18:09:04Z",
       "id": "syntax_reference_view_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/view.md"
@@ -279,7 +279,7 @@
       "target_file": "syntax_reference/procedure.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T18:49:46Z",
       "id": "syntax_reference_trigger_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/trigger.md"
@@ -291,9 +291,9 @@
       "target_file": "syntax_reference/policy_mask_and_rls.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:16Z",
-      "functions_processed": 661,
-      "functions_total": 661,
+      "completed_at": "2026-06-08T18:15:28Z",
+      "functions_processed": 605,
+      "functions_total": 605,
       "id": "sb_core",
       "status": "completed",
       "target_file": "functional_reference/sb_core.md"
@@ -425,22 +425,22 @@
       "target_file": "catalog_reference/sys_catalog_type_descriptor.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:22:35Z",
       "id": "catalog_sys_catalog_domain_descriptor",
       "status": "completed",
       "target_file": "catalog_reference/sys_catalog_domain_descriptor.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:22:35Z",
       "id": "catalog_sys_catalog_domain_element",
       "status": "completed",
       "target_file": "catalog_reference/sys_catalog_domain_element.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
-      "id": "catalog_sys_catalog_donor_type_mapping",
+      "completed_at": "2026-06-08T18:13:07Z",
+      "id": "catalog_sys_catalog_type_alias_mapping",
       "status": "completed",
-      "target_file": "catalog_reference/sys_catalog_donor_type_mapping.md"
+      "target_file": "catalog_reference/sys_catalog_type_alias_mapping.md"
     },
     {
       "completed_at": "2026-06-08T12:02:32Z",
@@ -731,7 +731,7 @@
       "target_file": "syntax_reference/ebnf/dml_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:42:11Z",
       "id": "ebnf_insert_statement",
       "production": "insert_statement",
       "status": "completed",
@@ -745,28 +745,28 @@
       "target_file": "syntax_reference/ebnf/values_source.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:42:11Z",
       "id": "ebnf_update_statement",
       "production": "update_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/update_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:42:11Z",
       "id": "ebnf_delete_statement",
       "production": "delete_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/delete_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:42:11Z",
       "id": "ebnf_merge_statement",
       "production": "merge_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/merge_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:42:11Z",
       "id": "ebnf_upsert_statement",
       "production": "upsert_statement",
       "status": "completed",
@@ -780,18 +780,46 @@
       "target_file": "syntax_reference/ebnf/ddl_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:02:22Z",
       "id": "ebnf_create_statement",
       "production": "create_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/create_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:49:46Z",
+      "id": "ebnf_create_event_trigger",
+      "production": "create_event_trigger",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/create_event_trigger.md"
+    },
+    {
+      "completed_at": "2026-06-08T18:49:46Z",
+      "id": "ebnf_event_trigger_event",
+      "production": "event_trigger_event",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/event_trigger_event.md"
+    },
+    {
+      "completed_at": "2026-06-08T19:02:22Z",
       "id": "ebnf_alter_statement",
       "production": "alter_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/alter_statement.md"
+    },
+    {
+      "completed_at": "2026-06-08T19:02:22Z",
+      "id": "ebnf_database_lifecycle_statement",
+      "production": "database_lifecycle_statement",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/database_lifecycle_statement.md"
+    },
+    {
+      "completed_at": "2026-06-08T19:02:22Z",
+      "id": "ebnf_filespace_lifecycle_statement",
+      "production": "filespace_lifecycle_statement",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/filespace_lifecycle_statement.md"
     },
     {
       "completed_at": "2026-06-08T12:02:32Z",
@@ -822,42 +850,42 @@
       "target_file": "syntax_reference/ebnf/recreate_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:39:06Z",
       "id": "ebnf_transaction_statement",
       "production": "transaction_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/transaction_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:39:06Z",
       "id": "ebnf_begin_transaction",
       "production": "begin_transaction",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/begin_transaction.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:39:06Z",
       "id": "ebnf_commit_transaction",
       "production": "commit_transaction",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/commit_transaction.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:39:06Z",
       "id": "ebnf_rollback_transaction",
       "production": "rollback_transaction",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/rollback_transaction.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:39:06Z",
       "id": "ebnf_savepoint_statement",
       "production": "savepoint_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/savepoint_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:39:06Z",
       "id": "ebnf_set_transaction",
       "production": "set_transaction",
       "status": "completed",
@@ -892,14 +920,14 @@
       "target_file": "syntax_reference/ebnf/drop_identity.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:28:28Z",
       "id": "ebnf_grant_statement",
       "production": "grant_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/grant_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T18:28:28Z",
       "id": "ebnf_revoke_statement",
       "production": "revoke_statement",
       "status": "completed",
@@ -1172,13 +1200,13 @@
       "target_file": "syntax_reference/ebnf/literal.md"
     },
     {
-      "completed_at": "2026-06-08T13:15:32Z",
+      "completed_at": "2026-06-08T18:13:07Z",
       "id": "syntax_reference_procedural_sql",
       "status": "completed",
       "target_file": "syntax_reference/procedural_sql.md"
     },
     {
-      "completed_at": "2026-06-08T13:15:32Z",
+      "completed_at": "2026-06-08T18:15:28Z",
       "id": "syntax_reference_procedural_sql_blocks",
       "status": "completed",
       "target_file": "syntax_reference/procedural_sql_blocks.md"
@@ -1202,13 +1230,13 @@
       "target_file": "syntax_reference/procedural_sql_exceptions.md"
     },
     {
-      "completed_at": "2026-06-08T13:15:32Z",
+      "completed_at": "2026-06-08T18:49:46Z",
       "id": "syntax_reference_procedural_sql_triggers_and_events",
       "status": "completed",
       "target_file": "syntax_reference/procedural_sql_triggers_and_events.md"
     },
     {
-      "completed_at": "2026-06-08T13:22:21Z",
+      "completed_at": "2026-06-08T18:15:28Z",
       "id": "syntax_reference_schema_tree_and_name_resolution",
       "status": "completed",
       "target_file": "syntax_reference/schema_tree_and_name_resolution.md"

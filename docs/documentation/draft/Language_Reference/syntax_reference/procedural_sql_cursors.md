@@ -24,8 +24,8 @@ declare cursor c_orders for
 | Query | Parsed, bound, and lowered to SBLR. |
 | Parameters | Bound from routine variables or parameters. |
 | Row descriptor | Derived from query projection descriptors. |
-| Scrollability | Forward-only by default unless descriptor/profile admits scrollable behavior. |
-| Holdability | Transaction-scoped by default unless descriptor/profile admits holdable behavior. |
+| Scrollability | Forward-only by default unless descriptor admits scrollable behavior. |
+| Holdability | Transaction-scoped by default unless descriptor admits holdable behavior. |
 | Sensitivity | Cursor sees rows according to its snapshot and profile policy. |
 
 ## Lifecycle
@@ -86,7 +86,7 @@ begin
 end
 ```
 
-`row_not_found()` is illustrative of a handler/context function. The exact name can be profile-specific; the operation must read procedural diagnostic context rather than inspect raw cursor state directly.
+`row_not_found()` is illustrative of a handler/context function. The exact name can be SBsql-specific; the operation must read procedural diagnostic context rather than inspect raw cursor state directly.
 
 ## Fetch Targets
 
@@ -171,5 +171,5 @@ A holdable cursor can survive a transaction boundary only where policy admits it
 - Cursor names are local symbols, not durable identity.
 - Cursor handles are not transaction authority.
 - Cursor state cannot bypass row visibility or security checks.
-- Parser-support UDRs may expose donor cursor behavior, but the engine cursor descriptor owns ScratchBird execution behavior.
+- Parser-support UDRs may expose SBsql cursor behavior, but the engine cursor descriptor owns ScratchBird execution behavior.
 - Cursor metadata can appear in support bundles only through authorized, redacted projections.

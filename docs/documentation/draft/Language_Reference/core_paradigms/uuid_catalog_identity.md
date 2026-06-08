@@ -7,9 +7,9 @@ Generation task: `core_paradigms_uuid_catalog_identity`
 
 ## Purpose
 
-ScratchBird catalog identity is UUID based. User-facing names, localized names, aliases, synonyms, and donor-visible spellings are resolver inputs. They are not durable identity.
+ScratchBird catalog identity is UUID based. User-facing names, localized names, aliases, synonyms, and SBsql-visible spellings are resolver inputs. They are not durable identity.
 
-The schema-tree and name-resolution contract is documented in [../syntax_reference/schema_tree_and_name_resolution.md](../syntax_reference/schema_tree_and_name_resolution.md), including current schema, home schema, search path, recursive schemas, and donor-parser sandbox roots.
+The schema-tree and name-resolution contract is documented in [../syntax_reference/schema_tree_and_name_resolution.md](../syntax_reference/schema_tree_and_name_resolution.md), including current schema, home schema, search path, recursive schemas, and SBsql-parser sandbox roots.
 
 This is why DDL and catalog inspection statements show both name-oriented behavior and UUID-oriented binding. Creating an object assigns stable identity. Renaming an object changes resolver state. Dropping or retiring an object updates catalog lifecycle and dependency state.
 
@@ -32,7 +32,7 @@ uuid_ref                ::= "UUID" string_literal ;
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

@@ -7,7 +7,7 @@ Generation task: `data_types_conversion_matrix`
 
 ## Purpose
 
-The conversion model is a matrix of source descriptor, target descriptor, cast class, lossiness, null behavior, collation/charset rule, timezone rule, and security policy. SBsql documentation groups these rules by behavior rather than by donor spelling.
+The conversion model is a matrix of source descriptor, target descriptor, cast class, lossiness, null behavior, collation/charset rule, timezone rule, and security policy. SBsql documentation groups these rules by behavior rather than by SBsql spelling.
 
 Use explicit casts when a script crosses family boundaries: text to numeric, text to temporal, binary to UUID, JSON scalar to typed scalar, vector element conversion, or protected value rendering. Unsupported or ambiguous conversions must fail before execution.
 
@@ -23,20 +23,20 @@ from app.ingest_document;
 | Source Family | Target Family | Implicit Assignment | Explicit Cast | Notes |
 | --- | --- | --- | --- | --- |
 | `null_value` | any nullable target | yes | yes | `null` adopts the target descriptor. Non-nullable targets reject it. |
-| `boolean` | `text` | profile-dependent | yes | Renders canonical `true`/`false` unless donor profile overrides rendering. |
-| `text` | `boolean` | no | yes | Accepted spellings are descriptor/profile controlled. Invalid text is diagnostic. |
+| `boolean` | `text` | policy-dependent | yes | Renders canonical `true`/`false` unless SBsql policy overrides rendering. |
+| `text` | `boolean` | no | yes | Accepted spellings are descriptor controlled. Invalid text is diagnostic. |
 | `integer` | wider signed integer | yes | yes | Refused if the value cannot fit the target width. |
 | `integer` | unsigned integer | no | yes | Refused for negative values or out-of-range values. |
 | `unsigned_integer` | signed integer | no | yes | Refused if the unsigned value cannot fit the signed target. |
 | `integer` or `unsigned_integer` | `decimal` | yes when exact | yes | Precision/scale must admit the exact value. |
 | `decimal` | integer | no | yes | Fractional values, overflow, or unsupported rounding are diagnostic. |
-| exact numeric | approximate real | profile-dependent | yes | May be lossy. Portable scripts should cast explicitly. |
+| exact numeric | approximate real | policy-dependent | yes | May be lossy. Portable scripts should cast explicitly. |
 | approximate real | exact numeric | no | yes | NaN, infinity, out-of-range, and non-exact values are diagnostic unless profile admits a policy. |
-| numeric | `text` | no | yes | Rendering is descriptor/profile controlled. |
-| `text` | numeric | no | yes | Parsing is descriptor/profile controlled; invalid text is diagnostic. |
+| numeric | `text` | no | yes | Rendering is descriptor controlled. |
+| `text` | numeric | no | yes | Parsing is descriptor controlled; invalid text is diagnostic. |
 | `text` | `date`, `time`, `timestamp`, `interval` | no | yes | Requires accepted literal syntax for the target descriptor. |
 | temporal | `text` | no | yes | Rendering is timezone/profile controlled. |
-| temporal | temporal | profile-dependent | yes | Date/time/timestamp conversions require explicit timezone and precision rules when ambiguous. |
+| temporal | temporal | policy-dependent | yes | Date/time/timestamp conversions require explicit timezone and precision rules when ambiguous. |
 | `binary` | `text` | no | yes | Requires charset or encoding rule. Raw byte reinterpretation is not implicit. |
 | `text` | `binary` | no | yes | Requires encoding rule. |
 | `text` | `uuid` | no | yes | Text must be canonical or profile-admitted UUID text. |
@@ -48,7 +48,7 @@ from app.ingest_document;
 
 ## Implicit Conversion Policy
 
-Implicit conversion is intentionally narrow. It exists for safe assignment and overload resolution only when the conversion is exact, deterministic, and cannot hide donor-specific behavior.
+Implicit conversion is intentionally narrow. It exists for safe assignment and overload resolution only when the conversion is exact, deterministic, and cannot hide SBsql-defined behavior.
 
 | Implicitly Safe Class | Examples |
 | --- | --- |
@@ -57,7 +57,7 @@ Implicit conversion is intentionally narrow. It exists for safe assignment and o
 | `null` to nullable target | `null` assigned to `varchar(30)` or `timestamp`. |
 | Domain to base carrier | A domain value used where its underlying carrier is required, subject to domain policy. |
 
-All other family-crossing conversions should be written as `cast(...)`, `try_cast(...)`, a donor-specific conversion function, or a named SBsql conversion function.
+All other family-crossing conversions should be written as `cast(...)`, `try_cast(...)`, a SBsql-defined conversion function, or a named SBsql conversion function.
 
 ## Lossy And Refused Conversions
 
@@ -72,9 +72,9 @@ All other family-crossing conversions should be written as `cast(...)`, `try_cas
 | Vector dimension mismatch | Diagnostic refusal. |
 | Protected value to raw text or raw binary | Denied. Protected values require authorized release surfaces and never ordinary casts. |
 
-## Donor Coercion Rules
+## SBsql Coercion Rules
 
-Donor parsers may accept donor-specific implicit casts, literal forms, or assignment behavior, but those rules are local to that parser profile. The parser must lower the donor behavior into a canonical descriptor decision before SBLR admission. The engine does not infer Firebird, PostgreSQL, MySQL, SQLite, or any other donor coercion from plain SBsql text.
+SBsql parsers may accept SBsql-defined implicit casts, literal forms, or assignment behavior, but those rules are local to that SBsql session policy. The parser must lower the SBsql behavior into a canonical descriptor decision before SBLR admission. The engine does not infer SBsql, SBsql, SBsql, SBsql, or any other SBsql coercion from plain SBsql text.
 
 ## Syntax Productions
 
@@ -89,7 +89,7 @@ literal                 ::= string_literal | numeric_literal | boolean_literal |
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

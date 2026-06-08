@@ -37,7 +37,7 @@ The package boundary is semantic, not a privilege boundary. A caller still needs
 | Syntax Forms | function_call |
 | Overloads | add_months(date,n) |
 | Return Type Rule | date shifted by whole months with end-of-month clamp semantics; descriptor=date |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -227,7 +227,7 @@ select age_in_years(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | clock_timestamp() |
 | Return Type Rule | current timestamp provider value from SBLR execution context; descriptor=timestamp_tz |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -265,7 +265,7 @@ select clock_timestamp() from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | current_date |
 | Return Type Rule | current date in session timezone |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -303,7 +303,7 @@ select current_date() from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | current_time[(precision)] |
 | Return Type Rule | current time in session timezone |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -340,8 +340,8 @@ select current_time(arg_1) from app.sample_values;
 | Kind | scalar |
 | Syntax Forms | keyword_or_function_call |
 | Overloads | current_timestamp[(precision)] |
-| Return Type Rule | transaction-stable timestamp by default; statement-stable only by donor profile |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Return Type Rule | transaction-stable timestamp by default; statement-stable only by SBsql policy |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -493,7 +493,7 @@ select date_diff(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | date_part(part,timestamp) |
 | Return Type Rule | extract temporal part as numeric |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -569,7 +569,7 @@ select date_sub(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | date_trunc(part,timestamp) |
 | Return Type Rule | truncate temporal value to part |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -645,7 +645,7 @@ select day_name(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | dow(date) |
 | Return Type Rule | day-of-week number extracted from date/timestamp argument; descriptor=int64 |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -683,7 +683,7 @@ select dow(temporal_value_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | doy(date) |
 | Return Type Rule | day-of-year number extracted from date/timestamp argument; descriptor=int64 |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -797,7 +797,7 @@ select from_unixtime(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | isodow(date) |
 | Return Type Rule | ISO day-of-week number extracted from date/timestamp argument; descriptor=int64 |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -835,7 +835,7 @@ select isodow(temporal_value_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | last_day(date) |
 | Return Type Rule | last calendar day of the input month; descriptor=date |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -873,7 +873,7 @@ select last_day(temporal_value_1) from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | localtime |
 | Return Type Rule | local time value derived from current timestamp context; descriptor=time |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -911,7 +911,7 @@ select localtime() from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | localtimestamp |
 | Return Type Rule | local timestamp value derived from current timestamp context without timezone suffix; descriptor=timestamp |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -949,7 +949,7 @@ select localtimestamp() from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | make_date(year,month,day) |
 | Return Type Rule | date constructed from year/month/day integer arguments; descriptor=date |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -1025,7 +1025,7 @@ select make_interval(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | make_time(hour,minute,second) |
 | Return Type Rule | time constructed from hour/minute/second integer arguments; descriptor=time |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -1063,7 +1063,7 @@ select make_time(arg_1, arg_2, arg_3) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | make_timestamp(year,month,day,hour,minute,second) |
 | Return Type Rule | timestamp constructed from date/time or integer date-time parts; descriptor=timestamp |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -1101,7 +1101,7 @@ select make_timestamp(arg_1, arg_2, arg_3, arg_4, arg_5, arg_6) from app.sample_
 | Syntax Forms | function_call |
 | Overloads | make_timestamptz(...,timezone) |
 | Return Type Rule | timestamp with timezone constructed from date/time and optional timezone text; descriptor=timestamp_tz |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -1253,7 +1253,7 @@ select next_day(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | now() |
 | Return Type Rule | transaction-stable timestamp by default |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -1291,7 +1291,7 @@ select now() from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | quarter(date) |
 | Return Type Rule | calendar quarter number extracted from date/timestamp argument; descriptor=int64 |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -1329,7 +1329,7 @@ select quarter(temporal_value_1) from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | statement_timestamp |
 | Return Type Rule | statement-start timestamp from SBLR execution context; descriptor=timestamp_tz |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -1367,7 +1367,7 @@ select statement_timestamp() from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | timeofday() |
 | Return Type Rule | current timestamp provider value rendered as character text; descriptor=character |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -1443,7 +1443,7 @@ select timezone(arg_1) from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | transaction_timestamp |
 | Return Type Rule | transaction-start timestamp from SBLR execution context when transaction context is present; descriptor=timestamp_tz |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -1481,7 +1481,7 @@ select transaction_timestamp() from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | week(date) |
 | Return Type Rule | ISO week number extracted from date/timestamp argument; descriptor=int64 |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |

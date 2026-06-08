@@ -9,7 +9,7 @@ Generation task: `core_paradigms_intro_and_mga`
 
 SBsql is a parser language for asking ScratchBird to perform work. The engine does not execute SQL text. The parser lowers admitted text into SBLR envelopes that carry UUID-resolved object identity, descriptor-bound values, transaction context, and diagnostic routing information.
 
-MGA is the transaction authority. A statement may request begin, commit, rollback, savepoint, retain, chain, or remote bridge participation, but finality belongs to the database transaction inventory and recovery model. This keeps donor syntax, client tools, and parser packages from becoming storage or recovery authority.
+MGA is the transaction authority. A statement may request begin, commit, rollback, savepoint, retain, chain, or remote bridge participation, but finality belongs to the database transaction inventory and recovery model. This keeps SBsql syntax, client tools, and parser packages from becoming storage or recovery authority.
 
 A practical reading rule follows from this: treat every name, keyword, and option in SBsql as evidence that must be bound. Treat every durable object, transaction outcome, and security decision as engine-owned state.
 
@@ -30,7 +30,7 @@ transaction_statement   ::= begin_transaction | commit_transaction | rollback_tr
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

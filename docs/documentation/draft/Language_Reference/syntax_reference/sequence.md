@@ -15,7 +15,7 @@ Sequences produce generated values through catalog-controlled state. Cache, rest
 2. Bind the statement to UUID catalog identity and descriptor metadata.
 3. Admit the catalog mutation through SBLR and engine verification.
 4. Make the mutation visible only when the owning transaction commits.
-5. Invalidate dependent plans, parser caches, driver metadata, UDR metadata, support-bundle projections, and donor compatibility views that rely on the changed object.
+5. Invalidate dependent plans, parser caches, driver metadata, UDR metadata, support-bundle projections, and metadata rendering views that rely on the changed object.
 6. Retire or drop the sequence only after dependency, privilege, transaction, recovery, and sandbox checks pass.
 
 ## Lifecycle Statement Surface
@@ -29,9 +29,9 @@ Sequences produce generated values through catalog-controlled state. Cache, rest
 | Show | `SHOW SEQUENCE ...`, `SHOW SEQUENCES` | Returns authorized sequence metadata and current-state projection according to policy. |
 | Describe | `DESCRIBE SEQUENCE ...` | Returns one sequence's descriptor, range, cache, cycle, ownership, dependency, and visibility metadata. |
 | Recreate | `RECREATE SEQUENCE ...` | Replaces sequence metadata only when restart and dependency behavior are explicitly admitted. |
-| Drop | `DROP SEQUENCE ... [RESTRICT | CASCADE]` | Retires the sequence only after default, generated-column, routine, and donor compatibility dependencies are handled. |
+| Drop | `DROP SEQUENCE ... [RESTRICT | CASCADE]` | Retires the sequence only after default, generated-column, routine, and metadata rendering dependencies are handled. |
 
-Sequence inspection does not grant value-generation authority. `NEXT VALUE`, donor generator aliases, and restart behavior remain separate execution surfaces with their own rights and transaction policy.
+Sequence inspection does not grant value-generation authority. `NEXT VALUE`, SBsql generator aliases, and restart behavior remain separate execution surfaces with their own rights and transaction policy.
 
 ## Practical Lifecycle Example
 
@@ -50,14 +50,14 @@ drop sequence app.order_number restrict;
 - User-visible names are resolver input; UUID rows are durable identity.
 - The parser cannot create catalog truth by accepting syntax.
 - Catalog DDL must be transactionally visible and rollback-safe.
-- Donor parser variants may render donor syntax, but catalog authority remains ScratchBird catalog authority.
+- SBsql parser variants may render SBsql syntax, but catalog authority remains ScratchBird catalog authority.
 - Support and diagnostic surfaces may inspect the object only through authorized projections.
 
 ## Verification Checklist
 
 | Check | Required Outcome |
 | --- | --- |
-| Parse | Statement shape is recognized by the active parser profile. |
+| Parse | Statement shape is recognized by the SBsql. |
 | Bind | Names, UUIDs, descriptors, options, and dependencies resolve exactly. |
 | Authorize | The effective user or agent UUID is allowed to mutate the object. |
 | Admit | SBLR route and result shape are accepted by the engine verifier. |

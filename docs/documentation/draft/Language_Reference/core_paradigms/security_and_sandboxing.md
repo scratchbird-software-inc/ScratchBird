@@ -9,9 +9,9 @@ Generation task: `core_paradigms_security_and_sandboxing`
 
 Security statements change durable authorization and policy state. The parser does not grant authority by recognizing a command. The effective user or agent UUID, active role context, group membership, policy snapshot, sandbox root, and object visibility rules decide admission.
 
-Donor parser sessions are sandboxed to the emulated database/workarea that they attach to. SBsql can administer the broader schema tree when authorized. Donor compatibility catalog views may expose projected metadata, but those views operate through grants and policy, not through parser privilege.
+Client and parser sessions may be sandboxed to the database or workarea root that they attach to. SBsql can administer the broader schema tree when authorized. Metadata rendering catalog views may expose projected metadata, but those views operate through grants and policy, not through parser privilege.
 
-Schema sandbox roots and resolver visibility are detailed in [../syntax_reference/schema_tree_and_name_resolution.md](../syntax_reference/schema_tree_and_name_resolution.md).
+Schema sandbox roots and resolver visibility are detailed in [../syntax_reference/schema_tree_and_name_resolution.md](../syntax_reference/schema_tree_and_name_resolution.md). Grant, revoke, role, group, and privilege semantics are detailed in [../syntax_reference/security_and_privilege_statements.md](../syntax_reference/security_and_privilege_statements.md).
 
 Explicit denial wins over allow. Hidden rows remain hidden unless a catalog projection has its own authority to render them.
 
@@ -36,7 +36,7 @@ principal_ref           ::= uuid_ref | qualified_name ;
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

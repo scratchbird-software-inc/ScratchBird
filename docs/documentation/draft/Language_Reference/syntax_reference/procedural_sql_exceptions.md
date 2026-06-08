@@ -50,7 +50,7 @@ end
 | `when not_found do ...` | Handles cursor/query no-row conditions where profile exposes a not-found condition. |
 | `when constraint_violation do ...` | Handles constraint class diagnostics where profile exposes class names. |
 
-The active profile defines which condition names are accepted. The engine still emits canonical message-vector records.
+The SBsql defines which condition names are accepted. The engine still emits canonical message-vector records.
 
 ## Handler Scope
 
@@ -147,7 +147,7 @@ exception
 end
 ```
 
-Profiles differ on whether no-row assignment yields nulls, a not-found condition, or a diagnostic. The active parser profile must preserve donor behavior while mapping the condition to canonical message-vector output.
+Profiles differ on whether no-row assignment yields nulls, a not-found condition, or a diagnostic. The SBsql must preserve SBsql behavior while mapping the condition to canonical message-vector output.
 
 ## Case Not Found
 

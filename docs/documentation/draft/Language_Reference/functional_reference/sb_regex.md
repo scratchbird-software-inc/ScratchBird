@@ -151,7 +151,7 @@ select regexp_count(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | regexp_like(string,pattern[,flags]) |
 | Return Type Rule | regex match using versioned regex engine |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |

@@ -1,6 +1,6 @@
 # Procedural SQL Triggers And Events
 
-This page documents table triggers, event triggers, transition values, `WHEN` filters, event capture, and trigger execution context.
+This page documents table triggers, event triggers, database/session/transaction lifecycle events, transition values, `WHEN` filters, event capture, and trigger execution context.
 
 Related pages: [procedural_sql.md](procedural_sql.md), [trigger.md](trigger.md), [procedural_sql_blocks.md](procedural_sql_blocks.md), [procedural_sql_exceptions.md](procedural_sql_exceptions.md), [security_and_privilege_statements.md](security_and_privilege_statements.md), [policy_mask_and_rls.md](policy_mask_and_rls.md).
 
@@ -34,7 +34,7 @@ table_trigger           ::= "CREATE" trigger_options? "TRIGGER" trigger_name
                             "AS" routine_body ;
 ```
 
-The EBNF is descriptive. The exact accepted syntax is profile-aware and context-sensitive.
+The EBNF is descriptive. The exact accepted syntax is session-policy-aware and context-sensitive.
 
 ## Timing
 
@@ -115,7 +115,7 @@ Generated columns, identity columns, protected columns, masked fields, and polic
 
 ## Event Trigger Shape
 
-Event triggers capture database, schema, DDL, security, operational, or profile-admitted events rather than row changes.
+Event triggers capture database lifecycle, session lifecycle, transaction lifecycle, schema, DDL, security, policy, operational, or session-policy-admitted events rather than row changes.
 
 ```sql
 create event trigger app.audit_table_ddl
@@ -142,6 +142,38 @@ end;
 
 The generated surface rows include `event_trigger_filter` and `event_trigger_security_clause`; event trigger execution is still an engine-defined event dispatch, not a parser-owned hook.
 
+## Lifecycle Event Triggers
+
+Database, session, and transaction lifecycle triggers use the event-trigger model. They receive a read-only `event` descriptor, not `old` or `new` transition rows.
+
+```sql
+create event trigger app.database_connect_audit
+on database connect
+as
+begin
+  insert into app.connection_audit(event_name, database_uuid, session_uuid, occurred_at)
+  values (event.name, event.database_uuid, event.session_uuid, current_timestamp);
+end;
+```
+
+```sql
+create event trigger app.transaction_rollback_audit
+on transaction rollback
+as
+begin
+  insert into app.transaction_audit(event_name, transaction_uuid, phase, occurred_at)
+  values (event.name, event.transaction_uuid, event.phase, current_timestamp);
+end;
+```
+
+| Event Family | Examples | Contract |
+| --- | --- | --- |
+| Database lifecycle | `database connect`, `database disconnect`, `database attach`, `database detach`, `database open`, `database close`, recovery state changes | Admission events may deny before a usable session or database state is exposed. Terminal events are observation/cleanup events. |
+| Session lifecycle | `session connect`, `session authenticate`, `session authorization change`, `session disconnect`, `session cancel`, `session timeout` | Security-sensitive fields are redacted according to the effective trigger security mode. |
+| Transaction lifecycle | `transaction start`, `transaction prepare`, `transaction commit`, `transaction rollback`, savepoint lifecycle | The event can observe or deny only where its phase admits that behavior. MGA transaction inventory remains finality authority. |
+
+Unqualified `on transaction commit` and `on transaction rollback` are phase-aware event classes. Where the trigger needs separate before/after/failure behavior, use the explicit phase forms documented in [trigger.md](trigger.md).
+
 ## Event Context
 
 An event trigger receives a read-only event context descriptor. The exact fields are event-class dependent.
@@ -150,7 +182,7 @@ An event trigger receives a read-only event context descriptor. The exact fields
 | --- | --- | --- |
 | Event identity | event UUID, event class, event tag | Engine-provided and read-only. |
 | Object identity | object UUID, object class, schema UUID, object name | UUID is authority; names are display/resolver evidence. |
-| Principal/session | principal UUID, session UUID, parser profile, connection UUID | Redacted according to security policy. |
+| Principal/session | principal UUID, session UUID, SBsql session policy, connection UUID | Redacted according to security policy. |
 | Transaction | transaction UUID, statement UUID, timestamp | MGA remains finality authority. |
 | Command metadata | command tag, operation family, result shape | Text may be redacted or omitted where policy requires. |
 | Diagnostics | message-vector fields for failure events | Protected material must not be exposed. |
@@ -180,7 +212,7 @@ Trigger security mode controls how privileges are evaluated.
 | Definer | Trigger body executes with the trigger owner/security definer context, subject to sandboxing and protected-material rules. |
 | System/internal | Reserved for engine-owned triggers and must not be exposed through ordinary parser text. |
 
-Even in definer mode, the trigger cannot bypass MGA, recovery fences, protected-material redaction, or cluster/public build gates.
+Even in definer mode, the trigger cannot bypass MGA, recovery fences, protected-material redaction, sandboxing, or provider admission gates.
 
 ## Trigger Ordering
 
@@ -200,7 +232,7 @@ Triggers may cause statements that fire other triggers. The engine must enforce 
 | --- | --- |
 | Maximum depth | Enforce configured recursion depth. |
 | Self-recursion | Refuse or require explicit admission. |
-| Mutating same relation | Enforce donor/profile/SBsql policy. |
+| Mutating same relation | Enforce SBsql session policy. |
 | Event trigger loops | Prevent infinite event capture loops. |
 | Diagnostics | Emit canonical message vectors for recursion refusal. |
 
@@ -241,4 +273,5 @@ Trigger and event implementation should prove:
 - generated/identity/protected fields cannot be improperly assigned;
 - trigger failure behavior is deterministic;
 - event payloads do not leak secrets;
-- event trigger execution cannot bypass public cluster gates or private provider boundaries.
+- lifecycle event triggers cannot override connection admission, session authority, or MGA transaction finality outside the documented event phase;
+- event trigger execution cannot bypass provider admission gates.

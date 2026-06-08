@@ -20,6 +20,7 @@ create_statement        ::= create_schema
                           | create_function
                           | create_procedure
                           | create_trigger
+                          | create_event_trigger
                           | create_policy
                           | create_mask
                           | create_rls ;
@@ -35,6 +36,9 @@ create_statement        ::= create_schema
 | --- |
 | ddl_statement |
 | recreate_statement |
+| database_lifecycle_statement |
+| filespace_lifecycle_statement |
+| trigger lifecycle statements |
 
 ## Child Productions
 

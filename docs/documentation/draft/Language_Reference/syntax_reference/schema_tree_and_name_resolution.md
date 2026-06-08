@@ -1,6 +1,6 @@
 # Schema Tree And Name Resolution
 
-This page documents the SBsql schema tree, schema session variables, name-resolution order, recursive schema behavior, base schema branches, and donor-parser sandbox rules.
+This page documents the SBsql schema tree, schema session variables, name-resolution order, recursive schema behavior, base schema branches, and SBsql-parser sandbox rules.
 
 Related pages: [schema.md](schema.md), [script_tokens_and_identifiers.md](script_tokens_and_identifiers.md), [database.md](database.md), [../core_paradigms/uuid_catalog_identity.md](../core_paradigms/uuid_catalog_identity.md), [../core_paradigms/security_and_sandboxing.md](../core_paradigms/security_and_sandboxing.md), [../functional_reference/sb_core.md](../functional_reference/sb_core.md), and [../catalog_reference/index.md](../catalog_reference/index.md).
 
@@ -8,7 +8,7 @@ Related pages: [schema.md](schema.md), [script_tokens_and_identifiers.md](script
 
 A schema is both a catalog object and a resolver scope. A schema name such as `app` is not durable authority. The durable object is the schema UUID, and every object created inside that schema is bound to a parent schema UUID.
 
-The schema tree is recursive. A schema may have child schemas, and each child has its own UUID, names, grants, policy, comments, and child-object namespace. This lets ScratchBird model native SBsql workspaces, donor-emulated database roots, remote bridge namespaces, system catalog branches, user home branches, and compatibility catalog projections without flattening every object into a single global namespace.
+The schema tree is recursive. A schema may have child schemas, and each child has its own UUID, names, grants, policy, comments, and child-object namespace. This lets ScratchBird model native SBsql workspaces, parser-attached database roots, remote bridge namespaces, system catalog branches, user home branches, and compatibility catalog projections without flattening every object into a single global namespace.
 
 ## Schema Session Variables
 
@@ -17,10 +17,10 @@ The schema tree is recursive. A schema may have child schemas, and each child ha
 | Current schema | Default schema UUID used for unqualified object creation and ordinary unqualified lookup. Exposed through `current_schema()` and the `CURRENT_SCHEMA` context variable. | Session execution context. |
 | Default schema | Database or session default used when a new session has no more specific current-schema setting. `ALTER DATABASE ... SET DEFAULT SCHEMA ...` changes database-level default metadata. | Database catalog metadata plus session attach policy. |
 | Home schema | Default user-owned schema created or selected by identity policy, normally under the user-home root. It is a convenience root for the user's own objects, not a privilege bypass. | Identity policy and schema catalog row. |
-| Search path | Ordered list of schema UUIDs considered after the current schema for unqualified lookup. Exposed through `search_path()` and `SHOW SEARCH PATH` where admitted. | Session descriptor and parser profile. |
-| Default root | The root UUID used as a final resolver scope for the session, donor sandbox, or system/admin context. | Attach policy, security context, and parser profile. |
-| Sandbox root | The highest schema root visible to a donor-parser session or restricted session. Names outside this root are invisible unless a granted catalog projection renders them. | Materialized authorization and parser-profile sandbox policy. |
-| Temporary schema | Session-private schema for temporary objects where the active parser profile supports it. | Session descriptor and parser-profile temporary-object policy. |
+| Search path | Ordered list of schema UUIDs considered after the current schema for unqualified lookup. Exposed through `search_path()` and `SHOW SEARCH PATH` where admitted. | Session descriptor and SBsql session policy. |
+| Default root | The root UUID used as a final resolver scope for the session, SBsql sandbox, or system/admin context. | Attach policy, security context, and SBsql session policy. |
+| Sandbox root | The highest schema root visible to a SBsql-parser session or restricted session. Names outside this root are invisible unless a granted catalog projection renders them. | Materialized authorization and SBsql-session sandbox policy. |
+| Temporary schema | Session-private schema for temporary objects where the SBsql supports it. | Session descriptor and SBsql-session temporary-object policy. |
 
 These variables are UUID-bearing session descriptors. Display names are rendered through the name registry after authorization and language/profile selection.
 
@@ -33,7 +33,7 @@ show search path;
 
 `current_schema()` returns the current schema projection for the session. The generated functional reference records it as `sb.session.current_schema` with SBLR binding `sblr.expr.session_current_schema.v3`.
 
-`search_path()` and `SHOW SEARCH PATH` expose the active search-path descriptor where the session and parser profile admit that surface. Donor profiles may render equivalent behavior as `SET search_path`, `SHOW search_path`, `USE database`, or no search path at all.
+`search_path()` and `SHOW SEARCH PATH` expose the active search-path descriptor where the session and SBsql session policy admit that surface. SBsql policies may render equivalent behavior as `SET search_path`, `SHOW search_path`, `USE database`, or no search path at all.
 
 ## Base Schema Tree
 
@@ -45,7 +45,7 @@ Database creation assigns UUIDv7 schema object IDs for bootstrap paths. The name
 +-- sys
 |   |
 |   +-- catalog              engine-owned catalog authority tables
-|   +-- catalog_readable     authorized catalog projections for users and donor views
+|   +-- catalog_readable     authorized catalog projections for users and SBsql views
 |   +-- metrics              local metrics and retention metadata
 |   +-- agents               agent registration, leases, and local agent metadata
 |   +-- security             security providers, users, roles, groups, policy metadata
@@ -53,11 +53,11 @@ Database creation assigns UUIDv7 schema object IDs for bootstrap paths. The name
 |   +-- management           administrative command and management-state surfaces
 |   +-- fn                   built-in function and function-package metadata
 |   +-- udr                  UDR package, bridge, parser-support, and trusted binding metadata
-|   +-- parser               parser profile, dialect, route, and compatibility metadata
+|   +-- parser               SBsql session policy, dialect, route, and metadata
 |   +-- storage              filespace, page, TOAST, index, and storage diagnostics
 |   +-- mga                  transaction inventory, horizons, cleanup, and recovery metadata
 |   +-- audit                audit and event records visible through policy
-|   +-- compatibility        donor and driver compatibility projections
+|   +-- compatibility        SBsql and driver compatibility projections
 |   +-- information          ScratchBird-native information schema
 |   +-- information_schema   standards-compatible information-schema projection
 |   +-- diagnostics          canonical diagnostics and message-vector metadata
@@ -69,12 +69,12 @@ Database creation assigns UUIDv7 schema object IDs for bootstrap paths. The name
 |
 +-- remote                  bridge/federation namespace roots
 |
-+-- emulated                donor-parser database/workarea roots
++-- workarea                parser-attached database/workarea roots
 |
 +-- local.user              bootstrap local-user root used by the initial catalog manifest
 ```
 
-The minimum bootstrap manifest requires `sys.catalog`, `sys.metrics`, and `local.user`. The broader logical tree gives stable placement for public system branches, user home schemas, remote bridge roots, and donor-emulated roots.
+The minimum bootstrap manifest requires `sys.catalog`, `sys.metrics`, and `local.user`. The broader logical tree gives stable placement for public system branches, user home schemas, remote bridge roots, and parser-attached workarea roots.
 
 ## Branch Purpose
 
@@ -86,7 +86,7 @@ The minimum bootstrap manifest requires `sys.catalog`, `sys.metrics`, and `local
 | `sys.security` | Security provider, identity, role, group, and policy metadata. | Only through security DCL/admin surfaces. |
 | `sys.fn` | Built-in function/package registry. | No ordinary user mutation. |
 | `sys.udr` | UDR and parser-support package metadata. | Only through trusted UDR registration/admin surfaces. |
-| `sys.parser` | Parser profiles, donor compatibility descriptors, and parser route metadata. | Only through parser administration policy. |
+| `sys.parser` | Parser profiles, metadata rendering descriptors, and parser route metadata. | Only through parser administration policy. |
 | `sys.storage` | Storage diagnostics and storage object metadata. | Engine/admin controlled. |
 | `sys.mga` | Transaction, horizon, cleanup, and recovery metadata. | Engine controlled. |
 | `sys.information` | ScratchBird-native information views. | Read through grants and policy. |
@@ -94,7 +94,7 @@ The minimum bootstrap manifest requires `sys.catalog`, `sys.metrics`, and `local
 | `users.public` | Shared ordinary user namespace. | Yes, subject to grants and policy. |
 | `users.<home schema>` | Per-user home namespace. | Yes for the owning identity, subject to grants and policy. |
 | `remote` | Namespaces for remote bridge connections and external relation descriptors. | Controlled by bridge and external-access policy. |
-| `emulated` | Donor-parser workarea roots. | Mutated through the connected donor parser profile and granted SBsql administration. |
+| `workarea` | Parser-attached workarea roots. | Mutated through the connected parser route and granted SBsql administration. |
 | `local.user` | Initial local-user bootstrap root. | User mutable in the bootstrap manifest. |
 
 Cluster-specific roots are not public standalone authority. Cluster surfaces must pass the compile-time cluster gate and, in public builds, route to the cluster stub or return a canonical unsupported/unlicensed message vector.
@@ -108,7 +108,7 @@ Cluster-specific roots are not public standalone authority. Cluster surfaces mus
 | Child namespace | Child schemas and objects are scoped under the parent schema UUID. |
 | No text authority | Changing a schema name updates resolver metadata; it does not change object UUIDs or child object identity. |
 | No ambiguous visible path | If the same localized path resolves to more than one visible object UUID, binding fails with an ambiguity diagnostic. |
-| No sandbox escape | A restricted or donor session cannot resolve outside its sandbox root by spelling a parent path. |
+| No sandbox escape | A restricted or SBsql session cannot resolve outside its sandbox root by spelling a parent path. |
 | Transaction visibility | Schema creation, rename, and drop become visible only through MGA transaction finality. |
 | Cache invalidation | Resolver caches, prepared statements, parser metadata, and support-bundle projections are invalidated when schema resolver state changes. |
 
@@ -124,9 +124,9 @@ The resolver works on UUIDs and descriptors. A parser-recognized name must still
    - current schema UUID;
    - search-path schema UUIDs;
    - default root UUID;
-   - final global/legacy fallback where the engine admits it.
+   - final global fallback where the engine admits it.
 5. Match only entries with the requested object class or an admitted compatible class. For example, a relation request may match a table, view, materialized view, external table, or foreign table.
-6. Apply language, localized-name, primary-name, alias, donor-profile, and identifier-profile rules.
+6. Apply language, localized-name, primary-name, alias, SBsql, and identifier-profile rules.
 7. Apply materialized authorization and sandbox visibility.
 8. Return a bound object UUID, resolved object type, schema UUID, catalog generation, security epoch, resource epoch, and name-resolution epoch.
 
@@ -138,9 +138,9 @@ Identifier folding is profile-aware:
 
 | Profile Family | Unquoted Identifier Behavior |
 | --- | --- |
-| SBsql/native/Firebird-style profiles | Fold toward upper-case lookup unless exact matching is required. |
-| PostgreSQL-family profiles | Fold toward lower-case lookup. |
-| MySQL/MariaDB/Vitess/TiDB/Dolt case-insensitive profiles | Use case-insensitive lookup behavior for unquoted identifiers. |
+| SBsql default profile | Fold toward upper-case lookup unless exact matching is required. |
+| SBsql lower-case profile | Fold toward lower-case lookup. |
+| SBsql case-insensitive profile | Use case-insensitive lookup behavior for unquoted identifiers. |
 | Quoted identifiers | Require exact-match lookup under the active quoted-identifier profile. |
 
 Names can have localized labels and comments. The default language is `en`, the session language is preferred when present, and `und` can be used for language-independent names.
@@ -185,17 +185,17 @@ describe schema uuid '019d0000-0000-7000-8000-000000000001';
 
 The UUID literal above is illustrative. Real database and schema UUIDs are assigned by the engine.
 
-## Donor Parser Sandboxes
+## SBsql Parser Sandboxes
 
-Donor parser sessions see their connected donor database or workarea as their schema root.
+SBsql parser sessions see their connected SBsql database or workarea as their schema root.
 
-| Donor Family | Schema/Database Behavior |
+| SBsql Family | Schema/Database Behavior |
 | --- | --- |
-| Firebird | Single attachment schema context. There is no PostgreSQL-style search path. Resolution is relative to the connected donor schema root. |
-| MySQL/MariaDB/Vitess/TiDB/Dolt-style profiles | `USE database` changes the current database/schema descriptor. There is no separate multi-schema search path. |
-| PostgreSQL-family profiles | `search_path` is represented as a UUID-resolved descriptor list. Temporary schema behavior is session-private and may shadow permanent objects where the donor profile requires it. |
+| SBsql | Single attachment schema context. There is no SBsql-style search path. Resolution is relative to the connected SBsql schema root. |
+| SBsql/SBsql/SBsql/SBsql/Dolt-style profiles | `USE database` changes the current database/schema descriptor. There is no separate multi-schema search path. |
+| SBsql-family profiles | `search_path` is represented as a UUID-resolved descriptor list. Temporary schema behavior is session-private and may shadow permanent objects where the SBsql policy requires it. |
 
-A donor parser cannot escape to SBsql global namespaces by spelling paths outside its root. Donor compatibility catalog views can expose projected metadata from outside the root only when those views have their own grants and policy. The user's select privilege on a projection is not the same thing as parser authority to traverse the underlying schema tree.
+A parser route cannot escape to SBsql global namespaces by spelling paths outside its root. Metadata rendering catalog views can expose projected metadata from outside the root only when those views have their own grants and policy. The user's select privilege on a projection is not the same thing as parser authority to traverse the underlying schema tree.
 
 ## Catalog And Resolver Evidence
 
@@ -221,7 +221,7 @@ Resolver output must carry enough evidence for safe execution and cache invalida
 | Hidden object | Return not-found/not-visible according to metadata-hiding policy. |
 | Quoted identifier mismatch | Exact-match failure. |
 | Search-path stale after DDL | Invalidate cached plan or refuse stale execution. |
-| Donor root escape | Sandbox-denied diagnostic. |
+| SBsql root escape | Sandbox-denied diagnostic. |
 | System branch mutation by ordinary user | Denied diagnostic. |
 | Cluster branch without cluster authority | Unsupported or unlicensed cluster message vector. |
 
@@ -233,7 +233,7 @@ Resolver output must carry enough evidence for safe execution and cache invalida
 | Recursive tree | Child schema creation stores parent schema UUID and cannot create ambiguous visible paths. |
 | Session variables | Current schema, default root, and search path are UUID descriptors. |
 | Resolution | Qualified names bypass search path; unqualified names use current schema and search-path order. |
-| Identifier profiles | SBsql, Firebird, PostgreSQL, and MySQL-family folding rules produce expected bindings. |
-| Sandboxing | Donor parser sessions cannot resolve outside their connected root. |
+| Identifier profiles | SBsql, SBsql, SBsql, and SBsql folding rules produce expected bindings. |
+| Sandboxing | SBsql parser sessions cannot resolve outside their connected root. |
 | Catalog projections | Authorized catalog views can render projected metadata without granting resolver traversal. |
 | Invalidation | Schema DDL changes invalidate resolver, plan, parser, and support-bundle projections. |

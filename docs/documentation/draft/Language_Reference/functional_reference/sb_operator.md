@@ -11,7 +11,7 @@ Generation task: `sb_operator`
 
 The package boundary is semantic, not a privilege boundary. A caller still needs object privileges, expression admission, descriptor compatibility, and policy admission for the statement that uses the operation.
 
-For symbolic syntax, precedence, associativity, donor-profile operator aliases, and result descriptor rules, see [../syntax_reference/operators.md](../syntax_reference/operators.md) and [../syntax_reference/operator_type_result_matrix.md](../syntax_reference/operator_type_result_matrix.md).
+For symbolic syntax, precedence, associativity, SBsql operator aliases, and result descriptor rules, see [../syntax_reference/operators.md](../syntax_reference/operators.md) and [../syntax_reference/operator_type_result_matrix.md](../syntax_reference/operator_type_result_matrix.md).
 
 ## Package Inventory
 

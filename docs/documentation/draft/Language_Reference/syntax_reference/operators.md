@@ -1,6 +1,6 @@
 # Operators
 
-This page is part of the SBsql Language Reference Manual. It describes operator syntax, precedence, associativity, descriptor binding, and the boundary between portable SBsql operators and donor-profile operator aliases.
+This page is part of the SBsql Language Reference Manual. It describes operator syntax, precedence, associativity, descriptor binding, and the boundary between portable SBsql operators and SBsql operator aliases.
 
 ## Purpose
 
@@ -12,7 +12,7 @@ The detailed operand/result matrix is in [operator_type_result_matrix.md](operat
 
 1. Parse the operator token or contextual operator phrase.
 2. Resolve the operator to a canonical operation ID such as `sb.operator.add`.
-3. Resolve operand descriptors, domains, collations, charsets, timezones, and donor profile options.
+3. Resolve operand descriptors, domains, collations, charsets, timezones, and SBsql policy options.
 4. Apply the implicit conversion matrix only where the conversion is safe and admitted.
 5. Derive the result descriptor.
 6. Lower to SBLR expression operation.
@@ -29,15 +29,15 @@ The following table lists SBsql expression precedence from highest to lowest. Pa
 | 1 | `(...)`, function calls, casts, literals, parameters, object references | n/a | Primary expressions bind first. |
 | 2 | JSON/document access `->`, `->>`; array/subscript forms where admitted; vector distance forms such as `<->` in vector-search context | left | These bind tightly to the left expression. |
 | 3 | unary `+`, unary `-` | right | Unary plus is descriptor-preserving where admitted. Unary minus requires a numeric descriptor. |
-| 4 | exponentiation | profile-dependent | Portable SBsql uses `power(base, exponent)`. The token `^` is donor-profile sensitive and is not assigned a single portable SBsql meaning. |
+| 4 | exponentiation | policy-dependent | Portable SBsql uses `power(base, exponent)`. The token `^` is SBsql sensitive and is not assigned a single portable SBsql meaning. |
 | 5 | `*`, `/`, `%` | left | Multiplication, numeric division, and modulo. |
 | 6 | `+`, `-` | left | Numeric addition/subtraction, and temporal plus/minus interval forms. |
-| 7 | `||` | left | Text concatenation. XML/document concatenation uses explicit functions or profile-specific forms. |
+| 7 | `||` | left | Text concatenation. XML/document concatenation uses explicit functions or SBsql-specific forms. |
 | 8 | comparison: `=`, `<>`, `!=`, `<`, `<=`, `>`, `>=`; `IS DISTINCT FROM`; `IS NOT DISTINCT FROM` | non-associative | Chained comparisons must be written with `AND`. |
 | 9 | pattern and membership predicates: `LIKE`, `ILIKE`, regex match, `BETWEEN`, `IN`, `IS NULL`, `IS [NOT] TRUE`, `IS [NOT] FALSE`, `IS [NOT] UNKNOWN` | non-associative | These return `boolean` and use three-valued logic. |
 | 10 | `NOT` | right | Logical negation. |
 | 11 | `AND` | left | Three-valued logical conjunction. |
-| 12 | `XOR` | left | Boolean exclusive-or. Donor bitwise XOR is not this operator. |
+| 12 | `XOR` | left | Boolean exclusive-or. SBsql bitwise XOR is not this operator. |
 | 13 | `OR` | left | Three-valued logical disjunction. |
 
 Set operators such as `UNION`, `INTERSECT`, and `EXCEPT` are query operators, not scalar expression operators. Their rules are documented with query syntax.
@@ -87,7 +87,7 @@ Portable SBsql exposes bit operations as functions so the type contract is unamb
 | `bit_toggle(value,position)` | `int64` |
 | `bit_test(value,position)` | `boolean` |
 
-The symbolic tokens `&`, `|`, `^`, `~`, `<<`, and `>>` are donor-profile sensitive. Different donor engines assign different meanings to these tokens. Portable SBsql scripts should use named bit functions and `power()` instead of assuming a global meaning for `^` or `|`.
+The symbolic tokens `&`, `|`, `^`, `~`, `<<`, and `>>` are SBsql sensitive. A specific SBsql policy may assign a meaning to these tokens. Portable SBsql scripts should use named bit functions and `power()` instead of assuming a global meaning for `^` or `|`.
 
 ## Null Behavior
 
@@ -100,19 +100,19 @@ Most scalar operators are strict: if any required operand is `null`, the result 
 | `NOT` | `NOT null` returns `null`. |
 | `AND` | `false AND null` returns `false`; `true AND null` returns `null`; `null AND null` returns `null`. |
 | `OR` | `true OR null` returns `true`; `false OR null` returns `null`; `null OR null` returns `null`. |
-| `XOR` | Returns `null` when either side is `null` unless a donor profile explicitly admits a different boolean XOR rule. |
+| `XOR` | Returns `null` when either side is `null` unless a SBsql policy explicitly admits a different boolean XOR rule. |
 | `LIKE`, `ILIKE`, regex | Returns `null` when the input, pattern, or required escape/flags are `null`. |
 
-## Donor Profile Operator Aliases
+## SBsql Profile Operator Aliases
 
-Donor parsers may map donor-specific symbols to canonical SBsql operations or parser-support UDR calls, but only inside that donor profile. Examples:
+SBsql parsers may map SBsql-defined symbols to canonical SBsql operations or parser-support UDR calls, but only inside that SBsql policy. Examples:
 
 | Token or Form | Why It Is Profile Sensitive |
 | --- | --- |
-| `^` | May mean exponentiation, bitwise XOR, or be unsupported depending on donor. Portable SBsql uses `power()` or `bit_xor()`. |
-| `|` | May mean bitwise OR, pipe-related syntax, or profile-specific text/search syntax. Portable SBsql uses `bit_or()` or explicit functions. |
-| `#`, `~`, `!~`, `~*`, `!~*` | Commonly regex, bitwise, or donor-specific operators. Portable SBsql uses named regex or bit functions unless a parser profile admits the symbol. |
-| `@>`, `<@`, `&&`, `<<`, `>>` | Commonly array/range/geometric operators in donor dialects. Portable SBsql uses named range, array, spatial, or graph functions unless the active donor profile admits the symbol. |
+| `^` | May mean exponentiation, bitwise XOR, or be unsupported depending on SBsql. Portable SBsql uses `power()` or `bit_xor()`. |
+| `|` | May mean bitwise OR, pipe-related syntax, or SBsql-specific text/search syntax. Portable SBsql uses `bit_or()` or explicit functions. |
+| `#`, `~`, `!~`, `~*`, `!~*` | Commonly regex, bitwise, or SBsql-defined operators. Portable SBsql uses named regex or bit functions unless a SBsql session policy admits the symbol. |
+| `@>`, `<@`, `&&`, `<<`, `>>` | Commonly array/range/geometric operators in SBsql dialects. Portable SBsql uses named range, array, spatial, or graph functions unless the active SBsql policy admits the symbol. |
 | `<->` | Vector distance in vector-search context. It is not a general numeric subtraction token sequence. |
 
 ## Diagnostics

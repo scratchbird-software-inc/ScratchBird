@@ -65,7 +65,7 @@ Required columns:
 | `security_epoch` | uint64 | Security policy epoch for visibility and release. |
 | `audit_lineage_ref` | UUID/text | Latest protected material audit anchor. |
 
-Mutation rule: only engine security/catalog APIs may insert or update rows. Parser SQL text, donor metadata, driver metadata, support bundle export, cloud provider status, Kubernetes status, CDN streams, SQLite, and WAL-like journals must not mutate this table.
+Mutation rule: only engine security/catalog APIs may insert or update rows. Parser SQL text, SBsql metadata, driver metadata, support bundle export, cloud provider status, Kubernetes status, CDN streams, SBsql, and WAL-like journals must not mutate this table.
 
 Visibility rule: rows are hidden by default unless the effective user can see protected material metadata under access policy. Visible rows expose only redacted metadata through presentation views.
 
@@ -74,7 +74,7 @@ Visibility rule: rows are hidden by default unless the effective user can see pr
 - Base rows require UUID identity and lifecycle metadata.
 - Visibility is policy controlled and may use redaction.
 - Derived views must preserve base-row authority and must not become engine identity.
-- Donor compatibility projections are rendering surfaces only.
+- catalog projections are rendering surfaces only.
 
 ## Example Inspection
 

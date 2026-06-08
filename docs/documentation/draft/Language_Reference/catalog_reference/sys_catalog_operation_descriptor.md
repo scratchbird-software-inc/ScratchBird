@@ -38,7 +38,7 @@ Catalog rows are not parser authority. They are visible through authorized catal
 | sys.catalog.canonicalization_profile | canonicalization_profile_uuid | Normalization behavior and resource dependencies. |
 | sys.catalog.index_compatibility | index_compatibility_uuid | Descriptor to index-family compatibility. |
 | sys.catalog.type_statistics | statistics_uuid | Descriptor-aware statistics and privacy policy. |
-| sys.catalog.driver_type_metadata | driver_metadata_uuid | ODBC/JDBC/.NET/native/donor metadata. |
+| sys.catalog.driver_type_metadata | driver_metadata_uuid | ODBC/JDBC/.NET/native/SBsql metadata. |
 | sys.catalog.backup_restore_type_profile | profile_uuid | Logical/physical backup and restore behavior. |
 | sys.catalog.replication_type_profile | profile_uuid | Logical-delta and replication compatibility. |
 | sys.catalog.cluster_type_transport_profile | profile_uuid | Cross-node transport/resource/fallback policy. |
@@ -93,7 +93,7 @@ Required columns:
 | `sys.catalog.canonicalization_profile` | `canonicalization_profile_uuid` | Normalization behavior and resource dependencies. |
 | `sys.catalog.index_compatibility` | `index_compatibility_uuid` | Descriptor to index-family compatibility. |
 | `sys.catalog.type_statistics` | `statistics_uuid` | Descriptor-aware statistics and privacy policy. |
-| `sys.catalog.driver_type_metadata` | `driver_metadata_uuid` | ODBC/JDBC/.NET/native/donor metadata. |
+| `sys.catalog.driver_type_metadata` | `driver_metadata_uuid` | ODBC/JDBC/.NET/native/SBsql metadata. |
 | `sys.catalog.backup_restore_type_profile` | `profile_uuid` | Logical/physical backup and restore behavior. |
 | `sys.catalog.replication_type_profile` | `profile_uuid` | Logical-delta and replication compatibility. |
 | `sys.catalog.cluster_type_transport_profile` | `profile_uuid` | Cross-node transport/resource/fallback policy. |
@@ -114,7 +114,7 @@ Protected material catalog tables are local `sys.catalog.*` and `sys.security.ca
 - Base rows require UUID identity and lifecycle metadata.
 - Visibility is policy controlled and may use redaction.
 - Derived views must preserve base-row authority and must not become engine identity.
-- Donor compatibility projections are rendering surfaces only.
+- catalog projections are rendering surfaces only.
 
 ## Example Inspection
 

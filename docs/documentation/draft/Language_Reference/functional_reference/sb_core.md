@@ -992,7 +992,7 @@ select count(arg_1) from app.orders group by account_id;
 | Kind | aggregate |
 | Syntax Forms | aggregate_call, aggregate_filter, aggregate_order_by_when_allowed, aggregate_distinct_when_allowed |
 | Overloads | count(*) or count(expr) |
-| Return Type Rule | int128 count accumulator unless donor profile requires int64 rendering |
+| Return Type Rule | int128 count accumulator unless SBsql policy requires int64 rendering |
 | Coercion Rule | descriptor implicit cast matrix |
 | Null Behavior | ignores_null_except_star |
 | Collation/Charset Rule | uses descriptor collation for comparable/string states |
@@ -4223,7 +4223,7 @@ select a(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | abs(number) |
 | Return Type Rule | absolute value with overflow checks |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -6275,7 +6275,7 @@ select cbrt(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | ceil(number) |
 | Return Type Rule | ceiling by numeric descriptor |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -6655,7 +6655,7 @@ select close(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | coalesce(args...) |
 | Return Type Rule | first non-null expression |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -6958,8 +6958,8 @@ select comparison_collation_resolution(arg_1) from app.sample_values;
 | Kind | scalar |
 | Syntax Forms | function_call |
 | Overloads | concat(args...) |
-| Return Type Rule | concatenate with donor-profile null behavior |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Return Type Rule | concatenate with SBsql null behavior |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -7007,7 +7007,7 @@ select concat(arg_1) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_concat_ws.v3 |
 | AST Binding | ast.expr.scalar_concat_ws |
 | Engine Entrypoint | concat_ws |
-| Security Policy | pure string helper; no catalog, storage, security, transaction, donor, plugin, or cluster authority |
+| Security Policy | pure string helper; no catalog, storage, security, transaction, SBsql, plugin, or cluster authority |
 | Error Semantics | invalid arity or unsupported descriptor conversion refuses with SB_DIAG_FUNCTION_INVALID_INPUT |
 
 #### Optimizer Properties
@@ -7159,7 +7159,7 @@ select convert(arg_1) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_convert_from.v3 |
 | AST Binding | ast.expr.scalar_convert_from |
 | Engine Entrypoint | convert_from |
-| Security Policy | pure encoding helper; no catalog, storage, security, transaction, donor, plugin, or cluster authority |
+| Security Policy | pure encoding helper; no catalog, storage, security, transaction, SBsql, plugin, or cluster authority |
 | Error Semantics | invalid arity, non-binary input, unsupported encoding, or invalid UTF-8 bytes refuse with SB_DIAG_FUNCTION_INVALID_INPUT |
 
 #### Optimizer Properties
@@ -7197,7 +7197,7 @@ select convert_from(binary_value_1, arg_2) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_convert_to.v3 |
 | AST Binding | ast.expr.scalar_convert_to |
 | Engine Entrypoint | convert_to |
-| Security Policy | pure encoding helper; no catalog, storage, security, transaction, donor, plugin, or cluster authority |
+| Security Policy | pure encoding helper; no catalog, storage, security, transaction, SBsql, plugin, or cluster authority |
 | Error Semantics | invalid arity, non-text input, or unsupported encoding refuses with SB_DIAG_FUNCTION_INVALID_INPUT |
 
 #### Optimizer Properties
@@ -7719,7 +7719,7 @@ select current_capability_set(arg_1) from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | current_catalog |
 | Return Type Rule | current database/catalog projection |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -7757,7 +7757,7 @@ select current_catalog() from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | current_database |
 | Return Type Rule | current database/catalog UUID from SBLR execution context; descriptor=uuid |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -7985,7 +7985,7 @@ select current_request_uuid(arg_1) from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | current_role |
 | Return Type Rule | current active role UUID from SBLR execution context; descriptor=uuid |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless context provider returns typed null as specified by SBSFC-012 fixture evidence |
 | Collation/Charset Rule | uses input descriptor collation/charset where character semantics apply; otherwise not applicable |
 | Timezone Rule | session timezone/current timestamp context where temporal conversion requires it; otherwise not applicable |
@@ -8023,7 +8023,7 @@ select current_role() from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | current_schema |
 | Return Type Rule | current schema UUID/name projection |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -8289,7 +8289,7 @@ select current_transaction_id() from app.sample_values;
 | Syntax Forms | keyword_or_function_call |
 | Overloads | current_user |
 | Return Type Rule | session security principal |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -9457,234 +9457,6 @@ select domain_stack(arg_1) from app.sample_values;
 select domain_stack_value(arg_1) from app.sample_values;
 ```
 
-### `donor_contextual_keyword`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.donor_contextual_keyword |
-| UUID | 019dffbb-f000-7219-b58a-93be3af6dcde |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | donor_contextual_keyword(...) |
-| Return Type Rule | runtime-defined by engine entrypoint donor_contextual_keyword |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_donor_contextual_keyword.v3 |
-| AST Binding | ast.expr.scalar_donor_contextual_keyword |
-| Engine Entrypoint | donor_contextual_keyword |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select donor_contextual_keyword(arg_1) from app.sample_values;
-```
-
-### `donor_log_compatibility`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.donor_log_compatibility |
-| UUID | 019dffbb-f001-7411-8a00-000000000411 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | donor_log_compatibility(...) |
-| Return Type Rule | runtime-defined by engine entrypoint donor_log_compatibility |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_donor_log_compatibility.v3 |
-| AST Binding | ast.expr.scalar_donor_log_compatibility |
-| Engine Entrypoint | donor_log_compatibility |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select donor_log_compatibility(arg_1) from app.sample_values;
-```
-
-### `donor_only`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.donor_only |
-| UUID | 019dffbb-f000-786b-9c4a-4dfb6f42b2dd |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | donor_only(...) |
-| Return Type Rule | runtime-defined by engine entrypoint donor_only |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.native_surface.donor_only.v3 |
-| AST Binding | ast.expr.donor_only |
-| Engine Entrypoint | donor_only |
-| Security Policy | follows engine runtime seed registry authority for surface.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select donor_only(arg_1) from app.sample_values;
-```
-
-### `donor_only_rewrite`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.donor_only_rewrite |
-| UUID | 019dffbb-f001-7447-8a00-000000000447 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | donor_only_rewrite(...) |
-| Return Type Rule | runtime-defined by engine entrypoint donor_only_rewrite |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_donor_only_rewrite.v3 |
-| AST Binding | ast.expr.scalar_donor_only_rewrite |
-| Engine Entrypoint | donor_only_rewrite |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select donor_only_rewrite(arg_1) from app.sample_values;
-```
-
-### `donor_reserved_keyword`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.donor_reserved_keyword |
-| UUID | 019dffbb-f000-7395-ae26-804f954c291b |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | donor_reserved_keyword(...) |
-| Return Type Rule | runtime-defined by engine entrypoint donor_reserved_keyword |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_donor_reserved_keyword.v3 |
-| AST Binding | ast.expr.scalar_donor_reserved_keyword |
-| Engine Entrypoint | donor_reserved_keyword |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select donor_reserved_keyword(arg_1) from app.sample_values;
-```
-
-### `donor_rewrite`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.donor_rewrite |
-| UUID | 019dffbb-f000-7ac7-8951-deb86b0b8524 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | donor_rewrite(...) |
-| Return Type Rule | runtime-defined by engine entrypoint donor_rewrite |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_donor_rewrite.v3 |
-| AST Binding | ast.expr.scalar_donor_rewrite |
-| Engine Entrypoint | donor_rewrite |
-| Security Policy | follows engine runtime seed registry authority for surface.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select donor_rewrite(arg_1) from app.sample_values;
-```
-
 ### `drop`
 
 | Property | Value |
@@ -10455,7 +10227,7 @@ select filesystem(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | floor(number) |
 | Return Type Rule | floor by numeric descriptor |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -10711,82 +10483,6 @@ select gap(arg_1) from app.sample_values;
 select gcd(arg_1) from app.sample_values;
 ```
 
-### `gdscode`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.gdscode |
-| UUID | 019dffbb-f000-76d2-ad55-30d87813db45 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | gdscode(...) |
-| Return Type Rule | runtime-defined by engine entrypoint gdscode |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_gdscode.v3 |
-| AST Binding | ast.expr.scalar_gdscode |
-| Engine Entrypoint | gdscode |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select gdscode(arg_1) from app.sample_values;
-```
-
-### `gen_id`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.gen_id |
-| UUID | 019dffbb-f000-75e2-9ad5-770c12a23195 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | gen_id(...) |
-| Return Type Rule | runtime-defined by engine entrypoint gen_id |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_gen_id.v3 |
-| AST Binding | ast.expr.scalar_gen_id |
-| Engine Entrypoint | gen_id |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select gen_id(arg_1) from app.sample_values;
-```
-
 ### `greatest`
 
 | Property | Value |
@@ -10845,7 +10541,7 @@ select greatest(arg_1) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_has_column_privilege.v3 |
 | AST Binding | ast.expr.scalar_has_column_privilege |
 | Engine Entrypoint | has_column_privilege |
-| Security Policy | reads current SBLR principal/security context and engine-owned local MGA relation/column metadata; no parser SQL, donor backend, cluster path, WAL, or SQLite shortcut |
+| Security Policy | reads current SBLR principal/security context and engine-owned local MGA relation/column metadata; no parser SQL, non-SBsql backend, cluster path, WAL, or SBsql shortcut |
 | Error Semantics | invalid arity refuses with SB_DIAG_FUNCTION_INVALID_INPUT; unknown user, relation, column, or unsupported privilege token returns false |
 
 #### Optimizer Properties
@@ -10883,7 +10579,7 @@ select has_column_privilege(arg_1, arg_2, arg_3) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_has_function_privilege.v3 |
 | AST Binding | ast.expr.scalar_has_function_privilege |
 | Engine Entrypoint | has_function_privilege |
-| Security Policy | reads current SBLR principal/security context and canonical engine builtin metadata; no parser SQL, donor backend, cluster path, WAL, or SQLite shortcut |
+| Security Policy | reads current SBLR principal/security context and canonical engine builtin metadata; no parser SQL, non-SBsql backend, cluster path, WAL, or SBsql shortcut |
 | Error Semantics | invalid arity refuses with SB_DIAG_FUNCTION_INVALID_INPUT; unknown user, function, or unsupported privilege token returns false |
 
 #### Optimizer Properties
@@ -10921,7 +10617,7 @@ select has_function_privilege(arg_1, arg_2) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_has_schema_privilege.v3 |
 | AST Binding | ast.expr.scalar_has_schema_privilege |
 | Engine Entrypoint | has_schema_privilege |
-| Security Policy | reads current SBLR principal/security context and current schema catalog context; no parser SQL, donor backend, cluster path, WAL, or SQLite shortcut |
+| Security Policy | reads current SBLR principal/security context and current schema catalog context; no parser SQL, non-SBsql backend, cluster path, WAL, or SBsql shortcut |
 | Error Semantics | invalid arity refuses with SB_DIAG_FUNCTION_INVALID_INPUT; unknown user, schema, or unsupported privilege token returns false |
 
 #### Optimizer Properties
@@ -10959,7 +10655,7 @@ select has_schema_privilege(arg_1, arg_2) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_has_table_privilege.v3 |
 | AST Binding | ast.expr.scalar_has_table_privilege |
 | Engine Entrypoint | has_table_privilege |
-| Security Policy | reads current SBLR principal/security context and engine-owned local MGA relation metadata; no parser SQL, donor backend, cluster path, WAL, or SQLite shortcut |
+| Security Policy | reads current SBLR principal/security context and engine-owned local MGA relation metadata; no parser SQL, non-SBsql backend, cluster path, WAL, or SBsql shortcut |
 | Error Semantics | invalid arity refuses with SB_DIAG_FUNCTION_INVALID_INPUT; unknown user, relation, or unsupported privilege token returns false |
 
 #### Optimizer Properties
@@ -10975,44 +10671,6 @@ select has_schema_privilege(arg_1, arg_2) from app.sample_values;
 
 ```sql
 select has_table_privilege(arg_1, arg_2) from app.sample_values;
-```
-
-### `hierarchyid`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.hierarchyid |
-| UUID | 019dffbb-f001-7432-8a00-000000000432 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | hierarchyid(...) |
-| Return Type Rule | runtime-defined by engine entrypoint hierarchyid |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_hierarchyid.v3 |
-| AST Binding | ast.expr.scalar_hierarchyid |
-| Engine Entrypoint | hierarchyid |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select hierarchyid(arg_1) from app.sample_values;
 ```
 
 ### `hnsw`
@@ -11281,44 +10939,6 @@ select idle_in_transaction_session_timeout_ms(arg_1) from app.sample_values;
 select idle_in_transaction_timeout_default() from app.sample_values;
 ```
 
-### `ifnull`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.ifnull |
-| UUID | 019de5fc-2400-7e49-b026-73abe683cb43 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | ifnull(a,b) |
-| Return Type Rule | two-argument coalesce alias |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
-| Null Behavior | strict unless noted by function-specific semantics |
-| Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
-| Timezone Rule | session timezone for temporal forms; not applicable otherwise |
-| Volatility | stable_by_arguments |
-| Determinism | foldable only when volatility is immutable and all arguments are constants with stable descriptors |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.scalar_ifnull.v3 |
-| AST Binding | ast.expr.scalar_ifnull |
-| Engine Entrypoint | scalar_ifnull |
-| Security Policy | none unless session/security/system metadata is read |
-| Error Semantics | arity/type/overflow/domain errors use builtin error compatibility matrix |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | cpu_scalar |
-
-#### Practical Form
-
-```sql
-select ifnull(arg_1, arg_2) from app.sample_values;
-```
-
 ### `iif`
 
 | Property | Value |
@@ -11545,44 +11165,6 @@ select initcap(arg_1) from app.sample_values;
 
 ```sql
 select inner(arg_1) from app.sample_values;
-```
-
-### `innodb`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.innodb |
-| UUID | 019dffbb-f001-7428-8a00-000000000428 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | innodb(...) |
-| Return Type Rule | runtime-defined by engine entrypoint innodb |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_innodb.v3 |
-| AST Binding | ast.expr.scalar_innodb |
-| Engine Entrypoint | innodb |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select innodb(arg_1) from app.sample_values;
 ```
 
 ### `instr`
@@ -12279,7 +11861,7 @@ select left(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | length(value) |
 | Return Type Rule | character length for strings; collection cardinality only through typed overloads |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -12773,7 +12355,7 @@ select log2(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | lower(string) |
 | Return Type Rule | locale/collation-aware lowercase transform |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -14027,7 +13609,7 @@ select null_ordering_default_for_desc(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | nullif(a,b) |
 | Return Type Rule | null if equal using descriptor comparison semantics |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -14131,82 +13713,6 @@ select numeric_division_by_zero(arg_1) from app.sample_values;
 select numeric_overflow_behavior(arg_1) from app.sample_values;
 ```
 
-### `nvl`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.nvl |
-| UUID | 019dffbb-f000-799b-8d41-698142ec6713 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | nvl(...) |
-| Return Type Rule | runtime-defined by engine entrypoint nvl |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.native_surface.nvl.v3 |
-| AST Binding | ast.expr.nvl |
-| Engine Entrypoint | nvl |
-| Security Policy | follows engine runtime seed registry authority for surface.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select nvl(arg_1) from app.sample_values;
-```
-
-### `nvl2`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.nvl2 |
-| UUID | 019dffbb-f001-702a-8a00-00000000002a |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | nvl2(...) |
-| Return Type Rule | descriptor-authoritative nvl2 conditional/text result as implemented by the SBLR expression runtime |
-| Coercion Rule | descriptor implicit cast matrix; common result descriptor selected by binder/lowering route |
-| Null Behavior | conditional function-specific NULL handling follows SBSFC-011 row evidence |
-| Collation/Charset Rule | uses input descriptor collation/charset for character semantics; not applicable for binary/UUID metadata forms |
-| Timezone Rule | not applicable |
-| Volatility | stable_by_arguments |
-| Determinism | foldable only when selected branch and arguments are constants with stable descriptors |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.scalar_nvl2.v3 |
-| AST Binding | ast.expr.scalar_nvl2 |
-| Engine Entrypoint | scalar_nvl2 |
-| Security Policy | none unless session/security/system metadata is read |
-| Error Semantics | arity/type/compatibility errors use builtin error compatibility matrix and SBSFC-011 exact diagnostic row evidence |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | cpu_scalar |
-
-#### Practical Form
-
-```sql
-select nvl2(arg_1) from app.sample_values;
-```
-
 ### `object_resolution_failed`
 
 | Property | Value |
@@ -14255,7 +13761,7 @@ select object_resolution_failed(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | octet_length(value) |
 | Return Type Rule | byte length of encoded value |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -14435,44 +13941,6 @@ select operation_evidence_required(arg_1) from app.sample_values;
 select operator_overload_unresolved(arg_1) from app.sample_values;
 ```
 
-### `oracle_decode`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.oracle_decode |
-| UUID | 019dffbb-f000-7750-becc-e2c2bca4a98f |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | oracle_decode(...) |
-| Return Type Rule | descriptor-authoritative oracle_decode conditional/text result as implemented by the SBLR expression runtime |
-| Coercion Rule | descriptor implicit cast matrix; common result descriptor selected by binder/lowering route |
-| Null Behavior | conditional function-specific NULL handling follows SBSFC-011 row evidence |
-| Collation/Charset Rule | uses input descriptor collation/charset for character semantics; not applicable for binary/UUID metadata forms |
-| Timezone Rule | not applicable |
-| Volatility | stable_by_arguments |
-| Determinism | foldable only when selected branch and arguments are constants with stable descriptors |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.scalar_oracle_decode.v3 |
-| AST Binding | ast.expr.scalar_oracle_decode |
-| Engine Entrypoint | scalar_oracle_decode |
-| Security Policy | none unless session/security/system metadata is read |
-| Error Semantics | arity/type/compatibility errors use builtin error compatibility matrix and SBSFC-011 exact diagnostic row evidence |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | cpu_scalar |
-
-#### Practical Form
-
-```sql
-select oracle_decode(arg_1) from app.sample_values;
-```
-
 ### `outer`
 
 | Property | Value |
@@ -14521,7 +13989,7 @@ select outer(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | overlay(string placing string from start [for length]) |
 | Return Type Rule | SQL overlay semantics |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -14739,576 +14207,6 @@ select part(arg_1) from app.sample_values;
 select performance(arg_1) from app.sample_values;
 ```
 
-### `pg_advisory_lock`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_advisory_lock |
-| UUID | 019dffbb-f000-7e62-b00a-e220f1a97aa6 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_advisory_lock |
-| Return Type Rule | runtime-defined by engine entrypoint pg_advisory_lock |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_advisory_lock.v3 |
-| AST Binding | ast.expr.scalar_pg_advisory_lock |
-| Engine Entrypoint | pg_advisory_lock |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_advisory_lock() from app.sample_values;
-```
-
-### `pg_advisory_lock`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_advisory_lock_key |
-| UUID | 019dffbb-f000-7679-88f6-9fb6958295eb |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_advisory_lock(key) |
-| Return Type Rule | runtime-defined by engine entrypoint pg_advisory_lock |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_advisory_lock_key.v3 |
-| AST Binding | ast.expr.scalar_pg_advisory_lock_key |
-| Engine Entrypoint | pg_advisory_lock |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_advisory_lock(arg_1) from app.sample_values;
-```
-
-### `pg_advisory_unlock`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_advisory_unlock |
-| UUID | 019dffbb-f000-7d33-90a6-2d5bf09e58f5 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_advisory_unlock |
-| Return Type Rule | runtime-defined by engine entrypoint pg_advisory_unlock |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_advisory_unlock.v3 |
-| AST Binding | ast.expr.scalar_pg_advisory_unlock |
-| Engine Entrypoint | pg_advisory_unlock |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_advisory_unlock() from app.sample_values;
-```
-
-### `pg_advisory_unlock`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_advisory_unlock_key |
-| UUID | 019dffbb-f000-70f1-b555-9a326605ec2f |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_advisory_unlock(key) |
-| Return Type Rule | runtime-defined by engine entrypoint pg_advisory_unlock |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_advisory_unlock_key.v3 |
-| AST Binding | ast.expr.scalar_pg_advisory_unlock_key |
-| Engine Entrypoint | pg_advisory_unlock |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_advisory_unlock(arg_1) from app.sample_values;
-```
-
-### `pg_advisory_xact_lock`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_advisory_xact_lock |
-| UUID | 019dffbb-f000-70a8-8fa9-5767fb871532 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_advisory_xact_lock |
-| Return Type Rule | runtime-defined by engine entrypoint pg_advisory_xact_lock |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_advisory_xact_lock.v3 |
-| AST Binding | ast.expr.scalar_pg_advisory_xact_lock |
-| Engine Entrypoint | pg_advisory_xact_lock |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_advisory_xact_lock() from app.sample_values;
-```
-
-### `pg_advisory_xact_lock`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_advisory_xact_lock_key |
-| UUID | 019dffbb-f000-79c9-83b8-39046c9a6142 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_advisory_xact_lock(key) |
-| Return Type Rule | runtime-defined by engine entrypoint pg_advisory_xact_lock |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_advisory_xact_lock_key.v3 |
-| AST Binding | ast.expr.scalar_pg_advisory_xact_lock_key |
-| Engine Entrypoint | pg_advisory_xact_lock |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_advisory_xact_lock(arg_1) from app.sample_values;
-```
-
-### `pg_cancel_backend`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_cancel_backend |
-| UUID | 019dffbb-f000-785c-9f0b-3d80dde164f6 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_cancel_backend |
-| Return Type Rule | runtime-defined by engine entrypoint pg_cancel_backend |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_cancel_backend.v3 |
-| AST Binding | ast.expr.scalar_pg_cancel_backend |
-| Engine Entrypoint | pg_cancel_backend |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_cancel_backend() from app.sample_values;
-```
-
-### `pg_cancel_backend`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_cancel_backend_pid |
-| UUID | 019dffbb-f000-7ade-a48b-881f56660f50 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_cancel_backend(pid) |
-| Return Type Rule | runtime-defined by engine entrypoint pg_cancel_backend |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_cancel_backend_pid.v3 |
-| AST Binding | ast.expr.scalar_pg_cancel_backend_pid |
-| Engine Entrypoint | pg_cancel_backend |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_cancel_backend(arg_1) from app.sample_values;
-```
-
-### `pg_terminate_backend`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_terminate_backend |
-| UUID | 019dffbb-f000-7086-9dd0-64ffd62787f5 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_terminate_backend |
-| Return Type Rule | runtime-defined by engine entrypoint pg_terminate_backend |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_terminate_backend.v3 |
-| AST Binding | ast.expr.scalar_pg_terminate_backend |
-| Engine Entrypoint | pg_terminate_backend |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_terminate_backend() from app.sample_values;
-```
-
-### `pg_terminate_backend`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_terminate_backend_pid |
-| UUID | 019dffbb-f000-785f-8546-242367d0d3d3 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_terminate_backend(pid) |
-| Return Type Rule | runtime-defined by engine entrypoint pg_terminate_backend |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_terminate_backend_pid.v3 |
-| AST Binding | ast.expr.scalar_pg_terminate_backend_pid |
-| Engine Entrypoint | pg_terminate_backend |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_terminate_backend(arg_1) from app.sample_values;
-```
-
-### `pg_trgm`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_trgm |
-| UUID | 019dffbb-f000-7b42-a170-e02186cfb49b |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_trgm(...) |
-| Return Type Rule | runtime-defined by engine entrypoint pg_trgm |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_trgm.v3 |
-| AST Binding | ast.expr.scalar_pg_trgm |
-| Engine Entrypoint | pg_trgm |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_trgm(arg_1) from app.sample_values;
-```
-
-### `pg_try_advisory_lock`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_try_advisory_lock |
-| UUID | 019dffbb-f000-7023-98ab-6977caf6fe6a |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_try_advisory_lock |
-| Return Type Rule | runtime-defined by engine entrypoint pg_try_advisory_lock |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_try_advisory_lock.v3 |
-| AST Binding | ast.expr.scalar_pg_try_advisory_lock |
-| Engine Entrypoint | pg_try_advisory_lock |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_try_advisory_lock() from app.sample_values;
-```
-
-### `pg_try_advisory_lock`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_try_advisory_lock_key |
-| UUID | 019dffbb-f000-7040-bb2c-84260ef9488e |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_try_advisory_lock(key) |
-| Return Type Rule | runtime-defined by engine entrypoint pg_try_advisory_lock |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_try_advisory_lock_key.v3 |
-| AST Binding | ast.expr.scalar_pg_try_advisory_lock_key |
-| Engine Entrypoint | pg_try_advisory_lock |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_try_advisory_lock(arg_1) from app.sample_values;
-```
-
-### `pg_typeof`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.pg_typeof |
-| UUID | 019dffbb-f000-7115-af00-f00a23306cc8 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_typeof(...) |
-| Return Type Rule | runtime-defined by engine entrypoint pg_typeof |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_pg_typeof.v3 |
-| AST Binding | ast.expr.scalar_pg_typeof |
-| Engine Entrypoint | pg_typeof |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select pg_typeof(arg_1) from app.sample_values;
-```
-
-### `pg_xact_status`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.session.pg_xact_status |
-| UUID | 019dffbb-f000-71cf-af82-3d43e462b2a6 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | pg_xact_status([transaction_id]) |
-| Return Type Rule | current local transaction status label as character; returns in_progress for current local transaction, unknown for non-current ids, or NULL without transaction context |
-| Coercion Rule | optional transaction id argument must be int64-compatible; no parser-side finality or donor transaction authority |
-| Null Behavior | NULL argument returns NULL character; no current transaction context returns NULL for nullary call |
-| Collation/Charset Rule | returns byte-stable ASCII status labels |
-| Timezone Rule | not applicable |
-| Volatility | stable_per_transaction |
-| Determinism | not foldable; reads active transaction context |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.pg_xact_status.v3 |
-| AST Binding | ast.expr.pg_xact_status |
-| Engine Entrypoint | pg_xact_status |
-| Security Policy | reads active local transaction id status only; no parser-side finality and no transaction state mutation |
-| Error Semantics | arity/type/context diagnostics use canonical transaction-context fixtures; status is context-backed and non-mutating |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | cpu_scalar |
-
-#### Practical Form
-
-```sql
-select pg_xact_status(arg_1) from app.sample_values;
-```
-
 ### `pi`
 
 | Property | Value |
@@ -15461,82 +14359,6 @@ select policy_blocked(arg_1) from app.sample_values;
 select policy_blocked_diagnostic(arg_1) from app.sample_values;
 ```
 
-### `policy_refusal_checkpoint_donor_log`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_checkpoint_donor_log |
-| UUID | 019dffbb-f001-735f-8a00-00000000165f |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | policy_refusal_checkpoint_donor_log(...) |
-| Return Type Rule | runtime-defined by engine entrypoint policy_refusal_checkpoint_donor_log |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_refusal_checkpoint_donor_log.v3 |
-| AST Binding | ast.expr.scalar_refusal_checkpoint_donor_log |
-| Engine Entrypoint | policy_refusal_checkpoint_donor_log |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select policy_refusal_checkpoint_donor_log(arg_1) from app.sample_values;
-```
-
-### `policy_refusal_donor_log_mode`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_donor_log_mode |
-| UUID | 019dffbb-f001-735e-8a00-00000000165e |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | policy_refusal_donor_log_mode(...) |
-| Return Type Rule | runtime-defined by engine entrypoint policy_refusal_donor_log_mode |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_refusal_donor_log_mode.v3 |
-| AST Binding | ast.expr.scalar_refusal_donor_log_mode |
-| Engine Entrypoint | policy_refusal_donor_log_mode |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select policy_refusal_donor_log_mode(arg_1) from app.sample_values;
-```
-
 ### `position`
 
 | Property | Value |
@@ -15547,7 +14369,7 @@ select policy_refusal_donor_log_mode(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | position(substring in string) |
 | Return Type Rule | one-based position, zero/not-found behavior profile-gated |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -15623,7 +14445,7 @@ select post_event(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | power(base,exponent) |
 | Return Type Rule | numeric exponentiation |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -15839,44 +14661,6 @@ select private_profile_read(arg_1) from app.sample_values;
 
 ```sql
 select private_surface_refused(arg_1) from app.sample_values;
-```
-
-### `psql_case_not_found`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.psql_case_not_found |
-| UUID | 019dffbb-f001-7445-8a00-000000000445 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | psql_case_not_found(...) |
-| Return Type Rule | runtime-defined by engine entrypoint psql_case_not_found |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_psql_case_not_found.v3 |
-| AST Binding | ast.expr.scalar_psql_case_not_found |
-| Engine Entrypoint | psql_case_not_found |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select psql_case_not_found(arg_1) from app.sample_values;
 ```
 
 ### `public`
@@ -16193,7 +14977,7 @@ select raise() from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | random() |
 | Return Type Rule | random value; not foldable or index-eligible |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -16507,7 +15291,7 @@ select recursive_schema_path_separator(arg_1) from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16545,7 +15329,7 @@ select refusal_array_subquery() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16583,7 +15367,7 @@ select refusal_at() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16621,7 +15405,7 @@ select refusal_at_at() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16659,7 +15443,7 @@ select refusal_atomic() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16697,7 +15481,7 @@ select refusal_attach() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16735,7 +15519,7 @@ select refusal_call() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16773,7 +15557,7 @@ select refusal_collate() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16811,7 +15595,7 @@ select refusal_current_query() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16849,7 +15633,7 @@ select refusal_customer_table() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16887,7 +15671,7 @@ select refusal_desc() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16925,7 +15709,7 @@ select refusal_describe() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -16963,7 +15747,7 @@ select refusal_detach() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17001,7 +15785,7 @@ select refusal_event() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17039,7 +15823,7 @@ select refusal_exclude() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17077,7 +15861,7 @@ select refusal_execute_dynamic_sql() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17093,44 +15877,6 @@ select refusal_execute_dynamic_sql() from app.sample_values;
 
 ```sql
 select refusal_existsnode() from app.sample_values;
-```
-
-### `refusal_explain_donor_log_compatibilitytrue`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_explain_donor_log_compatibilitytrue |
-| UUID | 019dffbb-f001-7334-8a00-000000001634 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_explain_donor_log_compatibilitytrue |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_explain_donor_log_compatibilitytrue() from app.sample_values;
 ```
 
 ### `refusal_explain_evidencetrue`
@@ -17153,7 +15899,7 @@ select refusal_explain_donor_log_compatibilitytrue() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17191,7 +15937,7 @@ select refusal_explain_evidencetrue() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17229,7 +15975,7 @@ select refusal_explain_waltrue() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17267,7 +16013,7 @@ select refusal_forall() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17305,7 +16051,7 @@ select refusal_idempotency() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17343,7 +16089,7 @@ select refusal_identity() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17359,82 +16105,6 @@ select refusal_identity() from app.sample_values;
 
 ```sql
 select refusal_into() from app.sample_values;
-```
-
-### `refusal_lo_export`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_lo_export |
-| UUID | 019dffbb-f001-7313-8a00-000000001613 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_lo_export |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_lo_export() from app.sample_values;
-```
-
-### `refusal_lo_import`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_lo_import |
-| UUID | 019dffbb-f001-7312-8a00-000000001612 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_lo_import |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_lo_import() from app.sample_values;
 ```
 
 ### `refusal_model`
@@ -17457,7 +16127,7 @@ select refusal_lo_import() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17495,7 +16165,7 @@ select refusal_model() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17571,7 +16241,7 @@ select refusal_only_keyword(arg_1) from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17609,7 +16279,7 @@ select refusal_operator() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17647,7 +16317,7 @@ select refusal_operator_manifest_csv() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17685,7 +16355,7 @@ select refusal_over() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -17701,462 +16371,6 @@ select refusal_over() from app.sample_values;
 
 ```sql
 select refusal_overlaps() from app.sample_values;
-```
-
-### `refusal_pg_backend_pid`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_pg_backend_pid |
-| UUID | 019dffbb-f001-7320-8a00-000000001620 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_pg_backend_pid |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_pg_backend_pid() from app.sample_values;
-```
-
-### `refusal_pg_cron`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_pg_cron |
-| UUID | 019dffbb-f001-7319-8a00-000000001619 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_pg_cron |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_pg_cron() from app.sample_values;
-```
-
-### `refusal_pg_ls_dir`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_pg_ls_dir |
-| UUID | 019dffbb-f001-7311-8a00-000000001611 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_pg_ls_dir |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_pg_ls_dir() from app.sample_values;
-```
-
-### `refusal_pg_read_binary_file`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_pg_read_binary_file |
-| UUID | 019dffbb-f001-7308-8a00-000000001608 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_pg_read_binary_file |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_pg_read_binary_file() from app.sample_values;
-```
-
-### `refusal_pg_read_file`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_pg_read_file |
-| UUID | 019dffbb-f001-7309-8a00-000000001609 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_pg_read_file |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_pg_read_file() from app.sample_values;
-```
-
-### `refusal_pg_read_server_files`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_pg_read_server_files |
-| UUID | 019dffbb-f001-7310-8a00-000000001610 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_pg_read_server_files |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_pg_read_server_files() from app.sample_values;
-```
-
-### `refusal_pg_reload_conf`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_pg_reload_conf |
-| UUID | 019dffbb-f001-7314-8a00-000000001614 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_pg_reload_conf |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_pg_reload_conf() from app.sample_values;
-```
-
-### `refusal_pg_rotate_logfile`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_pg_rotate_logfile |
-| UUID | 019dffbb-f001-7315-8a00-000000001615 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_pg_rotate_logfile |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_pg_rotate_logfile() from app.sample_values;
-```
-
-### `refusal_pg_sleep`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_pg_sleep |
-| UUID | 019dffbb-f001-7317-8a00-000000001617 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_pg_sleep |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_pg_sleep() from app.sample_values;
-```
-
-### `refusal_pg_terminate_session`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_pg_terminate_session |
-| UUID | 019dffbb-f001-7318-8a00-000000001618 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_pg_terminate_session |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_pg_terminate_session() from app.sample_values;
-```
-
-### `refusal_rdb_get_context_client_pid`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_rdb_get_context_client_pid |
-| UUID | 019dffbb-f001-7330-8a00-000000001630 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_rdb_get_context_client_pid |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_rdb_get_context_client_pid() from app.sample_values;
-```
-
-### `refusal_rdb_get_context_user_session_name`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_rdb_get_context_user_session_name |
-| UUID | 019dffbb-f001-7353-8a00-000000001653 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_rdb_get_context_user_session_name |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_rdb_get_context_user_session_name() from app.sample_values;
 ```
 
 ### `refusal_returning`
@@ -18179,7 +16393,7 @@ select refusal_rdb_get_context_user_session_name() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18217,7 +16431,7 @@ select refusal_returning() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18255,7 +16469,7 @@ select refusal_sql_bulk_exceptions() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18271,82 +16485,6 @@ select refusal_sql_bulk_exceptions() from app.sample_values;
 
 ```sql
 select refusal_suspend() from app.sample_values;
-```
-
-### `refusal_sys_context_client_info`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_sys_context_client_info |
-| UUID | 019dffbb-f001-7329-8a00-000000001629 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_sys_context_client_info |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_sys_context_client_info() from app.sample_values;
-```
-
-### `refusal_sys_context_userenv_name`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_sys_context_userenv_name |
-| UUID | 019dffbb-f001-7352-8a00-000000001652 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_sys_context_userenv_name |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_sys_context_userenv_name() from app.sample_values;
 ```
 
 ### `refusal_system_variable_autocommit`
@@ -18369,7 +16507,7 @@ select refusal_sys_context_userenv_name() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18407,7 +16545,7 @@ select refusal_system_variable_autocommit() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18445,7 +16583,7 @@ select refusal_system_variable_global_var() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18483,7 +16621,7 @@ select refusal_system_variable_hostname() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18521,7 +16659,7 @@ select refusal_system_variable_servername() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18559,7 +16697,7 @@ select refusal_system_variable_session_autocommit() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18575,82 +16713,6 @@ select refusal_system_variable_session_autocommit() from app.sample_values;
 
 ```sql
 select refusal_system_variable_session_var() from app.sample_values;
-```
-
-### `refusal_system_variable_trancount`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_system_variable_trancount |
-| UUID | 019dffbb-f001-7336-8a00-000000001636 |
-| Kind | scalar |
-| Syntax Forms | operator_expression |
-| Overloads | sb.scalar.refusal_system_variable_trancount |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_system_variable_trancount() from app.sample_values;
-```
-
-### `refusal_updatexml`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_updatexml |
-| UUID | 019dffbb-f001-7324-8a00-000000001624 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_updatexml |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_updatexml() from app.sample_values;
 ```
 
 ### `refusal_wal`
@@ -18673,7 +16735,7 @@ select refusal_updatexml() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18689,82 +16751,6 @@ select refusal_updatexml() from app.sample_values;
 
 ```sql
 select refusal_wal() from app.sample_values;
-```
-
-### `refusal_with_nolock`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_with_nolock |
-| UUID | 019dffbb-f001-7332-8a00-000000001632 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_with_nolock |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_with_nolock() from app.sample_values;
-```
-
-### `refusal_with_readpast`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.refusal_with_readpast |
-| UUID | 019dffbb-f001-7331-8a00-000000001631 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sb.scalar.refusal_with_readpast |
-| Return Type Rule | no successful value; runtime always emits SB_DIAG_FUNCTION_RUNTIME_REFUSAL before side effects |
-| Coercion Rule | no coercion is applied; policy refusal is selected by parser/lowering route before argument coercion can authorize behavior |
-| Null Behavior | not applicable; refusal occurs before value materialization |
-| Collation/Charset Rule | not applicable; no text value is materialized |
-| Timezone Rule | not applicable; no temporal value is materialized |
-| Volatility | policy_refusal |
-| Determinism | deterministic diagnostic for the canonical refused surface |
-| Side Effects | none |
-| SBLR Binding | sblr.expr.public_policy_refusal.v3 |
-| AST Binding | ast.expr.public_policy_refusal |
-| Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
-| Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | diagnostic_refusal |
-
-#### Practical Form
-
-```sql
-select refusal_with_readpast() from app.sample_values;
 ```
 
 ### `refusal_xmlelement`
@@ -18787,7 +16773,7 @@ select refusal_with_readpast() from app.sample_values;
 | SBLR Binding | sblr.expr.public_policy_refusal.v3 |
 | AST Binding | ast.expr.public_policy_refusal |
 | Engine Entrypoint | policy_runtime_refusal |
-| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, WAL/donor-log, mutable session, extension, or private client-context side effects |
+| Security Policy | public SBsql policy refusal; emits canonical runtime refusal before filesystem, process, non-ScratchBird log, mutable session, extension, or private client-context side effects |
 | Error Semantics | canonical message vector includes SB_DIAG_FUNCTION_RUNTIME_REFUSAL; no source SQL text or sensitive argument payload is execution authority |
 
 #### Optimizer Properties
@@ -18939,7 +16925,7 @@ select regional(arg_1) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_relation_row_estimate.v3 |
 | AST Binding | ast.expr.scalar_relation_row_estimate |
 | Engine Entrypoint | relation_row_estimate |
-| Security Policy | reads engine-owned local MGA relation metadata and row-version sidecars; no parser SQL, donor backend, cluster path, WAL, or SQLite finality shortcut |
+| Security Policy | reads engine-owned local MGA relation metadata and row-version sidecars; no parser SQL, non-SBsql backend, cluster path, WAL, or SBsql finality shortcut |
 | Error Semantics | invalid arity, missing database context, or MGA catalog load failure refuses with SB_DIAG_FUNCTION_INVALID_INPUT |
 
 #### Optimizer Properties
@@ -19005,7 +16991,7 @@ select repeat(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | replace(string,from,to) |
 | Return Type Rule | replace all non-overlapping matches |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -19422,8 +17408,8 @@ select right(arg_1) from app.sample_values;
 | Kind | scalar |
 | Syntax Forms | function_call |
 | Overloads | round(number[,scale]) |
-| Return Type Rule | rounding mode descriptor/profile-gated |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Return Type Rule | rounding mode descriptor-gated |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -19601,44 +17587,6 @@ select safe_cast(arg_1) from app.sample_values;
 
 ```sql
 select savepoint_active() from app.sample_values;
-```
-
-### `sbsql_psql`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.sbsql_psql |
-| UUID | 019dffbb-f001-7406-8a00-000000000406 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sbsql_psql(...) |
-| Return Type Rule | runtime-defined by engine entrypoint sbsql_psql |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_sbsql_psql.v3 |
-| AST Binding | ast.expr.scalar_sbsql_psql |
-| Engine Entrypoint | sbsql_psql |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select sbsql_psql(arg_1) from app.sample_values;
 ```
 
 ### `sbsql_syntax_future_version`
@@ -20439,44 +18387,6 @@ select sha512(arg_1) from app.sample_values;
 select show(arg_1) from app.sample_values;
 ```
 
-### `show_trgm`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.show_trgm |
-| UUID | 019dffbb-f000-782d-9f6f-782288b11717 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | show_trgm(...) |
-| Return Type Rule | runtime-defined by engine entrypoint show_trgm |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_show_trgm.v3 |
-| AST Binding | ast.expr.scalar_show_trgm |
-| Engine Entrypoint | show_trgm |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select show_trgm(arg_1) from app.sample_values;
-```
-
 ### `sign`
 
 | Property | Value |
@@ -20877,7 +18787,7 @@ select soundex(arg_1) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_split_part.v3 |
 | AST Binding | ast.expr.scalar_split_part |
 | Engine Entrypoint | split_part |
-| Security Policy | pure string helper; no catalog, storage, security, transaction, donor, plugin, or cluster authority |
+| Security Policy | pure string helper; no catalog, storage, security, transaction, SBsql, plugin, or cluster authority |
 | Error Semantics | invalid arity, non-text delimiter, or non-positive field index refuses with SB_DIAG_FUNCTION_INVALID_INPUT |
 
 #### Optimizer Properties
@@ -20893,44 +18803,6 @@ select soundex(arg_1) from app.sample_values;
 
 ```sql
 select split_part(text_value_1, arg_2, arg_3) from app.sample_values;
-```
-
-### `sql_variant`
-
-| Property | Value |
-| --- | --- |
-| Builtin ID | sb.scalar.sql_variant |
-| UUID | 019dffbb-f001-7407-8a00-000000000407 |
-| Kind | scalar |
-| Syntax Forms | function_call |
-| Overloads | sql_variant(...) |
-| Return Type Rule | runtime-defined by engine entrypoint sql_variant |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.scalar_sql_variant.v3 |
-| AST Binding | ast.expr.scalar_sql_variant |
-| Engine Entrypoint | sql_variant |
-| Security Policy | follows engine runtime seed registry authority for data.scalar |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select sql_variant(arg_1) from app.sample_values;
 ```
 
 ### `sqlcode`
@@ -21057,7 +18929,7 @@ select sqlstate(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | sqrt(number) |
 | Return Type Rule | square root; domain errors profile-gated |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -21409,7 +19281,7 @@ select stmt_null(arg_1) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_string_to_array.v3 |
 | AST Binding | ast.expr.scalar_string_to_array |
 | Engine Entrypoint | string_to_array |
-| Security Policy | pure string helper; no catalog, storage, security, transaction, donor, plugin, or cluster authority |
+| Security Policy | pure string helper; no catalog, storage, security, transaction, SBsql, plugin, or cluster authority |
 | Error Semantics | invalid arity or unsupported descriptor conversion refuses with SB_DIAG_FUNCTION_INVALID_INPUT |
 
 #### Optimizer Properties
@@ -21588,8 +19460,8 @@ select substr(arg_1) from app.sample_values;
 | Kind | scalar |
 | Syntax Forms | function_call |
 | Overloads | substring(string,start[,length]) |
-| Return Type Rule | text/string slice by character semantics unless donor profile selects byte semantics |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Return Type Rule | text/string slice by character semantics unless SBsql policy selects byte semantics |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -21827,7 +19699,7 @@ select table(arg_1) from app.sample_values;
 | SBLR Binding | sblr.expr.scalar_table_size.v3 |
 | AST Binding | ast.expr.scalar_table_size |
 | Engine Entrypoint | table_size |
-| Security Policy | reads engine-owned local MGA relation metadata, row-version, and index sidecars; no parser SQL, donor backend, cluster path, WAL, or SQLite finality shortcut |
+| Security Policy | reads engine-owned local MGA relation metadata, row-version, and index sidecars; no parser SQL, non-SBsql backend, cluster path, WAL, or SBsql finality shortcut |
 | Error Semantics | invalid arity, invalid include_indexes value, missing database context, or MGA catalog load failure refuses with SB_DIAG_FUNCTION_INVALID_INPUT |
 
 #### Optimizer Properties
@@ -22995,7 +20867,7 @@ select treat_typed(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | trim([spec chars from] string) |
 | Return Type Rule | trim codepoint/grapheme behavior profile-gated |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -23223,7 +21095,7 @@ select tx_read_only(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | txid_status([transaction_id]) |
 | Return Type Rule | current local transaction status label as character; returns in_progress for current local transaction, unknown for non-current ids, or NULL without transaction context |
-| Coercion Rule | optional transaction id argument must be int64-compatible; no parser-side finality or donor transaction authority |
+| Coercion Rule | optional transaction id argument must be int64-compatible; no parser-side finality or non-ScratchBird transaction authority |
 | Null Behavior | NULL argument returns NULL character; no current transaction context returns NULL for nullary call |
 | Collation/Charset Rule | returns byte-stable ASCII status labels |
 | Timezone Rule | not applicable |
@@ -23679,7 +21551,7 @@ select unsupported_refused_by_design(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | upper(string) |
 | Return Type Rule | locale/collation-aware uppercase transform |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -24362,7 +22234,7 @@ select array(value_1) from app.sample_values;
 | Kind | special_form |
 | Syntax Forms | grammar_special_form |
 | Overloads | expr BETWEEN low AND high |
-| Return Type Rule | comparison expansion with donor null semantics |
+| Return Type Rule | comparison expansion with SBsql null semantics |
 | Coercion Rule | special-form-specific descriptor coercion; never stringly typed |
 | Null Behavior | special-form-specific |
 | Collation/Charset Rule | uses operand descriptors when strings are compared or transformed |

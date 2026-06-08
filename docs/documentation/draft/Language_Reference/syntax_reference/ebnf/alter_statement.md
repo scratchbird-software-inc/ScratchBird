@@ -34,6 +34,8 @@ alter_statement         ::= alter_schema
 | Parent Production |
 | --- |
 | ddl_statement |
+| database_lifecycle_statement |
+| filespace_lifecycle_statement |
 
 ## Child Productions
 

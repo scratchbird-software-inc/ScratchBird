@@ -66,7 +66,7 @@ The result type is a descriptor rule, not just a display name. Domains keep thei
 | `a XOR b` | boolean/boolean | `boolean` | `null` on unknown operand unless profile says otherwise. |
 | `a OR b` | boolean/boolean | `boolean` | SQL three-valued logic. |
 
-Boolean operators do not coerce arbitrary text or numeric values to boolean in portable SBsql. Use explicit casts where a donor profile requires legacy behavior.
+Boolean operators do not coerce arbitrary text or numeric values to boolean in portable SBsql. Use explicit casts where a session policy requires non-default behavior.
 
 ## Comparison Operators
 
@@ -112,13 +112,13 @@ JSON path text is parser input only. The bound path descriptor owns execution.
 
 | Form | Accepted Operand Families | Result Descriptor Rule | Portable SBsql Recommendation |
 | --- | --- | --- | --- |
-| `array_contains(array,value)` | array/multiset and element | `boolean` | Use named function unless the active parser profile admits a symbol such as `@>`. |
+| `array_contains(array,value)` | array/multiset and element | `boolean` | Use named function unless the SBsql admits a symbol such as `@>`. |
 | range contains | range and element/range | `boolean` | Use named range functions in portable SBsql. |
 | range overlaps | range/range | `boolean` | Use named range functions in portable SBsql. |
-| spatial predicate | geometry/geography descriptors | `boolean` | Use named `st_*` functions unless a donor profile admits spatial operator symbols. |
+| spatial predicate | geometry/geography descriptors | `boolean` | Use named `st_*` functions unless a SBsql policy admits spatial operator symbols. |
 | vector distance `<->` | vector descriptors with matching dimensions | distance/rank evidence, normally `real64` | Valid in vector-search context; exact rerank/recheck rules still apply. |
 
-Donor symbols such as `@>`, `<@`, `&&`, `<<`, and `>>` are profile-sensitive. They are not portable SBsql unless the SBsql grammar explicitly admits a portable spelling for that operation.
+SBsql symbols such as `@>`, `<@`, `&&`, `<<`, and `>>` are profile-sensitive. They are not portable SBsql unless the SBsql grammar explicitly admits a portable spelling for that operation.
 
 ## Bit Operations
 

@@ -62,13 +62,13 @@ Current admission rules are deliberately strict:
 - The supported route uses `UNION` or `UNION DISTINCT`; `UNION ALL` is refused because duplicate-preserving recursion requires a separate execution contract.
 - Column aliases, when supplied, must match the CTE row arity and become the output descriptor names.
 - The outer query for this exact route must select from the declared CTE.
-- Table-backed recursive references, search/cycle clauses, and recursive terms that require expression evaluation over the previous iteration must map to a future admitted route or fail closed with a donor-rendered unsupported diagnostic.
-- Donor parsers for engines that support recursive CTEs must lower only shapes that the SBsql/SBLR route admits; they must not silently approximate recursive semantics.
+- Table-backed recursive references, search/cycle clauses, and recursive terms that require expression evaluation over the previous iteration must map to a future admitted route or fail closed with a rendered unsupported diagnostic.
+- SBsql parsers for engines that support recursive CTEs must lower only shapes that the SBsql/SBLR route admits; they must not silently approximate recursive semantics.
 
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

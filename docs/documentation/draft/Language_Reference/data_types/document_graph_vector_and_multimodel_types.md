@@ -24,7 +24,7 @@ vector search app.embedding_index using :query_vector limit 10;
 | `json` | `json_document` | Text-preserving JSON document | JSON extraction, path predicates, rendering | Predicate and type recheck when an index produces candidates. |
 | `jsonb` | `json_document` | Normalized binary JSON/document representation | Path extraction, containment, indexing, comparison where admitted | Predicate and type recheck when an index produces candidates. |
 | `document` | `json_document` | Document payload plus schema/profile metadata | Document insert/update/query, document path indexes | Document identity, path, security, and MGA recheck. |
-| `array<T>` | descriptor overlay | Ordered homogeneous elements | Element access, containment, unnesting, donor array compatibility | Element descriptor and bounds recheck. |
+| `array<T>` | descriptor overlay | Ordered homogeneous elements | Element access, containment, unnesting, SBsql array compatibility | Element descriptor and bounds recheck. |
 | `multiset<T>` | descriptor overlay | Unordered homogeneous elements | Bag operations and aggregate-like element operations | Element descriptor and multiplicity recheck. |
 | `vector<float32,n>` | `vector` | `4 * n` bytes plus descriptor metadata | Exact vector search and vector functions | Exact source vector, MGA, security, and metric recheck. |
 | `vector<float16,n>` | `vector` | `2 * n` bytes plus descriptor metadata | Vector search where provider admits fp16 | Exact source vector, MGA, security, and metric recheck. |
@@ -56,7 +56,7 @@ No vector provider is row-authoritative. A vector index can accelerate candidate
 | Path identity | Path expressions bind to descriptor-aware operations. A text path is not authority after binding. |
 | Graph traversal order | Traversal result order is part of the operation descriptor when the surface requires stable order. |
 | Index use | Document, spatial, graph, and vector indexes produce candidate evidence. Executor recheck remains mandatory. |
-| Donor compatibility | Donor parsers may expose JSON, spatial, graph, vector, or document commands only for the donor features they support. Cross-donor behavior is not inferred. |
+| metadata rendering | SBsql parsers may expose JSON, spatial, graph, vector, or document commands only for the SBsql features they support. Cross-SBsql behavior is not inferred. |
 
 ## Syntax Productions
 
@@ -79,7 +79,7 @@ search_statement        ::= "SEARCH" search_action search_payload ;
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 
@@ -96,7 +96,7 @@ search_statement        ::= "SEARCH" search_action search_payload ;
 | graph_constraint_stmt | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
 | kv_geo_verb | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
 | graph_traversal_stmt | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
-| opensearch_mapping_clause | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
+| fulltext_mapping_clause | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
 | vector_metric | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
 | timeseries_clause | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |
 | kv_verifiable_op | grammar_production | multi_model | yes | rs.sbsql.rowset.v1 |

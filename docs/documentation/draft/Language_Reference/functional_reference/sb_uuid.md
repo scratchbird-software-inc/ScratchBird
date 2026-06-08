@@ -265,7 +265,7 @@ select uuid_timestamp(uuid_value_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | uuid_v1() |
 | Return Type Rule | compatibility UUID generator; not engine identity |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -303,7 +303,7 @@ select uuid_v1() from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | uuid_v4() |
 | Return Type Rule | random UUID generator; not engine identity |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -341,7 +341,7 @@ select uuid_v4() from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | uuid_v7() |
 | Return Type Rule | engine identity UUID generator; v7 only for engine identities |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |

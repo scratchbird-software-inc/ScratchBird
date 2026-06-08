@@ -15,6 +15,8 @@ commit_transaction      ::= "COMMIT" ("TRANSACTION" | "WORK")? ;
 
 `commit_transaction` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
+Full user-facing semantics for commit finality, chain/release options, uncertainty, and recovery-facing behavior are documented in [../transaction_control.md](../transaction_control.md).
+
 ## Used By
 
 | Parent Production |

@@ -570,7 +570,7 @@ select json_exists(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | json_extract(document,path) |
 | Return Type Rule | JSON/path extraction |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |
@@ -950,7 +950,7 @@ select json_table(arg_1) from app.sample_values;
 | Syntax Forms | function_call |
 | Overloads | json_typeof(value) |
 | Return Type Rule | JSON type classifier |
-| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous donor-profile coercion unless profile gate allows it |
+| Coercion Rule | use descriptor implicit cast matrix; reject ambiguous SBsql coercion unless SBsql policy allows it |
 | Null Behavior | strict unless noted by function-specific semantics |
 | Collation/Charset Rule | uses input descriptor collation/charset where string semantics apply |
 | Timezone Rule | session timezone for temporal forms; not applicable otherwise |

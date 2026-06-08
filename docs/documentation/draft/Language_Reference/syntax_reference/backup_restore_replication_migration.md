@@ -7,9 +7,9 @@ Generation task: `syntax_reference_backup_restore_replication_migration`
 
 ## Purpose
 
-Logical backup, restore, replication, migration, CDC, and archive commands operate through policy-bound streams. A remote logical stream can be admitted where the surface and policy allow it. Server-local file manipulation is denied by default for donor parsers and policy-controlled for SBsql.
+Logical backup, restore, replication, migration, CDC, and archive commands operate through policy-bound streams. A remote logical stream can be admitted where the surface and policy allow it. Server-local file manipulation is denied by default for parser routes and policy-controlled for SBsql.
 
-Physical page-copy backup/restore and low-level repair/verify behavior are not donor-parser operations. SBsql-only maintenance surfaces must still pass authorization and recovery checks.
+Physical page-copy backup/restore and low-level repair/verify behavior are not SBsql-parser operations. SBsql-only maintenance surfaces must still pass authorization and recovery checks.
 
 Example:
 
@@ -47,7 +47,7 @@ archive_statement       ::= "ARCHIVE" archive_action archive_payload? ;
 ## Binding And Execution
 
 - The parser recognizes the syntax and builds a statement or expression tree.
-- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and profile options.
+- Binding resolves catalog names, UUID references, parameter descriptors, result descriptors, security context, transaction context, and SBsql execution options.
 - SBLR admission maps the bound request to an operation family and result shape.
 - The engine rechecks authority before durable state changes or result delivery.
 

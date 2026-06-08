@@ -15,7 +15,7 @@ block                   ::= "BEGIN" procedural_statement* exception_section? "EN
 exception_section       ::= "EXCEPTION" exception_handler+ ;
 ```
 
-The exact donor spelling can vary by parser profile. The ScratchBird binding model is the same: declarations create descriptor-bound local symbols, executable statements lower to SBLR operations, and the block is stored as encoded executable metadata plus original reference source.
+The exact SBsql spelling can vary by SBsql session policy. The ScratchBird binding model is the same: declarations create descriptor-bound local symbols, executable statements lower to SBLR operations, and the block is stored as encoded executable metadata plus original reference source.
 
 ## Basic Block Example
 
@@ -54,7 +54,7 @@ end;
 | Exception handler | Handles a diagnostic class inside a block | `when sqlstate '23505' do begin ... end` |
 | Local helper routine | Nested routine where admitted by profile | `declare function local_tax(...) returns ... as ...` |
 
-Not every donor profile admits every declaration kind. If a donor parser accepts a donor-specific declaration, it must lower it to descriptor-aware ScratchBird metadata or fail closed.
+Not every SBsql policy admits every declaration kind. If a parser route accepts a SBsql-defined declaration, it must lower it to descriptor-aware ScratchBird metadata or fail closed.
 
 ## Parameters
 
@@ -75,7 +75,7 @@ end;
 | Parameter Attribute | Contract |
 | --- | --- |
 | Name | Resolver input within the routine body. |
-| Mode | `in`, `out`, `inout`, or profile-specific default. |
+| Mode | `in`, `out`, `inout`, or SBsql-specific default. |
 | Descriptor | Type, domain, collation, charset, scale, precision, timezone, and null policy. |
 | Default | Bound expression evaluated under routine-call rules. |
 | Authorization | Caller must be authorized to execute the routine; body execution uses invoker/definer policy. |
@@ -187,7 +187,7 @@ Dynamic SQL must be refused when:
 - the caller lacks authority;
 - the statement attempts server-local file access not admitted by policy;
 - the statement cannot be parsed and lowered to SBLR;
-- the statement tries to acquire parser, donor, storage, or recovery authority.
+- the statement tries to acquire parser, SBsql, storage, or recovery authority.
 
 ## Stored Body Contract
 
@@ -195,8 +195,8 @@ Every stored procedural object must retain:
 
 | Stored Item | Reason |
 | --- | --- |
-| Original source text | Editing, compatibility display, migration audit, and donor reference. |
-| Parser profile | Re-rendering and donor compatibility. |
+| Original source text | Editing, compatibility display, migration audit, and SBsql reference. |
+| Parser profile | Re-rendering and metadata rendering. |
 | Bound dependency graph | Invalidation, privilege checks, recompile, support bundles. |
 | Parameter and return descriptors | Call binding, result shape, and driver metadata. |
 | Executable representation | Runtime execution, JIT/AOT eligibility, and proof that execution does not depend on raw text. |
@@ -208,5 +208,5 @@ Every stored procedural object must retain:
 - A declaration does not create durable catalog state unless it is part of a catalog object definition.
 - Local variable names are not UUID identity.
 - Routine body text is not engine authority.
-- A donor parser may preserve donor reference source, but execution must use admitted SBLR or trusted UDR binding.
-- JIT/AOT can only consume the encoded representation and descriptor graph, not unbound donor text.
+- A parser route may preserve SBsql reference source, but execution must use admitted SBLR or trusted UDR binding.
+- JIT/AOT can only consume the encoded representation and descriptor graph, not unbound SBsql text.
