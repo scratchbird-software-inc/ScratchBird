@@ -53,12 +53,52 @@ alter procedure app.close_order set security definer;
 drop procedure app.close_order restrict;
 ```
 
+## Cursor Parameters
+
+A procedure parameter may use the `cursor` descriptor where policy admits routine-bound row streams.
+
+```sql
+create procedure app.copy_order_stream(p_orders cursor)
+returns (copied_order_id uuid)
+as
+begin
+  declare v_order_id uuid;
+  declare v_order_total decimal(18,2);
+
+  loop
+    fetch p_orders into v_order_id, v_order_total;
+    if row_not_found() then
+      leave;
+    end if;
+
+    insert into app.order_copy(order_id, order_total)
+    values (v_order_id, v_order_total)
+    returning order_id into copied_order_id;
+
+    suspend;
+  end loop;
+end;
+```
+
+Procedure cursor parameters follow the rules in [procedural_sql_cursors.md](procedural_sql_cursors.md):
+
+| Concern | Contract |
+| --- | --- |
+| Argument value | The caller passes an active cursor handle and descriptor, not copied rows. |
+| Ownership | The procedure borrows the cursor unless the signature and policy explicitly admit close, cancel, or transfer behavior. |
+| Row shape | Each `FETCH` checks the cursor row descriptor against target descriptors. |
+| Transaction context | The procedure uses the cursor's existing snapshot, transaction, holdability, and cleanup rules. |
+| Position | Fetching inside the procedure advances the caller-visible cursor handle. |
+| Security | The procedure cannot use a passed cursor to bypass row visibility, masks, protected-material policy, or write authorization. |
+| Result rows | A procedure may consume a cursor and still emit its own `RETURNS` rows with `SUSPEND`. |
+
 ## Boundaries
 
 - User-visible names are resolver input; UUID rows are durable identity.
 - The parser cannot create catalog truth by accepting syntax.
 - Catalog DDL must be transactionally visible and rollback-safe.
 - SBsql parser variants may render SBsql syntax, but catalog authority remains ScratchBird catalog authority.
+- Open cursor handles are routine-call resources, not durable procedure metadata.
 - Support and diagnostic surfaces may inspect the object only through authorized projections.
 
 ## Verification Checklist

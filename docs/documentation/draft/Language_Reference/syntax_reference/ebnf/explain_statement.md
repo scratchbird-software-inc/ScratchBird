@@ -1,19 +1,22 @@
 # Explain Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the user-facing grammar contract for plan inspection.
 
 Generation task: `ebnf_explain_statement`
-
 
 ## Production
 
 ```ebnf
-explain_statement       ::= "EXPLAIN" "ANALYZE"? query_statement ;
+explain_statement ::=
+    "EXPLAIN" explain_option_list? query_statement ;
+
+explain_option_list ::=
+    ("ANALYZE" | "PLAN" | "VERBOSE" | "COSTS" | "BUFFERS" | "TIMING" | "FORMAT" identifier)* ;
 ```
 
 ## Meaning
 
-`explain_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`explain_statement` returns an authorized plan report. `ANALYZE` executes the statement and adds measured execution evidence. Plan reports are diagnostic evidence and do not change query authority.
 
 ## Used By
 
@@ -26,10 +29,14 @@ explain_statement       ::= "EXPLAIN" "ANALYZE"? query_statement ;
 | Child Production |
 | --- |
 | query_statement |
+| identifier |
+
+## Binding Contract
+
+The explained query must bind normally. The caller must have permission to see the target objects and the requested plan details. `EXPLAIN ANALYZE` also requires permission to execute the query.
 
 ## Practical Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- Plan output must redact hidden object names, protected predicates, protected values, and unauthorized row counts.
+- Candidate evidence from indexes, document paths, vectors, search, graph, or bridge sources remains evidence only.
+- `EXPLAIN ANALYZE` must preserve transaction and recovery invariants.

@@ -1,39 +1,47 @@
 # Archive Replication Migration Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It documents the top-level grammar production for backup, restore, archive, replication, changefeed, and migration statements. Parsing recognizes shape; binding resolves descriptors and UUID catalog identity; SBLR admits the operation route; the engine owns transaction finality and recovery.
 
 Generation task: `ebnf_archive_replication_migration_statement`
 
+Parent reference: [Backup, Restore, Replication, And Migration](../backup_restore_replication_migration.md)
 
 ## Production
 
 ```ebnf
-archive_replication_migration_statement ::= archive_statement | backup_statement | restore_statement | replication_statement | migration_statement ;
+archive_replication_migration_statement ::=
+      archive_statement
+    | backup_statement
+    | restore_statement
+    | replication_statement
+    | migration_statement ;
 ```
 
 ## Meaning
 
-`archive_replication_migration_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+This production groups administrative data-movement statements. It does not authorize backup, restore, archive, replication, or migration work by itself. Each child production must bind to an admitted operation family, administrative privilege, object scope, stream or location descriptor, and transaction or job context.
 
 ## Used By
 
-| Parent Production |
-| --- |
-| native_statement |
+| Parent production | Purpose |
+| --- | --- |
+| `native_statement` | Allows the statement family in ordinary SBsql statement streams. |
+| `script_statement` | Allows scripted administration where policy admits it. |
 
 ## Child Productions
 
-| Child Production |
-| --- |
-| archive_statement |
-| backup_statement |
-| migration_statement |
-| replication_statement |
-| restore_statement |
+| Child production | Role |
+| --- | --- |
+| `backup_statement` | Exports logical streams or native backup sets. |
+| `restore_statement` | Validates or applies logical streams and admitted backup sets. |
+| `archive_statement` | Manages backup-set and manifest metadata. |
+| `replication_statement` | Manages replication routes and changefeeds. |
+| `migration_statement` | Plans, imports, replays, compares, validates, and cuts over migration routes. |
 
-## Practical Notes
+## Admission Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- Every child statement is administrative and must pass explicit privilege checks.
+- Stream or location handles must bind to policy-admitted descriptors.
+- External ordering evidence is not transaction finality authority.
+- Local applied work commits or rolls back through MGA.
+- Unsafe server-local file manipulation, low-level repair, and page verification are separate surfaces.

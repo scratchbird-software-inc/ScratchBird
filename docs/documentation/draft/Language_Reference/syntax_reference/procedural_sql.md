@@ -14,7 +14,7 @@ Procedural SQL text is not runtime authority. The parser accepts the body, the b
 | --- | --- |
 | Blocks, declarations, variables, parameters, assignment, and executable-body storage | [procedural_sql_blocks.md](procedural_sql_blocks.md) |
 | Control flow, conditional logic, loops, returns, row emission, and dynamic execution boundaries | [procedural_sql_control_flow.md](procedural_sql_control_flow.md) |
-| Cursors, row streams, positioned operations, and cursor metadata | [procedural_sql_cursors.md](procedural_sql_cursors.md) |
+| Cursors, row streams, cursor parameters, positioned operations, and cursor metadata | [procedural_sql_cursors.md](procedural_sql_cursors.md) |
 | Exceptions, diagnostics, conditions, `SIGNAL`, `RESIGNAL`, and handler behavior | [procedural_sql_exceptions.md](procedural_sql_exceptions.md) |
 | Table triggers, event triggers, transition values, `WHEN` filters, event capture, and trigger execution context | [procedural_sql_triggers_and_events.md](procedural_sql_triggers_and_events.md) |
 
@@ -71,7 +71,7 @@ begin
 end;
 ```
 
-A procedure may emit zero or more result rows. A procedure with a `returns (...)` list exposes output descriptors as part of its catalog identity.
+A procedure may emit zero or more result rows. A procedure with a `returns (...)` list exposes output descriptors as part of its catalog identity. A procedure can also accept an admitted `cursor` descriptor parameter when the body needs to consume a caller-provided row stream.
 
 ### Function
 
@@ -84,7 +84,7 @@ begin
 end;
 ```
 
-A function returns a single scalar, row, or admitted structured descriptor. Functions that are marked deterministic, immutable, stable, or volatile must match their implementation behavior.
+A function returns a single scalar, row, rowset, or admitted structured descriptor. Functions can accept cursor descriptors where policy admits them, but any function that observes or changes cursor state must use volatility attributes that match that behavior.
 
 ### Execute Block
 
@@ -117,7 +117,7 @@ begin
 end;
 ```
 
-Triggers run inside engine-defined table or event contexts. They can read transition values supplied by the engine, but parser text cannot invent storage authority.
+Triggers run inside engine-defined table or event contexts. They can read transition values supplied by the engine, declare local cursors, and pass admitted cursor handles to routines, but parser text cannot invent storage authority.
 
 ## Supported Statement Classes
 
@@ -130,6 +130,7 @@ Triggers run inside engine-defined table or event contexts. They can read transi
 | Conditional control | `if`, searched/simple `case` | Conditions use boolean descriptors and SQL null rules. |
 | Loops | `while`, `repeat`, `loop`, `for select`, cursor loops | Loop control is encoded into procedural SBLR. |
 | Cursor control | declare, open, fetch, close, positioned operations where admitted | See [procedural_sql_cursors.md](procedural_sql_cursors.md). |
+| Routine calls | procedure calls and function calls with scalar, row, rowset, or cursor descriptors | Cursor arguments pass engine handles, not copied row data. |
 | Diagnostics | `signal`, `resignal`, exception handlers, message vectors | See [procedural_sql_exceptions.md](procedural_sql_exceptions.md). |
 | Trigger/event control | `old`, `new`, transition rows, event payload, `when` filter | See [procedural_sql_triggers_and_events.md](procedural_sql_triggers_and_events.md). |
 

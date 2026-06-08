@@ -1,33 +1,70 @@
 # Restore Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It documents the grammar production for `RESTORE` while preserving the ScratchBird authority model: parsing recognizes shape, binding resolves descriptors and UUID catalog identity, SBLR admits the operation route, and the engine owns transaction finality and recovery.
 
 Generation task: `ebnf_restore_statement`
 
+Parent reference: [Backup, Restore, Replication, And Migration](../backup_restore_replication_migration.md)
 
 ## Production
 
 ```ebnf
-restore_statement       ::= "RESTORE" restore_source restore_options? ;
+restore_statement ::=
+    RESTORE restore_target restore_source restore_option_list? ;
+
+restore_target ::=
+      DATABASE database_ref
+    | SCHEMA schema_ref
+    | TABLE table_ref
+    | WORKAREA qualified_name ;
+
+restore_source ::=
+      FROM STREAM parameter_ref
+    | FROM BACKUP SET qualified_name
+    | FROM LOCATION location_ref ;
+
+restore_option_list ::=
+    WITH restore_option ("," restore_option)* ;
+
+restore_option ::=
+      FORMAT LOGICAL
+    | FORMAT NATIVE
+    | VALIDATE ONLY
+    | REPLACE
+    | NO REPLACE
+    | MAP NAMES mapping_ref
+    | MAP SECURITY mapping_ref
+    | TARGET SCHEMA schema_ref
+    | TARGET FILESPACE filespace_ref
+    | RECOVER UNTIL recovery_boundary
+    | QUARANTINE INVALID ROWS
+    | REQUIRE MANIFEST qualified_name ;
 ```
 
 ## Meaning
 
-`restore_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`restore_statement` recognizes an import or validation request. The grammar accepts target and source descriptors plus restore options. It does not apply data by itself. Applying restore data must go through engine-owned catalog and row routes, and applied work commits or rolls back through MGA.
+
+## Binding Requirements
+
+| Element | Binding requirement |
+| --- | --- |
+| Target | Existing or creatable database, schema, table, or workarea scope. |
+| Source | Stream handle, backup set, or location descriptor admitted by policy. |
+| Format | Logical or native restore route supported by the running product profile. |
+| Mapping | Name, type, security, or filespace mapping descriptors where required. |
+| Manifest | Manifest descriptor and validation evidence where required. |
+| Apply mode | Validate-only, replace, no-replace, quarantine, and recovery boundary rules. |
 
 ## Used By
 
-| Parent Production |
-| --- |
-| archive_replication_migration_statement |
+| Parent production | Purpose |
+| --- | --- |
+| `archive_replication_migration_statement` | Places `RESTORE` in the administrative data-movement family. |
 
-## Child Productions
+## Admission Notes
 
-No child production reference was detected in the production body.
-
-## Practical Notes
-
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- `VALIDATE ONLY` must not apply user data.
+- `REPLACE` is destructive and should be policy-gated.
+- Raw page mutation and repair behavior are outside this statement family.
+- Restore apply operations use local transaction finality.

@@ -1,19 +1,30 @@
 # Config Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the user-facing grammar contract for configuration inspection and reload commands.
 
 Generation task: `ebnf_config_statement`
-
 
 ## Production
 
 ```ebnf
-config_statement        ::= "CONFIG" ("RELOAD" | "HISTORY" | config_action) ;
+config_statement ::=
+      "CONFIG" "SHOW" config_target? config_option_list?
+    | "CONFIG" "VALIDATE" config_target? config_option_list?
+    | "CONFIG" "RELOAD" config_target? config_option_list?
+    | "CONFIG" "HISTORY" config_target? config_option_list?
+    | "CONFIG" "EFFECTIVE" config_target? config_option_list? ;
+
+config_target ::=
+      identifier
+    | qualified_name ;
+
+config_option_list ::=
+    "WITH" option ("," option)* ;
 ```
 
 ## Meaning
 
-`config_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`config_statement` inspects, validates, reloads, and reports configuration history or effective values. It does not grant direct file access or permission to read protected values.
 
 ## Used By
 
@@ -23,11 +34,18 @@ config_statement        ::= "CONFIG" ("RELOAD" | "HISTORY" | config_action) ;
 
 ## Child Productions
 
-No child production reference was detected in the production body.
+| Child Production |
+| --- |
+| identifier |
+| qualified_name |
+| option |
+
+## Binding Contract
+
+Configuration keys, targets, defaults, reloadability, protected references, and result descriptors must bind before execution. A failed reload must leave the prior effective configuration active.
 
 ## Practical Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- `CONFIG VALIDATE` should be usable without applying changes.
+- `CONFIG HISTORY` reports authorized reload attempts and message vectors.
+- Secrets and protected values must render as references or redacted values.

@@ -1,19 +1,28 @@
 # Search Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the user-facing grammar contract for search commands.
 
 Generation task: `ebnf_search_statement`
-
 
 ## Production
 
 ```ebnf
-search_statement        ::= "SEARCH" search_action search_payload ;
+search_statement ::=
+    "SEARCH" search_target search_payload return_clause? statement_option_list? ;
+
+search_target ::=
+    qualified_name ;
+
+search_payload ::=
+    "FOR" expression search_field_clause? multimodel_where_clause? limit_clause? ;
+
+search_field_clause ::=
+    "FIELDS" identifier ("," identifier)* ;
 ```
 
 ## Meaning
 
-`search_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`search_statement` recognizes descriptor-bound search commands. Search text, fields, analyzer profile, scoring, snippets, matched fields, and refresh behavior are bound operation inputs, not execution authority.
 
 ## Used By
 
@@ -23,11 +32,22 @@ search_statement        ::= "SEARCH" search_action search_payload ;
 
 ## Child Productions
 
-No child production reference was detected in the production body.
+| Child Production |
+| --- |
+| qualified_name |
+| expression |
+| identifier |
+| return_clause |
+| statement_option_list |
+| multimodel_where_clause |
+| limit_clause |
+
+## Binding Contract
+
+The target must resolve to a search-capable descriptor. Analyzer profile, field list, filters, score descriptor, snippet policy, and result projection must be admitted before execution. Search score is ranking evidence and requires final row recheck.
 
 ## Practical Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- Search query text is untrusted input.
+- Snippet rendering must obey protected-material policy.
+- Stable ordering requires the statement result descriptor or an explicit ordering surface.

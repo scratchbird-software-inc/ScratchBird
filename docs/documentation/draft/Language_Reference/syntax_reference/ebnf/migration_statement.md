@@ -1,33 +1,76 @@
 # Migration Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It documents the grammar production for `MIGRATION` while preserving the ScratchBird authority model: parsing recognizes shape, binding resolves descriptors and UUID catalog identity, SBLR admits the operation route, and local apply work commits or rolls back through MGA.
 
 Generation task: `ebnf_migration_statement`
 
+Parent reference: [Backup, Restore, Replication, And Migration](../backup_restore_replication_migration.md)
 
 ## Production
 
 ```ebnf
-migration_statement     ::= "MIGRATION" migration_action migration_payload? ;
+migration_statement ::=
+    MIGRATION migration_action migration_payload? migration_option_list? ;
+
+migration_action ::=
+      PLAN
+    | CREATE
+    | IMPORT
+    | REPLAY
+    | COMPARE
+    | VALIDATE
+    | CUTOVER
+    | ABORT
+    | SHOW
+    | DESCRIBE
+    | DROP ;
+
+migration_payload ::=
+      ROUTE qualified_name
+    | PLAN qualified_name
+    | SOURCE migration_endpoint
+    | TARGET migration_endpoint ;
+
+migration_option_list ::=
+    WITH migration_option ("," migration_option)* ;
+
+migration_option ::=
+      SOURCE migration_endpoint
+    | TARGET migration_endpoint
+    | MAP NAMES mapping_ref
+    | MAP TYPES mapping_ref
+    | MAP SECURITY mapping_ref
+    | MODE SNAPSHOT
+    | MODE CONTINUOUS
+    | VALIDATE ONLY
+    | QUARANTINE INVALID ROWS
+    | CUTOVER WHEN migration_cutover_condition ;
 ```
 
 ## Meaning
 
-`migration_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`migration_statement` recognizes planning, import, replay, compare, validation, cutover, abort, inspection, and drop actions for a migration route or plan. Migration statements coordinate data movement; they do not let source descriptors, bridge state, or stream tokens override local catalog or transaction authority.
+
+## Binding Requirements
+
+| Element | Binding requirement |
+| --- | --- |
+| Plan or route | Durable migration metadata visible to the caller. |
+| Source | Endpoint, stream, database, schema, table, or query descriptor admitted by policy. |
+| Target | Database, schema, table, or workarea descriptor admitted by policy. |
+| Mappings | Name, type, security, filespace, and identity mapping descriptors where required. |
+| Validation | Descriptor, row count, checksum, sample, comparison, or policy evidence. |
+| Cutover | Explicit cutover condition and safe boundary. |
 
 ## Used By
 
-| Parent Production |
-| --- |
-| archive_replication_migration_statement |
+| Parent production | Purpose |
+| --- | --- |
+| `archive_replication_migration_statement` | Places `MIGRATION` in the administrative data-movement family. |
 
-## Child Productions
+## Admission Notes
 
-No child production reference was detected in the production body.
-
-## Practical Notes
-
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- `VALIDATE ONLY` must not apply data.
+- Import and replay apply through engine-owned routes and local transactions.
+- Invalid or ambiguous rows should be quarantined when policy admits it.
+- Cutover must fail closed when source, target, validation, or replay state is uncertain.

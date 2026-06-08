@@ -1,6 +1,6 @@
 # Procedural SQL Cursors
 
-This page documents cursor declarations, cursor lifecycle, row fetching, positioned operations, and cursor diagnostics in procedural SQL.
+This page documents cursor declarations, cursor lifecycle, row fetching, cursor parameters, positioned operations, and cursor diagnostics in procedural SQL.
 
 Related pages: [procedural_sql.md](procedural_sql.md), [procedural_sql_blocks.md](procedural_sql_blocks.md), [procedural_sql_control_flow.md](procedural_sql_control_flow.md), [../functional_reference/sb_cursor.md](../functional_reference/sb_cursor.md).
 
@@ -102,6 +102,91 @@ fetch c_orders into v_order_id, v_order_total;
 | Too few/many targets | Diagnostic unless a profile admits a structured target. |
 | Structured target | Row variables or record variables may be admitted by profile. |
 
+## Cursor Parameters And Routine Calls
+
+Procedures, functions, and triggers may pass an admitted `cursor` descriptor across a routine call. The argument is an engine-owned handle to a row stream, not a copied result set, stored table, or durable catalog object. Passing the handle gives the callee access only to the operations admitted by the cursor descriptor, routine signature, security context, and current policy.
+
+```sql
+create procedure app.audit_order_stream(p_orders cursor)
+as
+begin
+  declare v_order_id uuid;
+  declare v_order_total decimal(18,2);
+
+  loop
+    fetch p_orders into v_order_id, v_order_total;
+    if row_not_found() then
+      leave;
+    end if;
+
+    execute procedure app.audit_order(v_order_id, v_order_total);
+  end loop;
+end;
+```
+
+A caller can create the cursor and pass it to the procedure:
+
+```sql
+declare cursor c_orders for
+  select order_id, order_total
+    from app.orders
+   where customer_id = p_customer_id
+   order by submitted_at;
+
+begin
+  open c_orders;
+  execute procedure app.audit_order_stream(c_orders);
+  close c_orders;
+end;
+```
+
+A function can accept a cursor argument when its attributes reflect cursor behavior. A function that fetches, closes, converts, or otherwise changes cursor state is not immutable or deterministic.
+
+```sql
+create function app.cursor_is_open(p_rows cursor)
+returns boolean
+volatile
+as
+begin
+  return cursor_active(p_rows);
+end;
+```
+
+Trigger bodies can create a cursor and pass it to another routine. The cursor remains scoped to the trigger execution context unless an explicit holdable or transferred route is admitted.
+
+```sql
+create trigger app.orders_ai
+after insert on table app.orders
+for each row
+as
+begin
+  declare cursor c_related for
+    select order_id, order_total
+      from app.orders
+     where customer_id = new.customer_id
+     order by submitted_at;
+
+  open c_related;
+  execute procedure app.audit_order_stream(c_related);
+  close c_related;
+end;
+```
+
+Cursor parameter rules:
+
+| Rule | Contract |
+| --- | --- |
+| Descriptor binding | The parameter descriptor must be `cursor` or an admitted cursor-compatible descriptor. |
+| Row shape | The row descriptor travels with the open cursor handle and is checked against each fetch target. |
+| Borrowed handle | A cursor argument is borrowed by default. The callee does not own the cursor unless the signature and policy explicitly admit transfer. |
+| Fetch position | Fetching through the callee advances the same cursor handle seen by the caller. |
+| Close behavior | A callee may close or cancel a passed cursor only where the signature or policy admits that operation. |
+| Transaction context | The cursor remains bound to the transaction, snapshot, holdability, and cleanup rules from its open operation. |
+| Function attributes | Any function that observes mutable cursor state or advances a cursor must be declared with compatible volatility. |
+| Trigger scope | Trigger-created cursors cannot outlive the trigger event unless an admitted holdable route exists. |
+| Storage boundary | An active cursor handle cannot be stored as committed row data. Durable metadata may describe a cursor shape; it cannot preserve an open cursor position. |
+| Security | Passing a cursor does not bypass row security, masks, protected-material policy, or positioned-update authorization. |
+
 ## Cursor Metadata Functions
 
 The generated functional reference exposes cursor-related functions in [../functional_reference/sb_cursor.md](../functional_reference/sb_cursor.md). Procedural SQL may use these functions where the cursor handle is visible and policy admits context reads.
@@ -163,6 +248,9 @@ A holdable cursor can survive a transaction boundary only where policy admits it
 | Fetch after close | Cursor-not-open diagnostic. |
 | End of cursor | Not-found condition or cursor-state result. |
 | Descriptor mismatch | Assignment diagnostic. |
+| Cursor parameter descriptor mismatch | Routine-call descriptor diagnostic. |
+| Cursor parameter lifetime violation | Cursor-lifetime diagnostic. |
+| Callee closes a borrowed cursor without authority | Cursor-authority diagnostic. |
 | Positioned operation without current row | Positioned-operation diagnostic. |
 | Cursor handle stale after rollback/recovery | Fail-closed diagnostic. |
 
@@ -171,5 +259,6 @@ A holdable cursor can survive a transaction boundary only where policy admits it
 - Cursor names are local symbols, not durable identity.
 - Cursor handles are not transaction authority.
 - Cursor state cannot bypass row visibility or security checks.
+- Cursor arguments are handles to active streams; they are not copied result sets and do not transfer ownership unless explicitly admitted.
 - Parser-support UDRs may expose SBsql cursor behavior, but the engine cursor descriptor owns ScratchBird execution behavior.
 - Cursor metadata can appear in support bundles only through authorized, redacted projections.

@@ -1,33 +1,58 @@
 # Archive Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It documents the grammar production for `ARCHIVE` while preserving the ScratchBird authority model: parsing recognizes shape, binding resolves descriptors and UUID catalog identity, SBLR admits the operation route, and the engine owns durable archive catalog state.
 
 Generation task: `ebnf_archive_statement`
 
+Parent reference: [Backup, Restore, Replication, And Migration](../backup_restore_replication_migration.md)
 
 ## Production
 
 ```ebnf
-archive_statement       ::= "ARCHIVE" archive_action archive_payload? ;
+archive_statement ::=
+    ARCHIVE archive_action archive_payload? archive_option_list? ;
+
+archive_action ::=
+      SHOW
+    | DESCRIBE
+    | REGISTER
+    | VERIFY
+    | PIN
+    | UNPIN
+    | EXPIRE
+    | DROP ;
+
+archive_payload ::=
+      BACKUP SET qualified_name
+    | MANIFEST qualified_name
+    | DATABASE database_ref ;
+
+archive_option_list ::=
+    WITH archive_option ("," archive_option)* ;
 ```
 
 ## Meaning
 
-`archive_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`archive_statement` recognizes operations over backup-set and manifest metadata. Archive metadata is evidence and retention state. It does not override object authorization, stream validation, manifest checks, or MGA transaction finality.
+
+## Binding Requirements
+
+| Element | Binding requirement |
+| --- | --- |
+| Action | Authorized archive operation. |
+| Payload | Visible backup set, manifest, or database scope. |
+| Options | Retention, comment, label, verification, and policy descriptors where admitted. |
+| Result | Authorized report shape with redaction policy. |
 
 ## Used By
 
-| Parent Production |
-| --- |
-| archive_replication_migration_statement |
+| Parent production | Purpose |
+| --- | --- |
+| `archive_replication_migration_statement` | Places `ARCHIVE` in the administrative data-movement family. |
 
-## Child Productions
+## Admission Notes
 
-No child production reference was detected in the production body.
-
-## Practical Notes
-
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- `VERIFY` validates evidence; it does not repair data.
+- `PIN` and `UNPIN` affect retention policy only.
+- `DROP` must not remove managed artifacts unless policy admits that action explicitly.
+- Inspection surfaces must redact hidden locations, credentials, and object details.

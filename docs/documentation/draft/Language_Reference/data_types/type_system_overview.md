@@ -22,7 +22,7 @@ The public type contract is organized by descriptor family. A descriptor family 
 | `null_value` | `null` | Unknown or absent value marker | none | Carries no value; target descriptor is inferred from context or must be stated with `cast`. |
 | `boolean` | `boolean`, `bool` | Three-valued logic | 1 byte payload | Values are `true`, `false`, and SQL `null`. |
 | `integer` | `int16`, `smallint`, `int32`, `int`, `integer`, `int64`, `bigint`, `int128` | Exact signed integers | 2, 4, 8, or 16 bytes | Range is fixed by width. |
-| `unsigned_integer` | `uint8`, `uint16`, `uint32`, `uint64` | Exact unsigned integers | 1, 2, 4, or 8 bytes | Unsigned use must be explicit. |
+| `unsigned_integer` | `uint8`, `uint16`, `uint32`, `uint64`, `uint128` | Exact unsigned integers | 1, 2, 4, 8, or 16 bytes | Unsigned use must be explicit. |
 | `decimal` | `decimal(p,s)`, `numeric(p,s)`, `decfloat(16)`, `decfloat(34)`, `money`, `currency` | Exact base-10 and declared money-like values | descriptor-dependent | Precision, scale, rounding, overflow, and display are descriptor-owned. |
 | `real` | `real`, `float4`, `double precision`, `float8`, `float(p)` | Approximate numeric values | 4 or 8 bytes | IEEE-style finite, infinity, and NaN handling is descriptor-policy controlled. |
 | `text` | `char(n)`, `character(n)`, `varchar(n)`, `character varying(n)`, `text`, `clob`, `nchar(n)`, `nvarchar(n)`, `nclob` | Character data | descriptor header plus encoded bytes | Character count, byte count, charset, collation, and overflow policy are descriptor-owned. |
@@ -40,7 +40,7 @@ The canonical descriptor name is what the binder and SBLR envelope carry. SBsql 
 
 | SBsql family | Examples of accepted spellings | Binding rule |
 | --- | --- | --- |
-| Exact numeric | `int64`, `decimal(18,2)`, `numeric(18,2)`, `decfloat(34)` | Binds to signed integer, unsigned integer, decimal, or decimal-floating descriptors. |
+| Exact numeric | `int64`, `uint128`, `decimal(18,2)`, `numeric(18,2)`, `decfloat(34)` | Binds to signed integer, unsigned integer, decimal, or decimal-floating descriptors. |
 | Approximate numeric | `real`, `float4`, `double precision`, `float8`, `float(p)` | Binds to approximate real descriptors with explicit precision policy. |
 | Text | `char(20)`, `character(20)`, `varchar(200)`, `character varying(200)`, `text`, `clob` | Binds to text descriptors with charset, collation, and overflow policy. |
 | Binary | `binary(16)`, `varbinary(1024)`, `blob` | Binds to byte descriptors. |

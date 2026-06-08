@@ -1,10 +1,10 @@
 {
   "current_phase": "completed",
-  "last_updated": "2026-06-08T19:42:11Z",
+  "last_updated": "2026-06-08T22:08:28Z",
   "progress_summary": {
-    "completed_tasks": 183,
+    "completed_tasks": 198,
     "percent_complete": 100.0,
-    "total_tasks": 183
+    "total_tasks": 198
   },
   "source_blueprint_id": "sbsql_complete_ebnf_function_operator_catalog_reference",
   "tasks": [
@@ -45,13 +45,13 @@
       "target_file": "core_paradigms/bridge_and_cluster_boundaries.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T22:07:02Z",
       "id": "data_types_type_system_overview",
       "status": "completed",
       "target_file": "data_types/type_system_overview.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T22:06:26Z",
       "id": "data_types_numeric",
       "status": "completed",
       "target_file": "data_types/numeric_types.md"
@@ -87,13 +87,13 @@
       "target_file": "data_types/domains_casts_and_coercion.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T22:07:44Z",
       "id": "data_types_conversion_matrix",
       "status": "completed",
       "target_file": "data_types/conversion_matrix.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T22:08:28Z",
       "id": "syntax_reference_script_and_tokens",
       "status": "completed",
       "target_file": "syntax_reference/script_tokens_and_identifiers.md"
@@ -105,52 +105,58 @@
       "target_file": "syntax_reference/select.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T21:29:28Z",
       "id": "syntax_reference_with",
       "status": "completed",
       "target_file": "syntax_reference/with.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T21:03:25Z",
       "id": "syntax_reference_projection",
       "status": "completed",
       "target_file": "syntax_reference/projection.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T20:11:07Z",
       "id": "syntax_reference_from",
       "status": "completed",
       "target_file": "syntax_reference/from.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T21:29:28Z",
       "id": "syntax_reference_where",
       "status": "completed",
       "target_file": "syntax_reference/where.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T20:11:07Z",
       "id": "syntax_reference_group_by_having",
       "status": "completed",
       "target_file": "syntax_reference/group_by_and_having.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T21:29:28Z",
       "id": "syntax_reference_window",
       "status": "completed",
       "target_file": "syntax_reference/window.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T20:51:35Z",
       "id": "syntax_reference_order_limit",
       "status": "completed",
       "target_file": "syntax_reference/order_by_limit_offset.md"
     },
     {
-      "completed_at": "2026-06-08T19:39:24Z",
+      "completed_at": "2026-06-08T20:03:28Z",
       "id": "syntax_reference_insert",
       "status": "completed",
       "target_file": "syntax_reference/insert.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:06:39Z",
+      "id": "syntax_reference_copy",
+      "status": "completed",
+      "target_file": "syntax_reference/copy.md"
     },
     {
       "completed_at": "2026-06-08T19:39:24Z",
@@ -183,31 +189,37 @@
       "target_file": "syntax_reference/security_and_privilege_statements.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T20:38:45Z",
+      "id": "syntax_reference_agent_management",
+      "status": "completed",
+      "target_file": "syntax_reference/agent.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:30:29Z",
       "id": "syntax_reference_management_operations",
       "status": "completed",
       "target_file": "syntax_reference/management_and_operations.md"
     },
     {
-      "completed_at": "2026-06-08T18:15:28Z",
+      "completed_at": "2026-06-08T19:51:10Z",
       "id": "syntax_reference_backup_restore_replication_migration",
       "status": "completed",
       "target_file": "syntax_reference/backup_restore_replication_migration.md"
     },
     {
-      "completed_at": "2026-06-08T18:13:07Z",
+      "completed_at": "2026-06-08T20:24:50Z",
       "id": "syntax_reference_multimodel",
       "status": "completed",
       "target_file": "syntax_reference/multimodel_statements.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T19:57:49Z",
       "id": "syntax_reference_cluster_gated",
       "status": "completed",
       "target_file": "syntax_reference/cluster_gated_statements.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:31Z",
+      "completed_at": "2026-06-08T21:07:57Z",
       "id": "syntax_reference_refusal_vectors",
       "status": "completed",
       "target_file": "syntax_reference/refusal_vectors.md"
@@ -225,7 +237,7 @@
       "target_file": "syntax_reference/index.md"
     },
     {
-      "completed_at": "2026-06-08T18:13:07Z",
+      "completed_at": "2026-06-08T21:11:27Z",
       "id": "syntax_reference_schema_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/schema.md"
@@ -249,13 +261,13 @@
       "target_file": "syntax_reference/domain.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T21:25:51Z",
       "id": "syntax_reference_type_descriptor_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/type_descriptor.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T21:21:38Z",
       "id": "syntax_reference_sequence_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/sequence.md"
@@ -267,25 +279,25 @@
       "target_file": "syntax_reference/view.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T21:39:39Z",
       "id": "syntax_reference_function_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/function.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T21:39:39Z",
       "id": "syntax_reference_procedure_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/procedure.md"
     },
     {
-      "completed_at": "2026-06-08T18:49:46Z",
+      "completed_at": "2026-06-08T21:39:39Z",
       "id": "syntax_reference_trigger_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/trigger.md"
     },
     {
-      "completed_at": "2026-06-08T12:05:44Z",
+      "completed_at": "2026-06-08T20:57:51Z",
       "id": "syntax_reference_policy_mask_rls_lifecycle",
       "status": "completed",
       "target_file": "syntax_reference/policy_mask_and_rls.md"
@@ -668,25 +680,67 @@
       "target_file": "syntax_reference/ebnf/projection.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:11:07Z",
       "id": "ebnf_from_clause",
       "production": "from_clause",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/from_clause.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:11:07Z",
       "id": "ebnf_group_by_clause",
       "production": "group_by_clause",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/group_by_clause.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:11:07Z",
       "id": "ebnf_having_clause",
       "production": "having_clause",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/having_clause.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:11:07Z",
+      "id": "ebnf_function_lifecycle_statement",
+      "production": "function_lifecycle_statement",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/function_lifecycle_statement.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:11:07Z",
+      "id": "ebnf_create_function",
+      "production": "create_function",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/create_function.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:11:07Z",
+      "id": "ebnf_alter_function",
+      "production": "alter_function",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/alter_function.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:11:07Z",
+      "id": "ebnf_recreate_function",
+      "production": "recreate_function",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/recreate_function.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:11:07Z",
+      "id": "ebnf_drop_function",
+      "production": "drop_function",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/drop_function.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:11:07Z",
+      "id": "ebnf_function_signature",
+      "production": "function_signature",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/function_signature.md"
     },
     {
       "completed_at": "2026-06-08T12:02:32Z",
@@ -694,6 +748,13 @@
       "production": "window_clause",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/window_clause.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:11:07Z",
+      "id": "ebnf_describe_statement",
+      "production": "describe_statement",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/describe_statement.md"
     },
     {
       "completed_at": "2026-06-08T12:02:32Z",
@@ -724,18 +785,53 @@
       "target_file": "syntax_reference/ebnf/set_operator.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:06:39Z",
       "id": "ebnf_dml_statement",
       "production": "dml_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/dml_statement.md"
     },
     {
-      "completed_at": "2026-06-08T19:42:11Z",
+      "completed_at": "2026-06-08T20:03:28Z",
       "id": "ebnf_insert_statement",
       "production": "insert_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/insert_statement.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:06:39Z",
+      "id": "ebnf_copy_statement",
+      "production": "copy_statement",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/copy_statement.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:06:39Z",
+      "id": "ebnf_copy_source",
+      "production": "copy_source",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/copy_source.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:06:39Z",
+      "id": "ebnf_copy_format",
+      "production": "copy_format",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/copy_format.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:06:39Z",
+      "id": "ebnf_copy_options",
+      "production": "copy_options",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/copy_options.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:06:39Z",
+      "id": "ebnf_copy_endpoint",
+      "production": "copy_endpoint",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/copy_endpoint.md"
     },
     {
       "completed_at": "2026-06-08T12:02:32Z",
@@ -941,56 +1037,63 @@
       "target_file": "syntax_reference/ebnf/policy_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:30:29Z",
       "id": "ebnf_observability_statement",
       "production": "observability_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/observability_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:30:29Z",
       "id": "ebnf_show_statement",
       "production": "show_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/show_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:30:29Z",
       "id": "ebnf_explain_statement",
       "production": "explain_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/explain_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:30:29Z",
       "id": "ebnf_management_statement",
       "production": "management_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/management_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:38:45Z",
+      "id": "ebnf_agent_statement",
+      "production": "agent_statement",
+      "status": "completed",
+      "target_file": "syntax_reference/ebnf/agent_statement.md"
+    },
+    {
+      "completed_at": "2026-06-08T20:30:29Z",
       "id": "ebnf_show_management",
       "production": "show_management",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/show_management.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:30:29Z",
       "id": "ebnf_alter_management",
       "production": "alter_management",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/alter_management.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:30:29Z",
       "id": "ebnf_config_statement",
       "production": "config_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/config_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:30:29Z",
       "id": "ebnf_support_bundle_statement",
       "production": "support_bundle_statement",
       "status": "completed",
@@ -1018,126 +1121,126 @@
       "target_file": "syntax_reference/ebnf/alter_acceleration.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:51:10Z",
       "id": "ebnf_archive_replication_migration_statement",
       "production": "archive_replication_migration_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/archive_replication_migration_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:51:10Z",
       "id": "ebnf_backup_statement",
       "production": "backup_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/backup_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:51:10Z",
       "id": "ebnf_restore_statement",
       "production": "restore_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/restore_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:51:10Z",
       "id": "ebnf_replication_statement",
       "production": "replication_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/replication_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:51:10Z",
       "id": "ebnf_migration_statement",
       "production": "migration_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/migration_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:51:10Z",
       "id": "ebnf_archive_statement",
       "production": "archive_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/archive_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:24:50Z",
       "id": "ebnf_nosql_statement",
       "production": "nosql_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/nosql_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:24:50Z",
       "id": "ebnf_document_statement",
       "production": "document_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/document_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:24:50Z",
       "id": "ebnf_graph_statement",
       "production": "graph_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/graph_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:24:50Z",
       "id": "ebnf_vector_statement",
       "production": "vector_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/vector_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:24:50Z",
       "id": "ebnf_search_statement",
       "production": "search_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/search_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:24:50Z",
       "id": "ebnf_timeseries_statement",
       "production": "timeseries_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/timeseries_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T20:24:50Z",
       "id": "ebnf_kv_statement",
       "production": "kv_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/kv_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:57:49Z",
       "id": "ebnf_private_cluster_statement",
       "production": "private_cluster_statement",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/private_cluster_statement.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:57:49Z",
       "id": "ebnf_show_cluster",
       "production": "show_cluster",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/show_cluster.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:57:49Z",
       "id": "ebnf_alter_cluster",
       "production": "alter_cluster",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/alter_cluster.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:57:49Z",
       "id": "ebnf_create_cluster",
       "production": "create_cluster",
       "status": "completed",
       "target_file": "syntax_reference/ebnf/create_cluster.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T19:57:49Z",
       "id": "ebnf_drop_cluster",
       "production": "drop_cluster",
       "status": "completed",
@@ -1200,7 +1303,7 @@
       "target_file": "syntax_reference/ebnf/literal.md"
     },
     {
-      "completed_at": "2026-06-08T18:13:07Z",
+      "completed_at": "2026-06-08T21:39:39Z",
       "id": "syntax_reference_procedural_sql",
       "status": "completed",
       "target_file": "syntax_reference/procedural_sql.md"
@@ -1218,7 +1321,7 @@
       "target_file": "syntax_reference/procedural_sql_control_flow.md"
     },
     {
-      "completed_at": "2026-06-08T13:15:32Z",
+      "completed_at": "2026-06-08T21:39:39Z",
       "id": "syntax_reference_procedural_sql_cursors",
       "status": "completed",
       "target_file": "syntax_reference/procedural_sql_cursors.md"

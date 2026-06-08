@@ -8,6 +8,7 @@
 | alter_identity | ebnf/alter_identity.md |
 | alter_management | ebnf/alter_management.md |
 | alter_statement | ebnf/alter_statement.md |
+| agent_statement | ebnf/agent_statement.md |
 | archive_replication_migration_statement | ebnf/archive_replication_migration_statement.md |
 | archive_statement | ebnf/archive_statement.md |
 | backup_statement | ebnf/backup_statement.md |
@@ -15,6 +16,11 @@
 | comment_statement | ebnf/comment_statement.md |
 | commit_transaction | ebnf/commit_transaction.md |
 | config_statement | ebnf/config_statement.md |
+| copy_endpoint | ebnf/copy_endpoint.md |
+| copy_format | ebnf/copy_format.md |
+| copy_options | ebnf/copy_options.md |
+| copy_source | ebnf/copy_source.md |
+| copy_statement | ebnf/copy_statement.md |
 | create_cluster | ebnf/create_cluster.md |
 | create_identity | ebnf/create_identity.md |
 | create_statement | ebnf/create_statement.md |
@@ -22,6 +28,7 @@
 | cte_list | ebnf/cte_list.md |
 | ddl_statement | ebnf/ddl_statement.md |
 | delete_statement | ebnf/delete_statement.md |
+| describe_statement | ebnf/describe_statement.md |
 | denied_statement | ebnf/denied_statement.md |
 | dml_statement | ebnf/dml_statement.md |
 | document_statement | ebnf/document_statement.md |
@@ -32,6 +39,12 @@
 | expression | ebnf/expression.md |
 | expression_atom | ebnf/expression_atom.md |
 | from_clause | ebnf/from_clause.md |
+| function_lifecycle_statement | ebnf/function_lifecycle_statement.md |
+| create_function | ebnf/create_function.md |
+| alter_function | ebnf/alter_function.md |
+| recreate_function | ebnf/recreate_function.md |
+| drop_function | ebnf/drop_function.md |
+| function_signature | ebnf/function_signature.md |
 | grant_statement | ebnf/grant_statement.md |
 | graph_statement | ebnf/graph_statement.md |
 | group_by_clause | ebnf/group_by_clause.md |

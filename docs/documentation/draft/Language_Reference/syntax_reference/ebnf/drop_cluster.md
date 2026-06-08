@@ -1,33 +1,48 @@
 # Drop Cluster EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It documents the grammar production for `DROP CLUSTER` while preserving the public cluster gate: recognized lifecycle removal syntax returns stable diagnostics unless an admitted provider boundary exists.
 
 Generation task: `ebnf_drop_cluster`
 
+Parent reference: [Cluster-Gated Statements](../cluster_gated_statements.md)
 
 ## Production
 
 ```ebnf
-drop_cluster            ::= "DROP" "CLUSTER" cluster_ref ;
+drop_cluster ::=
+    DROP CLUSTER cluster_ref drop_cluster_option_list? ;
+
+drop_cluster_option_list ::=
+    WITH drop_cluster_option ("," drop_cluster_option)* ;
+
+drop_cluster_option ::=
+      IF EXISTS
+    | RESTRICT
+    | CASCADE
+    | VALIDATE ONLY ;
 ```
 
 ## Meaning
 
-`drop_cluster` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`drop_cluster` recognizes cluster lifecycle removal syntax. In public builds, it is a recognized gated surface that returns stable refusal diagnostics. It must not remove local database state, filespaces, routes, or provider metadata as a substitute for production cluster removal.
+
+## Binding Requirements
+
+| Element | Binding requirement |
+| --- | --- |
+| Cluster reference | Visible cluster resolver input where provider admission exists. |
+| Restrict/cascade option | Dependency policy descriptor where admitted. |
+| Validate-only option | Diagnostic route that proves what would be refused or admitted. |
 
 ## Used By
 
-| Parent Production |
-| --- |
-| private_cluster_statement |
+| Parent production | Purpose |
+| --- | --- |
+| `private_cluster_statement` | Places lifecycle removal in the cluster-gated statement family. |
 
-## Child Productions
+## Admission Notes
 
-No child production reference was detected in the production body.
-
-## Practical Notes
-
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- `IF EXISTS` may suppress object-not-found diagnostics only where disclosure policy admits it.
+- `RESTRICT` and `CASCADE` are provider-admitted lifecycle policies, not local filesystem actions.
+- Public builds should return unsupported, unlicensed, or fail-closed diagnostics.
+- Local catalog cleanup must not masquerade as cluster removal.

@@ -1,33 +1,60 @@
 # Alter Cluster EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It documents the grammar production for `ALTER CLUSTER` while preserving the public cluster gate: recognized topology, routing, placement, transaction, security, job, and validation syntax returns stable diagnostics unless an admitted provider boundary exists.
 
 Generation task: `ebnf_alter_cluster`
 
+Parent reference: [Cluster-Gated Statements](../cluster_gated_statements.md)
 
 ## Production
 
 ```ebnf
-alter_cluster           ::= "ALTER" "CLUSTER" cluster_action ;
+alter_cluster ::=
+    ALTER CLUSTER cluster_ref cluster_action cluster_option_list? ;
+
+cluster_action ::=
+      SET cluster_setting_list
+    | ADD MEMBER member_ref
+    | DROP MEMBER member_ref
+    | DRAIN MEMBER member_ref
+    | SET MEMBER member_ref ROLE cluster_member_role
+    | DEFINE REGION region_name
+    | DEFINE SHARD PROFILE shard_profile_ref
+    | PUBLISH ROUTE route_ref
+    | REBALANCE placement_clause
+    | START JOB cluster_job_ref
+    | CANCEL JOB cluster_job_ref
+    | THROTTLE cluster_throttle_payload
+    | VALIDATE cluster_validation_target
+    | RECONCILE cluster_reconcile_target
+    | FAILOVER cluster_failover_target ;
+
+cluster_option_list ::=
+    WITH cluster_option ("," cluster_option)* ;
 ```
 
 ## Meaning
 
-`alter_cluster` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`alter_cluster` recognizes cluster mutation, control, validation, and administrative syntax. The public parser can classify these operations, but public builds must not execute production cluster behavior through local core code.
+
+## Binding Requirements
+
+| Element | Binding requirement |
+| --- | --- |
+| Cluster reference | Visible cluster resolver input where provider admission exists. |
+| Action | Normalized cluster operation family. |
+| Action payload | Member, route, placement, region, job, validation, reconciliation, failover, or setting descriptors. |
+| Options | Provider, manifest, digest, dry-run, validate-only, timeout, and diagnostic options. |
 
 ## Used By
 
-| Parent Production |
-| --- |
-| private_cluster_statement |
+| Parent production | Purpose |
+| --- | --- |
+| `private_cluster_statement` | Places cluster mutation/control in the cluster-gated statement family. |
 
-## Child Productions
+## Admission Notes
 
-No child production reference was detected in the production body.
-
-## Practical Notes
-
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- Public builds return unsupported, unlicensed, or fail-closed diagnostics.
+- Local single-node maintenance cannot become cluster maintenance through this syntax.
+- Distributed transaction and query actions require provider admission.
+- Local MGA remains local finality authority even when a provider route is admitted.

@@ -1,19 +1,51 @@
 # Show Management EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the user-facing grammar contract for management inspection commands.
 
 Generation task: `ebnf_show_management`
-
 
 ## Production
 
 ```ebnf
-show_management         ::= "SHOW" "MANAGEMENT" management_target ;
+show_management ::=
+    "SHOW" "MANAGEMENT" management_target management_filter? show_option_list? ;
+
+management_target ::=
+      "HEALTH"
+    | "READINESS"
+    | "LIVENESS"
+    | "LISTENERS"
+    | "LOCAL" "MANAGERS"
+    | "PARSER" "POOLS"
+    | "PARSERS"
+    | "UDR" "PACKAGES"
+    | "SESSIONS"
+    | "CONNECTIONS"
+    | "STATEMENTS"
+    | "TRANSACTIONS"
+    | "WAITS"
+    | "JOBS"
+    | "CONFIG"
+    | "STORAGE"
+    | "FILESPACES"
+    | "INDEXES"
+    | "MEMORY"
+    | "CACHE"
+    | "TEMP"
+    | "RECOVERY"
+    | "CLEANUP"
+    | "DIAGNOSTICS"
+    | "SUPPORT" ;
+
+management_filter ::=
+      identifier
+    | uuid_ref
+    | "WITH" option_list ;
 ```
 
 ## Meaning
 
-`show_management` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`show_management` returns authorized management projections for runtime targets. It is inspection only and must not control service state.
 
 ## Used By
 
@@ -23,11 +55,19 @@ show_management         ::= "SHOW" "MANAGEMENT" management_target ;
 
 ## Child Productions
 
-No child production reference was detected in the production body.
+| Child Production |
+| --- |
+| identifier |
+| uuid_ref |
+| option_list |
+| show_option_list |
+
+## Binding Contract
+
+The target and optional filter must bind to visible runtime state. The result descriptor must redact protected values and hidden targets according to the caller's privileges and sandbox root.
 
 ## Practical Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- `SHOW MANAGEMENT` reports should be stable enough for tools to parse.
+- Hidden targets should be omitted or refused without leaking existence.
+- Runtime paths, secrets, and protected payloads are redacted by default.

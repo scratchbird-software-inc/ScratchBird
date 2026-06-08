@@ -26,6 +26,7 @@ from app.ingest_document;
 | `boolean` | `text` | policy-dependent | yes | Renders canonical `true`/`false` unless SBsql policy overrides rendering. |
 | `text` | `boolean` | no | yes | Accepted spellings are descriptor controlled. Invalid text is diagnostic. |
 | `integer` | wider signed integer | yes | yes | Refused if the value cannot fit the target width. |
+| `unsigned_integer` | wider unsigned integer | yes | yes | Refused if the value cannot fit the target width. |
 | `integer` | unsigned integer | no | yes | Refused for negative values or out-of-range values. |
 | `unsigned_integer` | signed integer | no | yes | Refused if the unsigned value cannot fit the signed target. |
 | `integer` or `unsigned_integer` | `decimal` | yes when exact | yes | Precision/scale must admit the exact value. |
@@ -52,7 +53,7 @@ Implicit conversion is intentionally narrow. It exists for safe assignment and o
 
 | Implicitly Safe Class | Examples |
 | --- | --- |
-| Widening exact integer | `int16` to `int32`, `int32` to `int64`, `uint16` to `uint32`. |
+| Widening exact integer | `int16` to `int32`, `int32` to `int64`, `int64` to `int128`, `uint16` to `uint32`, `uint64` to `uint128`. |
 | Exact integer to admitted decimal | `int32` to `decimal(18,0)`. |
 | `null` to nullable target | `null` assigned to `varchar(30)` or `timestamp`. |
 | Domain to base carrier | A domain value used where its underlying carrier is required, subject to domain policy. |
@@ -74,7 +75,7 @@ All other family-crossing conversions should be written as `cast(...)`, `try_cas
 
 ## SBsql Coercion Rules
 
-SBsql parsers may accept SBsql-defined implicit casts, literal forms, or assignment behavior, but those rules are local to that SBsql session policy. The parser must lower the SBsql behavior into a canonical descriptor decision before SBLR admission. The engine does not infer SBsql, SBsql, SBsql, SBsql, or any other SBsql coercion from plain SBsql text.
+SBsql parsers may accept SBsql-defined implicit casts, literal forms, or assignment behavior, but those rules are local to that SBsql session policy. The parser must lower the SBsql behavior into a canonical descriptor decision before SBLR admission. The engine does not infer coercion from plain SBsql text.
 
 ## Syntax Productions
 

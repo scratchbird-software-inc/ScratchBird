@@ -292,6 +292,39 @@ Rules:
 | Transition values | `new` and `old` are view-row descriptors, not base-table rows. |
 | Result count | The trigger must report command completion according to the admitted view-update contract. |
 
+## Trigger Calls With Cursor Arguments
+
+A trigger body can declare a cursor, open it under the trigger's transaction and security context, and pass the cursor to a procedure or function that accepts a `cursor` descriptor.
+
+```sql
+create trigger app.orders_ai_cursor_audit
+after insert on table app.orders
+for each row
+as
+begin
+  declare cursor c_customer_orders for
+    select order_id, order_total
+      from app.orders
+     where customer_id = new.customer_id
+     order by submitted_at;
+
+  open c_customer_orders;
+  execute procedure app.audit_order_stream(c_customer_orders);
+  close c_customer_orders;
+end;
+```
+
+Trigger cursor-call rules:
+
+| Concern | Contract |
+| --- | --- |
+| Cursor source | The cursor must be declared or otherwise visible in the trigger body context. |
+| Event context | The cursor uses the trigger event's transaction, snapshot, transition values, and security mode. |
+| Routine argument | The callee receives a borrowed cursor handle unless transfer is explicitly admitted. |
+| Lifetime | A trigger-scoped cursor cannot outlive the trigger event unless an admitted holdable route exists. |
+| Transition data | A cursor query may reference available `old`, `new`, transition table, or `event` descriptors only where the trigger family exposes them. |
+| Failure handling | If the callee fails, trigger failure policy decides whether the source operation is refused, quarantined, or diagnosed. |
+
 ## REFERENCING Clause
 
 The `REFERENCING` clause renames transition values or transition tables for the trigger body.

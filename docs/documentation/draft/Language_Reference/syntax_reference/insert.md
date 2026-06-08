@@ -77,7 +77,24 @@ If the target does not admit row insertion, the statement must fail before execu
 
 ## Explicit Values
 
-The `VALUES` form supplies one or more row constructors.
+The `VALUES` form supplies one or more row constructors. SBsql supports the compact multi-row form:
+
+```sql
+insert into app.my_table (col1, col2, col3)
+values
+  (:val1, :val2, :val3),
+  (:val4, :val5, :val6),
+  (:val7, :val8, :val9);
+```
+
+The same form can be written on one line:
+
+```sql
+insert into app.my_table (col1, col2, col3)
+values (:val1, :val2, :val3), (:val4, :val5, :val6);
+```
+
+Each parenthesized row constructor must produce the same number of values as the target column list. Values are assigned by ordinal: the first expression maps to the first target column, the second expression maps to the second target column, and so on.
 
 ```sql
 insert into app.customer (

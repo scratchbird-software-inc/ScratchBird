@@ -1,19 +1,58 @@
-# Timeseries Statement EBNF Production
+# Time-Series Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the user-facing grammar contract for time-series commands.
 
 Generation task: `ebnf_timeseries_statement`
-
 
 ## Production
 
 ```ebnf
-timeseries_statement    ::= "TIMESERIES" timeseries_action timeseries_payload ;
+timeseries_statement ::=
+    "TIMESERIES" timeseries_action timeseries_target timeseries_payload? return_clause? statement_option_list? ;
+
+timeseries_action ::=
+      "QUERY"
+    | "INSERT"
+    | "DELETE"
+    | "DOWNSAMPLE"
+    | "RETAIN"
+    | "GAPFILL"
+    | "DESCRIBE" ;
+
+timeseries_target ::=
+    qualified_name ;
+
+timeseries_payload ::=
+      timeseries_query_payload
+    | timeseries_insert_payload
+    | timeseries_delete_payload
+    | timeseries_policy_payload ;
+
+timeseries_query_payload ::=
+    time_window_clause multimodel_where_clause? bucket_clause? aggregate_clause? ;
+
+timeseries_insert_payload ::=
+    "SERIES" expression "AT" expression "VALUE" expression ;
+
+timeseries_delete_payload ::=
+    time_window_clause multimodel_where_clause? ;
+
+timeseries_policy_payload ::=
+    time_window_clause? statement_option_list? ;
+
+time_window_clause ::=
+    "BETWEEN" expression "AND" expression ;
+
+bucket_clause ::=
+    "BUCKET" expression ;
+
+aggregate_clause ::=
+    "AGGREGATE" expression ("," expression)* ;
 ```
 
 ## Meaning
 
-`timeseries_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`timeseries_statement` recognizes time-window query, sample mutation, downsample, retention, gap-fill, and inspection commands. Timestamp descriptors, window bounds, bucket alignment, interpolation, and late-sample behavior are bound before execution.
 
 ## Used By
 
@@ -23,11 +62,20 @@ timeseries_statement    ::= "TIMESERIES" timeseries_action timeseries_payload ;
 
 ## Child Productions
 
-No child production reference was detected in the production body.
+| Child Production |
+| --- |
+| qualified_name |
+| expression |
+| return_clause |
+| statement_option_list |
+| multimodel_where_clause |
+
+## Binding Contract
+
+The target must resolve to a time-series capable descriptor. Window bounds, series identity, timestamp precision, bucket size, aggregate descriptors, gap-fill behavior, and retention policy must be admitted. Mutations must be transactional and rollback-safe.
 
 ## Practical Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- Time-zone and timestamp precision are descriptor owned.
+- Gap-fill status should be explicit when synthetic rows are returned.
+- Retention and downsample commands must not remove samples visible to an active transaction.

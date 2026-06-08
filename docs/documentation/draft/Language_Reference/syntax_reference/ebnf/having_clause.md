@@ -8,7 +8,8 @@ Generation task: `ebnf_having_clause`
 ## Production
 
 ```ebnf
-having_clause           ::= "HAVING" predicate ;
+having_clause ::=
+    "HAVING" predicate ;
 ```
 
 ## Meaning
@@ -20,6 +21,7 @@ having_clause           ::= "HAVING" predicate ;
 | Parent Production |
 | --- |
 | select_statement |
+| query_statement |
 
 ## Child Productions
 
@@ -27,9 +29,14 @@ having_clause           ::= "HAVING" predicate ;
 | --- |
 | predicate |
 
+## Binding Contract
+
+`HAVING` filters aggregate groups after grouping and aggregate accumulator state are available. Its predicate may reference grouping keys, aggregate calls, deterministic expressions over grouping and aggregate values, constants, and parameters. A `HAVING` predicate that references an ordinary non-grouped source column must be refused unless the binder proves functional dependency.
+
 ## Practical Notes
 
 - Quoted uppercase terms are literal contextual tokens.
 - Lowercase names refer to other productions or binder-level symbols.
 - Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
 - A production that names an object reference must still pass resolver and authorization checks.
+- Use `WHERE` for row filtering before grouping; use `HAVING` for group filtering after aggregation.

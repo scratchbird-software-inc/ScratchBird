@@ -1,19 +1,44 @@
 # Show Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the user-facing grammar contract for generic `SHOW` inspection.
 
 Generation task: `ebnf_show_statement`
-
 
 ## Production
 
 ```ebnf
-show_statement          ::= "SHOW" show_target show_option_list? ;
+show_statement ::=
+    "SHOW" show_target show_option_list? ;
+
+show_target ::=
+      "HEALTH"
+    | "READINESS"
+    | "LIVENESS"
+    | "VERSION"
+    | "BUILD"
+    | "RUNTIME"
+    | "DIAGNOSTICS"
+    | "DATABASES"
+    | "SCHEMAS"
+    | "TABLES"
+    | "VIEWS"
+    | "INDEXES"
+    | "FUNCTIONS"
+    | "PROCEDURES"
+    | "TRIGGERS"
+    | "DOMAINS"
+    | "SEQUENCES"
+    | "PRIVILEGES"
+    | "SEARCH" "PATH"
+    | show_management_target ;
+
+show_option_list ::=
+    "WITH" option ("," option)* ;
 ```
 
 ## Meaning
 
-`show_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`show_statement` returns compact authorized projections. It does not grant access to hidden catalog rows, runtime internals, secrets, or protected material.
 
 ## Used By
 
@@ -23,11 +48,17 @@ show_statement          ::= "SHOW" show_target show_option_list? ;
 
 ## Child Productions
 
-No child production reference was detected in the production body.
+| Child Production |
+| --- |
+| option |
+| show_management_target |
+
+## Binding Contract
+
+The selected target must bind to a visible report descriptor. Rows and fields must be filtered or redacted according to privileges, sandbox root, and disclosure policy.
 
 ## Practical Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- `SHOW` is for compact inspection; use `DESCRIBE` for one-object detail.
+- Tool-facing output should be stable, typed, and redacted.
+- Hidden targets should not leak through counts or diagnostics.

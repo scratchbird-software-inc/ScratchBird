@@ -1,19 +1,47 @@
 # Vector Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the user-facing grammar contract for vector commands.
 
 Generation task: `ebnf_vector_statement`
-
 
 ## Production
 
 ```ebnf
-vector_statement        ::= "VECTOR" vector_action vector_payload ;
+vector_statement ::=
+    "VECTOR" vector_action vector_target vector_payload? return_clause? statement_option_list? ;
+
+vector_action ::=
+      "SEARCH"
+    | "RERANK"
+    | "UPSERT"
+    | "DELETE"
+    | "REBUILD"
+    | "DESCRIBE" ;
+
+vector_target ::=
+    qualified_name ;
+
+vector_payload ::=
+      vector_search_payload
+    | vector_rerank_payload
+    | vector_mutation_payload ;
+
+vector_search_payload ::=
+    "USING" expression vector_metric_clause? multimodel_where_clause? limit_clause? ;
+
+vector_rerank_payload ::=
+    "USING" expression "CANDIDATES" expression vector_metric_clause? limit_clause? ;
+
+vector_mutation_payload ::=
+    ("KEY" expression)? "VALUE" expression ;
+
+vector_metric_clause ::=
+    "METRIC" identifier ;
 ```
 
 ## Meaning
 
-`vector_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`vector_statement` recognizes vector candidate search, exact rerank, mutation, rebuild, and inspection commands. Vector dimension, element profile, metric, index evidence, and exact-recheck behavior are descriptor owned.
 
 ## Used By
 
@@ -23,11 +51,22 @@ vector_statement        ::= "VECTOR" vector_action vector_payload ;
 
 ## Child Productions
 
-No child production reference was detected in the production body.
+| Child Production |
+| --- |
+| qualified_name |
+| expression |
+| identifier |
+| return_clause |
+| statement_option_list |
+| multimodel_where_clause |
+| limit_clause |
+
+## Binding Contract
+
+The target must resolve to a vector-capable descriptor. Query vector dimensions and element profile must match the target descriptor. Approximate candidate evidence must be exact-reranked or carry an admitted exactness proof before final delivery.
 
 ## Practical Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- Vector indexes are candidate evidence only.
+- Metric choice must be admitted for the vector descriptor and index.
+- Mutation must update or invalidate vector evidence transactionally.

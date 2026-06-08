@@ -8,7 +8,7 @@ Generation task: `ebnf_dml_statement`
 ## Production
 
 ```ebnf
-dml_statement           ::= insert_statement | update_statement | delete_statement | merge_statement | upsert_statement ;
+dml_statement           ::= insert_statement | update_statement | delete_statement | merge_statement | upsert_statement | copy_statement ;
 ```
 
 ## Meaning
@@ -28,6 +28,7 @@ dml_statement           ::= insert_statement | update_statement | delete_stateme
 | delete_statement |
 | insert_statement |
 | merge_statement |
+| copy_statement |
 | update_statement |
 | upsert_statement |
 

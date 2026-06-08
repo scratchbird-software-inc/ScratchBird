@@ -32,6 +32,7 @@ where invoice_total > 0;
 | `int64` | `bigint` | signed integer | 8 bytes | -9223372036854775808 to 9223372036854775807 |
 | `uint64` | none | unsigned integer | 8 bytes | 0 to 18446744073709551615 |
 | `int128` | none | signed integer | 16 bytes | -170141183460469231731687303715884105728 to 170141183460469231731687303715884105727 |
+| `uint128` | none | unsigned integer | 16 bytes | 0 to 340282366920938463463374607431768211455 |
 | `decimal(p,s)` | `numeric(p,s)` | exact decimal | descriptor-dependent, normally fixed binary decimal for admitted precision | `p` total digits, `s` fractional digits; absolute value is less than `10^(p-s)`. |
 | `decfloat(16)` | none | decimal floating point | 8 bytes logical decimal-float payload | Decimal floating value with 16 decimal digits of precision; exponent and special value policy are descriptor-owned. |
 | `decfloat(34)` | none | decimal floating point | 16 bytes logical decimal-float payload | Decimal floating value with 34 decimal digits of precision; exponent and special value policy are descriptor-owned. |
@@ -41,6 +42,21 @@ where invoice_total > 0;
 | `money` | `currency` | exact decimal domain | descriptor-dependent | Money-like value over a decimal carrier; currency code, scale, rounding, and rendering are descriptor or domain policy. |
 
 `decimal(p,s)` and `numeric(p,s)` admit precision and scale only when the active descriptor policy supports them. The portable baseline is precision `1` through `38` and scale `0` through `p`; higher precision may be admitted by database policy, but scripts that require portability should declare the precision they need and treat unsupported precision as a bind-time error.
+
+## Integer Literal Widths
+
+Unsigned integer literals may carry an explicit width suffix when the script
+needs the literal descriptor to be known before contextual coercion. `U` binds
+to the default unsigned integer descriptor for the active policy. `U128` and
+`UINT128` bind the literal as `uint128`:
+
+```sql
+select 123U128 as exact_unsigned_value;
+select cast('340282366920938463463374607431768211455' as uint128) as max_uint128;
+```
+
+Negative text or numeric input cannot bind to `uint128`. Values greater than
+`340282366920938463463374607431768211455` are refused as overflow.
 
 ## Arithmetic And Widening
 

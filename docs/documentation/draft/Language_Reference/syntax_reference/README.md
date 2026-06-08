@@ -17,7 +17,10 @@ This directory contains SBsql statement, expression, lifecycle, and clause refer
 | Topic | File |
 | --- | --- |
 | SELECT | [select.md](select.md) |
+| FROM and table expressions | [from.md](from.md) |
+| GROUP BY and HAVING | [group_by_and_having.md](group_by_and_having.md) |
 | INSERT | [insert.md](insert.md) |
+| COPY streaming import/export | [copy.md](copy.md) |
 | UPDATE | [update.md](update.md) |
 | DELETE | [delete.md](delete.md) |
 | WITH and recursive CTEs | [with.md](with.md) |
@@ -33,8 +36,10 @@ This directory contains SBsql statement, expression, lifecycle, and clause refer
 | Domains | [domain.md](domain.md) |
 | Type descriptors | [type_descriptor.md](type_descriptor.md) |
 | Security and privileges | [security_and_privilege_statements.md](security_and_privilege_statements.md) |
+| Agents and agent management | [agent.md](agent.md) |
 | Transactions | [transaction_control.md](transaction_control.md) |
 | Backup, restore, replication, and migration | [backup_restore_replication_migration.md](backup_restore_replication_migration.md) |
+| Multimodel statements | [multimodel_statements.md](multimodel_statements.md) |
 
 ## Procedural SQL Pages
 

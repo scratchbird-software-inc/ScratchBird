@@ -8,7 +8,29 @@ Generation task: `ebnf_group_by_clause`
 ## Production
 
 ```ebnf
-group_by_clause         ::= "GROUP" "BY" expression_list ;
+group_by_clause ::=
+    "GROUP" "BY" group_by_item ("," group_by_item)* group_by_modifier? ;
+
+group_by_item ::=
+      expression
+    | column_ordinal
+    | grouping_set ;
+
+group_by_modifier ::=
+      "WITH" "ROLLUP"
+    | "WITH" "CUBE" ;
+
+grouping_set ::=
+      "GROUPING" "SETS" "(" grouping_set_list ")"
+    | "ROLLUP" "(" expression_list ")"
+    | "CUBE" "(" expression_list ")" ;
+
+grouping_set_list ::=
+    grouping_set_element ("," grouping_set_element)* ;
+
+grouping_set_element ::=
+      "(" expression_list? ")"
+    | expression ;
 ```
 
 ## Meaning
@@ -20,10 +42,19 @@ group_by_clause         ::= "GROUP" "BY" expression_list ;
 | Parent Production |
 | --- |
 | select_statement |
+| query_statement |
 
 ## Child Productions
 
-No child production reference was detected in the production body.
+| Child Production |
+| --- |
+| expression |
+| expression_list |
+| column_ordinal |
+
+## Binding Contract
+
+`GROUP BY` partitions the visible input rowset into aggregate groups. The binder must resolve each grouping expression to an equality/grouping descriptor. Non-aggregate projections in the same query block must be grouping keys, deterministic expressions over grouping keys and aggregate results, constants, parameters, or expressions proven functionally dependent on the grouping keys.
 
 ## Practical Notes
 
@@ -31,3 +62,5 @@ No child production reference was detected in the production body.
 - Lowercase names refer to other productions or binder-level symbols.
 - Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
 - A production that names an object reference must still pass resolver and authorization checks.
+- `GROUP BY` does not define output order. Use `ORDER BY` for deterministic presentation order.
+- Advanced grouping forms require an admitted grouping metadata descriptor that can distinguish real null keys from subtotal placeholders.

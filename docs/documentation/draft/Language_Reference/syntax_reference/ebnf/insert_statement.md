@@ -60,7 +60,7 @@ After parsing, the binder must resolve:
 | --- | --- |
 | Target | A table, updatable view, or descriptor-bound rowset target that admits insertion. |
 | Column list | Target descriptors, ordinals, structured path targets where admitted, and generated/default rules. |
-| Values source | Expression descriptors, parameter descriptors, row counts, and row constructor shapes. |
+| Values source | Expression descriptors, parameter descriptors, row counts, and row constructor shapes. `VALUES (a, b), (c, d)` is one insert source containing multiple row constructors. |
 | Query source | Query result descriptors assignable to the target columns. |
 | Default source | Default, identity, generated, and nullable-column rules for a complete row. |
 | `RETURNING` | Authorized result descriptors evaluated after row construction. |
@@ -86,6 +86,7 @@ After parsing, the binder must resolve:
 
 - `DEFAULT` is contextual inside inserted values and is not a string literal.
 - A missing column list means the source must bind to the target's admitted insert column order.
+- Every row constructor in a multi-row `VALUES` source must match the target column count and bind by ordinal.
 - Structured path targets are valid only when the target descriptor defines insertable structured fields.
 - Multimodel inserts are rowset inserts only when the target exposes a row descriptor; command-style multimodel operations use their own statement family.
 - `RETURNING` is a statement result and not commit proof.

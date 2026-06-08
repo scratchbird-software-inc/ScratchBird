@@ -1,19 +1,61 @@
 # Graph Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the user-facing grammar contract for graph commands.
 
 Generation task: `ebnf_graph_statement`
-
 
 ## Production
 
 ```ebnf
-graph_statement         ::= "GRAPH" graph_action graph_payload ;
+graph_statement ::=
+    "GRAPH" graph_action graph_target graph_payload? return_clause? statement_option_list? ;
+
+graph_action ::=
+      "MATCH"
+    | "TRAVERSE"
+    | "SHORTEST_PATH"
+    | "CREATE_NODE"
+    | "CREATE_EDGE"
+    | "UPDATE_NODE"
+    | "UPDATE_EDGE"
+    | "DELETE_NODE"
+    | "DELETE_EDGE"
+    | "VALIDATE" ;
+
+graph_target ::=
+    qualified_name ;
+
+graph_payload ::=
+      graph_match_payload
+    | graph_traverse_payload
+    | graph_path_payload
+    | graph_mutation_payload ;
+
+graph_match_payload ::=
+    "PATTERN" graph_pattern multimodel_where_clause? ;
+
+graph_traverse_payload ::=
+    "FROM" "NODE" expression "OVER" "EDGE_TYPE" expression depth_clause? ;
+
+graph_path_payload ::=
+    "FROM" "NODE" expression "TO" "NODE" expression ("OVER" "EDGE_TYPE" expression)? ;
+
+graph_mutation_payload ::=
+    graph_property_list? ;
+
+depth_clause ::=
+    "DEPTH" expression "TO" expression ;
+
+graph_property_list ::=
+    "SET" graph_property_assignment ("," graph_property_assignment)* ;
+
+graph_property_assignment ::=
+    identifier "=" expression ;
 ```
 
 ## Meaning
 
-`graph_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`graph_statement` recognizes graph match, traversal, path, mutation, and validation commands. Nodes, edges, paths, graph properties, direction, and traversal depth must bind to graph descriptors before execution.
 
 ## Used By
 
@@ -23,11 +65,22 @@ graph_statement         ::= "GRAPH" graph_action graph_payload ;
 
 ## Child Productions
 
-No child production reference was detected in the production body.
+| Child Production |
+| --- |
+| qualified_name |
+| graph_pattern |
+| expression |
+| identifier |
+| return_clause |
+| statement_option_list |
+| multimodel_where_clause |
+
+## Binding Contract
+
+The target must resolve to a graph-capable descriptor. Node identity, edge identity, endpoint direction, path shape, property descriptors, and graph constraints must be validated. Traversal evidence is not final row authority.
 
 ## Practical Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- Stable path order exists only when the operation descriptor defines it or an outer ordering surface is used.
+- Node and edge deletion must obey graph constraints.
+- Property values bind to declared descriptors.

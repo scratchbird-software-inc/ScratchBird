@@ -1,38 +1,48 @@
 # Management Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the user-facing grammar contract for management command routing without treating SQL text as engine authority.
 
 Generation task: `ebnf_management_statement`
-
 
 ## Production
 
 ```ebnf
-management_statement    ::= show_management | alter_management | config_statement | support_bundle_statement ;
+management_statement ::=
+      show_management
+    | agent_statement
+    | alter_management
+    | config_statement
+    | support_bundle_statement ;
 ```
 
 ## Meaning
 
-`management_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`management_statement` dispatches management inspection and control commands. The grammar recognizes the statement family only. Binding must still resolve runtime targets, configuration keys, job identifiers, service identifiers, result descriptors, security context, and an admitted SBLR operation route.
 
 ## Used By
 
 | Parent Production |
 | --- |
 | native_statement |
+| statement |
 
 ## Child Productions
 
 | Child Production |
 | --- |
+| agent_statement |
+| show_management |
 | alter_management |
 | config_statement |
-| show_management |
 | support_bundle_statement |
+
+## Binding Contract
+
+Management commands are operationally sensitive. The binder must distinguish inspection from control, apply sandbox and disclosure policy, refuse hidden targets, and admit only routes that preserve transaction finality, recovery fencing, and protected-material redaction.
 
 ## Practical Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- Management syntax is contextual.
+- Runtime control actions require stronger authority than inspection.
+- A management report is a typed projection, not direct access to internal state.
+- Failed management actions must return canonical message vectors.

@@ -1,19 +1,58 @@
-# Kv Statement EBNF Production
+# Key-Value Statement EBNF Production
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page is part of the SBsql Language Reference Manual. It explains the user-facing grammar contract for key-value commands.
 
 Generation task: `ebnf_kv_statement`
-
 
 ## Production
 
 ```ebnf
-kv_statement            ::= "KV" kv_action kv_payload ;
+kv_statement ::=
+    "KV" kv_action kv_target kv_payload? return_clause? statement_option_list? ;
+
+kv_action ::=
+      "GET"
+    | "PUT"
+    | "DELETE"
+    | "INCREMENT"
+    | "EXPIRE"
+    | "SCAN"
+    | "LIST"
+    | "SET"
+    | "MAP" ;
+
+kv_target ::=
+    qualified_name ;
+
+kv_payload ::=
+      kv_key_payload
+    | kv_put_payload
+    | kv_increment_payload
+    | kv_expire_payload
+    | kv_scan_payload ;
+
+kv_key_payload ::=
+    "KEY" expression ;
+
+kv_put_payload ::=
+    "KEY" expression "VALUE" expression ttl_clause? ;
+
+kv_increment_payload ::=
+    "KEY" expression "BY" expression ;
+
+kv_expire_payload ::=
+    "KEY" expression ttl_clause ;
+
+kv_scan_payload ::=
+    ("FROM" "KEY" expression)? ("TO" "KEY" expression)? limit_clause? ;
+
+ttl_clause ::=
+    "TTL" expression ;
 ```
 
 ## Meaning
 
-`kv_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`kv_statement` recognizes descriptor-bound key-value commands. Keys, values, versions, expiration policy, and collection behavior are typed surfaces, not raw storage layout.
 
 ## Used By
 
@@ -23,11 +62,20 @@ kv_statement            ::= "KV" kv_action kv_payload ;
 
 ## Child Productions
 
-No child production reference was detected in the production body.
+| Child Production |
+| --- |
+| qualified_name |
+| expression |
+| return_clause |
+| statement_option_list |
+| limit_clause |
+
+## Binding Contract
+
+The target must resolve to a key-value capable descriptor. Key descriptors, value descriptors, TTL behavior, version checks, range bounds, and result projection must bind before execution.
 
 ## Practical Notes
 
-- Quoted uppercase terms are literal contextual tokens.
-- Lowercase names refer to other productions or binder-level symbols.
-- Optional parts use `?`; repeated lists use `*` or `+` according to the grammar.
-- A production that names an object reference must still pass resolver and authorization checks.
+- Range scans require descriptor-compatible start and end keys.
+- TTL cleanup timing must not change transaction visibility.
+- Conditional mutations must fail closed when versions or existence predicates do not match.
