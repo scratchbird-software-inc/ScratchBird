@@ -1,85 +1,117 @@
 # sys.catalog.protected_material Catalog Reference
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page documents the authorized catalog surface that records protected
+material identity and lifecycle metadata. It does not expose raw protected
+values.
 
 Generation task: `catalog_sys_catalog_protected_material`
 
+Related pages: [Binary, UUID, And Protected Values](../data_types/binary_uuid_and_protected_values.md),
+[Security And Sandboxing](../core_paradigms/security_and_sandboxing.md),
+[sys.catalog.protected_material_version](sys_catalog_protected_material_version.md),
+[sys.catalog.protected_material_policy_binding](sys_catalog_protected_material_policy_binding.md), and
+[sys.security.catalog.protected_material_audit_event](sys_security_catalog_protected_material_audit_event.md).
 
 ## Role
 
-`sys.catalog.protected_material` is a system catalog surface. It records durable metadata used by the binder, engine verifier, optimizer, security layer, support diagnostics, bridge rendering, or transaction model.
+`sys.catalog.protected_material` is the durable identity record for secret,
+credential, key, token, protected binary, protected text, protected diagnostic,
+or other release-controlled material.
 
-Catalog rows are not parser authority. They are visible through authorized catalog projections, SHOW/DESCRIBE surfaces, information-style views, or support tooling. Base catalog mutation must go through engine-managed catalog operations.
+The table stores metadata and references. It must not store or render plaintext
+secret material through ordinary catalog projections.
 
 ## Keys And Columns
 
-| Column | Type Family | Requirement |
-| --- | --- | --- |
-| protected_material_uuid | UUID | Stable material identity. |
-| object_class | enum/text | protected_material` or admitted protected material subclass. |
-| owner_scope_uuid | UUID | Owning database, schema, security authority, package, user, role, or system scope. |
-| purpose_class | enum/text | Purpose class controlling default release purpose. |
-| storage_class | enum | direct, wrapped, split, external_reference, derived, or redacted; direct storage still forbids plaintext. |
-| active_version_uuid | nullable UUID | Active version visible at the current MGA catalog generation. |
-| lifecycle_state | enum | active, disabled_by_policy, retained_no_active_version, purged, quarantined, or archived. |
-| retention_policy_uuid | UUID | Retention policy. |
-| access_policy_uuid | UUID | Metadata and read visibility policy. |
-| release_policy_uuid | UUID | Purpose-bound release policy. |
-| purge_policy_uuid | UUID | Purge/destruction policy. |
-| audit_policy_uuid | UUID | Audit evidence policy. |
-| created_transaction_uuid | UUID | Creating MGA transaction or bootstrap event. |
-| created_local_transaction_id | uint64 | Creating local MGA transaction ID. |
-| updated_transaction_uuid | UUID | Last mutating MGA transaction or system event. |
-| updated_local_transaction_id | uint64 | Last mutating local MGA transaction ID. |
-| catalog_generation_id | uint64 | Visible catalog generation. |
-| security_epoch | uint64 | Security policy epoch for visibility and release. |
-| audit_lineage_ref | UUID/text | Latest protected material audit anchor. |
-
-## Full Definition Extract
-
-### Catalog Table `sys.catalog.protected_material`
-
 Primary key: `protected_material_uuid`
 
-Required columns:
-
-| Column | Type family | Requirement |
+| Column | Type Family | Requirement |
 | --- | --- | --- |
-| `protected_material_uuid` | UUID | Stable material identity. |
-| `object_class` | enum/text | `protected_material` or admitted protected material subclass. |
-| `owner_scope_uuid` | UUID | Owning database, schema, security authority, package, user, role, or system scope. |
-| `purpose_class` | enum/text | Purpose class controlling default release purpose. |
-| `storage_class` | enum | direct, wrapped, split, external_reference, derived, or redacted; direct storage still forbids plaintext. |
-| `active_version_uuid` | nullable UUID | Active version visible at the current MGA catalog generation. |
-| `lifecycle_state` | enum | active, disabled_by_policy, retained_no_active_version, purged, quarantined, or archived. |
-| `retention_policy_uuid` | UUID | Retention policy. |
-| `access_policy_uuid` | UUID | Metadata and read visibility policy. |
+| `protected_material_uuid` | UUID | Stable protected-material identity. |
+| `object_class` | enum/text | Protected-material class or admitted subclass. |
+| `owner_scope_uuid` | UUID | Owning database, schema, package, principal, security scope, or system scope. |
+| `purpose_class` | enum/text | Default purpose for access, release, rotation, backup, replication, or support use. |
+| `storage_class` | enum | `wrapped`, `split`, `external_reference`, `derived`, `redacted`, or other admitted class. Plaintext catalog storage is not an ordinary public class. |
+| `active_version_uuid` | nullable UUID | Active version visible for the current catalog generation. |
+| `lifecycle_state` | enum | `active`, `disabled_by_policy`, `retained_no_active_version`, `purged`, `quarantined`, or `archived`. |
+| `retention_policy_uuid` | UUID | Retention policy for metadata and references. |
+| `access_policy_uuid` | UUID | Metadata visibility policy. |
 | `release_policy_uuid` | UUID | Purpose-bound release policy. |
 | `purge_policy_uuid` | UUID | Purge/destruction policy. |
 | `audit_policy_uuid` | UUID | Audit evidence policy. |
-| `created_transaction_uuid` | UUID | Creating MGA transaction or bootstrap event. |
+| `created_transaction_uuid` | UUID | Creating transaction or bootstrap event. |
 | `created_local_transaction_id` | uint64 | Creating local MGA transaction ID. |
-| `updated_transaction_uuid` | UUID | Last mutating MGA transaction or system event. |
+| `updated_transaction_uuid` | UUID | Last mutating transaction or system event. |
 | `updated_local_transaction_id` | uint64 | Last mutating local MGA transaction ID. |
 | `catalog_generation_id` | uint64 | Visible catalog generation. |
-| `security_epoch` | uint64 | Security policy epoch for visibility and release. |
-| `audit_lineage_ref` | UUID/text | Latest protected material audit anchor. |
+| `security_epoch` | uint64 | Security epoch for visibility and release. |
+| `audit_lineage_ref` | UUID/text | Latest audit lineage anchor or redacted evidence reference. |
 
-Mutation rule: only engine security/catalog APIs may insert or update rows. Parser SQL text, SBsql metadata, driver metadata, support bundle export, cloud provider status, Kubernetes status, CDN streams, SBsql, and WAL-like journals must not mutate this table.
+## Protected Material Identity
 
-Visibility rule: rows are hidden by default unless the effective user can see protected material metadata under access policy. Visible rows expose only redacted metadata through presentation views.
+The UUID identifies the protected material, not the raw secret. Versions carry
+rotated or replaced protected references. Policy bindings decide who can inspect
+metadata, resolve a reference, release a value, purge a version, or include
+evidence in support output.
 
-## Operational Boundaries
+## Lifecycle States
 
-- Base rows require UUID identity and lifecycle metadata.
-- Visibility is policy controlled and may use redaction.
-- Derived views must preserve base-row authority and must not become engine identity.
-- catalog projections are rendering surfaces only.
+| State | Meaning |
+| --- | --- |
+| `active` | Material has an active version and can be resolved where policy admits it. |
+| `disabled_by_policy` | Metadata exists, but resolution or release is blocked. |
+| `retained_no_active_version` | Metadata is retained while no version is active. |
+| `purged` | Protected reference reachability has been removed according to purge policy. |
+| `quarantined` | Material is fenced because integrity, policy, or compromise state is uncertain. |
+| `archived` | Metadata is retained for audit, recovery, or compliance but not ordinary use. |
+
+## Visibility And Mutation
+
+Rows are hidden by default unless the effective principal can inspect protected
+material metadata. Visible projections must redact sensitive fields.
+
+Mutation is performed only by engine-managed protected-material lifecycle
+operations such as create, add version, rotate, disable, quarantine, purge,
+restore metadata, or policy change. Ordinary parser text, driver metadata,
+support-bundle generation, diagnostics rendering, and catalog projections must
+not directly mutate the base table.
 
 ## Example Inspection
 
 ```sql
-select *
+select protected_material_uuid,
+       object_class,
+       purpose_class,
+       lifecycle_state,
+       active_version_uuid,
+       security_epoch
 from sys.catalog.protected_material
-limit 20;
+order by protected_material_uuid;
 ```
+
+Returned rows and columns depend on disclosure policy.
+
+## Failure Modes
+
+| Condition | Required Behavior |
+| --- | --- |
+| Metadata hidden by policy | Return redacted not-visible result or denied diagnostic. |
+| Active version missing | Refuse resolution and report retained/no-active-version state where visible. |
+| Lifecycle state disabled | Deny release or resolution. |
+| Quarantined material | Fence release and require operator or policy action. |
+| Purged material requested | Return purged-state diagnostic without raw reference data. |
+| Security epoch stale | Reauthorize and rebind before release or rendering. |
+| Support output attempts raw value | Deny or redact; this is a proof failure if leaked. |
+
+## Verification Checklist
+
+Proof should demonstrate:
+
+- raw protected values are absent from ordinary catalog projections;
+- hidden metadata does not leak through errors;
+- active version selection uses MGA-visible catalog state;
+- release requires release policy and audit evidence;
+- purge removes protected reference reachability without deleting required audit
+  evidence;
+- lifecycle states gate resolution and release;
+- security epoch changes invalidate cached protected-material handles.

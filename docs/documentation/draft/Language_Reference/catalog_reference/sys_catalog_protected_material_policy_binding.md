@@ -1,59 +1,117 @@
 # sys.catalog.protected_material_policy_binding Catalog Reference
 
-This page is part of the SBsql Language Reference Manual. It is generated from the SBsql grammar, surface registry, SBLR routing matrix, built-in operation registries, catalog-definition material, and parser/engine proof fixtures. It explains the user-facing language contract without treating SQL text as engine authority.
+This page documents the authorized catalog surface that binds protected
+material or protected-material versions to retention, access, release, purge,
+audit, diagnostic, redaction, backup, restore, replication, migration, and
+support policies.
 
 Generation task: `catalog_sys_catalog_protected_material_policy_binding`
 
+Related pages: [sys.catalog.protected_material](sys_catalog_protected_material.md),
+[sys.catalog.protected_material_version](sys_catalog_protected_material_version.md),
+[sys.security.catalog.protected_material_audit_event](sys_security_catalog_protected_material_audit_event.md), and
+[Security And Sandboxing](../core_paradigms/security_and_sandboxing.md).
 
 ## Role
 
-`sys.catalog.protected_material_policy_binding` is a system catalog surface. It records durable metadata used by the binder, engine verifier, optimizer, security layer, support diagnostics, bridge rendering, or transaction model.
+`sys.catalog.protected_material_policy_binding` records which policies control
+protected material. A material can have material-level policies and
+version-level policies. Version-level policy can narrow or override behavior
+only where the policy model admits it.
 
-Catalog rows are not parser authority. They are visible through authorized catalog projections, SHOW/DESCRIBE surfaces, information-style views, or support tooling. Base catalog mutation must go through engine-managed catalog operations.
+The table is used before metadata rendering, reference resolution, release,
+export, backup, restore, replication, purge, diagnostics, and support-bundle
+generation.
 
 ## Keys And Columns
 
-| Column | Type Family | Requirement |
-| --- | --- | --- |
-| binding_uuid | UUID | Stable binding identity. |
-| protected_material_uuid | UUID | Bound material. |
-| protected_material_version_uuid | nullable UUID | Bound version, or null for material-level binding. |
-| policy_uuid | UUID | Bound policy. |
-| policy_kind | enum | retention, access, release, purge, audit, diagnostic, redaction, backup_restore, or support_bundle. |
-| diagnostic_state | enum/text | active, disabled_by_policy, security_redacted, purge_blocked, release_blocked, or archived. |
-| catalog_generation_id | uint64 | Visible catalog generation. |
-| security_epoch | uint64 | Security epoch. |
-
-## Full Definition Extract
-
-### Catalog Table `sys.catalog.protected_material_policy_binding`
-
 Primary key: `binding_uuid`
 
-Required columns:
-
-| Column | Type family | Requirement |
+| Column | Type Family | Requirement |
 | --- | --- | --- |
 | `binding_uuid` | UUID | Stable binding identity. |
-| `protected_material_uuid` | UUID | Bound material. |
+| `protected_material_uuid` | UUID | Bound protected material. |
 | `protected_material_version_uuid` | nullable UUID | Bound version, or null for material-level binding. |
-| `policy_uuid` | UUID | Bound policy. |
-| `policy_kind` | enum | retention, access, release, purge, audit, diagnostic, redaction, backup_restore, or support_bundle. |
-| `diagnostic_state` | enum/text | active, disabled_by_policy, security_redacted, purge_blocked, release_blocked, or archived. |
+| `policy_uuid` | UUID | Policy object that controls the behavior. |
+| `policy_kind` | enum | `retention`, `access`, `release`, `purge`, `audit`, `diagnostic`, `redaction`, `backup_restore`, `replication`, `migration`, or `support_bundle`. |
+| `diagnostic_state` | enum/text | `active`, `disabled_by_policy`, `security_redacted`, `purge_blocked`, `release_blocked`, or `archived`. |
 | `catalog_generation_id` | uint64 | Visible catalog generation. |
-| `security_epoch` | uint64 | Security epoch. |
+| `security_epoch` | uint64 | Security epoch for visibility and release. |
 
-## Operational Boundaries
+## Policy Kinds
 
-- Base rows require UUID identity and lifecycle metadata.
-- Visibility is policy controlled and may use redaction.
-- Derived views must preserve base-row authority and must not become engine identity.
-- catalog projections are rendering surfaces only.
+| Policy Kind | Controls |
+| --- | --- |
+| `retention` | How long metadata, versions, hashes, and audit evidence are kept. |
+| `access` | Who can inspect metadata or resolve references. |
+| `release` | Who can obtain raw material for a specific admitted purpose. |
+| `purge` | When protected-reference reachability can be destroyed. |
+| `audit` | Which events must be recorded and how long evidence is retained. |
+| `diagnostic` | What can appear in diagnostics and message vectors. |
+| `redaction` | Which fields are hidden, masked, hashed, or summarized. |
+| `backup_restore` | Whether material, references, or redacted metadata can enter backup/restore streams. |
+| `replication` | Whether material can be included in change streams or replication routes. |
+| `migration` | Whether material can be transformed or mapped during migration. |
+| `support_bundle` | Which redacted evidence may be collected for support. |
+
+## Resolution Rules
+
+When protected material is accessed:
+
+1. bind protected material UUID;
+2. select visible version where needed;
+3. load material-level policy bindings;
+4. load version-level policy bindings;
+5. combine policies according to policy precedence;
+6. apply security epoch and transaction visibility;
+7. admit, redact, deny, or quarantine the request;
+8. record audit evidence where policy requires it.
+
+Missing required policy is a refusal, not permission to proceed.
+
+## Visibility And Mutation
+
+Rows are visible only through authorized projections. Base rows are created or
+changed by protected-material lifecycle and security-policy operations.
+
+Changing a binding advances the security epoch and invalidates cached protected
+handles, stream routes, support projections, metadata projections, and any
+compiled or prepared operation that depended on the prior binding.
 
 ## Example Inspection
 
 ```sql
-select *
+select protected_material_uuid,
+       protected_material_version_uuid,
+       policy_kind,
+       diagnostic_state,
+       security_epoch
 from sys.catalog.protected_material_policy_binding
-limit 20;
+where protected_material_uuid = :protected_material_uuid
+order by policy_kind;
 ```
+
+## Failure Modes
+
+| Condition | Required Behavior |
+| --- | --- |
+| Required policy missing | Refuse protected-material operation. |
+| Binding hidden by policy | Redact or hide binding metadata. |
+| Binding disabled | Deny the controlled behavior. |
+| Release blocked | Deny release and emit release diagnostic where visible. |
+| Purge blocked | Refuse purge and preserve reachability. |
+| Conflicting policies | Fail closed unless precedence resolves them. |
+| Stale security epoch | Reauthorize and invalidate cached state. |
+
+## Verification Checklist
+
+Proof should demonstrate:
+
+- material-level and version-level policies are both considered;
+- missing required policy fails closed;
+- release, purge, support, backup, replication, and migration behavior depend on
+  explicit bindings;
+- binding changes advance security epoch and invalidate dependent state;
+- unauthorized users cannot infer hidden policy details;
+- diagnostics are redacted according to diagnostic/redaction policy;
+- audit evidence is recorded where policy requires it.

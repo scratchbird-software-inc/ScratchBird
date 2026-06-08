@@ -1,6 +1,6 @@
 {
   "current_phase": "completed",
-  "last_updated": "2026-06-08T23:22:50Z",
+  "last_updated": "2026-06-08T23:36:10Z",
   "progress_summary": {
     "completed_tasks": 198,
     "percent_complete": 100.0,
@@ -431,13 +431,13 @@
       "target_file": "functional_reference/sb_xml.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T23:29:19Z",
       "id": "catalog_sys_catalog_type_descriptor",
       "status": "completed",
       "target_file": "catalog_reference/sys_catalog_type_descriptor.md"
     },
     {
-      "completed_at": "2026-06-08T18:22:35Z",
+      "completed_at": "2026-06-08T23:36:10Z",
       "id": "catalog_sys_catalog_domain_descriptor",
       "status": "completed",
       "target_file": "catalog_reference/sys_catalog_domain_descriptor.md"
@@ -449,43 +449,43 @@
       "target_file": "catalog_reference/sys_catalog_domain_element.md"
     },
     {
-      "completed_at": "2026-06-08T18:13:07Z",
+      "completed_at": "2026-06-08T23:30:48Z",
       "id": "catalog_sys_catalog_type_alias_mapping",
       "status": "completed",
       "target_file": "catalog_reference/sys_catalog_type_alias_mapping.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T23:30:03Z",
       "id": "catalog_sys_catalog_type_capability",
       "status": "completed",
       "target_file": "catalog_reference/sys_catalog_type_capability.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T23:31:56Z",
       "id": "catalog_sys_catalog_operation_descriptor",
       "status": "completed",
       "target_file": "catalog_reference/sys_catalog_operation_descriptor.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T23:32:45Z",
       "id": "catalog_sys_catalog_protected_material",
       "status": "completed",
       "target_file": "catalog_reference/sys_catalog_protected_material.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T23:33:27Z",
       "id": "catalog_sys_catalog_protected_material_version",
       "status": "completed",
       "target_file": "catalog_reference/sys_catalog_protected_material_version.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T23:34:09Z",
       "id": "catalog_sys_catalog_protected_material_policy_binding",
       "status": "completed",
       "target_file": "catalog_reference/sys_catalog_protected_material_policy_binding.md"
     },
     {
-      "completed_at": "2026-06-08T12:02:32Z",
+      "completed_at": "2026-06-08T23:35:01Z",
       "id": "catalog_sys_security_catalog_protected_material_audit_event",
       "status": "completed",
       "target_file": "catalog_reference/sys_security_catalog_protected_material_audit_event.md"

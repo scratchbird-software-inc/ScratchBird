@@ -118,7 +118,7 @@ select domain_uuid,
        base_domain_uuid,
        domain_stack_hash
 from sys.catalog.domain_descriptor
-limit 20;
+order by domain_kind, domain_uuid;
 ```
 
 Use [Domain Lifecycle](../syntax_reference/domain.md) for supported mutation syntax. This catalog page is for metadata interpretation.
