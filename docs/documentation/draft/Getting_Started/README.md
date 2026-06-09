@@ -45,6 +45,7 @@ ScratchBird uses several branded component names:
 | Topic | Manual |
 | --- | --- |
 | SBsql grammar, syntax, functions, operators, catalog tables, procedural SQL, and EBNF | [../Language_Reference/README.md](../Language_Reference/README.md) |
+| Installation, configuration, service lifecycle, diagnostics, backup, restore, and release validation | [../Operations_Administration/README.md](../Operations_Administration/README.md) |
 | Schema tree and name resolution details | [../Language_Reference/syntax_reference/schema_tree_and_name_resolution.md](../Language_Reference/syntax_reference/schema_tree_and_name_resolution.md) |
 | Operator precedence and result types | [../Language_Reference/syntax_reference/operators.md](../Language_Reference/syntax_reference/operators.md) |
 | Procedural SQL | [../Language_Reference/syntax_reference/procedural_sql.md](../Language_Reference/syntax_reference/procedural_sql.md) |

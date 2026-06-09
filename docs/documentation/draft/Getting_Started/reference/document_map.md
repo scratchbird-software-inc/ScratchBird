@@ -127,6 +127,28 @@ Use the Language Reference when you need exact syntax, types, operators, functio
 | Work with agents | [Agent](../../Language_Reference/syntax_reference/agent.md) |
 | Understand scripts and identifiers | [Script Tokens And Identifiers](../../Language_Reference/syntax_reference/script_tokens_and_identifiers.md) |
 
+## Operations And Administration Entry Points
+
+Use the Operations And Administration Guide when you need runbook, configuration, diagnostics, data movement, or release-validation guidance.
+
+| Area | Entry Point |
+| --- | --- |
+| Main operations index | [Operations And Administration Guide](../../Operations_Administration/README.md) |
+| Installation and output layout | [Installation And Output Layout](../../Operations_Administration/installation_and_output_layout.md) |
+| Configuration | [Configuration Reference](../../Operations_Administration/configuration_reference.md) |
+| Operating modes runbook | [Operating Modes Runbook](../../Operations_Administration/operating_modes_runbook.md) |
+| Service lifecycle | [Service Lifecycle](../../Operations_Administration/service_lifecycle.md) |
+| Identity, security, and policy | [Identity, Security, And Policy](../../Operations_Administration/identity_security_and_policy.md) |
+| Parser routes | [Parser Registration And Routes](../../Operations_Administration/parser_registration_and_routes.md) |
+| Database lifecycle | [Database Lifecycle](../../Operations_Administration/database_lifecycle.md) |
+| Filespaces and storage | [Filespaces And Storage](../../Operations_Administration/filespaces_and_storage.md) |
+| Backup, restore, and data movement | [Backup, Restore, And Data Movement](../../Operations_Administration/backup_restore_and_data_movement.md) |
+| Diagnostics and support bundles | [Diagnostics, Message Vectors, And Support Bundles](../../Operations_Administration/diagnostics_message_vectors_and_support_bundles.md) |
+| Monitoring and readiness | [Monitoring, Health, And Readiness](../../Operations_Administration/monitoring_health_and_readiness.md) |
+| Troubleshooting | [Troubleshooting](../../Operations_Administration/troubleshooting.md) |
+| Upgrade and compatibility | [Upgrade And Compatibility Policy](../../Operations_Administration/upgrade_and_compatibility_policy.md) |
+| Release validation | [Release Validation Checklist](../../Operations_Administration/release_validation_checklist.md) |
+
 ## Functional Reference By Namespace
 
 | Namespace | Page |
