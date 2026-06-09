@@ -1,67 +1,88 @@
-# Sb Timeseries Functional Reference
-
-This page is part of the SBsql Language Reference Manual. It explains the user-facing language contract while preserving the ScratchBird authority model: SQL text parses to SBLR, durable identity is UUID based, descriptors own type behavior, security is materialized from catalog policy, and MGA owns transaction finality.
+# SB Timeseries Functional Reference
 
 Generation task: `sb_timeseries`
 
+Package namespace: `sb.timeseries`
 
-## Package Boundary
+Time-series bucketing, interpolation, downsampling, and aggregate helper surfaces.
 
-`sb.timeseries` contains 1 registered built-in operation records. Each record binds a public function, operator, aggregate, window function, or special form to descriptor-aware overloads, null behavior, optimizer properties, SBLR binding, and engine entrypoint metadata.
+## How To Read This Page
 
-The package boundary is semantic, not a privilege boundary. A caller still needs object privileges, expression admission, descriptor compatibility, and policy admission for the statement that uses the operation.
+Provides scalar time-series helpers for bucketing, interpolation, simple series aggregation, and downsampling.
+
+Each entry below is written for a user reading SBsql, not for a registry maintainer. The technical fields are retained so an operator can connect the language surface to SBLR and engine diagnostics when troubleshooting.
+
+Privileges, policy admission, sandboxing, and descriptor compatibility are still checked by the surrounding statement. A function being listed here does not grant access to catalog objects, protected material, files, network targets, or external services.
+
+Every operation entry includes:
+
+- `Purpose`: what the operation is for.
+- `Call forms`: the public spelling or overload shapes recognized by SBsql.
+- `Parameters`: the argument roles and descriptor/coercion rules.
+- `Returns`: the result descriptor and value rule.
+- `Behavior`: NULL, volatility, collation, timezone, side-effect, and execution notes.
+- `Errors`: the message-vector conditions raised for invalid input or denied execution.
+- `Example`: a representative SBsql usage shape. Examples use ordinary schema names such as `app.orders` and are meant to show the function form, not prescribe a schema.
 
 ## Package Inventory
 
 | Kind | Records |
-| --- | --- |
+| --- | ---: |
 | aggregate | 1 |
 
-## Type Mechanics
-
-- Argument descriptors select the overload.
-- Return descriptors come from the declared return type rule.
-- Null, collation, charset, timezone, and security behavior are part of binding.
-- Optimizer properties may allow constant folding, generated column use, or index eligibility, but execution authority remains with the engine.
-- Practical forms below are canonical usage shapes derived from declared overload signatures; statement admission still depends on the surrounding query, object privileges, and descriptor binding.
-
-## Operation Records
+## Operation Reference
 
 ### `aggregate`
 
-| Property | Value |
+**Purpose:** Computes a simple aggregate over a bounded numeric time-series payload.
+
+**Call Forms:**
+
+- `aggregate(aggregate_name, numeric_series)`
+- Syntax category: `function_call`
+
+**Parameters:**
+
+- `aggregate_name`: Text value naming the aggregate to apply. Supported names are `count`, `min`, `max`, `sum`, `avg`, and `average`.
+- `numeric_series`: Text or descriptor-supported value containing numeric samples. The current bounded helper accepts comma-separated values and bracketed list text such as `'[1,2,3,4]'`.
+- Coercion: Both arguments are read through descriptor-aware scalar conversion. Invalid text, unsupported aggregate names, malformed numeric samples, or ambiguous casts are refused.
+- NULL handling: If the parsed series contains no numeric values, the function returns SQL `NULL` with a `real64` descriptor. Other NULL behavior follows descriptor binding for the supplied arguments.
+
+**Returns:**
+
+`real64`. `count` returns the number of parsed samples as a `real64`; `min` and `max` return the lowest and highest parsed samples; `sum` returns the sample total; `avg` and `average` return the arithmetic mean.
+
+**Behavior:**
+
+- Volatility: immutable for the same aggregate name and numeric series payload.
+- Determinism: deterministic for the same parsed sample sequence.
+- Side effects: none.
+- Collation/charset: text input is parsed byte-stably; aggregate names are matched as canonical lowercase tokens.
+- Timezone: not applicable to this scalar aggregate helper.
+- Security and authority: executes as a bounded scalar helper. It does not create, write, or manage persistent time-series objects.
+
+**Errors:**
+
+The function refuses invalid arity, non-numeric series values, malformed descriptor input, and unsupported aggregate names through SBsql message vectors.
+
+**Example:**
+
+```sql
+select aggregate('avg', '[1,2,3,4]') as average_value;
+```
+
+**Technical Details:**
+
+| Field | Value |
 | --- | --- |
 | Builtin ID | timeseries.aggregate |
 | UUID | 019f0000-0000-7000-8000-000000063901 |
 | Kind | aggregate |
-| Syntax Forms | function_call |
-| Overloads | aggregate(...) |
-| Return Type Rule | runtime-defined by engine entrypoint aggregate |
-| Coercion Rule | descriptor implicit cast matrix or runtime guard |
-| Null Behavior | engine runtime entrypoint semantics |
-| Collation/Charset Rule | engine runtime entrypoint semantics where text descriptors apply |
-| Timezone Rule | engine runtime entrypoint semantics where temporal descriptors apply |
-| Volatility | runtime_defined_by_engine_entrypoint |
-| Determinism | follows engine runtime entrypoint semantics for stable inputs |
-| Side Effects | none unless the engine runtime entrypoint documents otherwise |
-| SBLR Binding | sblr.expr.timeseries_aggregate.v3 |
-| AST Binding | ast.expr.timeseries_aggregate |
-| Engine Entrypoint | aggregate |
-| Security Policy | follows engine runtime seed registry authority for timeseries |
-| Error Semantics | engine runtime guard diagnostics |
-
-#### Optimizer Properties
-
-| Property | Value |
-| --- | --- |
-| foldable | False |
-| index_eligible | False |
-| generated_column_eligible | False |
-| cost_class | runtime_seed |
-
-#### Practical Form
-
-```sql
-select aggregate(arg_1) from app.orders group by account_id;
-```
-
+| Syntax forms | function_call |
+| SBLR binding | sblr.expr.timeseries_aggregate.v3 |
+| AST binding | ast.expr.timeseries_aggregate |
+| Engine entrypoint | aggregate |
+| Optimizer foldable | False |
+| Index eligible | False |
+| Generated-column eligible | False |
+| Cost class | runtime_seed |
