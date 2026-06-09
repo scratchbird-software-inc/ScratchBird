@@ -2,27 +2,60 @@
 
 ## Purpose
 
-Standalone server mode adds listener and parser routing for clients that connect over a protocol-facing entry point. This is the mode to read when you are thinking about donor-style clients, network clients, parser pools, or ordinary client/server use.
+Standalone server mode is the client/server shape where clients enter through listener and parser routing. It is the mode to evaluate when a client needs a network-facing entry point, a parser package, protocol negotiation, or compatibility testing through a client tool.
+
+The defining boundary is that clients do not call SBcore directly. They connect to SBgate, are routed to a parser package, and reach SBcore through the configured local service path.
 
 ## High-Level Shape
 
 ```mermaid
 flowchart LR
-    Client[Client tool or application] --> Listener[SBgate]
-    Listener --> Parser[Parser package]
-    Parser --> IPC[Local server route]
-    IPC --> Server[SBsrv]
-    Server --> Engine[SBcore]
-    Engine --> DB[(Database files)]
+    Client[Client tool or application]
+    Gate[SBgate listener]
+    Parser[Parser package]
+    LocalRoute[Local server route]
+    Server[SBsrv]
+    Engine[SBcore]
+    DB[(Database files)]
+    Diagnostics[Message vectors and logs]
+
+    Client --> Gate
+    Gate --> Parser
+    Parser --> LocalRoute
+    LocalRoute --> Server
+    Server --> Engine
+    Engine --> DB
+    Parser --> Diagnostics
+    Server --> Diagnostics
+    Engine --> Diagnostics
 ```
 
-## Parser Role
+## What This Mode Is For
 
-The listener does not make donor syntax into engine authority. A parser package accepts a specific protocol or language surface, validates it according to its profile, and lowers admitted work to a ScratchBird execution request.
+Standalone server mode is the right page to read when you are evaluating:
 
-The engine then rechecks object identity, descriptors, transaction context, and security before execution.
+- network-facing client access;
+- listener startup and shutdown;
+- parser selection and parser pool behavior;
+- donor-style client or tool experiments where a parser exists;
+- native SBsql over a listener route;
+- protocol negotiation and refusal behavior;
+- end-to-end client/server smoke tests.
 
-## Typical Request Flow
+Actual suitability depends on the current release, target platform, parser status, configuration, and proof results.
+
+## Component Responsibilities
+
+| Component | Responsibility In This Mode |
+| --- | --- |
+| Client | Connects through the configured listener route and sends language or protocol requests. |
+| SBgate | Accepts client connections, performs listener-level routing, and hands work to the selected parser path. |
+| Parser package | Accepts one client language or protocol family, binds visible names, lowers admitted work to SBLR, and renders client-shaped results or diagnostics. |
+| SBsrv | Provides the local service route to SBcore where configured. |
+| SBcore | Owns durable catalog identity, descriptors, transactions, storage, recovery, authorization, and engine diagnostics. |
+| Configuration | Defines listener endpoints, parser registration, identity sources, database routes, resource files, policy, and diagnostics. |
+
+## Request Flow
 
 ```mermaid
 sequenceDiagram
@@ -33,36 +66,127 @@ sequenceDiagram
     participant Engine as SBcore
 
     Client->>Gate: connect
-    Gate->>Parser: route to configured parser
-    Parser->>Server: attach/open session
-    Server->>Engine: authenticate and bind session
+    Gate->>Parser: select configured parser route
+    Parser->>Server: attach or open session
+    Server->>Engine: authenticate and materialize authorization
+    Engine-->>Server: session admitted or refused
+    Server-->>Parser: session result
+    Parser-->>Gate: protocol response
+    Gate-->>Client: connected or refused
     Client->>Gate: statement or protocol request
-    Gate->>Parser: parse and lower
-    Parser->>Server: SBLR/request envelope
-    Server->>Engine: execute admitted request
+    Gate->>Parser: request bytes or text
+    Parser->>Parser: parse and bind
+    Parser->>Server: SBLR request
+    Server->>Engine: execute admitted work
     Engine-->>Server: result or message vector
-    Server-->>Parser: result
-    Parser-->>Gate: protocol-specific rendering
-    Gate-->>Client: response
+    Server-->>Parser: engine result
+    Parser-->>Gate: client-shaped response
+    Gate-->>Client: rows, status, or diagnostic
 ```
 
-## What It Is For
+## Parser Routing
 
-Standalone server mode is intended for:
+The listener does not make syntax into engine authority. It selects a configured parser path. The parser accepts or refuses the client surface, then submits a bound request to the engine path.
 
-- client/server evaluation;
-- parser compatibility testing;
-- donor-style client experiments where a parser exists;
-- networked development deployments;
-- applications that need a network-facing service boundary.
+Parser routing must be explicit enough that users can answer:
 
-Suitability for any particular production environment must be verified against current release status and platform proof.
+- which parser handled the connection;
+- which database or workarea the session entered;
+- which identity was authenticated;
+- which schema root the session sees;
+- which unsupported or denied requests are refused by the parser;
+- which requests reach engine authority.
 
-## What It Does Not Mean
+## Compatibility Parser Boundaries
 
-The existence of a parser package does not mean every donor command, datatype, catalog projection, management utility, or driver behavior is complete. Each parser has its own supported surface and tests.
+A compatibility parser is scoped to its own client family.
 
-## Related Pages
+It should not:
 
-- [../architecture/engine_parser_boundary.md](../architecture/engine_parser_boundary.md)
-- [../using_scratchbird/donor_database_compatibility.md](../using_scratchbird/donor_database_compatibility.md)
+- accept unrelated dialects silently;
+- bypass engine transactions;
+- write storage directly;
+- grant access outside its configured workarea;
+- treat physical page-copy data as logical restore input;
+- perform low-level repair or verification through a donor route;
+- claim unsupported features by returning success without doing the work.
+
+It should:
+
+- accept the supported client surface;
+- lower supported work to SBLR;
+- apply parser-specific defaults explicitly;
+- return controlled diagnostics for unsupported, denied, unsafe, or unavailable behavior;
+- keep catalog projections within the configured authority model.
+
+## First Standalone Server Smoke Test
+
+A useful first standalone test should prove:
+
+1. Required binaries, parser packages, and resource files are staged together.
+2. Configuration validates before accepting clients.
+3. SBsrv can open the database route.
+4. SBgate starts and listens on the intended endpoint.
+5. The selected parser package is available and registered.
+6. A client can connect and authenticate.
+7. The parser opens the expected schema root or workarea.
+8. A create, insert, select, and commit cycle succeeds.
+9. A controlled invalid request returns the expected diagnostic.
+10. The client disconnects cleanly.
+11. Listener drain or stop behavior completes.
+12. The database reopens with committed data visible.
+
+## Diagnostics To Collect
+
+Standalone server mode has more moving parts than embedded or IPC mode. Useful diagnostics include:
+
+- configuration validation result;
+- listener endpoint and route selection;
+- parser registration and version;
+- authentication result;
+- session identity and schema root;
+- database open result;
+- transaction state;
+- message vectors for unsupported or denied requests;
+- parser-to-engine request identifiers where available;
+- clean shutdown, drain, and restart evidence.
+
+Diagnostics should be redacted before sharing outside trusted support channels.
+
+## Security And Exposure
+
+Network-facing entry points require careful configuration.
+
+Before allowing access beyond a local test environment, verify:
+
+- only intended endpoints are listening;
+- authentication is configured;
+- authorization and schema roots are explicit;
+- parser routes are limited to the needed surfaces;
+- diagnostics do not expose protected material;
+- server-local file access is denied unless an explicit documented policy admits a safe operation;
+- unsupported management or low-level actions refuse clearly.
+
+This guide does not certify a deployment shape. It describes the concepts to verify.
+
+## What This Mode Does Not Provide
+
+Standalone server mode does not automatically provide:
+
+- implementation of every command in every parser package;
+- compatibility with every external client tool;
+- shared identity conventions across separate installations;
+- cross-installation query planning;
+- automatic data movement;
+- physical backup or repair through parser routes;
+- production readiness without release-specific proof.
+
+## Where To Go Next
+
+- [Choosing A Mode Summary](choosing_a_mode_summary.md)
+- [Single-Node IPC Server](single_node_ipc_server.md)
+- [Managed Group Deployment](group_deployment.md)
+- [Donor Database Compatibility](../using_scratchbird/donor_database_compatibility.md)
+- [Engine Parser Boundary](../architecture/engine_parser_boundary.md)
+- [Configuration Basics](../administration/configuration_basics.md)
+- [Diagnostics And Support Bundles](../administration/diagnostics_and_support_bundles.md)
