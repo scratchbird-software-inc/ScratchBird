@@ -58,6 +58,27 @@ api::EngineRequestContext EngineContextFrom(const ParserServerEventEngineContext
   out.security_epoch = context.security_epoch;
   out.resource_epoch = context.resource_epoch;
   out.name_resolution_epoch = context.name_resolution_epoch;
+  out.language_context.language_profile_id =
+      context.language_context.language_profile_id;
+  out.language_context.language_tag = context.language_context.language_tag;
+  out.language_context.default_language_tag =
+      context.language_context.default_language_tag;
+  out.language_context.input_syntax_profile =
+      context.language_context.input_syntax_profile;
+  out.language_context.input_language_fallback_tag =
+      context.language_context.input_language_fallback_tag;
+  out.language_context.common_resource_hash =
+      context.language_context.common_resource_hash;
+  out.language_context.language_resource_epoch =
+      context.language_context.language_resource_epoch;
+  out.language_context.localized_name_epoch =
+      context.language_context.localized_name_epoch;
+  out.language_context.message_resource_epoch =
+      context.language_context.message_resource_epoch;
+  out.language_context.resource_compatibility_identity =
+      context.language_context.resource_compatibility_identity;
+  out.language_context.resource_version_identity =
+      context.language_context.resource_version_identity;
   out.trace_tags = context.trace_tags;
   return out;
 }

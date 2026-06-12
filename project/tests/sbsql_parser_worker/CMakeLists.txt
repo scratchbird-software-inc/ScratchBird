@@ -11,6 +11,19 @@ target_compile_features(sbp_sbsql_pipeline_probe PRIVATE cxx_std_23)
 target_link_libraries(sbp_sbsql_pipeline_probe PRIVATE sbl_sbsql_parser_pipeline)
 add_test(NAME sbp_sbsql_pipeline_probe COMMAND sbp_sbsql_pipeline_probe)
 
+add_executable(sbsql_canonical_element_stream_runtime_conformance
+  sbsql_canonical_element_stream_runtime_conformance.cpp
+)
+target_compile_features(sbsql_canonical_element_stream_runtime_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_canonical_element_stream_runtime_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_canonical_element_stream_runtime_conformance
+  COMMAND sbsql_canonical_element_stream_runtime_conformance
+)
+set_tests_properties(sbsql_canonical_element_stream_runtime_conformance PROPERTIES
+  LABELS "sbsql_canonical_element_stream;sbsql_parser_worker;SML-005;SML-006;SML-082;SML-083"
+)
+
 add_executable(sbp_sbsql_ipc_schema_probe parser_ipc_schema_probe.cpp)
 target_compile_features(sbp_sbsql_ipc_schema_probe PRIVATE cxx_std_23)
 target_link_libraries(sbp_sbsql_ipc_schema_probe PRIVATE sbl_sbsql_parser_pipeline)
@@ -27,6 +40,36 @@ add_test(
 )
 set_tests_properties(sbsql_language_resource_contract_conformance PROPERTIES
   LABELS "sbsql_language_resource_contract;sbsql_parser_worker;SML-005;SML-082;SML-083;SML-084;SML-086;SML-089;SML-094;SML-095;SML-096;SML-097;SML-098;SML-099;SML-100;SML-101"
+)
+
+add_executable(sbsql_language_control_surface_conformance
+  sbsql_language_control_surface_conformance.cpp
+)
+target_compile_features(sbsql_language_control_surface_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_language_control_surface_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_language_control_surface_conformance
+  COMMAND sbsql_language_control_surface_conformance
+)
+set_tests_properties(sbsql_language_control_surface_conformance PROPERTIES
+  LABELS "sbsql_language_control;sbsql_parser_worker;SML-003;SML-008;SML-009"
+)
+
+add_executable(sbsql_multilingual_passthrough_runtime_conformance
+  sbsql_multilingual_passthrough_runtime_conformance.cpp
+)
+target_compile_features(sbsql_multilingual_passthrough_runtime_conformance PRIVATE cxx_std_23)
+target_link_libraries(
+  sbsql_multilingual_passthrough_runtime_conformance
+  PRIVATE
+    sbl_sbsql_parser_worker_core
+)
+add_test(
+  NAME sbsql_multilingual_passthrough_runtime_conformance
+  COMMAND sbsql_multilingual_passthrough_runtime_conformance
+)
+set_tests_properties(sbsql_multilingual_passthrough_runtime_conformance PROPERTIES
+  LABELS "sbsql_multilingual_passthrough_runtime;sbsql_parser_worker;SML-018;SML-020;SML-090;frontdoor_lowering_cache;no_execution_plan_runtime"
 )
 
 add_executable(sbp_sbsql_registry_generation_probe sbsql_registry_generation_probe.cpp)
@@ -92,7 +135,7 @@ add_test(
           --repo-root "${PROJECT_SOURCE_DIR}/.."
 )
 set_tests_properties(sbsql_driver_language_surface_gate PROPERTIES
-  LABELS "sbsql_driver_language_surface;sbsql_parser_worker;SML-083;SML-086;SML-090;SML-101"
+  LABELS "sbsql_driver_language_surface;sbsql_parser_worker;SML-018;SML-020;SML-083;SML-086;SML-090;SML-101"
 )
 
 if(NOT TARGET sb_isql AND EXISTS "${PROJECT_SOURCE_DIR}/drivers/tool/cli/CMakeLists.txt")
@@ -3909,7 +3952,7 @@ add_test(
   COMMAND sbsql_frontdoor_lowering_cache_odfr_011_conformance
 )
 set_tests_properties(sbsql_frontdoor_lowering_cache_odfr_011_conformance PROPERTIES
-  LABELS "sbsql_frontdoor_lowering_cache_odfr_011_conformance;ODFR-011;sbsql_parser_worker;frontdoor_lowering_cache;benchmark_clean;mga_transaction_regression;no_execution_plan_runtime;SML-007"
+  LABELS "sbsql_frontdoor_lowering_cache_odfr_011_conformance;ODFR-011;sbsql_parser_worker;frontdoor_lowering_cache;benchmark_clean;mga_transaction_regression;no_execution_plan_runtime;SML-007;SML-090"
 )
 
 add_executable(sbsql_parser_v3_profile_meta_conformance sbsql_parser_v3_profile_meta_conformance.cpp)

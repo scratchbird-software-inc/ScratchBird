@@ -114,6 +114,49 @@ std::string LookupKey(std::string text, const std::string& profile, bool exact) 
   return text;
 }
 
+std::string DefaultLanguageTag(const EngineRequestContext& context) {
+  return context.language_context.default_language_tag.empty()
+             ? std::string("en")
+             : context.language_context.default_language_tag;
+}
+
+bool NameClassIsCanonical(const std::string& name_class) {
+  return name_class.empty() || name_class == "primary" || name_class == "default" ||
+         name_class == "canonical";
+}
+
+bool DefaultLanguageCanonicalName(const EngineCatalogNameRecord& name,
+                                  const std::string& default_language) {
+  return name.language_tag == default_language && NameClassIsCanonical(name.name_class);
+}
+
+bool AliasScopedName(const EngineCatalogNameRecord& name,
+                     const std::string& default_language) {
+  return name.language_tag != default_language || !NameClassIsCanonical(name.name_class);
+}
+
+bool CollisionScopeMatches(const EngineCatalogNameRecord& existing,
+                           const EngineCatalogNameRecord& wanted,
+                           const std::string& default_language) {
+  if (existing.language_tag == wanted.language_tag) { return true; }
+  if (DefaultLanguageCanonicalName(existing, default_language) ||
+      DefaultLanguageCanonicalName(wanted, default_language)) {
+    return true;
+  }
+  return AliasScopedName(existing, default_language) ||
+         AliasScopedName(wanted, default_language);
+}
+
+bool LookupKeysCollide(const EngineCatalogNameRecord& wanted,
+                       const EngineCatalogNameRecord& existing) {
+  if (!wanted.requires_exact_match && existing.requires_exact_match) { return false; }
+  const std::string left_key = wanted.requires_exact_match ? wanted.exact_lookup_key
+                                                           : wanted.normalized_lookup_key;
+  const std::string right_key = wanted.requires_exact_match ? existing.exact_lookup_key
+                                                            : existing.normalized_lookup_key;
+  return left_key == right_key;
+}
+
 EngineApiDiagnostic CatalogDiagnostic(const char* code, std::string detail = {}) {
   std::string message_key = "catalog.object.lifecycle";
   if (code == std::string(kCatalogObjectDiagnosticUuidRequired)) { message_key = "catalog.object.uuid_required"; }
@@ -922,17 +965,15 @@ EngineApiDiagnostic CheckNameConflict(const EngineCatalogObjectLifecycleState& s
                                       const std::string& schema_uuid,
                                       const std::vector<EngineLocalizedName>& names,
                                       const EngineRequestContext& context) {
+  const std::string default_language = DefaultLanguageTag(context);
   for (const auto& requested : names) {
     const auto wanted = MakeNameRecord(context, object_uuid, object_kind, schema_uuid, requested, 0);
     for (const auto& existing : state.names) {
       if (existing.object_uuid == object_uuid) { continue; }
       if (existing.schema_uuid != schema_uuid) { continue; }
-      if (existing.language_tag != wanted.language_tag) { continue; }
       if (ProfileName(existing.identifier_profile_uuid) != ProfileName(wanted.identifier_profile_uuid)) { continue; }
-      if (!wanted.requires_exact_match && existing.requires_exact_match) { continue; }
-      const std::string left_key = wanted.requires_exact_match ? wanted.exact_lookup_key : wanted.normalized_lookup_key;
-      const std::string right_key = wanted.requires_exact_match ? existing.exact_lookup_key : existing.normalized_lookup_key;
-      if (left_key == right_key) {
+      if (!CollisionScopeMatches(existing, wanted, default_language)) { continue; }
+      if (LookupKeysCollide(wanted, existing)) {
         return CatalogDiagnostic(object_kind == "synonym" ? kCatalogSynonymDiagnosticNameConflict
                                                           : kCatalogObjectDiagnosticDuplicateName,
                                  existing.object_kind + ":" + schema_uuid + ":" + wanted.display_name);

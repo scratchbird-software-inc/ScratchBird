@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "rendering/rendering.hpp"
 #include "resources/language_resource_contract.hpp"
 
 #include <algorithm>
@@ -57,6 +58,24 @@ sbsql::LanguageResourceManifest ValidReleaseProfile() {
       "MPL-2.0", "sbsql-langpack-normalize-v1", "sbom.lang.fr-ca",
       "notice.lang.fr-ca", true, false, true});
   return manifest;
+}
+
+sbsql::LanguageResourceBundleManifest ValidLanguageBundle() {
+  auto profile = ValidReleaseProfile();
+  sbsql::LanguageResourceBundleManifest bundle;
+  bundle.bundle_uuid = "019f1000-0000-7000-8000-000000000201";
+  bundle.bundle_contract_id = "sbsql.lang.fr-ca@1";
+  bundle.exact_tag = profile.exact_tag;
+  bundle.dialect_profile_uuid = "sbsql.v3";
+  bundle.topology_profile_uuid = "topology.sbsql.canonical_svo.v1";
+  bundle.common_resource_hash = profile.common_resource_hash;
+  bundle.canonical_element_stream_schema_hash = "canonical.stream.schema.v1";
+  bundle.predictive_resource_hash = profile.predictive_grammar_hash;
+  bundle.renderer_resource_hash = profile.renderer_registry_hash;
+  bundle.diagnostic_resource_hash = profile.diagnostic_pack_hash;
+  bundle.language_profile = profile;
+  bundle.provenance = profile.provenance;
+  return bundle;
 }
 
 void VerifyBuiltInRecoveryProfile() {
@@ -118,6 +137,66 @@ void VerifyReleaseProfileValidation() {
           "SML-088 machine-bootstrap profile was release-supported");
 }
 
+void VerifyLanguageBundleSchemaAdmission() {
+  auto bundle = ValidLanguageBundle();
+  auto result = sbsql::ValidateLanguageResourceBundleManifest(bundle);
+  Require(result.accepted, "SML-003 valid language resource bundle schema was rejected");
+
+  bundle.bundle_uuid.clear();
+  result = sbsql::ValidateLanguageResourceBundleManifest(bundle);
+  Require(!result.accepted && result.HasIssue("SBSQL.LANG_BUNDLE.BUNDLE_UUID_MISSING"),
+          "SML-003 bundle UUID was not required");
+
+  bundle = ValidLanguageBundle();
+  bundle.renderer_resource_hash = "renderer.hash.mismatch";
+  result = sbsql::ValidateLanguageResourceBundleManifest(bundle);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_BUNDLE.RENDERER_HASH_PROFILE_MISMATCH"),
+          "SML-003 bundle renderer hash mismatch was not refused");
+
+  bundle = ValidLanguageBundle();
+  auto admission = sbsql::AdmitLanguageResourceBundleOperation(
+      sbsql::LanguageBundleAdmissionRequest{sbsql::LanguageBundleOperation::kLoad, bundle});
+  Require(admission.accepted, "SML-009 signed compatible admitted bundle did not load-admit");
+
+  bundle.signed_bundle = false;
+  admission = sbsql::AdmitLanguageResourceBundleOperation(
+      sbsql::LanguageBundleAdmissionRequest{sbsql::LanguageBundleOperation::kLoad, bundle});
+  Require(!admission.accepted && admission.HasIssue("SBSQL.LANG_BUNDLE.UNSIGNED"),
+          "SML-009 unsigned bundle was not refused for load");
+
+  bundle = ValidLanguageBundle();
+  bundle.compatible_with_parser = false;
+  admission = sbsql::AdmitLanguageResourceBundleOperation(
+      sbsql::LanguageBundleAdmissionRequest{sbsql::LanguageBundleOperation::kLoad, bundle});
+  Require(!admission.accepted && admission.HasIssue("SBSQL.LANG_BUNDLE.INCOMPATIBLE"),
+          "SML-009 incompatible bundle was not refused for load");
+
+  bundle = ValidLanguageBundle();
+  bundle.admitted_by_security_policy = false;
+  admission = sbsql::AdmitLanguageResourceBundleOperation(
+      sbsql::LanguageBundleAdmissionRequest{sbsql::LanguageBundleOperation::kLoad, bundle});
+  Require(!admission.accepted &&
+              admission.HasIssue("SBSQL.LANG_BUNDLE.SECURITY_ADMISSION_REQUIRED"),
+          "SML-009 unadmitted bundle was not refused for load");
+
+  bundle = ValidLanguageBundle();
+  bundle.active_profile = true;
+  admission = sbsql::AdmitLanguageResourceBundleOperation(
+      sbsql::LanguageBundleAdmissionRequest{sbsql::LanguageBundleOperation::kUnload, bundle});
+  Require(!admission.accepted &&
+              admission.HasIssue("SBSQL.LANG_BUNDLE.ACTIVE_PROFILE_IN_USE"),
+          "SML-009 active profile was not refused for unload");
+
+  bundle = ValidLanguageBundle();
+  bundle.required_profile = true;
+  admission = sbsql::AdmitLanguageResourceBundleOperation(
+      sbsql::LanguageBundleAdmissionRequest{sbsql::LanguageBundleOperation::kUnload, bundle});
+  Require(!admission.accepted &&
+              admission.HasIssue("SBSQL.LANG_BUNDLE.REQUIRED_PROFILE"),
+          "SML-009 required profile was not refused for unload");
+}
+
 void VerifyCanonicalElementStreamContract() {
   sbsql::CanonicalElementStream stream;
   stream.resource_identity = "sbsql.common_resource_pack.v1";
@@ -127,24 +206,29 @@ void VerifyCanonicalElementStreamContract() {
   stream.topology_profile_uuid = "topology.svo.v1";
   stream.common_resource_hash = "common.hash.v1";
   stream.source_hash = "source.hash.v1";
-  stream.elements.push_back(sbsql::CanonicalElement{
-      sbsql::CanonicalElementKind::kCommand,
-      "SBSQL.SELECT",
-      "SBSQL.SELECT.SURFACE",
-      "slot.projection",
-      "alias.selectionner",
-      "projection",
-      "localized.hash.select",
-      sbsql::CanonicalElementSourceSpan{12, 12}});
-  stream.elements.push_back(sbsql::CanonicalElement{
-      sbsql::CanonicalElementKind::kClause,
-      "SBSQL.FROM",
-      "SBSQL.FROM.SURFACE",
-      "slot.source",
-      "alias.depuis",
-      "source",
-      "localized.hash.from",
-      sbsql::CanonicalElementSourceSpan{0, 6}});
+  sbsql::CanonicalElement select;
+  select.kind = sbsql::CanonicalElementKind::kCommand;
+  select.canonical_text = "SELECT";
+  select.canonical_id = "SBSQL.SELECT";
+  select.surface_id = "SBSQL.SELECT.SURFACE";
+  select.slot_id = "slot.projection";
+  select.alias_id = "alias.selectionner";
+  select.topology_role = "projection";
+  select.localized_text_hash = "localized.hash.select";
+  select.source_span = sbsql::CanonicalElementSourceSpan{12, 12};
+  stream.elements.push_back(select);
+
+  sbsql::CanonicalElement from;
+  from.kind = sbsql::CanonicalElementKind::kClause;
+  from.canonical_text = "FROM";
+  from.canonical_id = "SBSQL.FROM";
+  from.surface_id = "SBSQL.FROM.SURFACE";
+  from.slot_id = "slot.source";
+  from.alias_id = "alias.depuis";
+  from.topology_role = "source";
+  from.localized_text_hash = "localized.hash.from";
+  from.source_span = sbsql::CanonicalElementSourceSpan{0, 6};
+  stream.elements.push_back(from);
 
   auto result = sbsql::ValidateCanonicalElementStream(stream);
   Require(result.accepted, "SML-005/SML-082 valid canonical element stream was rejected");
@@ -212,6 +296,86 @@ void VerifyParseFallbackAndRenderingContract() {
               sbsql::SblrRenderRequest{true, true, true, false, false, true}) ==
               sbsql::SblrRenderDecision::kRefuseSourceReconstruction,
           "SML-095 rendering by source reconstruction was not refused");
+
+  sbsql::SblrRenderRequest preferred;
+  preferred.sblr_uuid_authority_valid = true;
+  preferred.preferred_renderer_available = true;
+  preferred.canonical_english_renderer_available = true;
+  preferred.preferred_language_profile = "fr-CA";
+  auto selection = sbsql::ClassifySblrRenderSelection(preferred);
+  Require(selection.decision == sbsql::SblrRenderDecision::kPreferredLanguage,
+          "SML-084 preferred renderer selection changed");
+  Require(selection.lossiness == sbsql::SblrRenderLossiness::kCanonicalEquivalent,
+          "SML-086 preferred renderer did not classify canonical-equivalent output");
+  Require(selection.selected_language_profile == "fr-CA",
+          "SML-084 preferred renderer did not retain selected language profile");
+  Require(selection.diagnostic_code == "SBSQL.LANG_RESOURCE.RENDERER_LOSSINESS_CLASSIFIED",
+          "SML-086 preferred renderer classification diagnostic missing");
+
+  preferred.preferred_renderer_partial = true;
+  selection = sbsql::ClassifySblrRenderSelection(preferred);
+  Require(selection.lossiness == sbsql::SblrRenderLossiness::kPreferredLanguagePartial,
+          "SML-086 preferred partial renderer did not classify partial lossiness");
+
+  preferred.preferred_renderer_partial = false;
+  preferred.preferred_language_is_canonical_english = true;
+  preferred.preferred_language_profile = "sbsql.builtin.recovery.en";
+  selection = sbsql::ClassifySblrRenderSelection(preferred);
+  Require(selection.lossiness == sbsql::SblrRenderLossiness::kLosslessCanonical,
+          "SML-086 canonical English renderer did not classify lossless canonical output");
+
+  sbsql::SblrRenderRequest fallback;
+  fallback.sblr_uuid_authority_valid = true;
+  fallback.canonical_english_renderer_available = true;
+  fallback.preferred_language_profile = "fr-CA";
+  fallback.canonical_english_profile = "sbsql.builtin.recovery.en";
+  selection = sbsql::ClassifySblrRenderSelection(fallback);
+  Require(selection.decision == sbsql::SblrRenderDecision::kCanonicalEnglishFallback,
+          "SML-084 canonical English fallback renderer was not selected");
+  Require(selection.lossiness == sbsql::SblrRenderLossiness::kCanonicalEnglishFallback,
+          "SML-086 canonical English fallback lossiness was not classified");
+  Require(selection.used_canonical_english_fallback,
+          "SML-084 fallback selection did not record canonical English fallback");
+  Require(selection.diagnostic_code == "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
+          "SML-084 canonical English fallback diagnostic missing");
+  Require(selection.server_revalidation_required,
+          "SML-084 renderer selection did not preserve server revalidation authority");
+
+  sbsql::SblrRenderRequest not_renderable;
+  not_renderable.sblr_uuid_authority_valid = true;
+  selection = sbsql::ClassifySblrRenderSelection(not_renderable);
+  Require(selection.decision == sbsql::SblrRenderDecision::kRefuseRendererUnavailable,
+          "SML-086 missing renderers did not refuse");
+  Require(selection.lossiness == sbsql::SblrRenderLossiness::kNotRenderable,
+          "SML-086 missing renderers did not classify not-renderable lossiness");
+  Require(selection.diagnostic_code == "SBSQL.LANG_RESOURCE.RENDERER_NOT_RENDERABLE",
+          "SML-086 not-renderable diagnostic missing");
+
+  sbsql::SblrEnvelope envelope;
+  envelope.operation_family = "sblr.query.multimodel_or_ddl.v3";
+  envelope.statement_hash = 42;
+  envelope.payload = "operation_id=ddl.create_table";
+  const auto rendered_fallback =
+      sbsql::RenderSblrEnvelopeWithProfileSelection(envelope, fallback);
+  Require(rendered_fallback.ok, "SML-084 fallback render result was not accepted");
+  Require(rendered_fallback.messages.diagnostics.size() == 1,
+          "SML-084 fallback render result did not retain diagnostic evidence");
+  Require(rendered_fallback.messages.diagnostics.front().code ==
+              "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
+          "SML-084 fallback render result did not emit fallback diagnostic");
+  Require(rendered_fallback.text.find("SBLR sblr.query.multimodel_or_ddl.v3 42") !=
+              std::string::npos,
+          "SML-084 fallback render result did not preserve SBLR rendering output");
+
+  const auto refused_render =
+      sbsql::RenderSblrEnvelopeWithProfileSelection(envelope, not_renderable);
+  Require(!refused_render.ok && refused_render.messages.has_errors(),
+          "SML-086 not-renderable result did not fail closed");
+  Require(refused_render.selection.lossiness == sbsql::SblrRenderLossiness::kNotRenderable,
+          "SML-086 refused render result did not retain not-renderable classification");
+  Require(refused_render.text.find("SBSQL.LANG_RESOURCE.RENDERER_NOT_RENDERABLE") !=
+              std::string::npos,
+          "SML-086 refused render result did not render public diagnostic");
 }
 
 void VerifyMalformedPackRefusals() {
@@ -318,6 +482,29 @@ void VerifyEditorToolProtocol() {
   result = sbsql::ValidateEditorToolProtocol(protocol);
   Require(!result.accepted && result.HasIssue("SBSQL.EDITOR_PROTOCOL.REQUIRED_FEATURE_MISSING"),
           "SML-101 missing no-disclosure feature was not refused");
+
+  protocol.hidden_object_no_disclosure = true;
+  protocol.renderer_lossiness_classes.pop_back();
+  result = sbsql::ValidateEditorToolProtocol(protocol);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.EDITOR_PROTOCOL.RENDERER_LOSSINESS_CLASSES_MISSING"),
+          "SML-086 missing renderer lossiness class metadata was not refused");
+
+  protocol.renderer_lossiness_classes.push_back("not_renderable");
+  protocol.fallback_diagnostic_codes.clear();
+  result = sbsql::ValidateEditorToolProtocol(protocol);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.EDITOR_PROTOCOL.FALLBACK_DIAGNOSTICS_MISSING"),
+          "SML-084 missing fallback diagnostics metadata was not refused");
+
+  protocol.fallback_diagnostic_codes = {
+      "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
+      "SBSQL.LANG_RESOURCE.FAIL_CLOSED_ON_PROFILE_MISMATCH"};
+  protocol.server_revalidation_authority = false;
+  result = sbsql::ValidateEditorToolProtocol(protocol);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.EDITOR_PROTOCOL.AUTHORITY_METADATA_MISSING"),
+          "SML-084 missing server revalidation metadata was not refused");
 }
 
 } // namespace
@@ -326,6 +513,7 @@ int main() {
   VerifyBuiltInRecoveryProfile();
   VerifyPreferredLanguageResourceDeclarations();
   VerifyReleaseProfileValidation();
+  VerifyLanguageBundleSchemaAdmission();
   VerifyCanonicalElementStreamContract();
   VerifyParseFallbackAndRenderingContract();
   VerifyMalformedPackRefusals();

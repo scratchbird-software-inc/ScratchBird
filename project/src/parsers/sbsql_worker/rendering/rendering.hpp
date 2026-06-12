@@ -10,13 +10,24 @@
 
 #include "common/common.hpp"
 #include "lowering/lowering.hpp"
+#include "resources/language_resource_contract.hpp"
 
 #include <string>
 
 namespace scratchbird::parser::sbsql {
 
+struct SblrEnvelopeRenderResult {
+  bool ok{false};
+  std::string text;
+  SblrRenderSelection selection;
+  MessageVectorSet messages;
+};
+
 std::string RenderMessageVectorSet(const MessageVectorSet& messages);
 std::string RenderPipelineResult(const PipelineResult& result);
 std::string RenderSblrEnvelope(const SblrEnvelope& envelope);
+SblrEnvelopeRenderResult RenderSblrEnvelopeWithProfileSelection(
+    const SblrEnvelope& envelope,
+    const SblrRenderRequest& request);
 
 } // namespace scratchbird::parser::sbsql

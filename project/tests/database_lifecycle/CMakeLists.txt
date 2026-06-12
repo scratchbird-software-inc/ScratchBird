@@ -1194,6 +1194,28 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "database_lifecycle_catalog_object_conformance;database_lifecycle_catalog_object;database_lifecycle;database_lifecycle_catalog;catalog_common_descriptor_gate;catalog_generation_mga_gate;catalog_name_comment_resolver_gate;catalog_dependency_api_gate;catalog_diagnostic_vector_gate;catalog_wire_metadata_gate;constraint_catalog_descriptor_gate;PRF_G06_CONSTRAINTS_READY;mga_transaction_regression"
   )
 
+  add_executable(database_lifecycle_sbsql_multilingual_name_registry_conformance
+    sbsql_multilingual_name_registry_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_sbsql_multilingual_name_registry_conformance PRIVATE cxx_std_23)
+  target_link_libraries(database_lifecycle_sbsql_multilingual_name_registry_conformance
+    PRIVATE
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME database_lifecycle_sbsql_multilingual_name_registry_conformance
+    COMMAND database_lifecycle_sbsql_multilingual_name_registry_conformance
+  )
+  set_tests_properties(database_lifecycle_sbsql_multilingual_name_registry_conformance PROPERTIES
+    LABELS "database_lifecycle_sbsql_multilingual_name_registry_conformance;SML-004;SML-GATE-002;sbsql_multilingual;database_lifecycle_catalog;catalog_name_comment_resolver_gate;mga_transaction_regression"
+  )
+
   add_executable(cdp_uuid_descriptor_cache_gate
     cdp_uuid_descriptor_cache_gate.cpp
   )

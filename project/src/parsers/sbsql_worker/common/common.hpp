@@ -104,9 +104,13 @@ struct SessionContext {
   std::string default_language{"en"};
   std::string language_profile{"sbsql.builtin.recovery.en"};
   std::string language_tag{"en"};
+  std::string input_syntax_profile{"sbsql.syntax.standard"};
+  std::string input_language_fallback_tag;
   std::string common_resource_hash{"builtin.common.sbsql.v1"};
   std::string dialect_profile_uuid;
   std::string policy_profile_uuid{"default"};
+  std::string resource_compatibility_identity{"sbsql.resource.compat.v1"};
+  std::string resource_version_identity{"sbsql.resource-pack.v1"};
   std::uint64_t language_resource_epoch{0};
   std::uint64_t localized_name_epoch{0};
   std::uint64_t message_resource_epoch{0};

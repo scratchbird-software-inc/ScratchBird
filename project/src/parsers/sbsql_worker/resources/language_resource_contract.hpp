@@ -72,6 +72,7 @@ struct CanonicalElementSourceSpan {
 
 struct CanonicalElement {
   CanonicalElementKind kind{CanonicalElementKind::kIdentifier};
+  std::string canonical_text;
   std::string canonical_id;
   std::string surface_id;
   std::string slot_id;
@@ -122,6 +123,10 @@ struct SblrRenderRequest {
   bool resource_revoked{false};
   bool resource_incompatible{false};
   bool source_reconstruction_requested{false};
+  bool preferred_renderer_partial{false};
+  bool preferred_language_is_canonical_english{false};
+  std::string preferred_language_profile{"preferred"};
+  std::string canonical_english_profile{"sbsql.builtin.recovery.en"};
 };
 
 enum class SblrRenderDecision {
@@ -132,6 +137,25 @@ enum class SblrRenderDecision {
   kRefuseIncompatibleResource,
   kRefuseSourceReconstruction,
   kRefuseRendererUnavailable,
+};
+
+enum class SblrRenderLossiness {
+  kLosslessCanonical,
+  kCanonicalEquivalent,
+  kPreferredLanguagePartial,
+  kCanonicalEnglishFallback,
+  kNotRenderable,
+};
+
+struct SblrRenderSelection {
+  SblrRenderDecision decision{SblrRenderDecision::kRefuseRendererUnavailable};
+  SblrRenderLossiness lossiness{SblrRenderLossiness::kNotRenderable};
+  std::string selected_language_profile;
+  std::string fallback_language_profile;
+  bool used_canonical_english_fallback{false};
+  bool server_revalidation_required{true};
+  std::string diagnostic_code;
+  std::string diagnostic_message;
 };
 
 struct LanguageResourceLimits {
@@ -202,6 +226,41 @@ struct LanguageResourceManifest {
   bool removed{false};
 };
 
+struct LanguageResourceBundleManifest {
+  std::string bundle_schema_version{"sbsql.language_resource_bundle.v1"};
+  std::string bundle_uuid;
+  std::string bundle_contract_id;
+  std::string exact_tag;
+  std::string dialect_profile_uuid;
+  std::string topology_profile_uuid;
+  std::string common_resource_hash;
+  std::string canonical_element_stream_schema_hash;
+  std::string predictive_resource_hash;
+  std::string renderer_resource_hash;
+  std::string diagnostic_resource_hash;
+  std::string compatibility_identity{"sbsql.resource.compat.v1"};
+  std::string lifecycle_state{"staged"};
+  LanguageResourceManifest language_profile;
+  std::vector<LanguageDataProvenance> provenance;
+  bool signed_bundle{true};
+  bool compatible_with_parser{true};
+  bool admitted_by_security_policy{true};
+  bool parser_language_library{false};
+  bool active_profile{false};
+  bool required_profile{false};
+};
+
+enum class LanguageBundleOperation {
+  kValidate,
+  kLoad,
+  kUnload,
+};
+
+struct LanguageBundleAdmissionRequest {
+  LanguageBundleOperation operation{LanguageBundleOperation::kValidate};
+  LanguageResourceBundleManifest bundle;
+};
+
 enum class LocaleLiteralClassification {
   kCanonical,
   kRequiresExplicitProfile,
@@ -237,10 +296,35 @@ struct EditorToolProtocol {
   bool cancellation_and_limits{true};
   bool offline_cache_status{true};
   bool support_bundle_redaction_metadata{true};
+  bool fail_closed_on_mismatch{true};
+  bool server_revalidation_authority{true};
+  std::string authority_boundary{"client_resources_are_untrusted_until_server_revalidation"};
+  std::vector<std::string> syntax_profile_order{
+      "explicit_syntax_profile",
+      "preferred_language_and_dialect",
+      "canonical_english_fallback_when_preferred_fails",
+      "fail_closed"};
+  std::vector<std::string> renderer_lossiness_classes{
+      "lossless_canonical",
+      "canonical_equivalent",
+      "preferred_language_partial",
+      "canonical_english_fallback",
+      "not_renderable"};
+  std::vector<std::string> fallback_diagnostic_codes{
+      "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
+      "SBSQL.LANG_RESOURCE.FAIL_CLOSED_ON_PROFILE_MISMATCH"};
+  std::vector<std::string> rendering_diagnostic_codes{
+      "SBSQL.LANG_RESOURCE.RENDERER_LOSSINESS_CLASSIFIED",
+      "SBSQL.LANG_RESOURCE.RENDERER_SOURCE_RECONSTRUCTION_FORBIDDEN",
+      "SBSQL.LANG_RESOURCE.RENDERER_NOT_RENDERABLE"};
 };
 
 const LanguageResourceManifest& BuiltInCanonicalEnglishRecoveryProfile();
 ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResourceManifest& manifest);
+ResourceValidationResult ValidateLanguageResourceBundleManifest(
+    const LanguageResourceBundleManifest& bundle);
+ResourceValidationResult AdmitLanguageResourceBundleOperation(
+    const LanguageBundleAdmissionRequest& request);
 ResourceValidationResult ValidateEditorToolProtocol(const EditorToolProtocol& protocol);
 ResourceValidationResult ValidateCanonicalElementStream(const CanonicalElementStream& stream);
 ResourceValidationResult ValidateParseProfileOrder(const std::vector<ParseProfileStep>& order);
@@ -251,12 +335,15 @@ RestoreLanguageResourceState ClassifyRestoreLanguageResourceState(
     const LanguageResourceRestoreRequest& request);
 ParseProfileDecision SelectParseProfile(const ParseProfileDecisionInput& input);
 SblrRenderDecision ClassifySblrRenderRequest(const SblrRenderRequest& request);
+SblrRenderSelection ClassifySblrRenderSelection(const SblrRenderRequest& request);
 std::vector<ParseProfileStep> DefaultParseProfileOrder();
 
 std::string_view LanguageResourceChannelName(LanguageResourceChannel channel);
 std::string_view ParseProfileStepName(ParseProfileStep step);
 std::string_view ParseProfileDecisionName(ParseProfileDecision decision);
 std::string_view SblrRenderDecisionName(SblrRenderDecision decision);
+std::string_view SblrRenderLossinessName(SblrRenderLossiness lossiness);
+std::string_view LanguageBundleOperationName(LanguageBundleOperation operation);
 std::string_view RestoreLanguageResourceStateName(RestoreLanguageResourceState state);
 
 } // namespace scratchbird::parser::sbsql

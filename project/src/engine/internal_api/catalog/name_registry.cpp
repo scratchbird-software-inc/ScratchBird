@@ -139,6 +139,63 @@ bool ObjectClassMatchesRequest(const std::string& entry_class,
   return false;
 }
 
+bool NameClassIsCanonical(const std::string& name_class) {
+  return name_class.empty() || name_class == "primary" || name_class == "default" ||
+         name_class == "canonical";
+}
+
+bool NameRegistryDefaultLanguageCanonical(const NameRegistryEntry& entry,
+                                          const std::string& default_language) {
+  return entry.language_tag == default_language && NameClassIsCanonical(entry.name_class);
+}
+
+bool NameRegistryAliasScoped(const NameRegistryEntry& entry,
+                             const std::string& default_language) {
+  return entry.language_tag != default_language || !NameClassIsCanonical(entry.name_class);
+}
+
+bool NameRegistryCollisionScopeMatches(const NameRegistryEntry& existing,
+                                       const NameRegistryEntry& wanted,
+                                       const std::string& default_language) {
+  if (existing.language_tag == wanted.language_tag) { return true; }
+  if (NameRegistryDefaultLanguageCanonical(existing, default_language) ||
+      NameRegistryDefaultLanguageCanonical(wanted, default_language)) {
+    return true;
+  }
+  return NameRegistryAliasScoped(existing, default_language) ||
+         NameRegistryAliasScoped(wanted, default_language);
+}
+
+bool NameRegistryLookupKeysCollide(const NameRegistryEntry& wanted,
+                                   const NameRegistryEntry& existing) {
+  if (!wanted.requires_exact_match && existing.requires_exact_match) { return false; }
+  const std::string left_key = wanted.requires_exact_match ? wanted.exact_lookup_key
+                                                           : wanted.normalized_lookup_key;
+  const std::string right_key = wanted.requires_exact_match ? existing.exact_lookup_key
+                                                            : existing.normalized_lookup_key;
+  return left_key == right_key;
+}
+
+int NameRegistryNameClassRank(const std::string& name_class) {
+  if (NameClassIsCanonical(name_class)) { return 0; }
+  if (name_class == "alias") { return 1; }
+  return 2;
+}
+
+bool NameRegistryDisplayOrderLess(const NameRegistryEntry& lhs,
+                                  const NameRegistryEntry& rhs) {
+  if (lhs.language_tag != rhs.language_tag) { return lhs.language_tag < rhs.language_tag; }
+  const int lhs_rank = NameRegistryNameClassRank(lhs.name_class);
+  const int rhs_rank = NameRegistryNameClassRank(rhs.name_class);
+  if (lhs_rank != rhs_rank) { return lhs_rank < rhs_rank; }
+  if (ProfileName(lhs.identifier_profile_uuid) != ProfileName(rhs.identifier_profile_uuid)) {
+    return ProfileName(lhs.identifier_profile_uuid) < ProfileName(rhs.identifier_profile_uuid);
+  }
+  if (lhs.display_name != rhs.display_name) { return lhs.display_name < rhs.display_name; }
+  if (lhs.raw_name_text != rhs.raw_name_text) { return lhs.raw_name_text < rhs.raw_name_text; }
+  return lhs.name_entry_uuid < rhs.name_entry_uuid;
+}
+
 bool ProfileFoldsMysqlInsensitive(const std::string& profile) {
   const std::string p = ProfileName(profile);
   return p.find("mysql_case_insensitive") != std::string::npos ||
@@ -662,10 +719,13 @@ NameRegistryNameResult SelectUuidToNameCandidate(const EngineApiRequest& request
     return result;
   }
 
+  std::vector<NameRegistryEntry> ordered = candidates;
+  std::stable_sort(ordered.begin(), ordered.end(), NameRegistryDisplayOrderLess);
+
   const auto languages = LanguageCandidates(request.context);
   const std::string requested_profile = ProfileName(NameRegistryDefaultIdentifierProfile(request.context));
   for (const auto& language : languages) {
-    for (const auto& candidate : candidates) {
+    for (const auto& candidate : ordered) {
       if (candidate.language_tag == language && candidate.name_class == "primary" &&
           ProfileName(candidate.identifier_profile_uuid) == requested_profile) {
         result.ok = true;
@@ -674,7 +734,7 @@ NameRegistryNameResult SelectUuidToNameCandidate(const EngineApiRequest& request
         return result;
       }
     }
-    for (const auto& candidate : candidates) {
+    for (const auto& candidate : ordered) {
       if (candidate.language_tag == language && ProfileName(candidate.identifier_profile_uuid) == requested_profile) {
         result.ok = true;
         result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -682,7 +742,7 @@ NameRegistryNameResult SelectUuidToNameCandidate(const EngineApiRequest& request
         return result;
       }
     }
-    for (const auto& candidate : candidates) {
+    for (const auto& candidate : ordered) {
       if (candidate.language_tag == language && candidate.name_class == "primary") {
         result.ok = true;
         result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -690,7 +750,7 @@ NameRegistryNameResult SelectUuidToNameCandidate(const EngineApiRequest& request
         return result;
       }
     }
-    for (const auto& candidate : candidates) {
+    for (const auto& candidate : ordered) {
       if (candidate.language_tag == language) {
         result.ok = true;
         result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -700,7 +760,7 @@ NameRegistryNameResult SelectUuidToNameCandidate(const EngineApiRequest& request
     }
   }
 
-  for (const auto& candidate : candidates) {
+  for (const auto& candidate : ordered) {
     if (candidate.name_class == "primary") {
       result.ok = true;
       result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -711,7 +771,7 @@ NameRegistryNameResult SelectUuidToNameCandidate(const EngineApiRequest& request
 
   result.ok = true;
   result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
-  result.entry = candidates.front();
+  result.entry = ordered.front();
   (void)diagnostic_operation;
   return result;
 }
@@ -788,17 +848,15 @@ bool NameRegistryWouldConflict(const EngineRequestContext& context,
                                std::string* conflict_name) {
   const auto loaded = LoadNameRegistryState(context, observer_tx);
   if (!loaded.ok) { return false; }
+  const std::string default_language = NameRegistryDefaultLanguage(context);
   for (const auto& name : names) {
     const auto wanted = MakeNameRegistryEntry(context, object_uuid, object_class, scope_uuid, name, name.name);
     for (const auto& entry : loaded.state.entries) {
       if (entry.object_uuid == object_uuid) { continue; }
       if (entry.scope_uuid != scope_uuid) { continue; }
-      if (entry.language_tag != wanted.language_tag) { continue; }
       if (ProfileName(entry.identifier_profile_uuid) != ProfileName(wanted.identifier_profile_uuid)) { continue; }
-      if (!wanted.requires_exact_match && entry.requires_exact_match) { continue; }
-      const std::string left_key = wanted.requires_exact_match ? wanted.exact_lookup_key : wanted.normalized_lookup_key;
-      const std::string right_key = wanted.requires_exact_match ? entry.exact_lookup_key : entry.normalized_lookup_key;
-      if (left_key == right_key) {
+      if (!NameRegistryCollisionScopeMatches(entry, wanted, default_language)) { continue; }
+      if (NameRegistryLookupKeysCollide(wanted, entry)) {
         if (conflict_name) { *conflict_name = wanted.display_name; }
         return true;
       }

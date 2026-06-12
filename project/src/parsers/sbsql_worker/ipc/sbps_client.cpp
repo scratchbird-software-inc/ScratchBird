@@ -85,6 +85,40 @@ constexpr std::uint16_t kLongStringSentinel = 0xffff;
 constexpr std::uint32_t kDefaultSbpsRequestTimeoutMs = 300000;
 constexpr std::size_t kPortableAfUnixPathLimit = 108;
 
+std::string NormalizeLanguageTag(std::string_view value) {
+  return value.empty() ? "en" : std::string(value);
+}
+
+std::string LanguageProfileForTag(std::string_view value) {
+  const std::string tag = NormalizeLanguageTag(value);
+  if (tag == "en") return "sbsql.builtin.recovery.en";
+  return "sbsql.language-profile." + tag;
+}
+
+std::string InputFallbackTagForTag(std::string_view value) {
+  const std::string tag = NormalizeLanguageTag(value);
+  return tag == "en" ? std::string{} : "en";
+}
+
+void ApplySbpsLanguageContext(SessionContext* session,
+                              std::string_view requested_language_tag,
+                              std::uint64_t language_resource_epoch,
+                              std::uint64_t localized_name_epoch) {
+  if (session == nullptr) return;
+  session->default_language = "en";
+  session->language_tag = NormalizeLanguageTag(requested_language_tag);
+  session->language_profile = LanguageProfileForTag(session->language_tag);
+  session->input_syntax_profile = "sbsql.syntax.standard";
+  session->input_language_fallback_tag =
+      InputFallbackTagForTag(session->language_tag);
+  session->common_resource_hash = "builtin.common.sbsql.v1";
+  session->resource_compatibility_identity = "sbsql.resource.compat.v1";
+  session->resource_version_identity = "sbsql.resource-pack.v1";
+  session->language_resource_epoch = language_resource_epoch;
+  session->localized_name_epoch = localized_name_epoch;
+  if (session->message_resource_epoch == 0) session->message_resource_epoch = 1;
+}
+
 struct FrameHeader {
   std::uint16_t message_type{0};
   std::uint32_t flags{0};
@@ -1147,7 +1181,11 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
   session->principal_claim = credentials.principal;
   session->auth_provider_family =
       credentials.provider_family.empty() ? "local_password" : credentials.provider_family;
-  session->default_language = "en";
+  ApplySbpsLanguageContext(session,
+                           credentials.requested_language,
+                           descriptor_epoch == 0 ? name_resolution_epoch
+                                                 : descriptor_epoch,
+                           name_resolution_epoch);
   session->dialect_profile_uuid = "sbsql_v3";
   session->search_path = {"sys", "public"};
   session->transaction_context = "always_active";

@@ -280,6 +280,8 @@ CacheKey BuildFrontdoorLoweringCacheKey(const ParserConfig& config,
                            ? session.language_resource_epoch
                            : (config.resource_budget.max_statement_bytes ^
                               config.resource_budget.max_sblr_envelope_bytes);
+  key.localized_name_epoch = key.name_resolution_epoch;
+  key.language_resource_epoch = key.resource_epoch;
   key.parser_package_generation = Fnv1a64(config.bundle_contract_id);
   key.protocol_version = config.protocol_version;
   key.parser_package_version_hash = Fnv1a64(config.build_id);
@@ -302,13 +304,18 @@ CacheKey BuildFrontdoorLoweringCacheKey(const ParserConfig& config,
   key.language_tag = session.language_tag.empty()
                          ? session.default_language
                          : session.language_tag;
+  key.input_syntax_profile = session.input_syntax_profile;
+  key.input_language_fallback_tag = session.input_language_fallback_tag;
   key.common_resource_hash = session.common_resource_hash;
   key.policy_profile = session.policy_profile_uuid;
   key.parser_profile = config.profile_id;
   key.message_resource_epoch = session.message_resource_epoch;
+  key.resource_compatibility_identity = session.resource_compatibility_identity;
+  key.resource_version_identity = session.resource_version_identity;
   key.result_contract_hash =
       std::to_string(Fnv1a64(session.result_rendering_policy + "|" +
-                             config.dialect + "|" + session.common_resource_hash));
+                             config.dialect + "|" + session.common_resource_hash +
+                             "|" + session.resource_version_identity));
   return key;
 }
 

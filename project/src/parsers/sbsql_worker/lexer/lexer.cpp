@@ -55,6 +55,60 @@ bool Contains(const std::unordered_set<std::string>& values, std::string_view va
   return values.contains(std::string(value));
 }
 
+std::string CanonicalTokenId(TokenKind kind, std::string_view canonical_text) {
+  switch (kind) {
+    case TokenKind::kKeyword:
+      return std::string("SBSQL.TOKEN.") + std::string(canonical_text);
+    case TokenKind::kIdentifier:
+      return "SBSQL.TOKEN.IDENTIFIER";
+    case TokenKind::kNumericLiteral:
+      return "SBSQL.TOKEN.NUMERIC_LITERAL";
+    case TokenKind::kStringLiteral:
+      return "SBSQL.TOKEN.STRING_LITERAL";
+    case TokenKind::kBinaryLiteral:
+      return "SBSQL.TOKEN.BINARY_LITERAL";
+    case TokenKind::kTemporalLiteral:
+      return "SBSQL.TOKEN.TEMPORAL_LITERAL";
+    case TokenKind::kUuidLiteral:
+      return "SBSQL.TOKEN.UUID_LITERAL";
+    case TokenKind::kBooleanLiteral:
+      return "SBSQL.TOKEN.BOOLEAN_LITERAL";
+    case TokenKind::kNullLiteral:
+      return "SBSQL.TOKEN.NULL_LITERAL";
+    case TokenKind::kDefaultLiteral:
+      return "SBSQL.TOKEN.DEFAULT_LITERAL";
+    case TokenKind::kDocumentLiteral:
+      return "SBSQL.TOKEN.DOCUMENT_LITERAL";
+    case TokenKind::kVectorLiteral:
+      return "SBSQL.TOKEN.VECTOR_LITERAL";
+    case TokenKind::kRegexLiteral:
+      return "SBSQL.TOKEN.REGEX_LITERAL";
+    case TokenKind::kRangeLiteral:
+      return "SBSQL.TOKEN.RANGE_LITERAL";
+    case TokenKind::kParameter:
+      return "SBSQL.TOKEN.PARAMETER";
+    case TokenKind::kVariable:
+      return "SBSQL.TOKEN.VARIABLE";
+    case TokenKind::kOperator:
+      return "SBSQL.TOKEN.OPERATOR";
+    case TokenKind::kSymbol:
+      return "SBSQL.TOKEN.SYMBOL";
+    case TokenKind::kStatementTerminator:
+      return "SBSQL.TOKEN.STATEMENT_TERMINATOR";
+    case TokenKind::kComment:
+      return "SBSQL.TOKEN.COMMENT";
+    case TokenKind::kWhitespace:
+      return "SBSQL.TOKEN.WHITESPACE";
+    case TokenKind::kMetaCommand:
+      return "SBSQL.TOKEN.META_COMMAND";
+    case TokenKind::kParserDirective:
+      return "SBSQL.TOKEN.PARSER_DIRECTIVE";
+    case TokenKind::kEnd:
+      return "SBSQL.TOKEN.END";
+  }
+  return "SBSQL.TOKEN.UNKNOWN";
+}
+
 std::string KeywordClass(std::string_view text) {
   // SBsql is context-sensitive: command words are grammar tokens only in the
   // syntactic positions that ask for them. The lexer exposes a keyword class
@@ -322,6 +376,9 @@ class Lexer {
     Token token;
     token.kind = kind;
     token.text = std::move(text);
+    token.canonical_text = kind == TokenKind::kKeyword ? ToUpperAscii(token.text) : token.text;
+    token.canonical_token_id = CanonicalTokenId(kind, token.canonical_text);
+    token.canonical_alias_id = token.canonical_text == token.text ? "" : "alias." + token.text;
     token.offset = start;
     token.length = end - start;
     token.quoted = quoted;

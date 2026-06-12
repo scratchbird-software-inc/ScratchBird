@@ -29,6 +29,22 @@
     "canonical_english_fallback_when_preferred_fails",
     "fail_closed"
   ],
+  "renderer_lossiness_classes": [
+    "lossless_canonical",
+    "canonical_equivalent",
+    "preferred_language_partial",
+    "canonical_english_fallback",
+    "not_renderable"
+  ],
+  "fallback_diagnostics": [
+    "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
+    "SBSQL.LANG_RESOURCE.FAIL_CLOSED_ON_PROFILE_MISMATCH"
+  ],
+  "rendering_diagnostics": [
+    "SBSQL.LANG_RESOURCE.RENDERER_LOSSINESS_CLASSIFIED",
+    "SBSQL.LANG_RESOURCE.RENDERER_SOURCE_RECONSTRUCTION_FORBIDDEN",
+    "SBSQL.LANG_RESOURCE.RENDERER_NOT_RENDERABLE"
+  ],
   "allowed_component_values": {
     "local_parse": [
       "common_resource_pack_required",
@@ -97,7 +113,6 @@
       "client_resources_are_untrusted_until_server_revalidation"
     ],
     "implementation_state": [
-      "contract_declared_pending_runtime_integration",
       "runtime_integrated_with_tests"
     ]
   }

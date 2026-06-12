@@ -27,9 +27,127 @@
 
 namespace scratchbird::server {
 
+namespace engine_api = scratchbird::engine::internal_api;
+
 namespace {
 
-namespace engine_api = scratchbird::engine::internal_api;
+constexpr std::string_view kDefaultLanguageTag = "en";
+constexpr std::string_view kDefaultLanguageProfileId = "sbsql.builtin.recovery.en";
+constexpr std::string_view kDefaultInputSyntaxProfile = "sbsql.syntax.standard";
+constexpr std::string_view kDefaultCommonResourceHash = "builtin.common.sbsql.v1";
+constexpr std::string_view kDefaultResourceCompatibilityIdentity =
+    "sbsql.resource.compat.v1";
+constexpr std::string_view kDefaultResourceVersionIdentity =
+    "sbsql.resource-pack.v1";
+
+bool LooksLikeLanguageTag(std::string_view value) {
+  if (value.empty()) return false;
+  if (value.find('.') != std::string_view::npos) return false;
+  if (value.find(':') != std::string_view::npos) return false;
+  if (value.size() == 36 && value[8] == '-' && value[13] == '-' &&
+      value[18] == '-' && value[23] == '-') {
+    return false;
+  }
+  return true;
+}
+
+std::string NormalizeLanguageTag(std::string_view value) {
+  return value.empty() ? std::string(kDefaultLanguageTag) : std::string(value);
+}
+
+std::string BuiltinLanguageProfileIdForTag(std::string_view language_tag) {
+  const std::string tag = NormalizeLanguageTag(language_tag);
+  if (tag == kDefaultLanguageTag) return std::string(kDefaultLanguageProfileId);
+  return "sbsql.language-profile." + tag;
+}
+
+}  // namespace
+
+ServerLanguageContextIdentity ServerLanguageContextForSession(
+    const ServerSessionRecord& session) {
+  ServerLanguageContextIdentity identity;
+  identity.language_tag =
+      !session.language_tag.empty()
+          ? session.language_tag
+          : (LooksLikeLanguageTag(session.language_profile)
+                 ? NormalizeLanguageTag(session.language_profile)
+                 : std::string(kDefaultLanguageTag));
+  identity.language_profile_id =
+      session.language_profile.empty() || LooksLikeLanguageTag(session.language_profile)
+          ? BuiltinLanguageProfileIdForTag(identity.language_tag)
+          : session.language_profile;
+  identity.default_language_tag =
+      session.default_language_tag.empty() ? std::string(kDefaultLanguageTag)
+                                           : session.default_language_tag;
+  identity.input_syntax_profile =
+      session.input_syntax_profile.empty() ? std::string(kDefaultInputSyntaxProfile)
+                                           : session.input_syntax_profile;
+  identity.input_language_fallback_tag = session.input_language_fallback_tag;
+  identity.common_resource_hash =
+      session.common_resource_hash.empty() ? std::string(kDefaultCommonResourceHash)
+                                           : session.common_resource_hash;
+  identity.language_resource_epoch =
+      session.language_resource_epoch == 0 ? session.resource_epoch
+                                           : session.language_resource_epoch;
+  identity.localized_name_epoch =
+      session.localized_name_epoch == 0 ? session.name_resolution_epoch
+                                        : session.localized_name_epoch;
+  identity.message_resource_epoch = session.message_resource_epoch;
+  identity.resource_compatibility_identity =
+      session.resource_compatibility_identity.empty()
+          ? std::string(kDefaultResourceCompatibilityIdentity)
+          : session.resource_compatibility_identity;
+  identity.resource_version_identity =
+      session.resource_version_identity.empty()
+          ? std::string(kDefaultResourceVersionIdentity)
+          : session.resource_version_identity;
+  return identity;
+}
+
+void ApplyRequestedLanguageProfile(ServerSessionRecord* session,
+                                   std::string_view requested_language_tag) {
+  if (session == nullptr) return;
+  const std::string tag = NormalizeLanguageTag(requested_language_tag);
+  session->language_tag = tag;
+  session->default_language_tag = std::string(kDefaultLanguageTag);
+  session->language_profile = BuiltinLanguageProfileIdForTag(tag);
+  session->input_syntax_profile = std::string(kDefaultInputSyntaxProfile);
+  session->input_language_fallback_tag.clear();
+  if (session->common_resource_hash.empty()) {
+    session->common_resource_hash = std::string(kDefaultCommonResourceHash);
+  }
+  if (session->language_resource_epoch == 0) session->language_resource_epoch = 1;
+  if (session->localized_name_epoch == 0) session->localized_name_epoch = 1;
+  if (session->message_resource_epoch == 0) session->message_resource_epoch = 1;
+  if (session->resource_compatibility_identity.empty()) {
+    session->resource_compatibility_identity =
+        std::string(kDefaultResourceCompatibilityIdentity);
+  }
+  if (session->resource_version_identity.empty()) {
+    session->resource_version_identity = std::string(kDefaultResourceVersionIdentity);
+  }
+}
+
+void PopulateEngineLanguageContextFromSession(
+    const ServerSessionRecord& session,
+    engine_api::EngineLanguageContext* context) {
+  if (context == nullptr) return;
+  const auto identity = ServerLanguageContextForSession(session);
+  context->language_profile_id = identity.language_profile_id;
+  context->language_tag = identity.language_tag;
+  context->default_language_tag = identity.default_language_tag;
+  context->input_syntax_profile = identity.input_syntax_profile;
+  context->input_language_fallback_tag = identity.input_language_fallback_tag;
+  context->common_resource_hash = identity.common_resource_hash;
+  context->language_resource_epoch = identity.language_resource_epoch;
+  context->localized_name_epoch = identity.localized_name_epoch;
+  context->message_resource_epoch = identity.message_resource_epoch;
+  context->resource_compatibility_identity =
+      identity.resource_compatibility_identity;
+  context->resource_version_identity = identity.resource_version_identity;
+}
+
+namespace {
 
 constexpr std::uint32_t kSchemaAuthResultTestV1 = 3002;
 constexpr std::uint32_t kSchemaAttachResultTestV1 = 3004;
@@ -359,8 +477,9 @@ engine_api::EngineRequestContext EngineContextBase(const HostedEngineState& engi
   context.current_monotonic_ns = CurrentMonotonicNsText();
   context.security_context_present = false;
   context.cluster_authority_available = false;
-  context.language_context.language_tag = language.empty() ? "en" : language;
-  context.language_context.default_language_tag = "en";
+  ServerSessionRecord language_seed;
+  ApplyRequestedLanguageProfile(&language_seed, language);
+  PopulateEngineLanguageContextFromSession(language_seed, &context.language_context);
   return context;
 }
 
@@ -439,7 +558,7 @@ engine_api::EngineMaterializedAuthorizationContext MaterializeSessionAuthorizati
 engine_api::EngineRequestContext EngineContextForSession(const ServerSessionRecord& session,
                                                          const HostedEngineState& engine_state,
                                                          const sbps::Frame& request) {
-  auto context = EngineContextBase(engine_state, request, session.language_profile);
+  auto context = EngineContextBase(engine_state, request);
   context.trust_mode = TrustModeForSession(session);
   context.database_path = session.database_path.empty() ? context.database_path : session.database_path;
   context.database_uuid.canonical =
@@ -457,6 +576,7 @@ engine_api::EngineRequestContext EngineContextForSession(const ServerSessionReco
   context.security_epoch = session.security_epoch;
   context.resource_epoch = session.resource_epoch;
   context.name_resolution_epoch = session.name_resolution_epoch;
+  PopulateEngineLanguageContextFromSession(session, &context.language_context);
   context.trace_tags = session.engine_authorization_trace_tags;
   context.trace_tags.push_back("sb_server.session_registry");
   context.authorization_context = MaterializeSessionAuthorizationContext(session, context);
@@ -2131,6 +2251,7 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
   session.provider_family = auth_request.provider_family;
   session.database_path = FirstOpenDatabasePath(engine_state);
   session.database_uuid = FirstOpenDatabaseUuid(engine_state);
+  ApplyRequestedLanguageProfile(&session, decoded->requested_language);
   ApplyDatabaseHealthToSession(&session, *database);
   session.security_epoch = auth_result.connection_security_context.security_epoch == 0
                                ? session.security_epoch
@@ -2504,6 +2625,7 @@ SessionOperationResult HandleEmbeddedSysarchAttach(ServerSessionRegistry* regist
   session.attach_mode = "read_write";
   session.embedded_in_process = true;
   session.engine_authorization_trace_tags = {"embedded_sysarch", "sb_isql"};
+  ApplyRequestedLanguageProfile(&session, "en");
   ApplyDatabaseHealthToSession(&session, *database);
 
   sbps::Frame attach_frame;
@@ -3001,12 +3123,32 @@ std::string SessionRegistryStatusJson(const ServerSessionRegistry& registry) {
       << registry.finality_by_request_uuid.size() << ",\"sessions\":[";
   bool first = true;
   for (const auto& [_, session] : registry.sessions_by_uuid) {
+    const auto language = ServerLanguageContextForSession(session);
     if (!first) out << ',';
     first = false;
     out << "{\"session_uuid\":\"" << UuidBytesToText(session.session_uuid)
         << "\",\"principal\":\"" << JsonEscape(session.principal_claim)
         << "\",\"database_path\":\"" << JsonEscape(session.database_path)
         << "\",\"attach_mode\":\"" << JsonEscape(session.attach_mode)
+        << "\",\"language_profile_id\":\""
+        << JsonEscape(language.language_profile_id)
+        << "\",\"language_tag\":\"" << JsonEscape(language.language_tag)
+        << "\",\"default_language_tag\":\""
+        << JsonEscape(language.default_language_tag)
+        << "\",\"input_syntax_profile\":\""
+        << JsonEscape(language.input_syntax_profile)
+        << "\",\"input_language_fallback_tag\":\""
+        << JsonEscape(language.input_language_fallback_tag)
+        << "\",\"common_resource_hash\":\""
+        << JsonEscape(language.common_resource_hash)
+        << "\",\"language_resource_epoch\":"
+        << language.language_resource_epoch
+        << ",\"localized_name_epoch\":" << language.localized_name_epoch
+        << ",\"message_resource_epoch\":" << language.message_resource_epoch
+        << ",\"resource_compatibility_identity\":\""
+        << JsonEscape(language.resource_compatibility_identity)
+        << "\",\"resource_version_identity\":\""
+        << JsonEscape(language.resource_version_identity)
         << "\",\"session_binding_present\":"
         << (session.session_binding_present ? "true" : "false")
         << ",\"attachment_id\":\"" << UuidBytesToText(session.attachment_id)
