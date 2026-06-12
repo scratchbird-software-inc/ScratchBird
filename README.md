@@ -88,27 +88,6 @@ Documentation in this repository may include generated material, implementation 
 
 Generated documentation should be treated as technical reference material, not as a polished user manual. Where documentation and source behavior disagree, source code, tests, and current release notes should be treated as the basis for review.
 
-## Community help wanted
-
-The project especially welcomes help in these areas:
-
-- driver implementations and driver conformance testing;
-- platform build and test coverage;
-- Apple platform build and test access;
-- packaging tests for local installation models;
-- translation review and cross-language behavior validation;
-- reproducible bug reports;
-- test harness improvements;
-- documentation cleanup where generated documentation is unclear.
-
-Please include enough information to reproduce any issue: platform, compiler, build options, command line, test name, logs, and relevant configuration.
-
-## Contributions
-
-Contributions should be submitted through the normal GitHub pull request process.
-
-Before contributing, review the license, contribution, and security policies in this repository. Do not submit code, generated files, documentation, tests, fixtures, or examples copied from another project unless the contribution process explicitly allows it and the licensing/provenance is clear.
-
 ## Security
 
 Do not report security-sensitive issues in public issues if the repository provides a private security reporting process.
