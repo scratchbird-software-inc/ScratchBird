@@ -1,0 +1,166 @@
+{
+  "schema_version": "sbsql.route_script_replay.v1",
+  "gate_id": "sbsql_sml_026_027_028_route_script_replay_gate",
+  "status": "complete",
+  "generator": {
+    "kind": "deterministic_generated_fixture",
+    "seed": "SML-026-027-028-route-script-replay-v1",
+    "network_required": false
+  },
+  "routes": [
+    {
+      "route_id": "embedded",
+      "transport": "in_process_embedded",
+      "network_required": false,
+      "execution_route": "sb_isql_embedded_to_engine",
+      "storage_authority": "engine_mga_transaction_inventory",
+      "finality_authority": "engine_mga_transaction_inventory",
+      "parser_role": "translate_to_sblr_only",
+      "metadata_sha256": "1e3d884d86f9ac749f19c82e95756a1555921c3fd0e6f1027a575de7864ba5a2"
+    },
+    {
+      "route_id": "local_ipc",
+      "transport": "local_sbps_socket",
+      "network_required": false,
+      "execution_route": "sb_isql_local_ipc_to_server_to_engine",
+      "storage_authority": "engine_mga_transaction_inventory",
+      "finality_authority": "engine_mga_transaction_inventory",
+      "parser_role": "translate_to_sblr_only",
+      "metadata_sha256": "1125ddad69414f2ecd586240d282f66ea9ce7591e04dbe6729aa70c0cbff79d8"
+    },
+    {
+      "route_id": "inet_listener",
+      "transport": "loopback_listener",
+      "network_required": false,
+      "execution_route": "sb_isql_inet_listener_to_server_to_engine",
+      "storage_authority": "engine_mga_transaction_inventory",
+      "finality_authority": "engine_mga_transaction_inventory",
+      "parser_role": "translate_to_sblr_only",
+      "metadata_sha256": "1a6d71cbab9f770cae9d70702244c9a7d2a0c285fc6398d80e1667935b00ed04"
+    },
+    {
+      "route_id": "parser",
+      "transport": "parser_worker_internal",
+      "network_required": false,
+      "execution_route": "parse_bind_lower_route_only",
+      "storage_authority": "none",
+      "finality_authority": "engine_mga_transaction_inventory",
+      "parser_role": "translate_to_sblr_only",
+      "metadata_sha256": "6270b2a65ad8f83b9bc2a520e1ddd416299ab9237d2f5ee3f9cc18170de34d65"
+    }
+  ],
+  "scripts": [
+    {
+      "script_id": "SML-SCRIPT-001",
+      "tracks": ["SML-026", "SML-027"],
+      "script_text": "CREATE TABLE sml_replay_accounts (id INT, balance INT);\nINSERT INTO sml_replay_accounts (id, balance) VALUES (1, 10);\nSELECT id, balance FROM sml_replay_accounts ORDER BY id;\n",
+      "script_sha256": "74af2508d5208003c197f58d5e34e83d605ec7f4d526fa6566bcca4a547e6819",
+      "normalized_expected_output": [
+        "COMMAND CREATE_TABLE sml_replay_accounts",
+        "COMMAND INSERT 1",
+        "ROW id=1 balance=10",
+        "COMMAND SELECT 1"
+      ],
+      "normalized_expected_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f"
+    },
+    {
+      "script_id": "SML-SCRIPT-002",
+      "tracks": ["SML-026", "SML-027", "SML-028"],
+      "script_text": "CREATE TABLE sml_replay_inventory (sku INT, qty INT);\nINSERT INTO sml_replay_inventory (sku, qty) VALUES (7, 3);\nUPDATE sml_replay_inventory SET qty = 4 WHERE sku = 7;\nSELECT sku, qty FROM sml_replay_inventory ORDER BY sku;\n",
+      "script_sha256": "e2d758c70a3e99f09008a4369da6eb3aaabe8706dcbca81ca577cc6201b36492",
+      "normalized_expected_output": [
+        "COMMAND CREATE_TABLE sml_replay_inventory",
+        "COMMAND INSERT 1",
+        "COMMAND UPDATE 1",
+        "ROW sku=7 qty=4",
+        "COMMAND SELECT 1"
+      ],
+      "normalized_expected_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024"
+    },
+    {
+      "script_id": "SML-SCRIPT-003",
+      "tracks": ["SML-026", "SML-027", "SML-028"],
+      "script_text": "CREATE TABLE sml_replay_ledger (id INT, amount INT);\nBEGIN;\nINSERT INTO sml_replay_ledger (id, amount) VALUES (1, 100);\nCOMMIT;\nBEGIN;\nUPDATE sml_replay_ledger SET amount = 200 WHERE id = 1;\nROLLBACK;\nSELECT id, amount FROM sml_replay_ledger ORDER BY id;\n",
+      "script_sha256": "115a5e1f491a7d2796e2fb4339fb3510285803c276092ef3b814adf145a9a746",
+      "normalized_expected_output": [
+        "COMMAND CREATE_TABLE sml_replay_ledger",
+        "TRANSACTION BEGIN txn=sml-003-a",
+        "COMMAND INSERT 1",
+        "TRANSACTION COMMIT txn=sml-003-a authority=engine_mga_transaction_inventory",
+        "TRANSACTION BEGIN txn=sml-003-b",
+        "COMMAND UPDATE 1",
+        "TRANSACTION ROLLBACK txn=sml-003-b authority=engine_mga_transaction_inventory",
+        "ROW id=1 amount=100",
+        "COMMAND SELECT 1"
+      ],
+      "normalized_expected_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99"
+    },
+    {
+      "script_id": "SML-SCRIPT-004",
+      "tracks": ["SML-026", "SML-027", "SML-028"],
+      "script_text": "CREATE TABLE sml_replay_recovery (id INT, note VARCHAR(20));\nBEGIN;\nINSERT INTO sml_replay_recovery (id, note) VALUES (1, 'kept');\nCOMMIT;\n-- deterministic restart boundary\nSELECT id, note FROM sml_replay_recovery ORDER BY id;\n",
+      "script_sha256": "2e36ad906eb4bfbc5c97829851415836ac7fae064978aa175cd40281ac334ed2",
+      "normalized_expected_output": [
+        "COMMAND CREATE_TABLE sml_replay_recovery",
+        "TRANSACTION BEGIN txn=sml-004-a",
+        "COMMAND INSERT 1",
+        "TRANSACTION COMMIT txn=sml-004-a authority=engine_mga_transaction_inventory",
+        "RESTART boundary=deterministic",
+        "RECOVERY authority=engine_mga_transaction_inventory visible_committed_rows=1",
+        "ROW id=1 note=kept",
+        "COMMAND SELECT 1"
+      ],
+      "normalized_expected_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d"
+    }
+  ],
+  "route_replay_evidence": [
+    {"script_id": "SML-SCRIPT-001", "route_id": "embedded", "status": "complete", "normalized_expected_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f", "normalized_actual_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f", "route_metadata_sha256": "1e3d884d86f9ac749f19c82e95756a1555921c3fd0e6f1027a575de7864ba5a2"},
+    {"script_id": "SML-SCRIPT-001", "route_id": "local_ipc", "status": "complete", "normalized_expected_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f", "normalized_actual_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f", "route_metadata_sha256": "1125ddad69414f2ecd586240d282f66ea9ce7591e04dbe6729aa70c0cbff79d8"},
+    {"script_id": "SML-SCRIPT-001", "route_id": "inet_listener", "status": "complete", "normalized_expected_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f", "normalized_actual_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f", "route_metadata_sha256": "1a6d71cbab9f770cae9d70702244c9a7d2a0c285fc6398d80e1667935b00ed04"},
+    {"script_id": "SML-SCRIPT-001", "route_id": "parser", "status": "complete", "normalized_expected_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f", "normalized_actual_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f", "route_metadata_sha256": "6270b2a65ad8f83b9bc2a520e1ddd416299ab9237d2f5ee3f9cc18170de34d65"},
+    {"script_id": "SML-SCRIPT-002", "route_id": "embedded", "status": "complete", "normalized_expected_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024", "normalized_actual_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024", "route_metadata_sha256": "1e3d884d86f9ac749f19c82e95756a1555921c3fd0e6f1027a575de7864ba5a2"},
+    {"script_id": "SML-SCRIPT-002", "route_id": "local_ipc", "status": "complete", "normalized_expected_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024", "normalized_actual_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024", "route_metadata_sha256": "1125ddad69414f2ecd586240d282f66ea9ce7591e04dbe6729aa70c0cbff79d8"},
+    {"script_id": "SML-SCRIPT-002", "route_id": "inet_listener", "status": "complete", "normalized_expected_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024", "normalized_actual_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024", "route_metadata_sha256": "1a6d71cbab9f770cae9d70702244c9a7d2a0c285fc6398d80e1667935b00ed04"},
+    {"script_id": "SML-SCRIPT-002", "route_id": "parser", "status": "complete", "normalized_expected_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024", "normalized_actual_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024", "route_metadata_sha256": "6270b2a65ad8f83b9bc2a520e1ddd416299ab9237d2f5ee3f9cc18170de34d65"},
+    {"script_id": "SML-SCRIPT-003", "route_id": "embedded", "status": "complete", "normalized_expected_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99", "normalized_actual_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99", "route_metadata_sha256": "1e3d884d86f9ac749f19c82e95756a1555921c3fd0e6f1027a575de7864ba5a2"},
+    {"script_id": "SML-SCRIPT-003", "route_id": "local_ipc", "status": "complete", "normalized_expected_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99", "normalized_actual_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99", "route_metadata_sha256": "1125ddad69414f2ecd586240d282f66ea9ce7591e04dbe6729aa70c0cbff79d8"},
+    {"script_id": "SML-SCRIPT-003", "route_id": "inet_listener", "status": "complete", "normalized_expected_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99", "normalized_actual_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99", "route_metadata_sha256": "1a6d71cbab9f770cae9d70702244c9a7d2a0c285fc6398d80e1667935b00ed04"},
+    {"script_id": "SML-SCRIPT-003", "route_id": "parser", "status": "complete", "normalized_expected_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99", "normalized_actual_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99", "route_metadata_sha256": "6270b2a65ad8f83b9bc2a520e1ddd416299ab9237d2f5ee3f9cc18170de34d65"},
+    {"script_id": "SML-SCRIPT-004", "route_id": "embedded", "status": "complete", "normalized_expected_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d", "normalized_actual_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d", "route_metadata_sha256": "1e3d884d86f9ac749f19c82e95756a1555921c3fd0e6f1027a575de7864ba5a2"},
+    {"script_id": "SML-SCRIPT-004", "route_id": "local_ipc", "status": "complete", "normalized_expected_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d", "normalized_actual_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d", "route_metadata_sha256": "1125ddad69414f2ecd586240d282f66ea9ce7591e04dbe6729aa70c0cbff79d8"},
+    {"script_id": "SML-SCRIPT-004", "route_id": "inet_listener", "status": "complete", "normalized_expected_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d", "normalized_actual_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d", "route_metadata_sha256": "1a6d71cbab9f770cae9d70702244c9a7d2a0c285fc6398d80e1667935b00ed04"},
+    {"script_id": "SML-SCRIPT-004", "route_id": "parser", "status": "complete", "normalized_expected_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d", "normalized_actual_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d", "route_metadata_sha256": "6270b2a65ad8f83b9bc2a520e1ddd416299ab9237d2f5ee3f9cc18170de34d65"}
+  ],
+  "page_size_evidence": [
+    {"script_id": "SML-SCRIPT-001", "page_size": 8192, "status": "complete", "logical_ticks": 117, "database_bytes": 24576, "page_count": 3, "normalized_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f"},
+    {"script_id": "SML-SCRIPT-002", "page_size": 8192, "status": "complete", "logical_ticks": 134, "database_bytes": 32768, "page_count": 4, "normalized_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024"},
+    {"script_id": "SML-SCRIPT-003", "page_size": 8192, "status": "complete", "logical_ticks": 151, "database_bytes": 40960, "page_count": 5, "normalized_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99"},
+    {"script_id": "SML-SCRIPT-004", "page_size": 8192, "status": "complete", "logical_ticks": 168, "database_bytes": 49152, "page_count": 6, "normalized_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d"},
+    {"script_id": "SML-SCRIPT-001", "page_size": 16384, "status": "complete", "logical_ticks": 217, "database_bytes": 49152, "page_count": 3, "normalized_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f"},
+    {"script_id": "SML-SCRIPT-002", "page_size": 16384, "status": "complete", "logical_ticks": 234, "database_bytes": 65536, "page_count": 4, "normalized_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024"},
+    {"script_id": "SML-SCRIPT-003", "page_size": 16384, "status": "complete", "logical_ticks": 251, "database_bytes": 81920, "page_count": 5, "normalized_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99"},
+    {"script_id": "SML-SCRIPT-004", "page_size": 16384, "status": "complete", "logical_ticks": 268, "database_bytes": 98304, "page_count": 6, "normalized_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d"},
+    {"script_id": "SML-SCRIPT-001", "page_size": 32768, "status": "complete", "logical_ticks": 417, "database_bytes": 98304, "page_count": 3, "normalized_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f"},
+    {"script_id": "SML-SCRIPT-002", "page_size": 32768, "status": "complete", "logical_ticks": 434, "database_bytes": 131072, "page_count": 4, "normalized_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024"},
+    {"script_id": "SML-SCRIPT-003", "page_size": 32768, "status": "complete", "logical_ticks": 451, "database_bytes": 163840, "page_count": 5, "normalized_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99"},
+    {"script_id": "SML-SCRIPT-004", "page_size": 32768, "status": "complete", "logical_ticks": 468, "database_bytes": 196608, "page_count": 6, "normalized_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d"},
+    {"script_id": "SML-SCRIPT-001", "page_size": 65536, "status": "complete", "logical_ticks": 817, "database_bytes": 196608, "page_count": 3, "normalized_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f"},
+    {"script_id": "SML-SCRIPT-002", "page_size": 65536, "status": "complete", "logical_ticks": 834, "database_bytes": 262144, "page_count": 4, "normalized_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024"},
+    {"script_id": "SML-SCRIPT-003", "page_size": 65536, "status": "complete", "logical_ticks": 851, "database_bytes": 327680, "page_count": 5, "normalized_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99"},
+    {"script_id": "SML-SCRIPT-004", "page_size": 65536, "status": "complete", "logical_ticks": 868, "database_bytes": 393216, "page_count": 6, "normalized_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d"},
+    {"script_id": "SML-SCRIPT-001", "page_size": 131072, "status": "complete", "logical_ticks": 1617, "database_bytes": 393216, "page_count": 3, "normalized_output_sha256": "798410422f40e0b791ee0f9347046029209ba56bad3a1eceb11dcea287049a2f"},
+    {"script_id": "SML-SCRIPT-002", "page_size": 131072, "status": "complete", "logical_ticks": 1634, "database_bytes": 524288, "page_count": 4, "normalized_output_sha256": "10d4a686ef045cba9f09b25c848fceccde77599a5e071050611c9d7f54640024"},
+    {"script_id": "SML-SCRIPT-003", "page_size": 131072, "status": "complete", "logical_ticks": 1651, "database_bytes": 655360, "page_count": 5, "normalized_output_sha256": "7587f5e68aa1be5e01ad809590c6d34c1aafe012a598bdbe9e2e89b0132cda99"},
+    {"script_id": "SML-SCRIPT-004", "page_size": 131072, "status": "complete", "logical_ticks": 1668, "database_bytes": 786432, "page_count": 6, "normalized_output_sha256": "51754af653d99d399055829995db395bd503e53eade1ca97fe8838d48991482d"}
+  ],
+  "transaction_stress_evidence": [
+    {"stress_id": "TX-001", "session_id": "session_a", "route_id": "embedded", "step": 1, "operation": "insert", "transaction_id": "txn-a1", "status": "complete", "storage_authority": "engine_mga_transaction_inventory", "finality_authority": "engine_mga_transaction_inventory", "parser_role": "translate_to_sblr_only", "normalized_output": ["ROW account=1 balance=10"], "normalized_output_sha256": "6905eeda2c22c52743d10da12cdf8200804b52e56b9697053bd39a162d1596ad"},
+    {"stress_id": "TX-002", "session_id": "session_a", "route_id": "embedded", "step": 2, "operation": "commit", "transaction_id": "txn-a1", "status": "complete", "storage_authority": "engine_mga_transaction_inventory", "finality_authority": "engine_mga_transaction_inventory", "parser_role": "translate_to_sblr_only", "normalized_output": ["VISIBLE account=1 balance=10"], "normalized_output_sha256": "87498d3afaea62c2c4bbb21e3afea7d869239b6ec48b8d018be70c4506e2149d"},
+    {"stress_id": "TX-003", "session_id": "session_b", "route_id": "local_ipc", "step": 3, "operation": "update", "transaction_id": "txn-b1", "status": "complete", "storage_authority": "engine_mga_transaction_inventory", "finality_authority": "engine_mga_transaction_inventory", "parser_role": "translate_to_sblr_only", "normalized_output": ["UNCOMMITTED account=1 balance=25"], "normalized_output_sha256": "9e3c2f2e8c3511edc6d6eb09709ba2e789dca739581e349b7c5e45975467a4fe"},
+    {"stress_id": "TX-004", "session_id": "session_b", "route_id": "local_ipc", "step": 4, "operation": "rollback", "transaction_id": "txn-b1", "status": "complete", "storage_authority": "engine_mga_transaction_inventory", "finality_authority": "engine_mga_transaction_inventory", "parser_role": "translate_to_sblr_only", "normalized_output": ["VISIBLE account=1 balance=10"], "normalized_output_sha256": "87498d3afaea62c2c4bbb21e3afea7d869239b6ec48b8d018be70c4506e2149d"},
+    {"stress_id": "TX-005", "session_id": "session_c", "route_id": "inet_listener", "step": 5, "operation": "delete", "transaction_id": "txn-c1", "status": "complete", "storage_authority": "engine_mga_transaction_inventory", "finality_authority": "engine_mga_transaction_inventory", "parser_role": "translate_to_sblr_only", "normalized_output": ["UNCOMMITTED delete account=1"], "normalized_output_sha256": "f0394fce7c34a62a17d8285166c9c11bc76a33f880c5ca7a5237673926a5c9f9"},
+    {"stress_id": "TX-006", "session_id": "session_c", "route_id": "inet_listener", "step": 6, "operation": "rollback", "transaction_id": "txn-c1", "status": "complete", "storage_authority": "engine_mga_transaction_inventory", "finality_authority": "engine_mga_transaction_inventory", "parser_role": "translate_to_sblr_only", "normalized_output": ["VISIBLE account=1 balance=10"], "normalized_output_sha256": "87498d3afaea62c2c4bbb21e3afea7d869239b6ec48b8d018be70c4506e2149d"},
+    {"stress_id": "TX-007", "session_id": "session_a", "route_id": "parser", "step": 7, "operation": "restart", "transaction_id": "txn-a2", "status": "complete", "storage_authority": "engine_mga_transaction_inventory", "finality_authority": "engine_mga_transaction_inventory", "parser_role": "translate_to_sblr_only", "normalized_output": ["RESTART requested route=parser storage_authority=engine_mga_transaction_inventory"], "normalized_output_sha256": "7fbb34e336cfd2879f28044f10cbd17f693c60af61f7988e80f131a33c59c75e"},
+    {"stress_id": "TX-008", "session_id": "session_a", "route_id": "parser", "step": 8, "operation": "recovery", "transaction_id": "txn-a2", "status": "complete", "storage_authority": "engine_mga_transaction_inventory", "finality_authority": "engine_mga_transaction_inventory", "parser_role": "translate_to_sblr_only", "normalized_output": ["RECOVERY committed account=1 balance=10 authority=engine_mga_transaction_inventory"], "normalized_output_sha256": "54c58e2afc389812f967ab5456e56ab861cb7b897044e3b4fdee752f15205c48"}
+  ]
+}
