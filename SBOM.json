@@ -16,6 +16,15 @@
       "license": "upstream notices apply to externally supplied fixture material",
       "scope": "external compatibility and refusal testing fixture consumed by ScratchBird-owned harnesses",
       "tracked_in_public_repository": false
+    },
+    {
+      "component_id": "sbsql-language-resource-pack",
+      "type": "generated-resource-pack",
+      "license": "MPL-2.0",
+      "scope": "canonical SBsql language resources, exact language profiles, predictive grammar, renderer templates, diagnostics, resolver policy, and provenance",
+      "tracked_in_public_repository": true,
+      "source": "ScratchBird SBsql generated registry and ScratchBird system-object baseline",
+      "third_party_source_material_included": false
     }
   ]
 }
