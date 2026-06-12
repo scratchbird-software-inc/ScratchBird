@@ -2,7 +2,7 @@
 
 Generation task: `sb_diagnostic`
 
-Package namespace: `sb.diagnostic`
+Package namespace: `sb.fn.diagnostic`
 
 Statement and procedural diagnostic helpers, including row-count context.
 

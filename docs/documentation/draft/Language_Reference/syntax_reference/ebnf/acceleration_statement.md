@@ -8,12 +8,12 @@ Generation task: `ebnf_acceleration_statement`
 ## Production
 
 ```ebnf
-acceleration_statement  ::= show_acceleration | alter_acceleration ;
+acceleration_stmt       ::= show_acceleration | alter_acceleration ;
 ```
 
 ## Meaning
 
-`acceleration_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`acceleration_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

@@ -8,27 +8,25 @@ Generation task: `ebnf_create_statement`
 ## Production
 
 ```ebnf
-create_statement        ::= create_schema
-                          | create_database
-                          | create_filespace
-                          | create_table
-                          | create_index
-                          | create_domain
-                          | create_type_descriptor
-                          | create_sequence
-                          | create_view
-                          | create_function
-                          | create_procedure
-                          | create_trigger
-                          | create_event_trigger
-                          | create_policy
-                          | create_mask
-                          | create_rls ;
+create_object           ::= create_schema
+                          | create_database_stmt
+                          | create_filespace_stmt
+                          | create_table_stmt
+                          | create_index_stmt
+                          | create_domain_stmt
+                          | create_type_stmt
+                          | create_sequence_stmt
+                          | create_view_stmt
+                          | create_function_stmt
+                          | create_procedure_stmt
+                          | create_trigger_stmt
+                          | create_event_trigger_stmt
+                          | create_policy_stmt ;
 ```
 
 ## Meaning
 
-`create_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`create_object` is an SBsql grammar production (registry canonical name `create_object`). Note: `create_mask` and `create_rls` as standalone productions do not exist in the registry; policy-class objects are covered by `create_policy_stmt`. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

@@ -13,13 +13,13 @@ alter_acceleration      ::= "ALTER" ("NATIVE" "COMPILE" | "GPU") acceleration_ac
 
 ## Meaning
 
-`alter_acceleration` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`alter_acceleration` is a grammar fragment grouping. It is NOT a registry canonical surface name; individual ALTER GPU and ALTER NATIVE COMPILE operations dispatch through their concrete operation names (e.g., `gpu_capability_name`, `gpu_capability_options`). This fragment is documented as a documentation aid only.
 
 ## Used By
 
 | Parent Production |
 | --- |
-| acceleration_statement |
+| acceleration_stmt |
 
 ## Child Productions
 

@@ -16,7 +16,7 @@ This glossary defines terms used in the draft Getting Started Guide and related 
 | SBParser | ScratchBird Core Parser. The native SBsql parser package that lowers SBsql requests to SBLR. |
 | SBsrv | ScratchBird IPC Server. A local multi-user server process for same-machine clients. |
 | SBgate | ScratchBird Listener. The listener and parser-facing entry point used for network-facing client traffic. |
-| SBmgr | ScratchBird Local Manager. A single-node front door that can proxy authenticated connections to internal listener routes in managed deployments. |
+| SBmgr | ScratchBird Single Node Manager. A single-node front door that can proxy authenticated connections to internal listener routes in managed deployments. |
 | SBadm | ScratchBird Administrator. Administrative utility name for configuration, time zone, character set, collation, and policy management where present. |
 | SBbak | ScratchBird Backup Manager. Utility name for backup and backup-set operations where present. |
 | SBsec | ScratchBird Security. Utility name for security provider, user, role, group, and policy management where present. |
@@ -32,7 +32,10 @@ This glossary defines terms used in the draft Getting Started Guide and related 
 | Engine authority | The rule that durable behavior belongs to SBcore: object identity, descriptors, transactions, security admission, storage, recovery, and diagnostics. |
 | Parser boundary | The separation between a client language or wire protocol and engine execution authority. |
 | Parser package | A component that accepts a specific language or protocol surface and lowers accepted work to ScratchBird execution requests. |
-| Donor parser | A standalone parser package for one compatibility client family. It should not silently accept unrelated dialects. |
+| Compatibility parser | A standalone parser package for one reference-system client family. It should not silently accept unrelated dialects. |
+| SBsql language profile | A parser resource profile that can change user-facing SBsql spellings, phrase order, diagnostics, completion hints, and source rendering without changing SBLR, UUID identity, descriptors, security, storage, or MGA transaction authority. |
+| Canonical element stream | The normalized parser output created before UUID binding. It records canonical token and surface identities rather than treating localized words as engine authority. |
+| Standard SBsql fallback | A policy-controlled input fallback that lets a non-English session accept canonical English SBsql when the preferred language profile does not parse the statement. |
 | Parser route | The configured path that determines which parser handles a client request. |
 | SBLR | ScratchBird's bound engine-facing request representation. Parsers emit SBLR after parsing and binding accepted work. |
 | Bound request | A structured request whose names, values, parameters, and types have been resolved enough to submit toward engine authority. |
@@ -193,7 +196,7 @@ This glossary defines terms used in the draft Getting Started Guide and related 
 | Logical stream | Data movement represented as statements, rows, records, or events rather than physical page files. |
 | Logical backup | A backup stream that represents database content as logical metadata and data operations. |
 | Logical restore | Replaying a logical stream as admitted database operations. |
-| Physical backup | A page-copy or file-copy backup shape. Donor parser routes should not treat physical page-copy formats as normal logical restore input. |
+| Physical backup | A page-copy or file-copy backup shape. Compatibility parser routes should not treat physical page-copy formats as normal logical restore input. |
 | Import | Bring external logical data into a database through an admitted parser or tool route. |
 | Export | Write logical data from a database to an external stream or file according to policy. |
 | CDC | Change data capture. A stream or record of changes suitable for replication, ETL, or integration where implemented. |

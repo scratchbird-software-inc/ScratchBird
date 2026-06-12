@@ -7,7 +7,7 @@ Generation task: `ebnf_search_statement`
 ## Production
 
 ```ebnf
-search_statement ::=
+fulltext_search_query ::=
     "SEARCH" search_target search_payload return_clause? statement_option_list? ;
 
 search_target ::=
@@ -22,7 +22,7 @@ search_field_clause ::=
 
 ## Meaning
 
-`search_statement` recognizes descriptor-bound search commands. Search text, fields, analyzer profile, scoring, snippets, matched fields, and refresh behavior are bound operation inputs, not execution authority.
+`fulltext_search_query` recognizes descriptor-bound search commands. Search text, fields, analyzer profile, scoring, snippets, matched fields, and refresh behavior are bound operation inputs, not execution authority.
 
 ## Used By
 

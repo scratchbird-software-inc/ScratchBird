@@ -7,7 +7,7 @@ Generation task: `ebnf_config_statement`
 ## Production
 
 ```ebnf
-config_statement ::=
+config_stmt ::=
       "CONFIG" "SHOW" config_target? config_option_list?
     | "CONFIG" "VALIDATE" config_target? config_option_list?
     | "CONFIG" "RELOAD" config_target? config_option_list?
@@ -24,7 +24,7 @@ config_option_list ::=
 
 ## Meaning
 
-`config_statement` inspects, validates, reloads, and reports configuration history or effective values. It does not grant direct file access or permission to read protected values.
+`config_stmt` inspects, validates, reloads, and reports configuration history or effective values. It does not grant direct file access or permission to read protected values.
 
 ## Used By
 

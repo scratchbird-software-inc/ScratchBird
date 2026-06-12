@@ -9,7 +9,7 @@ Parent reference: [Backup, Restore, Replication, And Migration](../backup_restor
 ## Production
 
 ```ebnf
-restore_statement ::=
+restore_stmt ::=
     RESTORE restore_target restore_source restore_option_list? ;
 
 restore_target ::=
@@ -43,7 +43,7 @@ restore_option ::=
 
 ## Meaning
 
-`restore_statement` recognizes an import or validation request. The grammar accepts target and source descriptors plus restore options. It does not apply data by itself. Applying restore data must go through engine-owned catalog and row routes, and applied work commits or rolls back through MGA.
+`restore_stmt` recognizes an import or validation request. The grammar accepts target and source descriptors plus restore options. It does not apply data by itself. Applying restore data must go through engine-owned catalog and row routes, and applied work commits or rolls back through MGA.
 
 ## Binding Requirements
 

@@ -7,7 +7,7 @@ Generation task: `ebnf_vector_statement`
 ## Production
 
 ```ebnf
-vector_statement ::=
+vector_op_stmt ::=
     "VECTOR" vector_action vector_target vector_payload? return_clause? statement_option_list? ;
 
 vector_action ::=
@@ -41,7 +41,7 @@ vector_metric_clause ::=
 
 ## Meaning
 
-`vector_statement` recognizes vector candidate search, exact rerank, mutation, rebuild, and inspection commands. Vector dimension, element profile, metric, index evidence, and exact-recheck behavior are descriptor owned.
+`vector_op_stmt` recognizes vector candidate search, exact rerank, mutation, rebuild, and inspection commands. Vector dimension, element profile, metric, index evidence, and exact-recheck behavior are descriptor owned.
 
 ## Used By
 

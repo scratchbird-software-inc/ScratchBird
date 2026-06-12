@@ -8,12 +8,12 @@ Generation task: `ebnf_with_statement`
 ## Production
 
 ```ebnf
-with_statement          ::= "WITH" "RECURSIVE"? cte_list select_statement ;
+with_clause             ::= "WITH" "RECURSIVE"? cte_list select_statement ;
 ```
 
 ## Meaning
 
-`with_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`with_clause` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 `RECURSIVE` is contextual. The current admitted recursive route lowers bounded values-backed recursive CTEs to the `values_recursive_cte` SBLR payload and `SBLR_QUERY_PLAN_OPERATION`; broader recursive-reference forms must be rejected until a matching execution route is admitted.
 
@@ -29,6 +29,8 @@ with_statement          ::= "WITH" "RECURSIVE"? cte_list select_statement ;
 | --- |
 | cte_list |
 | select_statement |
+
+<!-- Note: the canonical production name is with_clause (registry fixture SBSQL-4B6E0DFBB334). The file is kept as with_statement.md for legacy navigation. -->
 
 ## Recursive Values Route
 

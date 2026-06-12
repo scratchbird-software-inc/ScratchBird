@@ -8,12 +8,12 @@ Generation task: `ebnf_alter_identity`
 ## Production
 
 ```ebnf
-alter_identity          ::= "ALTER" ("USER" | "ROLE" | "GROUP") principal_ref identity_option_list? ;
+alter_principal_stmt    ::= "ALTER" ("USER" | "ROLE" | "GROUP") principal_ref identity_option_list? ;
 ```
 
 ## Meaning
 
-`alter_identity` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`alter_principal_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

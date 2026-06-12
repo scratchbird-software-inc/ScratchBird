@@ -175,7 +175,7 @@ Sequence with an explicit integer descriptor and cache:
 
 ```sql
 create sequence app.invoice_number
-  as int64
+  as bigint
   start with 100000
   increment by 1
   minvalue 100000
@@ -188,7 +188,7 @@ Descending sequence:
 
 ```sql
 create sequence app.countdown
-  as int32
+  as int
   start with 100
   increment by -1
   minvalue 1
@@ -285,7 +285,7 @@ Use a sequence in a column default:
 
 ```sql
 create table app.orders (
-  order_number int64 not null default next value for app.order_number,
+  order_number bigint not null default next value for app.order_number,
   order_id uuid not null,
   primary key (order_number)
 );
@@ -323,13 +323,13 @@ Example:
 
 ```sql
 create sequence app.customer_number_seq
-  as int64
+  as bigint
   start with 1
   increment by 1
   no cycle;
 
 create table app.customer (
-  customer_number int64 not null default next value for app.customer_number_seq,
+  customer_number bigint not null default next value for app.customer_number_seq,
   customer_id uuid not null,
   display_name varchar(120) not null,
   primary key (customer_number)
@@ -406,7 +406,7 @@ Prepared statements and metadata caches that resolved the old name must rebind o
 
 ```sql
 recreate sequence app.stage_number
-  as int64
+  as bigint
   start with 1
   increment by 1
   no cache
@@ -515,14 +515,14 @@ Application order number:
 
 ```sql
 create sequence app.order_number
-  as int64
+  as bigint
   start with 1
   increment by 1
   cache 100
   no cycle;
 
 create table app.orders (
-  order_number int64 not null default next value for app.order_number,
+  order_number bigint not null default next value for app.order_number,
   order_id uuid not null,
   customer_id uuid not null,
   primary key (order_number)
@@ -533,7 +533,7 @@ Small bounded cycle for a reusable slot label:
 
 ```sql
 create sequence app.slot_number
-  as int32
+  as int
   start with 1
   increment by 1
   minvalue 1

@@ -94,9 +94,9 @@ Once connected with SBsql, run a small transaction that exercises names, types, 
 create schema app;
 
 create table app.notes (
-    note_id uint64 not null,
+    note_id bigint not null,
     note_text text not null,
-    created_at timestamp with time zone not null,
+    created_at timestamptz not null,
     constraint pk_notes primary key (note_id)
 );
 

@@ -7,7 +7,7 @@ Generation task: `ebnf_timeseries_statement`
 ## Production
 
 ```ebnf
-timeseries_statement ::=
+time_series_op_stmt ::=
     "TIMESERIES" timeseries_action timeseries_target timeseries_payload? return_clause? statement_option_list? ;
 
 timeseries_action ::=
@@ -52,7 +52,7 @@ aggregate_clause ::=
 
 ## Meaning
 
-`timeseries_statement` recognizes time-window query, sample mutation, downsample, retention, gap-fill, and inspection commands. Timestamp descriptors, window bounds, bucket alignment, interpolation, and late-sample behavior are bound before execution.
+`time_series_op_stmt` recognizes time-window query, sample mutation, downsample, retention, gap-fill, and inspection commands. Timestamp descriptors, window bounds, bucket alignment, interpolation, and late-sample behavior are bound before execution.
 
 ## Used By
 

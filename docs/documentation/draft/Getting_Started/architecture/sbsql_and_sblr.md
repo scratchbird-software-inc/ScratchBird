@@ -29,7 +29,7 @@ SBsql can be used for:
 - inspecting catalog and operational state;
 - running scripts.
 
-Native SBsql should express ScratchBird concepts directly instead of copying a donor language.
+Native SBsql should express ScratchBird concepts directly instead of copying a reference-system language.
 
 ## Where SBLR Fits
 
@@ -160,6 +160,11 @@ flowchart TB
 
 This lets parser packages preserve their client-facing syntax and defaults without becoming independent engines.
 
+SBsql language profiles use the same boundary. A localized SBsql profile may
+change spelling, phrase order, diagnostics, completion hints, and rendering
+templates, but it is normalized into canonical parser elements before UUID
+binding and SBLR lowering.
+
 ## Diagnostics
 
 SBsql and SBLR participate in structured diagnostics.
@@ -192,6 +197,7 @@ Availability must be checked against the current build, tests, configuration, an
 
 - [Engine Parser Boundary](engine_parser_boundary.md)
 - [First SBsql Session](../using_scratchbird/first_sbsql_session.md)
+- [SBsql Language Profiles](../../Language_Reference/core_paradigms/sbsql_language_profiles.md)
 - [Script Tokens And Identifiers](../../Language_Reference/syntax_reference/script_tokens_and_identifiers.md)
 - [Operators](../../Language_Reference/syntax_reference/operators.md)
 - [Procedural SQL](../../Language_Reference/syntax_reference/procedural_sql.md)

@@ -8,12 +8,12 @@ Generation task: `ebnf_revoke_statement`
 ## Production
 
 ```ebnf
-revoke_statement        ::= "REVOKE" grant_payload "FROM" principal_ref revoke_option_list? ;
+revoke_stmt             ::= "REVOKE" grant_payload "FROM" principal_ref revoke_option_list? ;
 ```
 
 ## Meaning
 
-`revoke_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`revoke_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 Full user-facing semantics for revoke behavior, grant-option removal, admin-option removal, cascade/restrict, security epoch changes, sandbox behavior, and effective privilege resolution are documented in [../security_and_privilege_statements.md](../security_and_privilege_statements.md).
 

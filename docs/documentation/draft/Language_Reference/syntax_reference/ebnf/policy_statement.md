@@ -8,12 +8,12 @@ Generation task: `ebnf_policy_statement`
 ## Production
 
 ```ebnf
-policy_statement        ::= create_policy | alter_policy | drop_policy | show_policy ;
+policy_stmt             ::= create_policy_stmt | alter_policy_stmt | drop_policy_stmt | show_policy ;
 ```
 
 ## Meaning
 
-`policy_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`policy_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

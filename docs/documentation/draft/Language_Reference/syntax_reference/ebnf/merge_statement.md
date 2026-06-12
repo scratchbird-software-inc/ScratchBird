@@ -65,7 +65,7 @@ After parsing, the binder must resolve:
 
 | Parent production | Purpose |
 | --- | --- |
-| `dml_statement` | Places `MERGE` in the data manipulation statement family. |
+| `dml` (statement family) | Places `MERGE` in the data manipulation statement family. |
 
 ## Child Productions
 

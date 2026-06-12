@@ -151,6 +151,20 @@ set_tests_properties(firebird_tool_runtime_isolation_gate PROPERTIES
 set(FIREBIRD_SURFACE_FIXTURE_ROOT
   "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/full_firebirdsql_parser_udr_emulation_closure"
 )
+set(FIREBIRD_SML_024_EMULATION_CLOSURE_ROOT
+  "${CMAKE_CURRENT_SOURCE_DIR}/generated/emulation_closure"
+)
+add_test(
+  NAME firebird_sml_024_emulation_closure_gate
+  COMMAND "${FIREBIRD_PYTHON3}"
+          "${FIREBIRD_SML_024_EMULATION_CLOSURE_ROOT}/firebird_sml_024_emulation_closure_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+          --fixture-root "${FIREBIRD_SML_024_EMULATION_CLOSURE_ROOT}"
+          --cmake-file "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
+)
+set_tests_properties(firebird_sml_024_emulation_closure_gate PROPERTIES
+  LABELS "firebird_emulation_closure;firebird_parser_worker;SML-024;SML-GATE-024;firebird_package_boundary_gate"
+)
 add_test(
   NAME firebird_clean_room_provenance_gate
   COMMAND "${FIREBIRD_PYTHON3}" "${CMAKE_CURRENT_SOURCE_DIR}/firebird_clean_room_provenance_gate.py"

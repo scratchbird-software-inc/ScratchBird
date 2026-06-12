@@ -8,12 +8,12 @@ Generation task: `ebnf_savepoint_statement`
 ## Production
 
 ```ebnf
-savepoint_statement     ::= "SAVEPOINT" identifier | "RELEASE" "SAVEPOINT" identifier | "ROLLBACK" "TO" "SAVEPOINT"? identifier ;
+savepoint_stmt          ::= "SAVEPOINT" identifier | "RELEASE" "SAVEPOINT" identifier | "ROLLBACK" "TO" "SAVEPOINT"? identifier ;
 ```
 
 ## Meaning
 
-`savepoint_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`savepoint_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 Full user-facing semantics for savepoint scope, rollback-to-savepoint, release, commit cleanup, and recovery limitations are documented in [../transaction_control.md](../transaction_control.md).
 

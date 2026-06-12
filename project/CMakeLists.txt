@@ -3579,14 +3579,18 @@ endif()
 option(SB_BUILD_DOCUMENTATION_BASELINE_GATES
   "Build generated documentation baseline CTest gates"
   OFF)
-if(SB_BUILD_TESTS)
+set(_sb_documentation_baseline_registry
+  "${PROJECT_SOURCE_DIR}/../docs/execution-plans/end-user-documentation-baseline-generation/DOCUMENTATION_BOOK_REGISTRY.csv")
+if(SB_BUILD_TESTS AND EXISTS "${_sb_documentation_baseline_registry}")
   set(SB_BUILD_DOCUMENTATION_BASELINE_GATES ON CACHE BOOL
     "Build generated documentation baseline CTest gates" FORCE)
 endif()
 if(SB_BUILD_DOCUMENTATION_BASELINE_GATES
+   AND EXISTS "${_sb_documentation_baseline_registry}"
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/documentation/generation/CMakeLists.txt")
   add_subdirectory(tests/documentation/generation)
 endif()
+unset(_sb_documentation_baseline_registry)
 
 if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/drivers/tool/cli/CMakeLists.txt"

@@ -126,7 +126,7 @@ This creates:
 Simple functions may use a single return expression when admitted.
 
 ```sql
-create function app.extended_price(quantity int32, unit_price decimal(18,2))
+create function app.extended_price(quantity int, unit_price decimal(18,2))
 returns decimal(18,2)
 deterministic
 returns null on null input

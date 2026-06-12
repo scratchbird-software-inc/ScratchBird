@@ -8,7 +8,7 @@ Generation task: `ebnf_statement`
 ## Production
 
 ```ebnf
-statement               ::= native_statement | refusal_statement ;
+statement               ::= native_statement | refusal_stmt ;
 ```
 
 ## Meaning
@@ -26,7 +26,7 @@ statement               ::= native_statement | refusal_statement ;
 | Child Production |
 | --- |
 | native_statement |
-| refusal_statement |
+| refusal_stmt |
 
 ## Practical Notes
 

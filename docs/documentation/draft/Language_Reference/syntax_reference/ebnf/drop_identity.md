@@ -8,12 +8,12 @@ Generation task: `ebnf_drop_identity`
 ## Production
 
 ```ebnf
-drop_identity           ::= "DROP" ("USER" | "ROLE" | "GROUP") principal_ref ;
+drop_principal_stmt     ::= "DROP" ("USER" | "ROLE" | "GROUP") principal_ref ;
 ```
 
 ## Meaning
 
-`drop_identity` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`drop_principal_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

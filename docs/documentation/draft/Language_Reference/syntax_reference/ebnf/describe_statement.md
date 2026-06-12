@@ -7,7 +7,7 @@ Generation task: `ebnf_describe_statement`
 ## Production
 
 ```ebnf
-describe_statement ::=
+describe_stmt ::=
     "DESCRIBE" describe_target object_ref describe_option_list? ;
 
 describe_target ::=
@@ -48,7 +48,7 @@ describe_option ::=
 
 ## Meaning
 
-`describe_statement` returns an authorized metadata projection for one object or one resolved overload. It is an inspection surface only. It does not grant catalog authority, storage authority, security authority, or transaction authority.
+`describe_stmt` returns an authorized metadata projection for one object or one resolved overload. It is an inspection surface only. It does not grant catalog authority, storage authority, security authority, or transaction authority.
 
 ## Used By
 

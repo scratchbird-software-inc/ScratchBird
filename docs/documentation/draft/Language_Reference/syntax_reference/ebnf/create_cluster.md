@@ -9,7 +9,7 @@ Parent reference: [Cluster-Gated Statements](../cluster_gated_statements.md)
 ## Production
 
 ```ebnf
-create_cluster ::=
+create_cluster_stmt ::=
     CREATE CLUSTER cluster_ref cluster_create_payload? cluster_option_list? ;
 
 cluster_create_payload ::=
@@ -25,7 +25,7 @@ cluster_option_list ::=
 
 ## Meaning
 
-`create_cluster` recognizes cluster lifecycle creation syntax. The public parser can classify and diagnose the statement, but public builds do not create production cluster membership, topology, routing, placement, failover, replication, or distributed transaction behavior.
+`create_cluster_stmt` recognizes cluster lifecycle creation syntax. The public parser can classify and diagnose the statement, but public builds do not create production cluster membership, topology, routing, placement, failover, replication, or distributed transaction behavior.
 
 ## Binding Requirements
 

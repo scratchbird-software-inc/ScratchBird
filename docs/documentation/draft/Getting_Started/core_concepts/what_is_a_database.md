@@ -154,7 +154,7 @@ ScratchBird documentation uses `database` in two related ways:
 | Durable database | The engine-owned stored data, metadata, catalog identity, security state, and transaction state. |
 | User-facing database | The namespace and compatibility view a connected client sees after authentication and parser routing. |
 
-A native SBsql session, an administrator, and a donor-style client may see different parts of the same durable database because each session can have its own parser profile, identity, grants, and schema root.
+A native SBsql session, an administrator, and a compatibility client may see different parts of the same durable database because each session can have its own parser profile, identity, grants, and schema root.
 
 ## What A Database Is Not
 

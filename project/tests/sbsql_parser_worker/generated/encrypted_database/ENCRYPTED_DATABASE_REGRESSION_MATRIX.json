@@ -1,0 +1,196 @@
+{
+  "gate_id": "SML-GATE-059-061",
+  "manifest_sha256": "sha256:77a8ece558dbc0f415a2162b3c8fb790ade87948b9c8c6e88fcc22071e63be9a",
+  "schema_version": "sbsql.encrypted_database_regression_matrix.v1",
+  "cases": [
+    {
+      "case_id": "SML059-profile-unencrypted-baseline",
+      "sml_slices": ["SML-059"],
+      "category": "profile_manifest",
+      "profile": "unencrypted_release_baseline",
+      "script_class": "bootstrap_catalog_lifecycle_query_dml_security_language",
+      "route": "all_public_routes",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_PROFILE.BASELINE_ADMITTED",
+      "evidence_text": "unencrypted baseline profile pairs every release script class with route page-size diagnostic and redaction rows"
+    },
+    {
+      "case_id": "SML059-profile-encrypted-release",
+      "sml_slices": ["SML-059"],
+      "category": "profile_manifest",
+      "profile": "encrypted_release_profile",
+      "script_class": "bootstrap_catalog_lifecycle_query_dml_security_language",
+      "route": "all_public_routes",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_PROFILE.ENCRYPTED_ADMITTED",
+      "evidence_text": "encrypted profile pairs every release script class with key-state diagnostic timing and redaction rows"
+    },
+    {
+      "case_id": "SML060-route-embedded",
+      "sml_slices": ["SML-060"],
+      "category": "full_route_execution",
+      "profile": "encrypted_release_profile",
+      "route": "embedded",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_ROUTE.EMBEDDED_PASSED",
+      "evidence_text": "embedded encrypted product corpus preserves normalized result hashes and restart recovery evidence"
+    },
+    {
+      "case_id": "SML060-route-local-ipc",
+      "sml_slices": ["SML-060"],
+      "category": "full_route_execution",
+      "profile": "encrypted_release_profile",
+      "route": "local_ipc",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_ROUTE.LOCAL_IPC_PASSED",
+      "evidence_text": "local IPC encrypted product corpus preserves normalized result hashes and restart recovery evidence"
+    },
+    {
+      "case_id": "SML060-route-inet-listener",
+      "sml_slices": ["SML-060"],
+      "category": "full_route_execution",
+      "profile": "encrypted_release_profile",
+      "route": "inet_listener",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_ROUTE.INET_LISTENER_PASSED",
+      "evidence_text": "inet listener encrypted product corpus preserves normalized result hashes and restart recovery evidence"
+    },
+    {
+      "case_id": "SML060-route-parser",
+      "sml_slices": ["SML-060"],
+      "category": "full_route_execution",
+      "profile": "encrypted_release_profile",
+      "route": "parser_route",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_ROUTE.PARSER_ROUTE_PASSED",
+      "evidence_text": "parser route encrypted product corpus is translated to SBLR and server revalidated without parser storage authority"
+    },
+    {
+      "case_id": "SML060-route-driver",
+      "sml_slices": ["SML-060"],
+      "category": "full_route_execution",
+      "profile": "encrypted_release_profile",
+      "route": "admitted_driver",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_ROUTE.DRIVER_PASSED",
+      "evidence_text": "admitted driver encrypted product corpus preserves normalized result hashes and server revalidation"
+    },
+    {
+      "case_id": "SML060-restart-recovery",
+      "sml_slices": ["SML-060"],
+      "category": "restart_recovery",
+      "profile": "encrypted_release_profile",
+      "route": "all_public_routes",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_RECOVERY.REOPEN_PASSED",
+      "evidence_text": "encrypted restart reopen recovery classifies durable MGA inventory before ordinary work resumes"
+    },
+    {
+      "case_id": "SML061-wrong-key-refusal",
+      "sml_slices": ["SML-061"],
+      "category": "key_failure",
+      "profile": "encrypted_release_profile",
+      "route": "all_public_routes",
+      "page_sizes": [8192],
+      "expected_result": "refused",
+      "diagnostic_code": "SBSQL.ENCRYPTED_KEY.WRONG_KEY_REFUSED",
+      "evidence_text": "wrong key refusal preserves corruption distinction and emits redacted diagnostic"
+    },
+    {
+      "case_id": "SML061-missing-key-refusal",
+      "sml_slices": ["SML-061"],
+      "category": "key_failure",
+      "profile": "encrypted_release_profile",
+      "route": "all_public_routes",
+      "page_sizes": [8192],
+      "expected_result": "refused",
+      "diagnostic_code": "SBSQL.ENCRYPTED_KEY.MISSING_KEY_REFUSED",
+      "evidence_text": "missing key refusal preserves encrypted database state without mutation"
+    },
+    {
+      "case_id": "SML061-stale-key-refusal",
+      "sml_slices": ["SML-061"],
+      "category": "key_failure",
+      "profile": "encrypted_release_profile",
+      "route": "all_public_routes",
+      "page_sizes": [8192],
+      "expected_result": "refused",
+      "diagnostic_code": "SBSQL.ENCRYPTED_KEY.STALE_KEY_REFUSED",
+      "evidence_text": "stale key refusal requires key lineage refresh and emits redacted diagnostic"
+    },
+    {
+      "case_id": "SML061-provider-unavailable-refusal",
+      "sml_slices": ["SML-061"],
+      "category": "key_failure",
+      "profile": "encrypted_release_profile",
+      "route": "all_public_routes",
+      "page_sizes": [8192],
+      "expected_result": "refused",
+      "diagnostic_code": "SBSQL.ENCRYPTED_KEY.PROVIDER_UNAVAILABLE",
+      "evidence_text": "unavailable key-release provider fails closed before storage attach"
+    },
+    {
+      "case_id": "SML061-unauthorized-release-refusal",
+      "sml_slices": ["SML-061"],
+      "category": "key_failure",
+      "profile": "encrypted_release_profile",
+      "route": "all_public_routes",
+      "page_sizes": [8192],
+      "expected_result": "refused",
+      "diagnostic_code": "SBSQL.ENCRYPTED_KEY.UNAUTHORIZED_RELEASE",
+      "evidence_text": "unauthorized key release fails closed with audit-before-success and redacted protected material"
+    },
+    {
+      "case_id": "SML061-rekey-rotation",
+      "sml_slices": ["SML-061"],
+      "category": "rekey_recovery",
+      "profile": "encrypted_release_profile",
+      "route": "all_public_routes",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_REKEY.ROTATION_PASSED",
+      "evidence_text": "rekey rotation records old and new key lineage handles without exposing protected material"
+    },
+    {
+      "case_id": "SML061-backup-restore",
+      "sml_slices": ["SML-061"],
+      "category": "backup_restore",
+      "profile": "encrypted_release_profile",
+      "route": "all_public_routes",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_BACKUP_RESTORE.PASSED",
+      "evidence_text": "backup restore records encrypted profile key lineage and refuses untracked key dependency"
+    },
+    {
+      "case_id": "SML061-repair-quarantine",
+      "sml_slices": ["SML-061"],
+      "category": "repair_quarantine",
+      "profile": "encrypted_release_profile",
+      "route": "all_public_routes",
+      "page_sizes": [8192],
+      "expected_result": "refused",
+      "diagnostic_code": "SBSQL.ENCRYPTED_REPAIR.QUARANTINED",
+      "evidence_text": "repair quarantine records exact refusal and datarepair history when encrypted page validation fails"
+    },
+    {
+      "case_id": "SML061-no-secret-artifacts",
+      "sml_slices": ["SML-061"],
+      "category": "redaction",
+      "profile": "encrypted_release_profile",
+      "route": "all_public_routes",
+      "page_sizes": [8192, 16384, 32768, 65536, 131072],
+      "expected_result": "accepted",
+      "diagnostic_code": "SBSQL.ENCRYPTED_REDACTION.NO_SECRET_ARTIFACTS",
+      "evidence_text": "logs support bundles audit rows and release evidence contain only redacted key handles and public diagnostics"
+    }
+  ]
+}
