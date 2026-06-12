@@ -61,6 +61,10 @@ REQUIRED_COMMON_CONTRACT = {
 REQUIRED_COMMON_METADATA_FIELDS = {
     "resource_identity",
     "resource_hash",
+    "resource_pack_path",
+    "resource_pack_manifest_sha256",
+    "resource_pack_common_resource_hash",
+    "supported_exact_profiles",
     "support_state",
     "fallback_diagnostics",
     "rendering_diagnostics",
@@ -69,6 +73,11 @@ REQUIRED_COMMON_METADATA_FIELDS = {
 }
 
 EXPECTED_COMMON_METADATA_SUPPORT_STATE = "release_supported"
+EXPECTED_RESOURCE_PACK_PATH = (
+    "project/resources/seed-packs/initial-resource-pack/resources/i18n/"
+    "sbsql-language-resource-pack"
+)
+EXPECTED_EXACT_PROFILES = ["en-US", "fr-FR", "de-DE", "it-IT", "es-ES"]
 
 EXPECTED_FALLBACK_DIAGNOSTICS = [
     "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
@@ -208,7 +217,16 @@ def common_metadata_hash(metadata: dict[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
 def validate_common_resource_pack_metadata(
+    repo_root: Path,
     metadata: Any,
     resource_identity: str,
 ) -> list[str]:
@@ -232,6 +250,26 @@ def validate_common_resource_pack_metadata(
             "common_resource_pack_metadata.support_state must be "
             f"{EXPECTED_COMMON_METADATA_SUPPORT_STATE!r}"
         )
+    if metadata.get("resource_pack_path") != EXPECTED_RESOURCE_PACK_PATH:
+        errors.append("common_resource_pack_metadata.resource_pack_path must point to the public seed-pack language resource pack")
+    if metadata.get("supported_exact_profiles") != EXPECTED_EXACT_PROFILES:
+        errors.append("common_resource_pack_metadata.supported_exact_profiles must list the exact initial language profiles")
+    pack_manifest = repo_root / EXPECTED_RESOURCE_PACK_PATH / "manifest.sblrp.json"
+    if not pack_manifest.is_file():
+        errors.append(f"language resource pack manifest missing: {pack_manifest}")
+    else:
+        observed_manifest_hash = sha256_file(pack_manifest)
+        if metadata.get("resource_pack_manifest_sha256") != observed_manifest_hash:
+            errors.append(
+                "common_resource_pack_metadata.resource_pack_manifest_sha256 mismatch: "
+                f"expected {observed_manifest_hash}"
+            )
+        try:
+            pack_manifest_payload = read_json(pack_manifest)
+            if metadata.get("resource_pack_common_resource_hash") != pack_manifest_payload.get("common_resource_hash"):
+                errors.append("common_resource_pack_metadata.resource_pack_common_resource_hash does not match pack manifest")
+        except (OSError, json.JSONDecodeError) as exc:
+            errors.append(f"language resource pack manifest unreadable: {exc}")
     if metadata.get("fallback_diagnostics") != EXPECTED_FALLBACK_DIAGNOSTICS:
         errors.append("common_resource_pack_metadata.fallback_diagnostics must be deterministic and complete")
     if metadata.get("rendering_diagnostics") != EXPECTED_RENDERING_DIAGNOSTICS:
@@ -412,6 +450,7 @@ def main() -> int:
         errors.append("resource_identity must be sbsql.common_resource_pack.v1")
     errors.extend(
         validate_common_resource_pack_metadata(
+            repo_root,
             surface.get("common_resource_pack_metadata"),
             str(resource_identity),
         )

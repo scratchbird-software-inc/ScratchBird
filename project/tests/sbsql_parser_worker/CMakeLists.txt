@@ -563,6 +563,16 @@ set_tests_properties(sbsql_language_element_manifest_gate PROPERTIES
 )
 
 add_test(
+  NAME sbsql_language_resource_pack_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_language_resource_pack_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_language_resource_pack_gate PROPERTIES
+  LABELS "sbsql_language_resource_pack_gate;sbsql_language_resource_contract;sbsql_parser_worker;SML-010;SML-014;SML-087;SML-089;SML-092;SML-094;SML-098;SML-099;SML-101"
+)
+
+add_test(
   NAME sbsql_sml_010_012_023_025_parser_closure_gate
   COMMAND "${SBSQL_PYTHON3}"
           "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/parser_closure/sbsql_sml_010_012_023_025_parser_closure_gate.py"
