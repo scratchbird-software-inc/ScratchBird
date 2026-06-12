@@ -32,7 +32,7 @@ PlannerReservationBackedMemoryResult BuildPlannerTemporaryWorkFromReservedResour
     scratchbird::core::memory::ReservationBackedMemoryResource* resource,
     std::string planning_route_label,
     scratchbird::core::platform::u64 planned_node_count,
-    bool parser_or_donor_authority,
+    bool parser_or_reference_authority,
     bool memory_plan_authority);
 
 }  // namespace scratchbird::engine::planner

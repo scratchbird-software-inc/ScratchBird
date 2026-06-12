@@ -21,13 +21,13 @@ namespace scratchbird::engine::executor {
 // Production executor actuals producer. These metrics are optimizer-advisory
 // only: they calibrate cost, cardinality, memory, spill, and EXPLAIN evidence,
 // but never become transaction finality, visibility, security, recovery,
-// parser, donor, or benchmark authority.
+// parser, reference, or benchmark authority.
 
 struct ExecutorOperatorMetricAuthority {
   bool engine_mga_snapshot_bound = false;
   bool transaction_inventory_authoritative = false;
   bool security_recheck_preserved = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_supplied_finality = false;
   bool metric_visibility_or_finality_authority = false;
   bool metric_recovery_authority = false;

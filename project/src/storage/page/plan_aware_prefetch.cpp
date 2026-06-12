@@ -209,7 +209,7 @@ PlanAwarePrefetchResult ExecutePlanAwarePrefetch(
                     "full payload prefetch requires engine late-materialization proof",
                     descriptor.item_id);
     }
-    if (descriptor.parser_or_donor_finality_or_visibility_authority ||
+    if (descriptor.parser_or_reference_finality_or_visibility_authority ||
         descriptor.client_finality_or_visibility_authority ||
         descriptor.provider_finality_or_visibility_authority ||
         descriptor.write_ahead_log_recovery_or_finality_authority) {

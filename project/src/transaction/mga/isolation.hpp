@@ -20,7 +20,7 @@ enum class IsolationLevel : u16 {
   read_committed,
   repeatable_read,
   serializable,
-  donor_compatibility,
+  reference_compatibility,
   unknown
 };
 
@@ -83,7 +83,7 @@ struct SerializableAccessRecord {
   SerializableKeyRange range;
   u64 sequence = 0;
   bool durable_inventory_authoritative = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
 };
 
 struct SerializableConflictResult {

@@ -31,7 +31,7 @@ namespace memory = scratchbird::core::memory;
 namespace platform = scratchbird::core::platform;
 
 constexpr std::string_view kAuthorityBoundary =
-    "resource_security_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_or_agent_action_authority";
+    "resource_security_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_or_agent_action_authority";
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -610,9 +610,9 @@ void AuthorityAndClusterBoundariesFailClosed() {
   Require(record.budget_reservation_evidence.authority_boundary.find("parser") !=
               std::string::npos,
           "CEIC-018 authority boundary missing parser");
-  Require(record.budget_reservation_evidence.authority_boundary.find("donor") !=
+  Require(record.budget_reservation_evidence.authority_boundary.find("reference") !=
               std::string::npos,
-          "CEIC-018 authority boundary missing donor");
+          "CEIC-018 authority boundary missing reference");
   Require(record.budget_reservation_evidence.authority_boundary.find("wal") != std::string::npos,
           "CEIC-018 authority boundary missing WAL");
   Require(record.budget_reservation_evidence.authority_boundary.find("benchmark") !=
@@ -633,7 +633,7 @@ void AuthorityAndClusterBoundariesFailClosed() {
 int main() {
   std::cout << "CEIC-018 authority_note=temp_spill_reservation_evidence_only;"
                "not_transaction_finality_row_visibility_security_authorization_recovery_"
-               "parser_donor_wal_benchmark_optimizer_plan_or_agent_action_authority\n";
+               "parser_reference_wal_benchmark_optimizer_plan_or_agent_action_authority\n";
   SecureRandomExclusiveCreateAndPermissions();
   PrecreatedTargetsAndSymlinkRootsFailClosed();
   ReservationModesAndQuotaRefusals();

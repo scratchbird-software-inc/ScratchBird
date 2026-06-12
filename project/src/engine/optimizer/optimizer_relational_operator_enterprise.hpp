@@ -33,7 +33,7 @@ enum class EnterpriseRelationalOperatorKind {
 struct EnterpriseRelationalOperatorAuthority {
   bool engine_optimizer_authority = true;
   bool parser_or_sql_authority = false;
-  bool donor_or_legacy_authority = false;
+  bool reference_or_legacy_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool metric_finality_or_visibility_authority = false;
   bool recovery_authority = false;

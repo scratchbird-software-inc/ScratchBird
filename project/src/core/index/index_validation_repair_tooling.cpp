@@ -151,8 +151,8 @@ IndexFamilyValidationRepairPath PathForDescriptor(
       return IndexFamilyValidationRepairPath::memory_only_runtime;
     case IndexPersistenceClass::memory_primary_persisted_cold_start:
       return IndexFamilyValidationRepairPath::memory_primary_cold_start;
-    case IndexPersistenceClass::donor_emulated:
-      return IndexFamilyValidationRepairPath::donor_semantic_mapping;
+    case IndexPersistenceClass::reference_emulated:
+      return IndexFamilyValidationRepairPath::reference_semantic_mapping;
     case IndexPersistenceClass::policy_blocked:
       return IndexFamilyValidationRepairPath::policy_refusal;
     case IndexPersistenceClass::virtual_catalog:
@@ -207,7 +207,7 @@ IndexFamilyValidationRepairResult BaseFamilyResult(
   AddEvidence(&result, "catalog_authority", BoolText(result.catalog_authority));
   AddEvidence(&result, "parser_authority", BoolText(result.parser_authority));
   AddEvidence(&result, "provider_authority", BoolText(result.provider_authority));
-  AddEvidence(&result, "donor_authority", BoolText(result.donor_authority));
+  AddEvidence(&result, "reference_authority", BoolText(result.reference_authority));
   AddEvidence(&result, "transaction_finality_authority",
               BoolText(result.transaction_finality_authority));
   AddEvidence(&result, "visibility_authority",
@@ -386,7 +386,7 @@ IndexFamilyValidationRepairResult ExecuteFamilyWithCompleteCapability(
       proof_present = MemoryColdStartProofPresent(request.proof);
       break;
     case IndexPersistenceClass::virtual_catalog:
-    case IndexPersistenceClass::donor_emulated:
+    case IndexPersistenceClass::reference_emulated:
     case IndexPersistenceClass::policy_blocked:
       proof_present = false;
       break;
@@ -869,8 +869,8 @@ const char* IndexFamilyValidationRepairPathName(
       return "memory_only_runtime";
     case IndexFamilyValidationRepairPath::memory_primary_cold_start:
       return "memory_primary_cold_start";
-    case IndexFamilyValidationRepairPath::donor_semantic_mapping:
-      return "donor_semantic_mapping";
+    case IndexFamilyValidationRepairPath::reference_semantic_mapping:
+      return "reference_semantic_mapping";
     case IndexFamilyValidationRepairPath::policy_refusal:
       return "policy_refusal";
     case IndexFamilyValidationRepairPath::unavailable:
@@ -989,12 +989,12 @@ IndexFamilyValidationRepairResult ExecuteIndexFamilyValidationRepairOperation(
     }
   }
 
-  if (descriptor->persistence == IndexPersistenceClass::donor_emulated) {
+  if (descriptor->persistence == IndexPersistenceClass::reference_emulated) {
     return RefuseFamily(
         request, descriptor, state,
-        "IRC.INDEX_REPAIR.DONOR_EMULATED.NON_AUTHORITY_MAPPING",
-        "irc.index_repair.donor_emulated.non_authority_mapping",
-        "donor-emulated index metadata is semantic mapping only and cannot validate, repair, recover, or expose physical authority",
+        "IRC.INDEX_REPAIR.REFERENCE_EMULATED.NON_AUTHORITY_MAPPING",
+        "irc.index_repair.reference_emulated.non_authority_mapping",
+        "reference-emulated index metadata is semantic mapping only and cannot validate, repair, recover, or expose physical authority",
         IndexFamilyValidationRepairOpenState::non_physical_refused);
   }
 

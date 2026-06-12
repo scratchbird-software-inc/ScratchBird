@@ -61,15 +61,15 @@ FORBIDDEN_RELEASE_TERMS = (
     "generally",
 )
 
-DONOR_PUBLICATION_SOURCE_INPUTS = {
-    "donor_catalog_seed_manifests",
+REFERENCE_PUBLICATION_SOURCE_INPUTS = {
+    "reference_catalog_seed_manifests",
     "catalog_seed_manifests",
-    "donor_function_mappings",
-    "donor_replication_migration_profiles",
-    "donor_sbsql_equivalence_profiles",
-    "donor_parser_profiles",
-    "donor_parser_registries",
-    "donor_wire_api_profiles",
+    "reference_function_mappings",
+    "reference_replication_migration_profiles",
+    "reference_sbsql_equivalence_profiles",
+    "reference_parser_profiles",
+    "reference_parser_registries",
+    "reference_wire_api_profiles",
     "wire_api_profiles",
     "regression_suites",
 }
@@ -663,44 +663,44 @@ SOURCE_RULES: dict[str, SourceRule] = {
         True,
         "Keep the security/redaction/policy documentation authority index manifest listed.",
     ),
-    "donor_parser_registries": SourceRule(
-        "donor parser registries",
+    "reference_parser_registries": SourceRule(
+        "reference parser registries",
         (
             "public_contract_snapshot*.yaml",
             "public_contract_snapshot*-exact-extraction-*.yaml",
         ),
         True,
-        "Keep donor parser registries synchronized.",
+        "Keep reference parser registries synchronized.",
     ),
-    "donor_parser_profiles": SourceRule(
-        "donor parser profiles",
+    "reference_parser_profiles": SourceRule(
+        "reference parser profiles",
         (
             "public_contract_snapshot*.yaml",
             "public_contract_snapshot*-exact-extraction-*.yaml",
         ),
         True,
-        "Keep donor parser registries synchronized.",
+        "Keep reference parser registries synchronized.",
     ),
-    "donor_catalog_seed_manifests": SourceRule(
-        "donor catalog seed manifests",
+    "reference_catalog_seed_manifests": SourceRule(
+        "reference catalog seed manifests",
         ("public_contract_snapshot",),
         True,
-        "Publish a central donor catalog seed manifest index for documentation.",
+        "Publish a central reference catalog seed manifest index for documentation.",
     ),
     "catalog_seed_manifests": SourceRule(
         "catalog seed manifests",
         ("public_contract_snapshot",),
         True,
-        "Publish a central donor catalog seed manifest index for documentation.",
+        "Publish a central reference catalog seed manifest index for documentation.",
     ),
-    "donor_wire_api_profiles": SourceRule(
-        "donor wire API profiles",
+    "reference_wire_api_profiles": SourceRule(
+        "reference wire API profiles",
         (
             "public_contract_snapshot",
             "public_contract_snapshot",
         ),
         True,
-        "Keep donor wire API profile registries synchronized.",
+        "Keep reference wire API profile registries synchronized.",
     ),
     "wire_api_profiles": SourceRule(
         "wire API profiles",
@@ -709,26 +709,26 @@ SOURCE_RULES: dict[str, SourceRule] = {
             "public_contract_snapshot",
         ),
         True,
-        "Keep donor wire API profile registries synchronized.",
+        "Keep reference wire API profile registries synchronized.",
     ),
-    "donor_function_mappings": SourceRule(
-        "donor function mappings",
+    "reference_function_mappings": SourceRule(
+        "reference function mappings",
         ("public_contract_snapshot",),
         True,
-        "Publish a central donor function mapping index for documentation.",
+        "Publish a central reference function mapping index for documentation.",
     ),
-    "donor_replication_migration_profiles": SourceRule(
-        "donor replication and migration profiles",
+    "reference_replication_migration_profiles": SourceRule(
+        "reference replication and migration profiles",
         ("public_contract_snapshot",),
         True,
-        "Publish a central donor replication and live-migration documentation index.",
+        "Publish a central reference replication and live-migration documentation index.",
     ),
-    "donor_sbsql_equivalence_profiles": SourceRule(
-        "donor to SBsql equivalence profiles",
+    "reference_sbsql_equivalence_profiles": SourceRule(
+        "reference to SBsql equivalence profiles",
         ("public_contract_snapshot",),
         True,
-        "Publish per-donor migration equivalence profiles that map donor dialects, command processes, and API workflows onto SBsql and SBLR.",
-        "Central donor documentation authority index carries all-family legal hold and completed-emulation publication assumptions.",
+        "Publish per-reference migration equivalence profiles that map reference dialects, command processes, and API workflows onto SBsql and SBLR.",
+        "Central reference documentation authority index carries all-family legal hold and completed-emulation publication assumptions.",
     ),
     "parser_support_udr_management_package_abi": SourceRule(
         "parser support UDR management package ABI",
@@ -743,13 +743,13 @@ SOURCE_RULES: dict[str, SourceRule] = {
         "Keep parser support UDR management package ABI synchronized.",
     ),
     "regression_suites": SourceRule(
-        "donor regression suites",
+        "reference regression suites",
         (
             "public_contract_snapshot",
-            "project/tests/donor_regression",
+            "project/tests/reference_regression",
         ),
         False,
-        "Publish per-donor regression and performance suite replay manifests.",
+        "Publish per-reference regression and performance suite replay manifests.",
     ),
     "release_manifest": SourceRule(
         "release manifest",
@@ -1199,8 +1199,8 @@ def source_authority_ready(book: Book, assessments: dict[str, SourceAssessment])
 
 def publication_policy_blockers(book: Book) -> list[str]:
     blockers: list[str] = []
-    is_donor_book = book.book_id.startswith("donor_") or bool(
-        DONOR_PUBLICATION_SOURCE_INPUTS.intersection(book.source_inputs)
+    is_reference_book = book.book_id.startswith("reference_") or bool(
+        REFERENCE_PUBLICATION_SOURCE_INPUTS.intersection(book.source_inputs)
     )
     is_security_sensitive_book = bool(
         SECURITY_PUBLICATION_SOURCE_INPUTS.intersection(book.source_inputs)
@@ -1209,9 +1209,9 @@ def publication_policy_blockers(book: Book) -> list[str]:
         EXAMPLE_PUBLICATION_SOURCE_INPUTS.intersection(book.source_inputs)
     )
     has_cli_surfaces = bool(CLI_PUBLICATION_SOURCE_INPUTS.intersection(book.source_inputs))
-    if is_donor_book:
-        blockers.append("donor_documentation_legal_hold_pending_ip_lawyer")
-    if book.book_id == "donor_interbase_migration_reference":
+    if is_reference_book:
+        blockers.append("reference_documentation_legal_hold_pending_ip_lawyer")
+    if book.book_id == "reference_interbase_migration_reference":
         blockers.append("closed_source_interbase_private_only_pending_legal_approval")
     if is_security_sensitive_book:
         blockers.append("security_documentation_pre_gold_private_use_at_own_risk")
@@ -1257,7 +1257,7 @@ def book_markdown(book: Book, assessments: dict[str, SourceAssessment], now: str
         "",
         "## Source Boundary",
         "",
-        "The generator used only repository-local inputs. Donor manuals and external references are layout or compatibility evidence only when source maps name them explicitly. Donor behavior does not override ScratchBird authority.",
+        "The generator used only repository-local inputs. Reference manuals and external references are layout or compatibility evidence only when source maps name them explicitly. Reference behavior does not override ScratchBird authority.",
         "",
         "## Source Authority Inventory",
         "",

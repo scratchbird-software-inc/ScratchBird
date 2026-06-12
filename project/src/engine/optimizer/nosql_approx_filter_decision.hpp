@@ -77,7 +77,7 @@ struct NoSqlApproxFilterDecisionRequest {
   bool exact_fallback_available = false;
   bool row_mga_recheck_required = true;
   bool row_security_recheck_required = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool provider_claims_transaction_finality_authority = false;
   bool provider_claims_visibility_authority = false;
   bool client_claims_visibility_or_finality_authority = false;

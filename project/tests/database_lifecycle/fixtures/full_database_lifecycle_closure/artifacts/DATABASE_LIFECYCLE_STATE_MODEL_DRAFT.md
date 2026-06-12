@@ -29,11 +29,11 @@ registries, or implementation packets before any implementation slice can close.
   it does not make them product behavior.
 - ScratchBird MGA remains the transaction, visibility, rollback, recovery,
   cleanup, and finality authority.
-- WAL, redo logs, undo logs, donor logs, parser state, file timestamps,
+- WAL, redo logs, undo logs, reference logs, parser state, file timestamps,
   wall-clock ordering, UUID ordering, cache state, checkpoint state, or route
   state must not become finality authority.
 - Engine-owned authentication and authorization are authoritative. Parsers,
-  listeners, managers, drivers, tools, and donor adapters only relay lifecycle
+  listeners, managers, drivers, tools, and reference adapters only relay lifecycle
   requests and render responses unless a canonical spec explicitly assigns them
   non-authoritative lifecycle duties.
 - Cluster lifecycle states and transitions fail closed in standalone execution
@@ -202,7 +202,7 @@ durable database or transaction finality.
 | `transaction.admission_pending` | Begin/admit transaction checks are running. | Ownership, security, policy, catalog snapshot, filespace, lock, memory, and cluster-scope checks required. |
 | `transaction.active` | MGA transaction is active. | Transaction inventory is authority for visibility and cleanup. |
 | `transaction.committing` | Commit finality is being established. | MGA commit evidence required before success. |
-| `transaction.rolling_back` | Rollback is being executed. | Engine MGA rollback methods only; no parser/donor/tool emulation. |
+| `transaction.rolling_back` | Rollback is being executed. | Engine MGA rollback methods only; no parser/reference/tool emulation. |
 | `transaction.committed` | Commit is durable and visible according to MGA rules. | Commit evidence and visibility publication required. |
 | `transaction.rolled_back` | Rollback is durable. | Rollback evidence and cleanup horizon required. |
 | `transaction.unknown_outcome` | External actor cannot prove commit or rollback. | Diagnostic persists until transaction inventory resolves finality. |
@@ -271,10 +271,10 @@ coverage where applicable, diagnostics, tests, and invalid-transition coverage.
 | `security.principal_privilege_policy.lifecycle` | Users, roles, groups, grants, revokes, row security, definer rights, policy rows, cache invalidation, audit, MGA visibility. | `canonical.security_audit`, `canonical.storage_mga`, `packet.security` |
 | `storage.allocation_freespace_pagemap.lifecycle` | Page allocation, free-space, page map, extent, page ownership, compaction, crash recovery, filespace coupling. | `canonical.storage_mga`, `packet.startup_open_filespace`, `registry.diagnostics` |
 | `runtime.executable_database_object.lifecycle` | Routines, procedures, functions, triggers, packages, stored SBLR, dependency, permission, invalidation, unload/quiesce. | `canonical.storage_mga`, `packet.udr`, `registry.sblr_api` |
-| `runtime.sequence_generator.lifecycle` | Sequence/generator/identity cache window, persistence, transaction interaction, crash recovery, donor mapping, diagnostics. | `canonical.storage_mga`, `registry.sblr_api`, `registry.diagnostics` |
+| `runtime.sequence_generator.lifecycle` | Sequence/generator/identity cache window, persistence, transaction interaction, crash recovery, reference mapping, diagnostics. | `canonical.storage_mga`, `registry.sblr_api`, `registry.diagnostics` |
 | `observability.operational_evidence_supportability.lifecycle` | Operational logs, audit, retention, rotation, redaction, export, support bundles, shutdown flush, diagnostic access. | `canonical.ops_observability`, `canonical.security_audit`, `registry.diagnostics` |
 | `runtime.capability_profile_feature_gate.lifecycle` | Capability, parser profile, edition gate, feature flag, package availability, policy epoch, downgrade refusal. | `canonical.ops_observability`, `canonical.security_audit`, `registry.diagnostics` |
-| `replication.changefeed_boundary.lifecycle` | Replication/CDC/changefeed/live ingest/publication/subscription/slot routes, retention, security, donor mapping, standalone refusal. | `canonical.storage_mga`, `canonical.ops_observability`, `registry.diagnostics` |
+| `replication.changefeed_boundary.lifecycle` | Replication/CDC/changefeed/live ingest/publication/subscription/slot routes, retention, security, reference mapping, standalone refusal. | `canonical.storage_mga`, `canonical.ops_observability`, `registry.diagnostics` |
 | `lifecycle.existing_implementation_reconciliation` | Existing implementation paths reconciled to this vocabulary and canonical specs with zero legacy-contract drift. | `packet.engine_lifecycle`, `conformance.lifecycle`, `registry.diagnostics` |
 | `lifecycle.protocol_persisted_format_versioning` | Version/compatibility/migration/downgrade/refusal for protocols and persisted formats. | `canonical.server_ipc_config`, `packet.ipc`, `packet.startup_open_filespace`, `registry.diagnostics` |
 | `lifecycle.admin_cli_command_surface` | Intended CLI/admin/client path, auth, diagnostics, audit, idempotency, no-user-command policy where applicable. | `canonical.ops_observability`, `registry.sblr_api`, `registry.diagnostics` |

@@ -24,7 +24,7 @@ struct EnterpriseJoinControlAuthority {
   bool normalized_sblr_or_api_metadata = true;
   bool parser_execution_authority = false;
   bool raw_sql_text_authority = false;
-  bool donor_or_legacy_authority = false;
+  bool reference_or_legacy_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool metric_finality_or_visibility_authority = false;
   bool recovery_authority = false;

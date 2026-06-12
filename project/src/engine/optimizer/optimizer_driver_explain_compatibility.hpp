@@ -21,7 +21,7 @@ namespace scratchbird::engine::optimizer {
 // Driver-visible explain compatibility records are observability evidence only.
 // They prove stable redacted JSON explain parity across engine and driver
 // routes. They are not transaction finality, visibility, authorization/security,
-// recovery, parser, donor, WAL, benchmark, optimizer-plan, index-finality,
+// recovery, parser, reference, WAL, benchmark, optimizer-plan, index-finality,
 // provider-finality, cluster, or agent-action authority.
 inline constexpr const char* kOptimizerDriverExplainCompatibilitySchemaId =
     "sb.optimizer.driver_visible_explain_compatibility.v1";
@@ -40,7 +40,7 @@ struct OptimizerExplainCompatibilityAuthorityFlags {
   bool authorization_security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;

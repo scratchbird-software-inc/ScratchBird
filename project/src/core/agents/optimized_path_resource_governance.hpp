@@ -12,7 +12,7 @@
 // Composes engine resource-governance admission with workload quota
 // reservations for optimized runtime paths. This records operational evidence
 // only; it never owns MGA visibility, finality, commit, rollback, recovery, or
-// parser/donor authority.
+// parser/reference authority.
 
 #include "agent_workload_resource_quota.hpp"
 #include "resource_governance_admission.hpp"

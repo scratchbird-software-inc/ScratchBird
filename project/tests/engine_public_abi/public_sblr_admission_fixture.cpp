@@ -284,13 +284,13 @@ int main() {
   }
   (void)sb_engine_result_release(result);
 
-  auto donor = scratchbird::engine::sblr::EnvelopeBuilder()
-                   .operation(scratchbird::engine::SblrOperationFamily::donor_meta, 1)
+  auto reference = scratchbird::engine::sblr::EnvelopeBuilder()
+                   .operation(scratchbird::engine::SblrOperationFamily::reference_meta, 1)
                    .append_bytes(payload, sizeof(payload))
                    .encode();
   result = nullptr;
-  if (dispatch(harness, donor, &result) != SB_ENGINE_STATUS_UNSUPPORTED || result == nullptr ||
-      !has_diagnostic(result, "SBLR.OPCODE.DONOR_META_FORBIDDEN")) {
+  if (dispatch(harness, reference, &result) != SB_ENGINE_STATUS_UNSUPPORTED || result == nullptr ||
+      !has_diagnostic(result, "SBLR.OPCODE.REFERENCE_META_FORBIDDEN")) {
     return 6;
   }
   (void)sb_engine_result_release(result);

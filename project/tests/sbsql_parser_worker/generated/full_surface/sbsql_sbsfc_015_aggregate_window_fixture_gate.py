@@ -15,7 +15,7 @@ This static gate checks canonical surface IDs, canonical builtin records,
 runtime alias/finalizer coverage, and independently recomputes expected values
 from fixture data. Executable runtime behavior is covered by
 sbsql_sbsfc_015_aggregate_window_runtime_conformance. Neither gate executes SQL
-text, uses a donor engine, mutates storage, or touches MGA/recovery behavior.
+text, uses a reference engine, mutates storage, or touches MGA/recovery behavior.
 """
 
 from __future__ import annotations

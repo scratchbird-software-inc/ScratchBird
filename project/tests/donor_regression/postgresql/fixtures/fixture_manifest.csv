@@ -1,2 +1,0 @@
-donor_id,evidence_family,required_artifact,authority_rule,status
-postgresql,parser_fixtures,fixture_manifest.csv,generated manifest only; accepted proof requires regenerated project test execution,fixture_materialization_passed

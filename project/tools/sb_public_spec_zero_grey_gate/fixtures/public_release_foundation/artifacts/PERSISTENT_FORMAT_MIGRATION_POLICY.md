@@ -26,7 +26,7 @@ This policy covers durable changes made by this execution_plan:
   may not invent missing catalog identity or missing transaction finality.
 - Backup, delta, and PITR metadata are derived from MGA evidence. They are not
   recovery authority and cannot replace transaction inventory or page state.
-- No WAL, redo log, donor transaction log, or CDC stream may become the durable
+- No WAL, redo log, reference transaction log, or CDC stream may become the durable
   recovery authority.
 
 ## Required Version Classes

@@ -7,7 +7,7 @@ Search key: `FSPE_010B3_VALIDATION_RESULT`
 
 This artifact closes `FSPE-010B3`: parser/client full-route streaming rendering. It does not close `FSPE-010B4` through `FSPE-010B9`.
 
-The implemented route remains parser-boundary safe: the test-wire command submits a canonical binary SBLR operation envelope to the server, the engine executes an internal operation, and no raw SQL text, donor command text, parser AST, or BoundAST is treated as engine authority.
+The implemented route remains parser-boundary safe: the test-wire command submits a canonical binary SBLR operation envelope to the server, the engine executes an internal operation, and no raw SQL text, reference command text, parser AST, or BoundAST is treated as engine authority.
 
 ## Validated Coverage
 

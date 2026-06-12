@@ -1,5 +1,0 @@
---max-allowed-packet=64K
---innodb-tablespaces-encryption
---innodb-encrypt-tables=on
---innodb-encryption-threads=4
---skip-innodb-fast-shutdown

@@ -512,8 +512,8 @@ void TestApiAndSblrAcceptedRoutes() {
           "CDP-040 API binary typed source evidence missing");
   Require(HasEvidence(api_result.evidence, "parser_finality_authority", "false"),
           "CDP-040 parser finality evidence missing");
-  Require(HasEvidence(api_result.evidence, "donor_finality_authority", "false"),
-          "CDP-040 donor finality evidence missing");
+  Require(HasEvidence(api_result.evidence, "reference_finality_authority", "false"),
+          "CDP-040 reference finality evidence missing");
   Require(HasEvidence(api_result.evidence, "native_bulk_ingest_lane", "direct_physical"),
           "CDP-040 direct physical lane evidence missing");
   Require(HasEvidence(api_result.evidence, "native_bulk_ingest_delegate", "none"),

@@ -16,5 +16,5 @@ DSR_DEP_014,P1-P4,available,public_contract_snapshot,Deterministic refusal rows 
 DSR_DEP_015,P2-P4,available,project/tests,Fuzz and fault injection harnesses are extended for wire/auth/driver route tests.
 DSR_DEP_016,P3-P4,available,project/drivers,Packaging evidence is represented in lane row-status manifests and enforced by CTest.
 DSR_DEP_017,P4,available,project/drivers;project/tests,Performance budgets depend on real-route benchmark fixtures and current baseline capture.
-DSR_DEP_018,P4,available,references donor sources and tools,Donor compatibility route evidence depends on donor tools and compatibility drivers being available or explicitly cited unavailable.
+DSR_DEP_018,P4,available,references reference sources and tools,Reference compatibility route evidence depends on reference tools and compatibility drivers being available or explicitly cited unavailable.
 DSR_DEP_019,P5,available,public_audit_summary,Release declaration generation depends on row-status manifests CTest evidence implementation-ahead classification and inventory sync.

@@ -51,7 +51,7 @@ enum class IndexFamily : u32 {
   graph,
   temporary_work,
   in_memory,
-  donor_emulated,
+  reference_emulated,
   policy_blocked,
   unknown
 };
@@ -61,7 +61,7 @@ enum class IndexPersistenceClass : u32 {
   memory_primary_persisted_cold_start,
   memory_only,
   virtual_catalog,
-  donor_emulated,
+  reference_emulated,
   policy_blocked
 };
 
@@ -75,7 +75,7 @@ enum class IndexKeyModel : u32 {
   expression_key,
   predicate_filtered_key,
   covering_payload,
-  donor_defined
+  reference_defined
 };
 
 enum class IndexCompletionStatus : u32 {

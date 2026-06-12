@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""ELER-076 donor catalog seed manifest conformance gate."""
+"""ELER-076 reference catalog seed manifest conformance gate."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from typing import Any
 
 
 FIXTURE_DIR = Path(
-    "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03"
+    "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03"
 )
 NON_DIRECT_MATRIX = "NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv"
 NO_EXTERNAL_REFERENCE_RE = re.compile(
@@ -251,8 +251,8 @@ def main() -> int:
         source_packet = Path(row.get("source_packet", ""))
         require(
             source_packet.parts[:4]
-            == ("docs", "contracts", "implementation_inputs", "donor-emulation"),
-            f"{context} source_packet must stay under donor-emulation packets",
+            == ("docs", "contracts", "implementation_inputs", "reference-emulation"),
+            f"{context} source_packet must stay under reference-emulation packets",
             errors,
         )
         require(
@@ -262,14 +262,14 @@ def main() -> int:
         )
         require(
             len(source_packet.parts) >= 6 and source_packet.parts[4] == row.get("engine_id"),
-            f"{context} source_packet donor does not match engine_id",
+            f"{context} source_packet reference does not match engine_id",
             errors,
         )
         manifest_path = repo_root / source_packet.parent / "catalog_seed_manifest_full.json"
         manifest_paths[row["engine_id"]] = manifest_path
 
     require(len(manifest_paths) == 19,
-            "catalog projection donor engine count must be 19", errors)
+            "catalog projection reference engine count must be 19", errors)
     for engine_id, manifest_path in sorted(manifest_paths.items()):
         validate_manifest(
             manifest_path,

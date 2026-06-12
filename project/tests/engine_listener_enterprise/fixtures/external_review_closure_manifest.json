@@ -13,7 +13,7 @@
     "independent_security_review",
     "database_correctness_review",
     "operational_reliability_review",
-    "donor_sblr_parser_boundary_review",
+    "reference_sblr_parser_boundary_review",
     "cluster_boundary_review"
   ],
   "rows": [
@@ -72,19 +72,19 @@
       ]
     },
     {
-      "finding_id": "ELER110-DONOR-SBLR-PARSER-BOUNDARY-REVIEW-PACKAGE",
-      "review_family": "donor_sblr_parser_boundary_review",
+      "finding_id": "ELER110-REFERENCE-SBLR-PARSER-BOUNDARY-REVIEW-PACKAGE",
+      "review_family": "reference_sblr_parser_boundary_review",
       "closure_status": "linux_review_closure_evidence_proven_external_validation_pending",
-      "closure_summary": "Donor SBLR authority rows parser-facing contract freeze and SBSQL-native synchronization are mapped without donor-dialect paste-through or parser runtime completion claims.",
+      "closure_summary": "Reference SBLR authority rows parser-facing contract freeze and SBSQL-native synchronization are mapped without reference-dialect paste-through or parser runtime completion claims.",
       "required_gates": [
-        "sblr_surface_donor_interface_closure_gate",
+        "sblr_surface_reference_interface_closure_gate",
         "sblr_surface_sbsql_sync_guardrail_gate",
         "engine_listener_parser_contract_freeze_gate",
         "engine_listener_sbsql_parser_sync_gate"
       ],
       "evidence_refs": [
         "project/tests/sblr_surface/sblr_surface_guardrail_gate.py#validate_interface_closure",
-        "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
+        "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
         "project/tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json",
         "project/tests/engine_listener_enterprise/engine_listener_enterprise_gate.py#validate_sbsql_parser_spec_execution_plan_sync"
       ]

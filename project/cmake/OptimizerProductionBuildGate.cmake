@@ -8,7 +8,7 @@
 
 # OEIC_OPTIMIZER_PRODUCTION_BUILD_GATE: fail closed when a production
 # release-complete optimizer build attempts to carry fixture/default,
-# placeholder, donor/parser, debug-only, relaxed-metric, or cluster-stub live
+# placeholder, compatibility/parser, debug-only, relaxed-metric, or cluster-stub live
 # authority paths.
 
 if(NOT DEFINED SB_OPTIMIZER_PRODUCTION_BUILD)
@@ -21,7 +21,7 @@ set(_sb_optimizer_production_bool_flags
   SB_OPTIMIZER_ALLOW_POLICY_DEFAULT_STATS_IN_PRODUCTION
   SB_OPTIMIZER_ALLOW_RELAXED_METRICS_IN_PRODUCTION
   SB_OPTIMIZER_ALLOW_PLACEHOLDER_RUNTIME_EVIDENCE_IN_PRODUCTION
-  SB_OPTIMIZER_ALLOW_DONOR_AUTHORITY_IN_PRODUCTION
+  SB_OPTIMIZER_ALLOW_COMPAT_AUTHORITY_IN_PRODUCTION
   SB_OPTIMIZER_ALLOW_PARSER_SHORTCUTS_IN_PRODUCTION
   SB_OPTIMIZER_ALLOW_CLUSTER_STUB_LIVE_CLAIMS
   SB_OPTIMIZER_ALLOW_DEBUG_ONLY_PATHS_IN_PRODUCTION
@@ -63,9 +63,9 @@ if(SB_OPTIMIZER_PRODUCTION_BUILD)
     list(APPEND _sb_optimizer_build_failures
       "placeholder runtime evidence is forbidden in production builds")
   endif()
-  if(SB_OPTIMIZER_ALLOW_DONOR_AUTHORITY_IN_PRODUCTION)
+  if(SB_OPTIMIZER_ALLOW_COMPAT_AUTHORITY_IN_PRODUCTION)
     list(APPEND _sb_optimizer_build_failures
-      "donor optimizer authority is forbidden in production builds")
+      "compatibility optimizer authority is forbidden in production builds")
   endif()
   if(SB_OPTIMIZER_ALLOW_PARSER_SHORTCUTS_IN_PRODUCTION)
     list(APPEND _sb_optimizer_build_failures

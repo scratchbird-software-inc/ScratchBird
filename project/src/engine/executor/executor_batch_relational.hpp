@@ -56,7 +56,7 @@ struct ExecutorBatchRelationalAuthorityEvidence {
   bool owns_recovery = false;
   bool owns_parser_execution = false;
   bool owns_timestamp_ordering = false;
-  bool owns_donor_storage = false;
+  bool owns_reference_storage = false;
   bool owns_sql_execution = false;
 };
 

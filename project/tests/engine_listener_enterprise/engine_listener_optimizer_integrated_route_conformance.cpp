@@ -351,7 +351,7 @@ api::DmlTargetAccessPlanRequest DmlAccessRequest(const FixtureIds& ids,
   request.security_recheck_planned = true;
   request.grants_proven = true;
   request.security_context_present = true;
-  request.parser_or_donor_authority = false;
+  request.parser_or_reference_authority = false;
   request.observed_catalog_epoch = 4100;
   request.current_catalog_epoch = 4100;
   request.observed_security_epoch = 4102;
@@ -382,7 +382,7 @@ api::DmlRowLocatorStreamResult ConsumePhysicalLocator(
   request.durable_mga_inventory_proof = true;
   request.mga_visibility_recheck_planned = true;
   request.security_recheck_planned = true;
-  request.parser_or_donor_authority = false;
+  request.parser_or_reference_authority = false;
   request.index_or_cache_finality_authority = false;
   request.index_unique = false;
   request.physical_tree = &tree;
@@ -445,7 +445,7 @@ opt::OptimizerCorrectnessOracleCase OracleCase(
   oracle_case.exact_recheck_required = true;
   oracle_case.mga_recheck_required = true;
   oracle_case.security_recheck_required = true;
-  oracle_case.donor_reference_only = true;
+  oracle_case.reference_reference_only = true;
   return oracle_case;
 }
 
@@ -478,7 +478,7 @@ opt::OptimizerRuntimeFeedback RuntimeFeedback(
   feedback.policy_allowed = true;
   feedback.advisory_only = true;
   feedback.mga_visibility_recheck_preserved = true;
-  feedback.parser_or_donor_authority = false;
+  feedback.parser_or_reference_authority = false;
   return feedback;
 }
 
@@ -492,12 +492,12 @@ void ProveFailClosedAuthorityBoundaries(
   parser_bound.context.parser_owned_claims_present = true;
   auto parser_key_request = key_request;
   parser_key_request.bound_request = parser_bound;
-  parser_key_request.parser_or_donor_authority_claimed = true;
+  parser_key_request.parser_or_reference_authority_claimed = true;
   const auto parser_key =
       opt::BuildProductionOptimizerPlanCacheKeyInput(parser_key_request);
   Require(!parser_key.ok &&
               Contains(parser_key.evidence,
-                       "production_plan_cache_parser_or_donor_authority_refused"),
+                       "production_plan_cache_parser_or_reference_authority_refused"),
           "parser authority was admitted to production plan cache key");
 
   auto placeholder_key_request = key_request;
@@ -520,27 +520,27 @@ void ProveFailClosedAuthorityBoundaries(
 
   auto unsafe_access = DmlAccessRequest(ids,
                                        opt::PhysicalPlanNode{});
-  unsafe_access.parser_or_donor_authority = true;
+  unsafe_access.parser_or_reference_authority = true;
   const auto refused_access = api::BuildDmlTargetAccessPlan(unsafe_access);
   Require(!refused_access.ok &&
               Contains(refused_access.diagnostics,
-                       "unsafe parser/donor authority"),
-          "DML access plan admitted parser/donor authority");
+                       "unsafe parser/reference authority"),
+          "DML access plan admitted parser/reference authority");
 
   auto unsafe_stream = api::DmlRowLocatorStreamRequest{};
   unsafe_stream.consumer = api::DmlRowLocatorStreamConsumer::update;
   unsafe_stream.access_plan = access_plan;
   unsafe_stream.access_plan_engine_authority_proof = true;
   unsafe_stream.durable_mga_inventory_proof = true;
-  unsafe_stream.parser_or_donor_authority = true;
+  unsafe_stream.parser_or_reference_authority = true;
   unsafe_stream.physical_tree = &tree;
   unsafe_stream.encoded_point_key = EncodedKey(ids.index_uuid, "customer-42");
   const auto refused_stream = api::BuildDmlRowLocatorStream(unsafe_stream);
   Require(!refused_stream.ok &&
               HasEvidence(refused_stream.evidence,
                           "dml_row_locator_stream_refusal",
-                          "parser_or_donor_authority_forbidden"),
-          "row locator stream admitted parser/donor authority");
+                          "parser_or_reference_authority_forbidden"),
+          "row locator stream admitted parser/reference authority");
 }
 
 std::string Csv(std::string_view value) {
@@ -587,7 +587,7 @@ int main(int argc, char** argv) {
       opt::BuildProductionOptimizerPlanCacheKeyInput(key_request);
   Require(key_result.ok, "production plan-cache key was refused");
   Require(Contains(key_result.evidence,
-                   "production_plan_cache_parser_or_donor_authority=false"),
+                   "production_plan_cache_parser_or_reference_authority=false"),
           "production plan-cache key missing authority evidence");
 
   opt::CatalogBackedProductionPlanningRequest production;
@@ -640,9 +640,9 @@ int main(int argc, char** argv) {
                       "engine_transaction_inventory"),
           "row-locator stream missing MGA finality authority evidence");
   Require(HasEvidence(stream.evidence,
-                      "parser_or_donor_authority",
+                      "parser_or_reference_authority",
                       "false"),
-          "row-locator stream missing parser/donor refusal evidence");
+          "row-locator stream missing parser/reference refusal evidence");
 
   opt::CachedOptimizerPlan cached;
   cached.key_input = key_result.input;
@@ -652,7 +652,7 @@ int main(int argc, char** argv) {
   cached.metadata_only = true;
   cached.mga_visibility_recheck_required = true;
   cached.security_recheck_required = true;
-  cached.parser_or_donor_finality_authority = false;
+  cached.parser_or_reference_finality_authority = false;
   opt::OptimizerPlanCache cache;
   const auto put = cache.PutEnterprise(cached);
   Require(put.ok &&
@@ -730,7 +730,7 @@ int main(int argc, char** argv) {
   Require(stability.accepted && stability.stable &&
               stability.benchmark_clean_permitted &&
               Contains(stability.evidence,
-                       "feedback_stability.parser_or_donor_authority=false"),
+                       "feedback_stability.parser_or_reference_authority=false"),
           "feedback stability did not preserve route correctness contract");
 
   const auto explain =
@@ -767,7 +767,7 @@ int main(int argc, char** argv) {
       {"feedback_and_explain_lineage", "complete",
        feedback_status.diagnostic_code},
       {"fail_closed_authority_boundaries", "complete",
-       "parser_donor_placeholder_cluster_refused"}};
+       "parser_reference_placeholder_cluster_refused"}};
   if (argc == 2) { WriteMatrix(argv[1], matrix); }
 
   std::cout << "engine_listener_optimizer_integrated_route_conformance=passed"

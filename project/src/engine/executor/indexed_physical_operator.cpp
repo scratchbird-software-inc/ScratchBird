@@ -38,7 +38,7 @@ IndexedPhysicalOperatorResult Fail(std::string code, std::string detail) {
   AddEvidence(&result, "runtime_route_capability", "false");
   AddEvidence(&result, "index_benchmark_clean", "false");
   AddEvidence(&result, "mga_finality_authority", "engine_transaction_inventory");
-  AddEvidence(&result, "parser_or_donor_authority", "false");
+  AddEvidence(&result, "parser_or_reference_authority", "false");
   AddEvidence(&result, "index_or_cache_finality_authority", "false");
   return result;
 }
@@ -85,9 +85,9 @@ IndexedPhysicalOperatorResult CheckBaseRequest(
     return Fail("SB-IRC060-SECURITY-RECHECK-REQUIRED",
                 "security_recheck_required");
   }
-  if (request.parser_or_donor_authority) {
-    return Fail("SB-IRC060-PARSER-DONOR-AUTHORITY-FORBIDDEN",
-                "parser_or_donor_authority_forbidden");
+  if (request.parser_or_reference_authority) {
+    return Fail("SB-IRC060-PARSER-REFERENCE-AUTHORITY-FORBIDDEN",
+                "parser_or_reference_authority_forbidden");
   }
   if (request.index_or_cache_finality_authority) {
     return Fail("SB-IRC060-INDEX-FINALITY-AUTHORITY-FORBIDDEN",
@@ -123,7 +123,7 @@ void AddAcceptedCommonEvidence(const IndexedPhysicalOperatorRequest& request,
   AddEvidence(result, "mga_visibility_recheck", "required");
   AddEvidence(result, "security_recheck", "required");
   AddEvidence(result, "mga_finality_authority", "engine_transaction_inventory");
-  AddEvidence(result, "parser_or_donor_authority", "false");
+  AddEvidence(result, "parser_or_reference_authority", "false");
   AddEvidence(result, "index_or_cache_finality_authority", "false");
 }
 

@@ -112,7 +112,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
             "no_parser_or_client_catalog_uuid_authority",
             "repair_history_health_observability",
             "durable_mga_inventory_is_sole_transaction_authority",
-            "parser_or_donor_authority_refused",
+            "parser_or_reference_authority_refused",
         ),
     },
     {
@@ -144,7 +144,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
             "OEIC_OPTIMIZER_METRIC_RETENTION_REDACTION",
             "redacted evidence only",
             "OptimizerMetricSupportBundleAuthority",
-            "parser_or_donor_authority",
+            "parser_or_reference_authority",
             "wal_or_redo_authority",
             "cluster_authority",
         ),

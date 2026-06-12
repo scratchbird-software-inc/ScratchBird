@@ -276,7 +276,7 @@ EngineApiDiagnostic ValidateEngineAuthorityBoundary(const EngineApiRequest& requ
     const std::string lower = LowerAscii(tag);
     if (StartsWith(lower, "authority:parser") ||
         StartsWith(lower, "authority:driver") ||
-        StartsWith(lower, "authority:donor") ||
+        StartsWith(lower, "authority:reference") ||
         StartsWith(lower, std::string("authority:sql") + "ite")) {
       return PrincipalDiagnostic(kSecurityPrincipalDiagnosticAuthorityBypassRefused,
                                  operation_id + ":non_engine_trace_authority");
@@ -286,7 +286,7 @@ EngineApiDiagnostic ValidateEngineAuthorityBoundary(const EngineApiRequest& requ
   const std::string forbidden_log = std::string("authoritative_") + "wal";
   for (const auto& option : request.option_envelopes) {
     const std::string lower = LowerAscii(option);
-    if (StartsWith(lower, "donor_shortcut:") ||
+    if (StartsWith(lower, "reference_shortcut:") ||
         StartsWith(lower, forbidden_embedded + "_shortcut:") ||
         StartsWith(lower, forbidden_log + ":")) {
       if (lower.find(":true") != std::string::npos || lower.find(":1") != std::string::npos ||

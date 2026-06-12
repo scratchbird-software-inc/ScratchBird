@@ -362,7 +362,7 @@ struct BenchmarkRow {
   std::vector<std::string> required_engine_evidence;
   std::vector<std::string> resolved_parser_objects;
   std::string benchmark_refusal_code;
-  std::string donor_equivalence_class;
+  std::string reference_equivalence_class;
   bool parameter_shape_pair = false;
   bool differential_pair = false;
 };
@@ -874,8 +874,8 @@ void WriteEvidenceJson(const std::vector<BenchmarkRow>& rows,
   out << "  \"execution_plan_row\":\"ODF-110\",\n";
   out << "  \"runtime_dependencies\":[],\n";
   out << "  \"forbidden_runtime_roots\":[\"docs" "/execution-plans\",\"docs" "/findings\",\"public_release_evidence\",\"docs/reference\"],\n";
-  out << "  \"live_donor_timing_claim\":false,\n";
-  out << "  \"donor_comparison_mode\":\"deterministic_comparable_reference_shape\",\n";
+  out << "  \"live_reference_timing_claim\":false,\n";
+  out << "  \"reference_comparison_mode\":\"deterministic_comparable_reference_shape\",\n";
   out << "  \"routes\":[\"sbsql_parser_lowering\",\"sblr.query.plan_operation\",\"engine_api.EnginePlanOperation\"],\n";
   out << "  \"rows\":[\n";
   for (std::size_t i = 0; i < rows.size(); ++i) {
@@ -902,9 +902,9 @@ void WriteEvidenceJson(const std::vector<BenchmarkRow>& rows,
         << ",\"detail\":" << Quote(route.benchmark_clean.detail) << "},\n";
     out << "      \"plan_evidence_markers\":" << StringArrayJson(row.plan_markers) << ",\n";
     out << "      \"engine_evidence\":" << EvidenceJson(route.api_result.evidence) << ",\n";
-    out << "      \"donor_current_comparison\":{\"mode\":\"deterministic_comparable_reference_shape\","
-        << "\"equivalence_class\":" << Quote(row.donor_equivalence_class)
-        << ",\"live_donor_timing_claim\":false,\"current_result_hash\":"
+    out << "      \"reference_current_comparison\":{\"mode\":\"deterministic_comparable_reference_shape\","
+        << "\"equivalence_class\":" << Quote(row.reference_equivalence_class)
+        << ",\"live_reference_timing_claim\":false,\"current_result_hash\":"
         << Quote(route.api_hash) << "}\n";
     out << "    }";
   }
@@ -948,8 +948,8 @@ void RequireJsonHygiene() {
   Require(in.good(), "ODF-110 JSON evidence was not written");
   std::string payload((std::istreambuf_iterator<char>(in)),
                       std::istreambuf_iterator<char>());
-  Require(Contains(payload, "\"live_donor_timing_claim\":false"),
-          "ODF-110 JSON made an unsupported donor timing claim");
+  Require(Contains(payload, "\"live_reference_timing_claim\":false"),
+          "ODF-110 JSON made an unsupported reference timing claim");
   Require(!Contains(payload, "docs" "/execution-plans/") &&
               !Contains(payload, "docs" "/findings/") &&
               !Contains(payload, "public_release_evidence") &&

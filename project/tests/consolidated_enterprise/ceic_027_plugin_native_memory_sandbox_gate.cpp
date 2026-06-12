@@ -181,14 +181,14 @@ void RequireNoAuthorityEvidence(const std::vector<std::string>& evidence) {
           "CEIC-027 anchor evidence missing");
   Require(EvidenceHas(
               evidence,
-              "memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority"),
+              "memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority"),
           "CEIC-027 authority scope evidence missing");
   Require(EvidenceHas(evidence,
                       "no_authority.transaction_finality=true") &&
               EvidenceHas(evidence, "no_authority.visibility=true") &&
               EvidenceHas(evidence, "no_authority.authorization_security=true") &&
               EvidenceHas(evidence, "no_authority.recovery=true") &&
-              EvidenceHas(evidence, "no_authority.parser_donor_wal=true") &&
+              EvidenceHas(evidence, "no_authority.parser_reference_wal=true") &&
               EvidenceHas(evidence,
                           "no_authority.benchmark_optimizer_index_agent=true"),
           "CEIC-027 no-authority evidence missing");

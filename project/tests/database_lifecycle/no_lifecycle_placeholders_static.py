@@ -22,7 +22,7 @@ SCAN_ROOTS = (
     "project/src/server",
     "project/src/engine/internal_api/lifecycle",
     "project/src/transaction/mga",
-    "project/src/parsers/donor/firebird",
+    "project/src/parsers/compatibility/firebird",
     "project/src/parsers/sbsql_worker/statement",
     "project/src/parsers/sbsql_worker/lowering",
     "project/src/parsers/sbsql_worker/runtime",

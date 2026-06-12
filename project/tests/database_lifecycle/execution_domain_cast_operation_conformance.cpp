@@ -190,7 +190,7 @@ void TestValidCastProfiles() {
       engine::DomainCastRuleKind::implicit,
       engine::DomainCastRuleKind::assignment,
       engine::DomainCastRuleKind::explicit_only,
-      engine::DomainCastRuleKind::donor_compatibility};
+      engine::DomainCastRuleKind::reference_compatibility};
   for (const auto kind : valid_cast_kinds) {
     auto descriptor = ValidCast();
     descriptor.cast_kind = kind;

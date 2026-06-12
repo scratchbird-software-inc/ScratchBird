@@ -1,4 +1,0 @@
-!include include/default_my.cnf
-
-[mysqltest]
-protocol=tcp

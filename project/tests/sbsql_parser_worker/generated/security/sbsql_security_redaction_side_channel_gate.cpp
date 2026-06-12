@@ -123,12 +123,12 @@ void ValidateFixtureCoverage(const std::filesystem::path& fixture_path,
       {"FSPE012G-CACHE-AUTHORITY",
        "security_policy_epoch;grant_epoch;role_set_hash;search_path_hash;language_profile"},
       {"FSPE012G-METADATA-PROJECTION", "value_column_only"},
-      {"FSPE012G-DONOR-RENDERING", "code;severity;message;component"},
+      {"FSPE012G-REFERENCE-RENDERING", "code;severity;message;component"},
   };
   std::set<std::string> ids;
   const std::map<std::string, std::string>* hidden_row = nullptr;
   const std::map<std::string, std::string>* missing_row = nullptr;
-  const std::map<std::string, std::string>* donor_row = nullptr;
+  const std::map<std::string, std::string>* reference_row = nullptr;
   for (const auto& row : rows) {
     const auto id = row.at("fixture_id");
     ids.insert(id);
@@ -150,7 +150,7 @@ void ValidateFixtureCoverage(const std::filesystem::path& fixture_path,
     }
     if (id == "FSPE012G-HIDDEN-NAME") hidden_row = &row;
     if (id == "FSPE012G-MISSING-NAME") missing_row = &row;
-    if (id == "FSPE012G-DONOR-RENDERING") donor_row = &row;
+    if (id == "FSPE012G-REFERENCE-RENDERING") reference_row = &row;
   }
   harness->Check(ids.contains("FSPE012G-HIDDEN-NAME"), "hidden-name fixture missing");
   harness->Check(ids.contains("FSPE012G-MISSING-NAME"), "missing-name fixture missing");
@@ -160,8 +160,8 @@ void ValidateFixtureCoverage(const std::filesystem::path& fixture_path,
                  "cache-authority fixture missing");
   harness->Check(ids.contains("FSPE012G-METADATA-PROJECTION"),
                  "metadata-projection fixture missing");
-  harness->Check(ids.contains("FSPE012G-DONOR-RENDERING"),
-                 "donor-rendering fixture missing");
+  harness->Check(ids.contains("FSPE012G-REFERENCE-RENDERING"),
+                 "reference-rendering fixture missing");
   if (hidden_row != nullptr && missing_row != nullptr) {
     harness->Check(hidden_row->at("expected_message_vector") ==
                        missing_row->at("expected_message_vector"),
@@ -173,15 +173,15 @@ void ValidateFixtureCoverage(const std::filesystem::path& fixture_path,
                        missing_row->at("elapsed_time_class"),
                    "hidden and missing fixture timing classes are distinguishable");
   }
-  if (donor_row != nullptr && hidden_row != nullptr) {
-    harness->Check(donor_row->at("profile") == "postgres_compat",
-                   "donor-rendering fixture does not bind donor profile");
-    harness->Check(donor_row->at("expected_message_vector") ==
+  if (reference_row != nullptr && hidden_row != nullptr) {
+    harness->Check(reference_row->at("profile") == "postgres_compat",
+                   "reference-rendering fixture does not bind reference profile");
+    harness->Check(reference_row->at("expected_message_vector") ==
                        hidden_row->at("expected_message_vector"),
-                   "donor rendering does not preserve hidden-as-missing diagnostic");
-    harness->Check(donor_row->at("returned_fields") ==
+                   "reference rendering does not preserve hidden-as-missing diagnostic");
+    harness->Check(reference_row->at("returned_fields") ==
                        hidden_row->at("returned_fields"),
-                   "donor rendering returned-fields contract diverges");
+                   "reference rendering returned-fields contract diverges");
   }
 }
 

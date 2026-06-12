@@ -46,8 +46,8 @@ struct FunctionVersionCompatibilityDecision {
   std::string diagnostic_id;
 };
 
-struct GoldenDonorBehaviorFixture {
-  std::string donor_or_plugin;
+struct GoldenReferenceBehaviorFixture {
+  std::string reference_or_plugin;
   std::string alias_name;
   std::string canonical_function_id;
   std::string sample_input;
@@ -79,7 +79,7 @@ FunctionVersionCompatibilityDecision ResolveFunctionVersionCompatibility(
     std::string current_semantic_version);
 FunctionHardeningReport ReviewFunctionDeterminismMetadata(const FunctionRegistry& registry);
 FunctionHardeningReport ValidateFunctionCrossPlatformGate(const FunctionRegistry& registry);
-std::vector<GoldenDonorBehaviorFixture> GoldenDonorBehaviorFixtures();
+std::vector<GoldenReferenceBehaviorFixture> GoldenReferenceBehaviorFixtures();
 std::vector<FunctionPerformanceBudget> FunctionPerformanceBudgets();
 std::vector<FunctionAuditEvidenceRequirement> FunctionAuditEvidenceRequirements(
     const FunctionRegistry& registry);

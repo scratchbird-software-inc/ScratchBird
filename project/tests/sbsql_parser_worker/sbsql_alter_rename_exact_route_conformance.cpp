@@ -242,8 +242,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts, bool standalone_re
               !Contains(artifacts.envelope.payload, std::string(kRenameSql)) &&
               !Contains(artifacts.envelope.payload, std::string(kAlterSql)),
           "ALTER/RENAME payload embedded target identifier or SQL text as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "ALTER/RENAME payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "ALTER/RENAME payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

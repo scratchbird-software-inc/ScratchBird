@@ -57,7 +57,7 @@ int main() {
           "MMCH-043 capability evidence marker missing");
   Require(EvidenceHas(
               capabilities.evidence,
-              "temp_workspace.platform_authority_scope=evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_or_agent_action_authority"),
+              "temp_workspace.platform_authority_scope=evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_or_agent_action_authority"),
           "MMCH-043 authority boundary evidence missing");
   Require(PlatformListed(capabilities, "linux") &&
               PlatformListed(capabilities, "windows") &&

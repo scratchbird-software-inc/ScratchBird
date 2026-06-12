@@ -185,7 +185,7 @@ bool DiagnosticsCoverRequiredCases() {
   }
   {
     auto feedback = BaseFeedback();
-    feedback.parser_or_donor_authority = true;
+    feedback.parser_or_reference_authority = true;
     feedback.transaction_finality_authority = "parser_worker";
     const auto status = opt::EvaluateOptimizerRuntimeFeedback(feedback);
     if (!Require(!status.ok, "unsafe feedback was accepted") ||
@@ -233,7 +233,7 @@ bool FeedbackAdjustsCostWithoutChangingSemantics() {
   }
 
   auto unsafe = feedback;
-  unsafe.parser_or_donor_authority = true;
+  unsafe.parser_or_reference_authority = true;
   const auto rejected = opt::ApplyOptimizerRuntimeFeedbackCost(base, unsafe);
   if (!Require(rejected.row_cost == base.row_cost, "unsafe feedback changed row cost") ||
       !Require(rejected.io_cost == base.io_cost, "unsafe feedback changed IO cost") ||

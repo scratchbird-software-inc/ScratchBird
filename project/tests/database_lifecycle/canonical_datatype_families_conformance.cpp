@@ -73,7 +73,7 @@ RequiredFamilies() {
           {Group::temporal_interval, "day_time_interval"},
           {Group::temporal_interval, "mixed_interval"},
           {Group::temporal_interval, "fixed_duration"},
-          {Group::temporal_interval, "donor_duration_domain"},
+          {Group::temporal_interval, "reference_duration_domain"},
           {Group::identity_network_lob, "uuid"},
           {Group::identity_network_lob, "guid_domain"},
           {Group::identity_network_lob, "object_id_domain"},
@@ -169,7 +169,7 @@ std::vector<std::string> RequiredDiagnostics() {
           "CTI.INTERVAL.CALENDAR_OPERATION_REFUSED",
           "CINL.IDENTITY.DESCRIPTOR_INVALID",
           "CINL.IDENTITY.INVALID_LITERAL",
-          "CINL.IDENTITY.DONOR_ORDERING_MISMATCH",
+          "CINL.IDENTITY.REFERENCE_ORDERING_MISMATCH",
           "CINL.IDENTITY.GENERATION_FENCED",
           "CINL.NETWORK.DESCRIPTOR_INVALID",
           "CINL.NETWORK.INVALID_ADDRESS",
@@ -264,7 +264,7 @@ std::vector<std::string> RequiredMetrics() {
       "sys.metrics.datatypes.pseudotype.visibility_denials_total",
       "sys.metrics.datatypes.opaque.udr_package_misses_total",
       "sys.metrics.datatypes.family.transport_refusals_total",
-      "sys.metrics.datatypes.family.donor_mapping_misses_total",
+      "sys.metrics.datatypes.family.reference_mapping_misses_total",
       "sys.metrics.datatypes.family.merge_manual_review_total"};
 }
 

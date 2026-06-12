@@ -511,7 +511,7 @@ void ValidateNameRows(
   }
   IndexUnique(names, "name_lookup_seed_id", harness);
   std::map<std::string, std::set<std::string>> classes_by_function;
-  std::size_t donor_alias_count = 0;
+  std::size_t reference_alias_count = 0;
   std::size_t plugin_alias_count = 0;
   for (const auto& row : names.rows) {
     const auto id = Field(row, "canonical_function_id");
@@ -538,13 +538,13 @@ void ValidateNameRows(
       harness->Check(target_kind == "function", std::string(id) + " SBSQL default name must target function");
       harness->Check(Field(row, "parser_profile") == "sbsql",
                      std::string(id) + " SBSQL default name must be parser-profile scoped");
-    } else if (name_class == "donor_alias") {
-      ++donor_alias_count;
-      harness->Check(target_kind == "function_alias", std::string(id) + " donor alias must be a label alias");
+    } else if (name_class == "reference_alias") {
+      ++reference_alias_count;
+      harness->Check(target_kind == "function_alias", std::string(id) + " reference alias must be a label alias");
       harness->Check(StartsWith(Field(row, "namespace"), "sys.fn.compat."),
-                     std::string(id) + " donor alias namespace must be compatibility-scoped");
+                     std::string(id) + " reference alias namespace must be compatibility-scoped");
       harness->Check(Contains(Field(row, "notes"), "not durable authority"),
-                     std::string(id) + " donor alias must state it is not durable authority");
+                     std::string(id) + " reference alias must state it is not durable authority");
     } else if (name_class == "plugin_alias") {
       ++plugin_alias_count;
       harness->Check(target_kind == "function_alias", std::string(id) + " plugin alias must be a label alias");
@@ -561,7 +561,7 @@ void ValidateNameRows(
     harness->Check(classes.count("canonical_name") == 1, id + " missing canonical_name label");
     harness->Check(classes.count("sbsql_default_name") == 1, id + " missing sbsql_default_name label");
   }
-  harness->Check(donor_alias_count > 0, "name matrix has no donor aliases");
+  harness->Check(reference_alias_count > 0, "name matrix has no reference aliases");
   harness->Check(plugin_alias_count > 0, "name matrix has no plugin aliases");
 }
 

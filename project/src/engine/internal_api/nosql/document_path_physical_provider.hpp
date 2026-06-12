@@ -86,7 +86,7 @@ struct DocumentPathRowEvidence {
   bool behavior_scan_claim = false;
   bool summary_visibility_or_finality_claim = false;
   bool parser_finality_authority_claim = false;
-  bool donor_finality_authority_claim = false;
+  bool reference_finality_authority_claim = false;
   bool provider_finality_authority_claim = false;
   bool write_ahead_log_finality_authority_claim = false;  // wal-not-authority
 };

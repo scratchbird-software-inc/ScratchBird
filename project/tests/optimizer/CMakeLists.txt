@@ -513,7 +513,7 @@ add_test(
   COMMAND optimizer_enterprise_route_validation_gate
 )
 set_tests_properties(optimizer_enterprise_route_validation_gate PROPERTIES
-  LABELS "optimizer_enterprise_route_validation_gate;OEIC-080;OEIC-081;OEIC-082;OEIC-083;OEIC-084;OEIC-085;optimizer;enterprise;benchmark_clean;live_route;scale;donor;crash_restart;security;mga_transaction_regression"
+  LABELS "optimizer_enterprise_route_validation_gate;OEIC-080;OEIC-081;OEIC-082;OEIC-083;OEIC-084;OEIC-085;optimizer;enterprise;benchmark_clean;live_route;scale;reference;crash_restart;security;mga_transaction_regression"
 )
 
 add_executable(

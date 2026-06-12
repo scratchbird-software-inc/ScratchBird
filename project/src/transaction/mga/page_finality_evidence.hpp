@@ -42,7 +42,7 @@ enum class PageFinalityProvenance : u16 {
   engine_mga_transaction_inventory,
   engine_mga_cleanup_horizon,
   parser_claim,
-  donor_claim,
+  reference_claim,
   timestamp_claim,
   uuid_order_claim,
   external_log_claim,

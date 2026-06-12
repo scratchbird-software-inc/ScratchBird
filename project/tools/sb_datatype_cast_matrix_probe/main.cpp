@@ -88,14 +88,14 @@ int main() {
   opaque_parse.value = {CanonicalTypeId::character, "opaque-render-token", false};
   opaque_parse.target_type_id = CanonicalTypeId::opaque_extension;
   opaque_parse.explicit_cast = true;
-  opaque_parse.donor_compatibility_profile = true;
+  opaque_parse.reference_compatibility_profile = true;
   const auto opaque_parse_cast = CastDatatypeValue(opaque_parse);
 
   DatatypeCastRequest opaque_semantic;
   opaque_semantic.value = {CanonicalTypeId::opaque_extension, "123", false};
   opaque_semantic.target_type_id = CanonicalTypeId::int32;
   opaque_semantic.explicit_cast = true;
-  opaque_semantic.donor_compatibility_profile = true;
+  opaque_semantic.reference_compatibility_profile = true;
   const auto opaque_semantic_cast = CastDatatypeValue(opaque_semantic);
 
   DatatypeCastRequest leap_date;

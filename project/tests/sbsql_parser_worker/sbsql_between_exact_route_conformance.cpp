@@ -165,7 +165,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!artifacts.envelope.parser_executes_sql,
           "BETWEEN lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "BETWEEN lowering allowed donor/file effects");
+          "BETWEEN lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"scalar_projection\""),
           "BETWEEN payload missing scalar projection envelope kind");
   Require(Contains(artifacts.envelope.payload, "\"projection_0_expr_kind\":\"special_form\""),
@@ -192,8 +192,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
           "BETWEEN payload missing upper operand");
   Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
           "BETWEEN payload did not prove no SQL text authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "BETWEEN payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "BETWEEN payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

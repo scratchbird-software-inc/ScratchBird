@@ -271,7 +271,7 @@ void ValidateProfilerCoverageAndDiff() {
               EvidenceHas(after_snapshot.evidence,
                           "no_authority.recovery=true") &&
               EvidenceHas(after_snapshot.evidence,
-                          "no_authority.parser_donor_wal=true"),
+                          "no_authority.parser_reference_wal=true"),
           "CEIC-028 no-authority markers missing");
   Require(after_snapshot.support_bundle_ready && after_snapshot.metrics_ready,
           "CEIC-028 support or metric rows not ready");

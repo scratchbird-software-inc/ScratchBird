@@ -95,7 +95,7 @@ enum class MGAWaitPolicy : u16 {
   wait_until_transaction_end,
   wait_with_deadlock_detection,
   wait_with_priority,
-  donor_compatible_wait,
+  reference_compatible_wait,
   maintenance_window_wait,
   unknown
 };
@@ -167,7 +167,7 @@ struct MGALockRequest {
   MGAWaitPolicy wait_policy = MGAWaitPolicy::wait_timeout;
   u64 timeout_millis = 0;
   MGAPriorityClass priority_class = MGAPriorityClass::normal;
-  std::string donor_profile = "none";
+  std::string reference_profile = "none";
   u64 policy_epoch = 0;
   u64 requested_at_millis = 0;
   bool cluster_exists = false;

@@ -57,7 +57,7 @@ void SetDomainValidationHookStatus(DomainRecord* record) {
       !record->encryption_policy_ref.empty() || !record->driver_metadata_envelope.empty() ||
       !record->wire_metadata_envelope.empty() || !record->element_path_envelope.empty() ||
       !record->method_binding_envelope.empty() || !record->localized_names_envelope.empty() ||
-      !record->comment_envelope.empty() || !record->donor_alias_envelope.empty()) {
+      !record->comment_envelope.empty() || !record->reference_alias_envelope.empty()) {
     record->validation_hook_status = "engine_metadata";
     return;
   }
@@ -228,15 +228,15 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
         updated.visibility_policy_envelope = profile.substr(25);
       } else if (StartsWith(profile, "domain_encryption_policy:")) {
         updated.encryption_policy_ref = profile.substr(25);
-      } else if (StartsWith(profile, "domain_donor_alias:")) {
-        if (!updated.donor_alias_envelope.empty()) { updated.donor_alias_envelope.push_back('|'); }
-        updated.donor_alias_envelope.append(profile.substr(19));
+      } else if (StartsWith(profile, "domain_reference_alias:")) {
+        if (!updated.reference_alias_envelope.empty()) { updated.reference_alias_envelope.push_back('|'); }
+        updated.reference_alias_envelope.append(profile.substr(19));
       }
     }
     for (const auto& profile : request.compatibility_profile.encoded_profiles) {
-      if (StartsWith(profile, "donor_alias:")) {
-        if (!updated.donor_alias_envelope.empty()) { updated.donor_alias_envelope.push_back('|'); }
-        updated.donor_alias_envelope.append(profile.substr(12));
+      if (StartsWith(profile, "reference_alias:")) {
+        if (!updated.reference_alias_envelope.empty()) { updated.reference_alias_envelope.push_back('|'); }
+        updated.reference_alias_envelope.append(profile.substr(12));
       }
     }
     for (const auto& option : request.option_envelopes) {
@@ -291,9 +291,9 @@ EngineAlterObjectResult EngineAlterObject(const EngineAlterObjectRequest& reques
       } else if (StartsWith(option, "localized_comment:")) {
         if (!updated.comment_envelope.empty()) { updated.comment_envelope.push_back('|'); }
         updated.comment_envelope.append(option.substr(18));
-      } else if (StartsWith(option, "donor_alias:")) {
-        if (!updated.donor_alias_envelope.empty()) { updated.donor_alias_envelope.push_back('|'); }
-        updated.donor_alias_envelope.append(option.substr(12));
+      } else if (StartsWith(option, "reference_alias:")) {
+        if (!updated.reference_alias_envelope.empty()) { updated.reference_alias_envelope.push_back('|'); }
+        updated.reference_alias_envelope.append(option.substr(12));
       } else {
         return MakeCrudDiagnosticResult<EngineAlterObjectResult>(
             request.context,

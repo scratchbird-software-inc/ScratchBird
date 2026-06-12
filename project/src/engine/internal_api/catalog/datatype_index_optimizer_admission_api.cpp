@@ -15,12 +15,12 @@ namespace scratchbird::engine::internal_api {
 EngineDatatypeIndexOptimizerAdmissionResult EvaluateDatatypeIndexOptimizerAdmission(
     const EngineDatatypeIndexOptimizerAdmissionRequest& request) {
   EngineDatatypeIndexOptimizerAdmissionResult result;
-  const auto metadata = RenderWireDriverMetadata(request.descriptor, {}, request.donor_label);
+  const auto metadata = RenderWireDriverMetadata(request.descriptor, {}, request.reference_label);
   result.canonical_descriptor_used = request.descriptor.canonical_type_name.empty()
                                          ? metadata.base_canonical_type_name
                                          : request.descriptor.canonical_type_name;
   result.optimizer_uses_canonical_descriptor =
-      !result.canonical_descriptor_used.empty() && result.canonical_descriptor_used != request.donor_label;
+      !result.canonical_descriptor_used.empty() && result.canonical_descriptor_used != request.reference_label;
 
   if (request.index_stats_status == "implemented" || request.index_stats_status == "validated") {
     if (request.support_path == "opaque_preserve_render" || metadata.opaque_render_only) {

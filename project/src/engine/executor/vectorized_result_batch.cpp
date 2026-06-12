@@ -734,7 +734,7 @@ VectorizedResultBatchResult FinalizeVectorizedResultBatchFromReservedResource(
     u64 row_count,
     std::vector<ResultBatchColumn> columns,
     bool engine_mga_authoritative,
-    bool parser_or_donor_authority,
+    bool parser_or_reference_authority,
     bool memory_finality_or_visibility_authority,
     bool debug_or_relaxed_path) {
   if (resource == nullptr || !resource->active()) {
@@ -744,11 +744,11 @@ VectorizedResultBatchResult FinalizeVectorizedResultBatchFromReservedResource(
                   row_count,
                   ResultBatchLayoutKind::unknown);
   }
-  if (!engine_mga_authoritative || parser_or_donor_authority ||
+  if (!engine_mga_authoritative || parser_or_reference_authority ||
       memory_finality_or_visibility_authority || debug_or_relaxed_path) {
     return Refuse("SB_RESULT_BATCH.RESERVED_RESOURCE_UNSAFE_AUTHORITY",
                   "result_batch.reserved_resource_unsafe_authority",
-                  "engine_mga_required_and_parser_donor_memory_finality_debug_authority_refused",
+                  "engine_mga_required_and_parser_reference_memory_finality_debug_authority_refused",
                   row_count,
                   ResultBatchLayoutKind::unknown);
   }
@@ -775,7 +775,7 @@ VectorizedResultBatchResult FinalizeVectorizedResultBatchFromReservedResource(
   result.evidence.push_back("result_batch.reserved_scratch_bytes=" +
                             std::to_string(scratch.bytes));
   result.evidence.push_back(
-      "result_batch.authority_scope=data_transport_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_index_or_agent_authority");
+      "result_batch.authority_scope=data_transport_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_index_or_agent_authority");
   if (result.ok()) {
     result.batch.evidence = result.evidence;
   }

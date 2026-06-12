@@ -16,7 +16,7 @@ The package owns:
 
 - Database UUIDs are engine identity and must be UUIDv7.
 - Schema root UUIDs are engine identity and must be UUIDv7.
-- UUIDv1 through UUIDv6 are donor/client compatibility values only and cannot be catalog bootstrap identity.
+- UUIDv1 through UUIDv6 are reference/client compatibility values only and cannot be catalog bootstrap identity.
 - Names and paths are labels over UUID identity, not durable authority.
 
 ## Bootstrap roots
@@ -52,7 +52,7 @@ The catalog identity layer owns:
 - The SQL object described by a catalog row has an object UUID.
 - The catalog row UUID and object UUID must be different.
 - Both UUIDs are engine identity and must be UUIDv7.
-- UUIDv1 through UUIDv6 are donor/client compatibility values only and cannot be catalog row identity or SQL object identity.
+- UUIDv1 through UUIDv6 are reference/client compatibility values only and cannot be catalog row identity or SQL object identity.
 
 ## Name and comment rules
 

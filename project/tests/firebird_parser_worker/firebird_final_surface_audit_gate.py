@@ -83,9 +83,9 @@ def main() -> int:
     required_evidence = (
         "FIREBIRD_CTEST_REQUIRED_GATES.csv",
         "FIREBIRD_CTEST_VARIATION_MATRIX.csv",
-        "FIREBIRD_DONOR_NATIVE_REGRESSION_MANIFEST.csv",
-        "FIREBIRD_QA_DONOR_REPLAY_MANIFEST.csv",
-        "FIREBIRD_DONOR_TOOL_BUILD_MANIFEST.csv",
+        "FIREBIRD_REFERENCE_NATIVE_REGRESSION_MANIFEST.csv",
+        "FIREBIRD_QA_REFERENCE_REPLAY_MANIFEST.csv",
+        "FIREBIRD_REFERENCE_TOOL_BUILD_MANIFEST.csv",
         "AGENT_EXECUTION_STATUS.csv",
     )
     for name in required_evidence:

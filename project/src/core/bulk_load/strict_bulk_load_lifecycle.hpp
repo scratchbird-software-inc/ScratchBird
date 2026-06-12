@@ -60,8 +60,8 @@ enum class DmlPageFilespaceDemandHintDecision : u32 {
 struct StrictBulkLoadPolicySnapshot {
   TypedUuid policy_uuid;
   bool enabled = false;
-  bool allow_donor_relaxed_semantics = false;
-  bool map_donor_relaxed_to_native_safe = false;
+  bool allow_reference_relaxed_semantics = false;
+  bool map_reference_relaxed_to_native_safe = false;
   bool require_all_constraints_valid = true;
   bool require_all_indexes_valid = true;
   bool require_all_domains_valid = true;
@@ -83,7 +83,7 @@ struct StrictBulkLoadBeginRequest {
   TypedUuid transaction_uuid;
   u64 local_transaction_id = 0;
   StrictBulkLoadPolicySnapshot policy;
-  bool donor_relaxed_semantics_requested = false;
+  bool reference_relaxed_semantics_requested = false;
   std::string staging_target;
 };
 

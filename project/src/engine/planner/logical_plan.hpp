@@ -155,7 +155,7 @@ struct NormalizedOptimizerPolicyControls {
 
 // SEARCH_KEY: OPCH_ENGINE_BOUNDARY_PARSER_SAFE_CONTROLS
 // Optimizer policy reaches the engine only as normalized SBLR/API/logical-plan
-// metadata. SQL text, parser execution authority, and donor/legacy authority
+// metadata. SQL text, parser execution authority, and reference/legacy authority
 // claims are rejected by the optimizer request boundary.
 struct OptimizerPolicyMetadata {
   bool optimizer_policy_metadata_present = false;
@@ -166,7 +166,7 @@ struct OptimizerPolicyMetadata {
   bool raw_sql_text_present = false;
   bool parser_execution_authority_claimed = false;
   bool parser_session_directives_unbound = false;
-  bool donor_or_legacy_policy_authority_claimed = false;
+  bool reference_or_legacy_policy_authority_claimed = false;
 };
 
 struct LogicalPlanNode {

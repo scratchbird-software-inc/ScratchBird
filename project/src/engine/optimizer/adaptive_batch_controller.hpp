@@ -19,7 +19,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: SB_OPTIMIZER_ADAPTIVE_BATCH_CONTROLLER_ODF_100
 // Adaptive batch feedback is advisory/resource-governance only. It may tune
 // bounded batch sizes, but it is never transaction finality, row visibility,
-// parser execution, donor/provider/client authority, autocommit, or recovery
+// parser execution, reference/provider/client authority, autocommit, or recovery
 // authority.
 enum class AdaptiveBatchFamily : std::uint32_t {
   kUnknown,

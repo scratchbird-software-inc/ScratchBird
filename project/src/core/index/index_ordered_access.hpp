@@ -75,7 +75,7 @@ enum class OrderedUniquenessMode : u32 {
 enum class OrderedNullUniquenessPolicy : u32 {
   nulls_distinct = 1,
   nulls_not_distinct = 2,
-  donor_profile_default = 3
+  reference_profile_default = 3
 };
 
 enum class OrderedDuplicateLifecycleAction : u32 {
@@ -124,7 +124,7 @@ enum class OrderedAliasDecisionKind : u32 {
   refused = 4
 };
 
-enum class OrderedDonorEngine : u32 {
+enum class OrderedReferenceEngine : u32 {
   scratchbird = 1,
   firebird = 2,
   postgresql = 3,
@@ -152,7 +152,7 @@ struct OrderedAccessRequest {
   u32 projected_order_components = 0;
   bool require_total_order_proof = true;
   bool allow_fallback_sort = false;
-  bool donor_visible = false;
+  bool reference_visible = false;
   bool overlay_predicate_required = false;
   bool require_page_authority = false;
   IndexPageAuthorityInput page_authority;
@@ -188,7 +188,7 @@ struct OrderedUniquenessRequest {
   OrderedNullUniquenessPolicy null_policy = OrderedNullUniquenessPolicy::nulls_distinct;
   IndexKeySemanticProfile semantic_profile;
   std::vector<IndexKeyEncodingComponent> key_components;
-  bool donor_profile_nulls_distinct = true;
+  bool reference_profile_nulls_distinct = true;
   bool partial_predicate = false;
   bool predicate_proven = true;
 };
@@ -223,7 +223,7 @@ struct OrderedDuplicateLifecycleRequest {
   bool equality_image_proof_present = true;
   bool stable_row_uuid_locators = true;
   bool preserve_mga_visibility_recheck = true;
-  bool parser_or_donor_finality_authority = false;
+  bool parser_or_reference_finality_authority = false;
   bool timestamp_or_uuid_order_finality_authority = false;
   u64 oldest_active_transaction_id = 0;
 };
@@ -340,8 +340,8 @@ struct OrderedAliasRequest {
   bool ordered_iteration_required = true;
   bool prefix_navigation_required = false;
   bool equality_only = false;
-  bool donor_requires_native_catalog_identity = false;
-  bool donor_requires_native_page_metrics = false;
+  bool reference_requires_native_catalog_identity = false;
+  bool reference_requires_native_page_metrics = false;
 };
 
 struct OrderedAliasDecision {
@@ -359,10 +359,10 @@ struct OrderedAliasDecision {
   bool ok() const { return status.ok() && admitted; }
 };
 
-struct OrderedDonorSemanticProfile {
-  OrderedDonorEngine donor = OrderedDonorEngine::unknown;
+struct OrderedReferenceSemanticProfile {
+  OrderedReferenceEngine reference = OrderedReferenceEngine::unknown;
   std::string profile_id;
-  std::string donor_name;
+  std::string reference_name;
   IndexFamily native_family = IndexFamily::btree;
   IndexKeyNullPlacement ascending_null_placement = IndexKeyNullPlacement::nulls_last;
   IndexKeyNullPlacement descending_null_placement = IndexKeyNullPlacement::nulls_first;
@@ -381,8 +381,8 @@ struct OrderedDonorSemanticProfile {
   std::vector<std::string> unsupported_modes;
 };
 
-struct OrderedDonorProfileRequest {
-  OrderedDonorEngine donor = OrderedDonorEngine::scratchbird;
+struct OrderedReferenceProfileRequest {
+  OrderedReferenceEngine reference = OrderedReferenceEngine::scratchbird;
   std::string profile_id;
   OrderedAccessRequest access;
   OrderedUniquenessRequest uniqueness;
@@ -391,15 +391,15 @@ struct OrderedDonorProfileRequest {
   bool overlay_requested = false;
   bool descending_key_requested = false;
   bool prefix_seek_requested = false;
-  bool donor_catalog_projection_requested = false;
+  bool reference_catalog_projection_requested = false;
   bool collation_epoch_valid = true;
   bool allow_fallback_sort = false;
 };
 
-struct OrderedDonorProfileDecision {
+struct OrderedReferenceProfileDecision {
   Status status;
   bool admitted = false;
-  OrderedDonorSemanticProfile profile;
+  OrderedReferenceSemanticProfile profile;
   OrderedAccessPlan access_plan;
   OrderedUniquenessDecision uniqueness_decision;
   OrderedOverlayDecision overlay_decision;
@@ -418,15 +418,15 @@ OrderedCompressionPlan PlanOrderedCompression(const OrderedCompressionRequest& r
 OrderedBuildPlan PlanOrderedBulkBuild(const OrderedBuildRequest& request);
 OrderedOverlayDecision DecideOrderedOverlayEligibility(const OrderedOverlayRequest& request);
 OrderedAliasDecision DecideOrderedAlias(const OrderedAliasRequest& request);
-const std::vector<OrderedDonorSemanticProfile>& BuiltinOrderedDonorSemanticProfiles();
-const OrderedDonorSemanticProfile* FindOrderedDonorSemanticProfile(OrderedDonorEngine donor,
+const std::vector<OrderedReferenceSemanticProfile>& BuiltinOrderedReferenceSemanticProfiles();
+const OrderedReferenceSemanticProfile* FindOrderedReferenceSemanticProfile(OrderedReferenceEngine reference,
                                                                    std::string_view profile_id = {});
-OrderedDonorProfileDecision ApplyOrderedDonorSemanticProfile(const OrderedDonorProfileRequest& request);
+OrderedReferenceProfileDecision ApplyOrderedReferenceSemanticProfile(const OrderedReferenceProfileRequest& request);
 
 const char* OrderedAccessShapeName(OrderedAccessShape shape);
 const char* OrderedAccessDecisionName(OrderedAccessDecision decision);
 const char* OrderedDuplicateLifecycleActionName(OrderedDuplicateLifecycleAction action);
-const char* OrderedDonorEngineName(OrderedDonorEngine donor);
+const char* OrderedReferenceEngineName(OrderedReferenceEngine reference);
 DiagnosticRecord MakeOrderedAccessDiagnostic(Status status,
                                              std::string diagnostic_code,
                                              std::string message_key,

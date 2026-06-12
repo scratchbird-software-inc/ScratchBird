@@ -1,6 +1,6 @@
 # Resources
 
-Versioned product resource packs: catalog seeds, donor seeds, charset, collation, timezone, diagnostics, policies, and provider profiles.
+Versioned product resource packs: catalog seeds, reference seeds, charset, collation, timezone, diagnostics, policies, and provider profiles.
 
 ## Create-time resource rule
 

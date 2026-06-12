@@ -146,8 +146,8 @@ def validate_benchmark_evidence(evidence: dict[str, Any]) -> None:
     _require(isinstance(authority, dict), "benchmark evidence missing authority controls")
     _require(authority.get("engine_mga_transaction_authority") is True,
              "benchmark evidence must preserve MGA transaction authority")
-    _require(authority.get("donor_or_embedded_storage_transaction_truth") is False,
-             "benchmark evidence cannot use donor/embedded storage as transaction truth")
+    _require(authority.get("reference_or_embedded_storage_transaction_truth") is False,
+             "benchmark evidence cannot use reference/embedded storage as transaction truth")
 
 
 def canonical_json(evidence: dict[str, Any]) -> str:

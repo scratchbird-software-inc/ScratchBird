@@ -22,7 +22,7 @@ void Add(std::vector<std::string>* values, std::string value) {
 bool UnsafeAuthority(const EnterpriseRelationalOperatorAuthority& authority) {
   return !authority.engine_optimizer_authority ||
          authority.parser_or_sql_authority ||
-         authority.donor_or_legacy_authority ||
+         authority.reference_or_legacy_authority ||
          authority.client_finality_or_visibility_authority ||
          authority.metric_finality_or_visibility_authority ||
          authority.recovery_authority ||
@@ -66,7 +66,7 @@ void FinishAccepted(const EnterpriseRelationalOperatorRequest& request,
   Add(&result->evidence, "enterprise_relational_operator.result_contract_hash=" +
                          request.result_contract_hash);
   Add(&result->evidence, "enterprise_relational_operator.parser_authority=false");
-  Add(&result->evidence, "enterprise_relational_operator.donor_authority=false");
+  Add(&result->evidence, "enterprise_relational_operator.reference_authority=false");
   Add(&result->evidence, "enterprise_relational_operator.cluster_authority=false");
   Add(&result->evidence, "enterprise_relational_operator.transaction_visibility_proof=true");
   Add(&result->evidence, "enterprise_relational_operator.memory_budget_bytes=" +

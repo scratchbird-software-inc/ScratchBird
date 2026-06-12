@@ -69,8 +69,8 @@ bool HasForbiddenAuthorityClaim(const std::vector<std::string>& claims) {
   static const char* kForbidden[] = {
       "transaction_finality", "transaction_authority", "visibility_authority",
       "security_authority", "authorization_authority", "recovery_authority",
-      "parser_authority", "parser_execution_authority", "donor_authority",
-      "donor_finality", "wal_authority", "benchmark_authority",
+      "parser_authority", "parser_execution_authority", "reference_authority",
+      "reference_finality", "wal_authority", "benchmark_authority",
       "cluster_authority", "provider_finality", "action_authority",
       "metric_authority", "memory_authority", "optimizer_plan_authority",
       "index_finality"};

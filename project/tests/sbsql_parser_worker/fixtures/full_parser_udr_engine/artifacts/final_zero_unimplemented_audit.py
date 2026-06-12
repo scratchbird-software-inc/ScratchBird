@@ -27,7 +27,7 @@ EXPECTED_COUNTS = {
     ARTIFACTS / "BATCH_ROW_MEMBERSHIP.csv": 2617,
     ARTIFACTS / "SEMANTIC_ORACLE_AUTHORITY_MAP.csv": 2617,
     ARTIFACTS / "ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv": 932,
-    ARTIFACTS / "DONOR_ALIAS_COVERAGE_BACKLOG.csv": 312,
+    ARTIFACTS / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv": 312,
 }
 
 REQUIRED_STATUS_REPORTS = (
@@ -134,7 +134,7 @@ def check_closure_actions(repo: Path, gate: Gate) -> None:
     for rel in (
         ARTIFACTS / "SURFACE_IMPLEMENTATION_BACKLOG.csv",
         ARTIFACTS / "ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv",
-        ARTIFACTS / "DONOR_ALIAS_COVERAGE_BACKLOG.csv",
+        ARTIFACTS / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv",
     ):
         for row in read_rows(repo, rel):
             action = row.get("closure_action", "").lower()

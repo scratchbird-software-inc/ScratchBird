@@ -23,4 +23,4 @@ The database lifecycle execution_plan has no remaining open tracker, acceptance,
 
 ## Closure Statement
 
-DBLC-018 closes the execution-control execution_plan. The release declaration is limited to the lifecycle surfaces and gates recorded by this execution_plan and its CTest/static-gate evidence. MGA remains the transaction and recovery authority; parser and donor layers remain non-authoritative.
+DBLC-018 closes the execution-control execution_plan. The release declaration is limited to the lifecycle surfaces and gates recorded by this execution_plan and its CTest/static-gate evidence. MGA remains the transaction and recovery authority; parser and reference layers remain non-authoritative.

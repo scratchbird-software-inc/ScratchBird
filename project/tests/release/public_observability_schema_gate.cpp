@@ -505,7 +505,7 @@ bool CheckOptimizationSurface() {
               "performance_optimization_surface_valid",
               validation.diagnostic_code,
               "support_bundle_public_safe_summary",
-              "no_parser_donor_storage_or_wal_authority",
+              "no_parser_reference_storage_or_wal_authority",
               "schema_fields=" + std::to_string(schema.size())) &&
        ok;
 
@@ -601,7 +601,7 @@ bool CheckRepairHistory() {
        ok;
 
   auto drift = request;
-  drift.inspection.parser_or_donor_authority = true;
+  drift.inspection.parser_or_reference_authority = true;
   const auto refused = api::EngineInspectRepairHistory(drift);
   ok = Expect(!refused.ok && !refused.diagnostics.empty() &&
                   refused.diagnostics.front().code ==
@@ -611,7 +611,7 @@ bool CheckRepairHistory() {
               refused.diagnostics.empty() ? "missing_diagnostic"
                                           : refused.diagnostics.front().code,
               "not_sensitive_schema_metadata",
-              "parser_or_donor_authority_refused",
+              "parser_or_reference_authority_refused",
               "stable_fail_closed") &&
        ok;
   return ok;

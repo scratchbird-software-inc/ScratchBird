@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "extensibility/udr_api.hpp"
+#include "behavior_support/api_behavior_store.hpp"
+#include "metric_registry.hpp"
 #include "parser_package_registry.hpp"
 #include "sblr_admission.hpp"
 #include "sbu_firebird_parser_support.hpp"
@@ -25,6 +27,7 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace metrics = scratchbird::core::metrics;
 namespace server = scratchbird::server;
 namespace udr_runtime = scratchbird::udr::runtime;
 namespace firebird_udr = scratchbird::udr::firebird_parser_support;
@@ -105,6 +108,26 @@ bool RuntimeStateHasEntrypoint(const udr_runtime::UdrPackageRuntimeState& state,
                                std::string_view entrypoint_name) {
   for (const auto& entrypoint : state.entrypoint_names) {
     if (entrypoint == entrypoint_name) return true;
+  }
+  return false;
+}
+
+bool MetricHasLabel(const metrics::MetricValue& value,
+                    std::string_view key,
+                    std::string_view expected) {
+  for (const auto& label : value.labels) {
+    if (label.key == key && label.value == expected) return true;
+  }
+  return false;
+}
+
+bool HasMetricValue(std::string_view family,
+                    std::string_view key,
+                    std::string_view expected) {
+  for (const auto& value : metrics::DefaultMetricRegistry().SnapshotCurrent()) {
+    if (value.family == family && MetricHasLabel(value, key, expected)) {
+      return true;
+    }
   }
   return false;
 }
@@ -231,6 +254,8 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   Require(HasRowField(registered, "entrypoint_count",
                       std::to_string(sbsql_descriptor.entrypoints.size())),
           "UDR registration did not expose the validated dispatch table size");
+  Require(HasRowField(registered, "runtime_language", "cpp"),
+          "UDR registration did not expose the trusted C++ runtime language");
 
   const auto duplicate = api::EngineRegisterUdrPackage(register_request);
   Require(!duplicate.ok && HasDiagnostic(duplicate, "SB_ENGINE_API_UDR_ALREADY_REGISTERED"),
@@ -244,6 +269,32 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   Require(!untrusted_result.ok &&
               HasDiagnostic(untrusted_result, "SB_ENGINE_API_UDR_TRUST_REQUIRED"),
           "non-trusted UDR profile was admitted");
+
+  // MDF-017 / DEFER-CXX-ONLY-UDR-ENFORCEMENT: C++ UDRs are the only runtime
+  // target admitted by the direct runtime registry or the engine API surface.
+  auto non_cpp_descriptor = sbsql_descriptor;
+  non_cpp_descriptor.package_uuid = "019e13b0-0000-7000-8000-000000000108";
+  non_cpp_descriptor.package_name = "non_cpp_udr_runtime";
+  non_cpp_descriptor.runtime_language = "python";
+  const auto non_cpp_runtime_result =
+      udr_runtime::RegisterPackage(non_cpp_descriptor);
+  Require(!non_cpp_runtime_result.ok &&
+              non_cpp_runtime_result.diagnostic_code ==
+                  "UDR.RUNTIME.NON_CPP_RUNTIME_FORBIDDEN",
+          "non-C++ UDR runtime descriptor was admitted");
+
+  auto non_cpp_request = UdrRequest<api::EngineRegisterUdrPackageRequest>(
+      database_path, "019e13b0-0000-7000-8000-000000000109");
+  AddManageUdrOptions(&non_cpp_request, sbsql_descriptor);
+  non_cpp_request.option_envelopes.push_back("runtime_language:python");
+  const auto non_cpp_request_result =
+      api::EngineRegisterUdrPackage(non_cpp_request);
+  Require(!non_cpp_request_result.ok &&
+              HasDiagnostic(non_cpp_request_result,
+                            "SB_ENGINE_API_UDR_NON_CPP_RUNTIME_FORBIDDEN"),
+          "engine registration admitted a non-C++ UDR runtime target");
+  Require(HasMetricValue("sb_udr_non_cpp_refusal_total", "reason", "python"),
+          "non-C++ UDR refusal metric was not emitted");
 
   auto missing_tx = UdrRequest<api::EngineRegisterUdrPackageRequest>(
       database_path, "019e13b0-0000-7000-8000-000000000104", 0);
@@ -293,6 +344,8 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
           "UDR runtime state was not loaded after engine load");
   Require(RuntimeStateHasEntrypoint(*runtime_state, "sbu_sbsql_parse_to_sblr"),
           "UDR runtime dispatch table is missing the SBSQL parse-to-SBLR entrypoint");
+  Require(runtime_state->runtime_language == "cpp",
+          "loaded UDR runtime state did not preserve C++ language enforcement");
 
   auto shutdown_load = UdrRequest<api::EngineLoadUdrPackageRequest>(database_path);
   AddManageUdrOptions(&shutdown_load, sbsql_descriptor);
@@ -428,6 +481,13 @@ void TestEngineOwnedUdrLifecycle(const std::filesystem::path& database_path) {
   Require(inspected.result_shape.rows.size() >= 2, "UDR inspect did not return lifecycle rows");
   Require(RowFieldContains(inspected, "entrypoints", "sbu_sbsql_parse_to_sblr"),
           "UDR inspect did not expose sanitized runtime entrypoint inventory");
+  Require(RowFieldContains(inspected, "runtime_language", "cpp"),
+          "UDR inspect did not expose the C++ runtime-language inventory");
+
+  const auto restart_catalog = api::VisibleApiBehaviorRecords(
+      Context(database_path, 200), "udr_package", 200);
+  Require(restart_catalog.size() >= 2,
+          "restart catalog reload did not reconstruct UDR package rows");
 
   const auto event_text = ReadFile(database_path.string() + ".sb.api_events");
   Require(Contains(event_text, "registered") && Contains(event_text, "loaded") &&

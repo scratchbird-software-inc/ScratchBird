@@ -74,7 +74,7 @@ bool ForbiddenAuthority(const AgentPackageProvenanceRecord& record) {
   return record.transaction_finality_authority || record.visibility_authority ||
          record.authorization_authority || record.security_authority ||
          record.recovery_authority || record.parser_authority ||
-         record.donor_authority || record.wal_authority ||
+         record.reference_authority || record.wal_authority ||
          record.benchmark_authority || record.optimizer_plan_authority ||
          record.index_finality_authority || record.provider_finality_authority ||
          record.cluster_authority || record.memory_authority ||

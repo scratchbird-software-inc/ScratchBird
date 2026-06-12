@@ -108,7 +108,7 @@ struct CoveringIndexPayloadAssemblyRequest {
   std::vector<CoveringIndexPayloadColumnValue> values;
   bool projection_only = true;
   bool result_contract_bound = false;
-  bool parser_or_donor_finality_authority = false;
+  bool parser_or_reference_finality_authority = false;
   bool client_finality_authority = false;
   bool provider_finality_authority = false;
 };
@@ -165,7 +165,7 @@ struct CoveringIndexPayloadValidationRequest {
   bool security_authorized_by_engine = false;
   bool base_row_recheck_available = false;
   bool allow_index_only = false;
-  bool parser_or_donor_finality_authority = false;
+  bool parser_or_reference_finality_authority = false;
   bool client_finality_authority = false;
   bool provider_finality_authority = false;
 };

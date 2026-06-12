@@ -56,7 +56,7 @@ bool RecheckProofValid(const TextInvertedExactRecheckProof& proof) {
 bool RerankProofAuthorityClean(
     const FullTextRuntimeExactRerankProof& proof) {
   return !proof.parser_finality_authority_claimed &&
-         !proof.donor_finality_authority_claimed &&
+         !proof.reference_finality_authority_claimed &&
          !proof.provider_finality_authority_claimed &&
          !proof.index_finality_authority_claimed &&
          !proof.write_ahead_log_finality_authority_claimed &&
@@ -90,7 +90,7 @@ bool SegmentAuthorityClean(const TextInvertedSegment& segment) {
          !segment.security_authority_claimed &&
          !segment.transaction_finality_authority_claimed &&
          !segment.parser_finality_authority_claimed &&
-         !segment.donor_finality_authority_claimed &&
+         !segment.reference_finality_authority_claimed &&
          !segment.provider_finality_authority_claimed &&
          !segment.write_ahead_log_finality_authority_claimed &&
          !segment.merge.merge_metadata_finality_authority;
@@ -772,7 +772,7 @@ FullTextRuntimeResult RuntimeFailure(std::string code,
   result.evidence.push_back("full_text_runtime.exact_source_recheck_required=true");
   result.evidence.push_back("full_text_runtime.mga_recheck_required=true");
   result.evidence.push_back("full_text_runtime.security_recheck_required=true");
-  result.evidence.push_back("full_text_runtime.parser_donor_provider_authority=false");
+  result.evidence.push_back("full_text_runtime.parser_reference_provider_authority=false");
   result.evidence.push_back("full_text_runtime.index_finality_authority=false");
   result.evidence.push_back("full_text_runtime.write_ahead_log_authority=false");
   return result;
@@ -839,7 +839,7 @@ FullTextRuntimeResult RuntimeSuccess(
   result.evidence.push_back("full_text_runtime.mga_recheck_required=true");
   result.evidence.push_back("full_text_runtime.security_recheck_required=true");
   result.evidence.push_back("full_text_runtime.visibility_security_finality_authority=false");
-  result.evidence.push_back("full_text_runtime.parser_donor_provider_authority=false");
+  result.evidence.push_back("full_text_runtime.parser_reference_provider_authority=false");
   result.evidence.push_back("full_text_runtime.index_finality_authority=false");
   result.evidence.push_back("full_text_runtime.write_ahead_log_authority=false");
   result.evidence.push_back(CountEvidence("full_text_runtime.scanned_blocks",

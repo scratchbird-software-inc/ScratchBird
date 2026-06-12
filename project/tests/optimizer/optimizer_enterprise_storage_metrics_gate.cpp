@@ -128,12 +128,12 @@ void TestStorageMetricPublication() {
 
 void TestStorageMetricRefusals() {
   auto sample = GoodSample();
-  sample.authority.parser_or_donor_authority = true;
+  sample.authority.parser_or_reference_authority = true;
   auto refused = page::PublishOptimizerStorageMetrics(sample);
   Require(!refused.ok &&
               refused.diagnostic_code ==
                   "SB_OPTIMIZER_STORAGE_METRICS.UNSAFE_AUTHORITY",
-          "parser/donor storage authority was not refused");
+          "parser/reference storage authority was not refused");
 
   sample = GoodSample();
   sample.authority.filespace_identity_authoritative = false;

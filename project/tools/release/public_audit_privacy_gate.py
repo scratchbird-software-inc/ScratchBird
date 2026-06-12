@@ -93,7 +93,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
             "SECURITY.AUDIT.REDACTED",
             "public_private_shape_separated",
             "parser_finality_authority",
-            "donor_finality_authority",
+            "reference_finality_authority",
         ),
     },
     {

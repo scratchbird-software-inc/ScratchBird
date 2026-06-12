@@ -13,7 +13,7 @@ namespace scratchbird::engine::functions::generated {
 const std::vector<AuthoritativeFunctionInput>& AuthoritativeFunctionInputs() {
   static const std::vector<AuthoritativeFunctionInput> inputs = {
       {"canonical_function", "public_input_snapshot", "authoritative_for_this_execution_plan"},
-      {"donor_alias", "public_input_snapshot", "authoritative_for_this_execution_plan"},
+      {"reference_alias", "public_input_snapshot", "authoritative_for_this_execution_plan"},
       {"plugin_alias", "public_input_snapshot", "authoritative_for_this_execution_plan"},
       {"operator", "public_input_snapshot", "authoritative_for_this_execution_plan"},
       {"context_variable", "public_input_snapshot", "authoritative_for_this_execution_plan"},
@@ -31,7 +31,7 @@ const std::vector<FunctionCompletionPolicyRow>& FunctionCompletionPolicyRows() {
       {"implement_now", false, true, false},
       {"refuse_until_classified", false, false, false},
       {"optional_package_dependency_gated", false, false, true},
-      {"donor_compat_package", false, false, true},
+      {"reference_compat_package", false, false, true},
       {"udr_only", false, false, true},
       {"connector_agent", false, false, true},
       {"future_gated_package", false, false, false},

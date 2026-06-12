@@ -72,7 +72,7 @@ bool SafePolicyToken(const std::string& token) {
          lowered.find(" from ") == std::string::npos &&
          lowered.find("where") == std::string::npos &&
          lowered.find("sql") == std::string::npos &&
-         lowered.find("donor") == std::string::npos;
+         lowered.find("reference") == std::string::npos;
 }
 
 bool SafePolicySource(const std::string& source) {
@@ -189,7 +189,7 @@ bool UnsafeAuthority(const EnterpriseJoinControlAuthority& authority) {
          !authority.normalized_sblr_or_api_metadata ||
          authority.parser_execution_authority ||
          authority.raw_sql_text_authority ||
-         authority.donor_or_legacy_authority ||
+         authority.reference_or_legacy_authority ||
          authority.client_finality_or_visibility_authority ||
          authority.metric_finality_or_visibility_authority ||
          authority.recovery_authority ||
@@ -227,7 +227,7 @@ EnterpriseJoinControlResult BuildEnterpriseJoinSearchPolicy(
   if (policy.raw_sql_text_present ||
       policy.parser_execution_authority_claimed ||
       policy.parser_session_directives_unbound ||
-      policy.donor_or_legacy_policy_authority_claimed) {
+      policy.reference_or_legacy_policy_authority_claimed) {
     Refuse(&result, "SB_OPT_JOIN_CONTROL_POLICY_AUTHORITY_INVALID");
     return result;
   }
@@ -247,7 +247,7 @@ EnterpriseJoinControlResult BuildEnterpriseJoinSearchPolicy(
   result.evidence.push_back(std::string("join_control.strategy=") +
                             JoinSearchStrategyName(result.join_policy.strategy));
   result.evidence.push_back("join_control.parser_authority=false");
-  result.evidence.push_back("join_control.donor_authority=false");
+  result.evidence.push_back("join_control.reference_authority=false");
   result.evidence.push_back("join_control.cluster_authority=false");
   result.diagnostics.push_back("SB_OPT_JOIN_CONTROL_POLICY_ACCEPTED");
   return result;

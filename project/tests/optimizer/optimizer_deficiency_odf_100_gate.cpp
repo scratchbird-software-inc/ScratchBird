@@ -207,12 +207,12 @@ void FailClosedGuards() {
           "ODF-100 missing MGA recheck did not fail closed");
 
   request = BaseRequest(opt::AdaptiveBatchFamily::kInsert);
-  request.agent_evidence.parser_or_donor_authority = true;
+  request.agent_evidence.parser_or_reference_authority = true;
   result = opt::EvaluateAdaptiveBatchController(request);
   Require(!result.ok &&
               result.diagnostic_code ==
                   "SB_OPTIMIZER_ADAPTIVE_BATCH.UNSAFE_AUTHORITY",
-          "ODF-100 parser/donor authority did not fail closed");
+          "ODF-100 parser/reference authority did not fail closed");
 
   request = BaseRequest(opt::AdaptiveBatchFamily::kCopy);
   request.agent_evidence.provider_transaction_finality_authority = true;
@@ -269,9 +269,9 @@ void AgentEvidenceAdaptorIsPolicyOnly() {
     if (field.first == "policy_allowed" && field.second == "true") {
       saw_policy = true;
     }
-    Require(!(field.first == "parser_or_donor_authority" &&
+    Require(!(field.first == "parser_or_reference_authority" &&
               field.second == "true"),
-            "ODF-100 agent evidence claimed parser/donor authority");
+            "ODF-100 agent evidence claimed parser/reference authority");
     Require(!(field.first == "provider_transaction_finality_authority" &&
               field.second == "true"),
             "ODF-100 agent evidence claimed provider finality authority");

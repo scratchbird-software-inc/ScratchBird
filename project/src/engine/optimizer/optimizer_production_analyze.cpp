@@ -124,7 +124,7 @@ std::vector<StatisticsContractStatus> ValidateAnalyzeRequest(
       !authority.redaction_policy_bound || !authority.stats_epoch_authority) {
     statuses.push_back(Status(false, "SB_OPT_ANALYZE_AUTHORITY_REQUIRED", request.relation_uuid));
   }
-  if (authority.parser_or_donor_authority || authority.client_finality_authority ||
+  if (authority.parser_or_reference_authority || authority.client_finality_authority ||
       authority.client_visibility_authority || authority.metric_finality_authority ||
       authority.metric_visibility_authority || authority.external_recovery_authority ||
       authority.cluster_authority || authority.fixture_or_synthetic_source) {
@@ -512,7 +512,7 @@ OptimizerProductionAnalyzeResult RunOptimizerProductionAnalyze(
   result.evidence.push_back("mga_snapshot_authority=true");
   result.evidence.push_back("transaction_inventory_authority=true");
   result.evidence.push_back("security_redaction_bound=true");
-  result.evidence.push_back("parser_or_donor_authority=false");
+  result.evidence.push_back("parser_or_reference_authority=false");
   result.evidence.push_back("cluster_authority=false");
   result.evidence.push_back("benchmark_clean_ready=" +
                             std::string(result.benchmark_clean_ready ? "true" : "false"));

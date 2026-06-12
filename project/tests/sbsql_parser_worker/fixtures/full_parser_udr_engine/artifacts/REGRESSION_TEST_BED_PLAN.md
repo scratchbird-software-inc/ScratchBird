@@ -9,7 +9,7 @@ Owning slice: `FSPE-011A`
 
 This artifact defines the reusable generated regression test bed for SBSQL/SB
 surfaces. It is a test-bed policy and asset-layout gate, not a claim that every
-semantic fixture has already been generated or executed. Donor rendering,
+semantic fixture has already been generated or executed. Reference rendering,
 independent semantic oracle completion, persistence, concurrency, and replay
 remain owned by FSPE-011B through FSPE-011F.
 
@@ -49,7 +49,7 @@ Required fixture suites:
 | UDR ABI/context fixtures | `project/tests/sbsql_parser_worker/generated/regression/udr` | `sbsql_regression_udr_support` |
 | Server admission/result/message fixtures | `project/tests/sbsql_parser_worker/generated/regression/server` | `sbsql_regression_server_admission` |
 | Engine behavior fixtures | `project/tests/sbsql_parser_worker/generated/regression/engine` | `sbsql_regression_engine_behavior` |
-| Donor alias parser/rendering fixtures | `project/tests/sbsql_parser_worker/generated/regression/donor_alias` | `sbsql_regression_donor_alias` |
+| Reference alias parser/rendering fixtures | `project/tests/sbsql_parser_worker/generated/regression/reference_alias` | `sbsql_regression_reference_alias` |
 | Diagnostic/message-vector fixtures | `project/tests/sbsql_parser_worker/generated/regression/diagnostics` | `sbsql_regression_diagnostic` |
 | Full-route listener/parser/server/engine fixtures | `project/tests/sbsql_parser_worker/generated/regression/full_route` | `sbsql_regression_full_route` |
 | Exhaustive registered-surface E2E gate | `project/tests/sbsql_parser_worker/generated/exhaustive_e2e` | `sbsql_exhaustive_e2e_regression` |
@@ -74,7 +74,7 @@ Required fixture suites:
 - Batch manifests use `BATCH-NNNN.manifest.json`.
 - Expected-result files use `<fixture_id>.expected.json`.
 - Failure summaries use `<batch_id>.failure-summary.json`.
-- Donor alias fixtures use `SBSQL-DONOR-*` IDs.
+- Reference alias fixtures use `SBSQL-REFERENCE-*` IDs.
 - Engine gap fixtures use `SBSQL-GAP-*` IDs.
 - Message-vector fixtures use `MSGV-*` IDs.
 
@@ -87,7 +87,7 @@ Required fixture suites:
 | UDR support | 60 seconds | no retry |
 | Server admission | 90 seconds | no retry |
 | Engine behavior | 120 seconds | no retry |
-| Donor alias | 90 seconds | no retry |
+| Reference alias | 90 seconds | no retry |
 | Diagnostic | 60 seconds | no retry |
 | Full route | 180 seconds | no retry |
 | Fuzz | 300 seconds | quarantine only after reproducible fixture capture |

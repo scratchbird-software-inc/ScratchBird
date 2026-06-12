@@ -63,7 +63,7 @@ constexpr u32 kPostingFlagProofNonUniqueExact = 1u << 3u;
 constexpr u32 kPostingFlagProofBytewiseStable = 1u << 4u;
 constexpr u32 kPostingFlagProofStableLocators = 1u << 5u;
 constexpr u32 kPostingFlagProofMgaRecheck = 1u << 6u;
-constexpr u32 kPostingFlagProofParserDonorAuthority = 1u << 7u;
+constexpr u32 kPostingFlagProofParserReferenceAuthority = 1u << 7u;
 constexpr u32 kPostingFlagProofTimestampUuidAuthority = 1u << 8u;
 
 Status OkStatus() {
@@ -301,7 +301,7 @@ bool ValidateCompactAuthority(const IndexCompactAuthorityContext& authority,
       !authority.encoded_key_order_proven ||
       !authority.mga_visibility_recheck_required ||
       !authority.security_recheck_required ||
-      authority.parser_or_donor_authority ||
+      authority.parser_or_reference_authority ||
       authority.provider_authority ||
       authority.wal_or_finality_authority ||
       authority.uuid_order_finality_authority) {
@@ -325,7 +325,7 @@ std::vector<std::string> BaseEvidence(IndexCompactEncodingKind kind) {
           "authorization_authority=false",
           "transaction_finality_authority=false",
           "recovery_authority=false",
-          "parser_or_donor_authority=false",
+          "parser_or_reference_authority=false",
           "provider_authority=false",
           "wal_or_finality_authority=false",
           "uuid_order_finality_authority=false"};
@@ -350,7 +350,7 @@ CompressionPolicyDecision CostDecision(CompressionPolicyRequest policy,
                                        u64 compact_bytes,
                                        bool index_correctness_proven) {
   policy.family = family;
-  policy.parser_or_donor_authority = authority.parser_or_donor_authority ||
+  policy.parser_or_reference_authority = authority.parser_or_reference_authority ||
                                      authority.provider_authority;
   policy.wal_or_finality_authority = authority.wal_or_finality_authority ||
                                      authority.uuid_order_finality_authority;
@@ -689,8 +689,8 @@ u32 PostingProofFlags(const IndexPostingList& list) {
   if (list.equality_proof.preserves_mga_visibility_recheck) {
     flags |= kPostingFlagProofMgaRecheck;
   }
-  if (list.equality_proof.parser_or_donor_finality_authority) {
-    flags |= kPostingFlagProofParserDonorAuthority;
+  if (list.equality_proof.parser_or_reference_finality_authority) {
+    flags |= kPostingFlagProofParserReferenceAuthority;
   }
   if (list.equality_proof.timestamp_or_uuid_order_finality_authority) {
     flags |= kPostingFlagProofTimestampUuidAuthority;
@@ -708,8 +708,8 @@ IndexPostingEqualityProof PostingProofFromFlags(u32 flags) {
       (flags & kPostingFlagProofStableLocators) != 0;
   proof.preserves_mga_visibility_recheck =
       (flags & kPostingFlagProofMgaRecheck) != 0;
-  proof.parser_or_donor_finality_authority =
-      (flags & kPostingFlagProofParserDonorAuthority) != 0;
+  proof.parser_or_reference_finality_authority =
+      (flags & kPostingFlagProofParserReferenceAuthority) != 0;
   proof.timestamp_or_uuid_order_finality_authority =
       (flags & kPostingFlagProofTimestampUuidAuthority) != 0;
   return proof;
@@ -783,7 +783,7 @@ std::optional<std::string> ValidatePostingListForCompact(
   if (!list.index_uuid.valid() || list.encoded_key.empty()) {
     return std::string("posting_list_header_invalid");
   }
-  if (list.equality_proof.parser_or_donor_finality_authority ||
+  if (list.equality_proof.parser_or_reference_finality_authority ||
       list.equality_proof.timestamp_or_uuid_order_finality_authority) {
     return std::string("posting_list_unsafe_authority");
   }

@@ -101,7 +101,7 @@ bool ScoreBetter(double left_score,
 
 bool DescriptorAuthorityClean(const VectorIvfPqDescriptor& descriptor) {
   return !descriptor.parser_finality_authority_claimed &&
-         !descriptor.donor_finality_authority_claimed &&
+         !descriptor.reference_finality_authority_claimed &&
          !descriptor.provider_finality_authority_claimed &&
          !descriptor.index_finality_authority_claimed &&
          !descriptor.write_ahead_log_finality_authority_claimed;
@@ -109,7 +109,7 @@ bool DescriptorAuthorityClean(const VectorIvfPqDescriptor& descriptor) {
 
 bool MetricAuthorityClean(const VectorIvfPqMetricResource& metric) {
   return !metric.parser_finality_authority_claimed &&
-         !metric.donor_finality_authority_claimed &&
+         !metric.reference_finality_authority_claimed &&
          !metric.provider_finality_authority_claimed &&
          !metric.index_finality_authority_claimed &&
          !metric.write_ahead_log_finality_authority_claimed;
@@ -117,7 +117,7 @@ bool MetricAuthorityClean(const VectorIvfPqMetricResource& metric) {
 
 bool RecheckProofAuthorityClean(const VectorIvfPqRecheckProof& proof) {
   return !proof.parser_finality_authority_claimed &&
-         !proof.donor_finality_authority_claimed &&
+         !proof.reference_finality_authority_claimed &&
          !proof.provider_finality_authority_claimed &&
          !proof.index_finality_authority_claimed &&
          !proof.write_ahead_log_finality_authority_claimed &&
@@ -203,7 +203,7 @@ bool ProviderAuthorityClean(const VectorIvfPqPhysicalProvider& provider) {
          !provider.security_authority_claimed &&
          !provider.transaction_finality_authority_claimed &&
          !provider.parser_finality_authority_claimed &&
-         !provider.donor_finality_authority_claimed &&
+         !provider.reference_finality_authority_claimed &&
          !provider.provider_finality_authority_claimed &&
          !provider.index_finality_authority_claimed &&
          !provider.write_ahead_log_finality_authority_claimed;
@@ -1199,7 +1199,7 @@ VectorIvfPqBuildResult BuildVectorIvfPqPhysicalProvider(
     return BuildFailure(
         "INDEX.VECTOR_IVF_PQ_PHYSICAL_PROVIDER.AUTHORITY_CLAIM_REFUSED",
         "index.vector_ivf_pq_physical_provider.authority_claim_refused",
-        "vector IVF/PQ provider is candidate evidence only and cannot claim transaction, visibility, security, index, provider, parser, donor, or write-ahead authority");
+        "vector IVF/PQ provider is candidate evidence only and cannot claim transaction, visibility, security, index, provider, parser, reference, or write-ahead authority");
   }
   if (!RecheckProofValid(request.recheck_proof)) {
     return BuildFailure(

@@ -98,48 +98,48 @@ void SetMetricFamilyProvenance(api::PerformanceMetricEvent* event) {
   event->cache_flags.measurement_quality = "measured";
 }
 
-opt::DonorDominanceTargetEvidence ComparableTarget(
+opt::ReferenceDominanceTargetEvidence ComparableTarget(
     std::string workload,
     std::string category,
-    std::string donor_engine,
+    std::string reference_engine,
     double current_ms,
-    double donor_ms,
+    double reference_ms,
     double prior_ms) {
-  opt::DonorDominanceTargetEvidence evidence;
+  opt::ReferenceDominanceTargetEvidence evidence;
   evidence.workload = std::move(workload);
   evidence.category = std::move(category);
   evidence.comparable = true;
   evidence.comparable_status = "comparable";
-  evidence.donor_best_engine = std::move(donor_engine);
-  evidence.donor_best_duration_ms = donor_ms;
+  evidence.reference_best_engine = std::move(reference_engine);
+  evidence.reference_best_duration_ms = reference_ms;
   evidence.scratchbird_current_duration_ms = current_ms;
   evidence.prior_scratchbird_duration_available = true;
   evidence.scratchbird_prior_duration_ms = prior_ms;
-  evidence.dominance_target_duration_ms = donor_ms - 0.000001;
-  evidence.dominance_target_rule = "strictly_less_than_donor_best_duration";
+  evidence.dominance_target_duration_ms = reference_ms - 0.000001;
+  evidence.dominance_target_rule = "strictly_less_than_reference_best_duration";
   evidence.exact_blocker_rule =
-      "SB_ORH_DONOR_DOMINANCE_TARGET.UNRESOLVED_DONOR_GAP";
-  evidence.diagnostic_code = "SB_ORH_DONOR_DOMINANCE_TARGET.COMPARABLE";
+      "SB_ORH_REFERENCE_DOMINANCE_TARGET.UNRESOLVED_REFERENCE_GAP";
+  evidence.diagnostic_code = "SB_ORH_REFERENCE_DOMINANCE_TARGET.COMPARABLE";
   return evidence;
 }
 
-opt::DonorDominanceTargetEvidence NonComparableMicroTarget(
+opt::ReferenceDominanceTargetEvidence NonComparableMicroTarget(
     std::string workload,
     double current_ms) {
-  opt::DonorDominanceTargetEvidence evidence;
+  opt::ReferenceDominanceTargetEvidence evidence;
   evidence.workload = std::move(workload);
   evidence.category = "micro";
   evidence.comparable = false;
   evidence.comparable_status = "non_comparable";
   evidence.scratchbird_current_duration_ms = current_ms;
-  evidence.dominance_target_rule = "donor_equivalent_micro_required";
+  evidence.dominance_target_rule = "reference_equivalent_micro_required";
   evidence.exact_blocker_rule =
-      "SB_ORH_DONOR_DOMINANCE_TARGET.MICRO_DONOR_EQUIVALENCE_REQUIRED";
-  evidence.diagnostic_code = "SB_ORH_DONOR_DOMINANCE_TARGET.NON_COMPARABLE";
+      "SB_ORH_REFERENCE_DOMINANCE_TARGET.MICRO_REFERENCE_EQUIVALENCE_REQUIRED";
+  evidence.diagnostic_code = "SB_ORH_REFERENCE_DOMINANCE_TARGET.NON_COMPARABLE";
   return evidence;
 }
 
-std::vector<opt::DonorDominanceTargetEvidence> Execution_Plan10DominanceFixture() {
+std::vector<opt::ReferenceDominanceTargetEvidence> Execution_Plan10DominanceFixture() {
   return {
       NonComparableMicroTarget("single_insert", 516.030333),
       NonComparableMicroTarget("point_select", 515.888137),
@@ -266,36 +266,36 @@ opt::BenchmarkMethodEvidence Method(std::string engine, std::string method) {
   evidence.skew_profile = "execution_plan10_preserved_skew";
   evidence.resource_budget_profile = "four_worker_2gb_memory_budget";
   evidence.constraint_policy = "same_constraints_enabled";
-  evidence.donor_reference_only = evidence.engine != "scratchbird";
-  evidence.uses_donor_storage_or_finality_for_scratchbird = false;
+  evidence.reference_reference_only = evidence.engine != "scratchbird";
+  evidence.uses_reference_storage_or_finality_for_scratchbird = false;
   evidence.diagnostic_code = "SB_ORH_BEST_METHOD_EQUIVALENCE.METHOD_READY";
   return evidence;
 }
 
-void DonorDominanceTargetContractPassesAndFailsClosed() {
+void ReferenceDominanceTargetContractPassesAndFailsClosed() {
   const auto fixture = Execution_Plan10DominanceFixture();
   for (const auto& item : fixture) {
-    const auto validation = opt::ValidateDonorDominanceTargetEvidence(item);
-    Require(validation.ok, item.workload + " donor target rejected");
+    const auto validation = opt::ValidateReferenceDominanceTargetEvidence(item);
+    Require(validation.ok, item.workload + " reference target rejected");
     Require(!item.diagnostic_code.empty(),
             item.workload + " diagnostic_code missing");
   }
 
-  const auto set_validation = opt::ValidateDonorDominanceTargetSet(
+  const auto set_validation = opt::ValidateReferenceDominanceTargetSet(
       fixture, RequiredExecution_Plan10Workloads());
-  Require(set_validation.ok, "complete Execution_Plan 10 donor target set rejected");
+  Require(set_validation.ok, "complete Execution_Plan 10 reference target set rejected");
 
   auto broken = ComparableTarget("broken_join", "join", "postgresql", 10.0,
                                  5.0, 9.0);
-  broken.donor_best_engine.clear();
+  broken.reference_best_engine.clear();
   broken.diagnostic_code.clear();
-  const auto rejected = opt::ValidateDonorDominanceTargetEvidence(broken);
-  Require(!rejected.ok, "broken comparable donor target accepted");
+  const auto rejected = opt::ValidateReferenceDominanceTargetEvidence(broken);
+  Require(!rejected.ok, "broken comparable reference target accepted");
   Require(rejected.diagnostic_code ==
-              "SB_ORH_DONOR_DOMINANCE_TARGET.MISSING_REQUIRED_FIELD",
-          "broken comparable donor target diagnostic mismatch");
-  Require(Contains(rejected.missing_fields, "donor_best_engine"),
-          "missing donor_best_engine not reported");
+              "SB_ORH_REFERENCE_DOMINANCE_TARGET.MISSING_REQUIRED_FIELD",
+          "broken comparable reference target diagnostic mismatch");
+  Require(Contains(rejected.missing_fields, "reference_best_engine"),
+          "missing reference_best_engine not reported");
   Require(Contains(rejected.missing_fields, "diagnostic_code"),
           "missing diagnostic_code not reported");
 }
@@ -447,7 +447,7 @@ void BestMethodBenchmarkEquivalencePassesAndFailsClosed() {
   auto broken = methods;
   broken[2].result_materialization_policy = "client_printed_rows";
   broken[2].diagnostic_code.clear();
-  broken[3].uses_donor_storage_or_finality_for_scratchbird = true;
+  broken[3].uses_reference_storage_or_finality_for_scratchbird = true;
   const auto rejected =
       opt::ValidateBestMethodBenchmarkEquivalence(broken, required_engines);
   Require(!rejected.ok, "broken benchmark equivalence accepted");
@@ -468,7 +468,7 @@ void BestMethodBenchmarkEquivalencePassesAndFailsClosed() {
 }  // namespace
 
 int main() {
-  DonorDominanceTargetContractPassesAndFailsClosed();
+  ReferenceDominanceTargetContractPassesAndFailsClosed();
   WholeRouteProfilerAttributionPassesAndFailsClosed();
   BestMethodBenchmarkEquivalencePassesAndFailsClosed();
   return 0;

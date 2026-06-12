@@ -432,7 +432,7 @@ std::string MaintenanceCoordinatorRecordsJson(const ServerMaintenanceCoordinator
       << "\",\"message_vector_shape\":\"diag.server.lifecycle.v1"
       << "\",\"cache_invalidation_marker_required\":true"
       << ",\"parser_finality_authority\":false"
-      << ",\"donor_finality_authority\":false"
+      << ",\"reference_finality_authority\":false"
       << "}]";
   return out.str();
 }

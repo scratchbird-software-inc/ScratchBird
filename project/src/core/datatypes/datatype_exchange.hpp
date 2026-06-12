@@ -25,7 +25,7 @@ inline constexpr std::array<byte, 8> kDatatypeDescriptorMagic = {'S', 'B', 'D', 
 
 using SerializedDatatypeDescriptor = std::array<byte, kSerializedDatatypeDescriptorBytes>;
 
-enum class DonorDialectId : u16 {
+enum class ReferenceDialectId : u16 {
   native_sbsql_v3,
   firebird,
   interbase,
@@ -45,7 +45,7 @@ enum class ConversionDiagnosticKind : u16 {
   narrowing,
   precision_loss_possible,
   incompatible,
-  donor_label_unmapped,
+  reference_label_unmapped,
   unsupported
 };
 
@@ -59,9 +59,9 @@ struct DatatypeDescriptorSerializationResult {
   }
 };
 
-struct DonorTypeLabelMapping {
-  DonorDialectId dialect = DonorDialectId::unknown;
-  std::string donor_label;
+struct ReferenceTypeLabelMapping {
+  ReferenceDialectId dialect = ReferenceDialectId::unknown;
+  std::string reference_label;
   CanonicalTypeId target_type_id = CanonicalTypeId::unknown;
   bool placeholder_only = true;
   bool parser_must_confirm_descriptor = true;
@@ -79,13 +79,13 @@ struct DatatypeConversionDiagnosticResult {
   }
 };
 
-const char* DonorDialectName(DonorDialectId dialect);
+const char* ReferenceDialectName(ReferenceDialectId dialect);
 const char* ConversionDiagnosticKindName(ConversionDiagnosticKind kind);
 DatatypeDescriptorSerializationResult SerializeDatatypeDescriptor(const DatatypeDescriptor& descriptor);
 DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescriptor& serialized);
-const std::vector<DonorTypeLabelMapping>& BuiltinDonorTypeLabelPlaceholders();
-std::vector<DonorTypeLabelMapping> DonorTypeLabelPlaceholdersFor(DonorDialectId dialect);
-DatatypeDescriptorResult ResolveDonorTypeLabelPlaceholder(DonorDialectId dialect, const std::string& donor_label);
+const std::vector<ReferenceTypeLabelMapping>& BuiltinReferenceTypeLabelPlaceholders();
+std::vector<ReferenceTypeLabelMapping> ReferenceTypeLabelPlaceholdersFor(ReferenceDialectId dialect);
+DatatypeDescriptorResult ResolveReferenceTypeLabelPlaceholder(ReferenceDialectId dialect, const std::string& reference_label);
 DatatypeConversionDiagnosticResult DescribeDatatypeConversion(CanonicalTypeId source_type_id,
                                                               CanonicalTypeId target_type_id);
 

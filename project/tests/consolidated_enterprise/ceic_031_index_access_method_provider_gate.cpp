@@ -217,10 +217,10 @@ void FailClosedCases() {
                 "static CompleteCapability alone was not refused");
 
   RequireStatus(index::AdmitIndexProviderAccessMethod(
-                    Contract(index::IndexFamily::donor_emulated,
+                    Contract(index::IndexFamily::reference_emulated,
                              index::IndexRouteKind::sql_select)),
-                index::IndexProviderAdmissionStatus::donor_emulated_non_runtime,
-                "donor-emulated family was not blocked");
+                index::IndexProviderAdmissionStatus::reference_emulated_non_runtime,
+                "reference-emulated family was not blocked");
 
   RequireStatus(index::AdmitIndexProviderAccessMethod(
                     Contract(index::IndexFamily::policy_blocked,

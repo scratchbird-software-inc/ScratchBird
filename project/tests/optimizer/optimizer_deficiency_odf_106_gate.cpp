@@ -57,8 +57,8 @@ void RequireEvidenceHygiene(const std::vector<std::string>& evidence) {
   for (const auto& item : evidence) {
     for (const auto forbidden :
          {"docs/", "execution-plans", "findings", "contracts", "references",
-          "parser_or_donor_authority=true",
-          "parser_or_donor_finality_or_visibility_authority=true",
+          "parser_or_reference_authority=true",
+          "parser_or_reference_finality_or_visibility_authority=true",
           "provider_transaction_finality_authority=true",
           "provider_visibility_authority=true",
           "provider_recovery_authority=true",

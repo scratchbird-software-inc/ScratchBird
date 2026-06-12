@@ -476,10 +476,10 @@ bool SerializableIntegratedEngineApiProof() {
   external_request.estimated_row_count = 1;
   external_request.option_envelopes = DmlOptions();
   external_request.option_envelopes.push_back(
-      "serializable.parser_or_donor_authority=true");
+      "serializable.parser_or_reference_authority=true");
   const auto external_insert = api::EngineInsertRows(external_request);
   ok = Require(!external_insert.ok,
-               "parser/donor serializable authority should fail closed in DML path") && ok;
+               "parser/reference serializable authority should fail closed in DML path") && ok;
   ok = Require(FirstDiagnosticCode(external_insert) ==
                    "SB-SNTXN-SERIALIZABLE-EXTERNAL-AUTHORITY-REFUSED",
                "external authority refusal should surface through EngineInsertRows") && ok;
@@ -621,16 +621,16 @@ bool SerializableRecoveryAndAuthorityRefusalProof() {
                          txn::SerializableAccessKind::range_read,
                          txn::MakeSerializableBoundedRange(relation, "a", "z"),
                          3);
-  external.parser_or_donor_authority = true;
+  external.parser_or_reference_authority = true;
   const auto external_result = tracker.RecordAccess(external);
   ok = Require(!external_result.ok(),
-               "parser or donor serializable authority should fail closed") && ok;
+               "parser or reference serializable authority should fail closed") && ok;
   ok = Require(external_result.conflict ==
                    txn::SerializableConflictKind::external_authority_refused,
                "external authority refusal should be classified") && ok;
 
   auto missing_inventory = external;
-  missing_inventory.parser_or_donor_authority = false;
+  missing_inventory.parser_or_reference_authority = false;
   missing_inventory.durable_inventory_authoritative = false;
   const auto missing_inventory_result = tracker.RecordAccess(missing_inventory);
   ok = Require(!missing_inventory_result.ok(),

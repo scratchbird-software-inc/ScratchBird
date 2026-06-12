@@ -90,7 +90,7 @@ bool SupportedMetric(VectorExactMetricKind metric) {
 
 bool DescriptorAuthorityClean(const VectorHnswDescriptor& descriptor) {
   return !descriptor.parser_finality_authority_claimed &&
-         !descriptor.donor_finality_authority_claimed &&
+         !descriptor.reference_finality_authority_claimed &&
          !descriptor.provider_finality_authority_claimed &&
          !descriptor.index_finality_authority_claimed &&
          !descriptor.write_ahead_log_finality_authority_claimed;
@@ -98,7 +98,7 @@ bool DescriptorAuthorityClean(const VectorHnswDescriptor& descriptor) {
 
 bool MetricAuthorityClean(const VectorHnswMetricResource& metric) {
   return !metric.parser_finality_authority_claimed &&
-         !metric.donor_finality_authority_claimed &&
+         !metric.reference_finality_authority_claimed &&
          !metric.provider_finality_authority_claimed &&
          !metric.index_finality_authority_claimed &&
          !metric.write_ahead_log_finality_authority_claimed;
@@ -106,7 +106,7 @@ bool MetricAuthorityClean(const VectorHnswMetricResource& metric) {
 
 bool RecheckProofAuthorityClean(const VectorHnswRecheckProof& proof) {
   return !proof.parser_finality_authority_claimed &&
-         !proof.donor_finality_authority_claimed &&
+         !proof.reference_finality_authority_claimed &&
          !proof.provider_finality_authority_claimed &&
          !proof.index_finality_authority_claimed &&
          !proof.write_ahead_log_finality_authority_claimed &&
@@ -183,7 +183,7 @@ bool ProviderAuthorityClean(const VectorHnswPhysicalProvider& provider) {
          !provider.security_authority_claimed &&
          !provider.transaction_finality_authority_claimed &&
          !provider.parser_finality_authority_claimed &&
-         !provider.donor_finality_authority_claimed &&
+         !provider.reference_finality_authority_claimed &&
          !provider.provider_finality_authority_claimed &&
          !provider.index_finality_authority_claimed &&
          !provider.write_ahead_log_finality_authority_claimed;
@@ -1180,7 +1180,7 @@ VectorHnswBuildResult BuildVectorHnswPhysicalProvider(
     return BuildFailure(
         "INDEX.VECTOR_HNSW_PHYSICAL_PROVIDER.AUTHORITY_CLAIM_REFUSED",
         "index.vector_hnsw_physical_provider.authority_claim_refused",
-        "vector HNSW provider is candidate evidence only and cannot claim transaction, visibility, security, index, provider, parser, donor, or write-ahead authority");
+        "vector HNSW provider is candidate evidence only and cannot claim transaction, visibility, security, index, provider, parser, reference, or write-ahead authority");
   }
   if (!RecheckProofValid(request.recheck_proof)) {
     return BuildFailure(

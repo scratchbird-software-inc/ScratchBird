@@ -439,7 +439,7 @@ void TestAuthorityAndRuntimeLeakageGuards() {
   const std::vector<std::string> combined = {
       "compact_encoding_storage_cpu_only=true",
       "transaction_finality_authority=false",
-      "parser_or_donor_authority=false"};
+      "parser_or_reference_authority=false"};
   for (const auto& item : combined) {
     Require(item.find("execution_plan") == std::string::npos,
             "runtime evidence leaked execution_plan marker");

@@ -71,7 +71,7 @@ bool HasAuthorityDrift(
          authority.authorization_security_authority ||
          authority.recovery_authority ||
          authority.parser_authority ||
-         authority.donor_authority ||
+         authority.reference_authority ||
          authority.wal_authority ||
          authority.benchmark_authority ||
          authority.optimizer_plan_authority ||
@@ -362,10 +362,10 @@ ValidateOptimizerWorkloadRegressionBudgetRecord(
     AddDiagnostic(&validation, record,
                   "SB_OPT_WORKLOAD_BUDGET.FORBIDDEN_AUTHORITY");
   }
-  if (!record.donor_reference_only || record.donor_as_authority ||
-      record.uses_donor_storage_or_finality_for_scratchbird) {
+  if (!record.reference_reference_only || record.reference_as_authority ||
+      record.uses_reference_storage_or_finality_for_scratchbird) {
     AddDiagnostic(&validation, record,
-                  "SB_OPT_WORKLOAD_BUDGET.DONOR_AUTHORITY_DRIFT");
+                  "SB_OPT_WORKLOAD_BUDGET.REFERENCE_AUTHORITY_DRIFT");
   }
 
   if (!Positive(record.baseline_p95_us) ||

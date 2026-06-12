@@ -34,7 +34,7 @@ Each replay fixture index row contains these fields.
 | `primary_route` / `route_set` | Replay route assignment. |
 | `parser_profile` | Standalone, native-future exact-refusal/promotion, or cluster-private profile/refusal policy. |
 | `session_context` | Required session, database, transaction, security, language, and result-contract fields. |
-| `input_text` | Durable client-facing SBSQL/donor-profile text or explicit surface replay key for grammar-fragment fixtures. |
+| `input_text` | Durable client-facing SBSQL/reference-profile text or explicit surface replay key for grammar-fragment fixtures. |
 | `expected_parse` | Accepted, profile-gated, or exact canonical refusal expectation. |
 | `expected_bound_shape` | Operation family and `ExecutionResultEnvelope.v3` result shape. |
 | `expected_sblr_digest_policy` | Stable normalized digest policy, explicitly independent from current implementation output. |
@@ -57,7 +57,7 @@ Each replay fixture index row contains these fields.
 | `server_admission` | `sbsql_replay_server_admission` | sb_server SBLR admission/revalidation and exact refusal replay. |
 | `engine_behavior` | `sbsql_replay_engine_behavior` | SBLR/internal API engine behavior or exact refusal replay. |
 | `full_route` | `sbsql_replay_full_route` | Parser worker to server to engine result-envelope replay. |
-| `donor_alias` | `sbsql_replay_donor_alias` | Donor alias rendering/profile/exact-refusal replay. |
+| `reference_alias` | `sbsql_replay_reference_alias` | Reference alias rendering/profile/exact-refusal replay. |
 | `diagnostic` | `sbsql_replay_diagnostic` | Message-vector and rendered diagnostic replay. |
 
 ## Failure Row Schema

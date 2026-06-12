@@ -85,4 +85,4 @@ Coverage rows closed by registry definition:
 
 Non-authority boundary:
 
-Drivers, listeners, managers, parsers, adapters, and tools may transport credential packets, assertions, and donor-rendered auth messages only. Session acceptance remains engine-owned, and registry rows require fail-closed diagnostics when a verifier boundary, support state, policy gate, channel binding, redaction policy, or production-admission requirement is not satisfied.
+Drivers, listeners, managers, parsers, adapters, and tools may transport credential packets, assertions, and reference-rendered auth messages only. Session acceptance remains engine-owned, and registry rows require fail-closed diagnostics when a verifier boundary, support state, policy gate, channel binding, redaction policy, or production-admission requirement is not satisfied.

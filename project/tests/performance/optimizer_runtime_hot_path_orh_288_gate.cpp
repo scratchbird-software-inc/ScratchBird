@@ -155,7 +155,7 @@ struct LargeScaleLaneCapture {
   bool exact_blocker = false;
   std::string exact_blocker_diagnostic;
   bool benchmark_clean_claim = false;
-  bool donor_equivalent_controls_present = true;
+  bool reference_equivalent_controls_present = true;
   bool best_method_equivalence_present = true;
   bool mga_visibility_evidence_present = true;
   bool security_recheck_evidence_present = true;
@@ -284,10 +284,10 @@ opt::BenchmarkMethodologyRunEvidence MethodologyEvidence(
   };
   run.latest_scratchbird_baseline_id = "scratchbird-main:orh288";
   run.latest_scratchbird_baseline_p50_us = lane.p50_us + 30.0;
-  run.donor_equivalent_baseline_id =
+  run.reference_equivalent_baseline_id =
       "firebird-equivalent:" + std::string(WorkloadName(lane.workload));
-  run.donor_equivalent_engine = "firebird";
-  run.donor_equivalent_baseline_p50_us = lane.p50_us + 70.0;
+  run.reference_equivalent_engine = "firebird";
+  run.reference_equivalent_baseline_p50_us = lane.p50_us + 70.0;
   run.methodology_only = true;
   run.performance_proof = false;
   run.benchmark_clean_claim = false;
@@ -303,7 +303,7 @@ opt::BenchmarkMethodEvidence MethodEvidence(const LargeScaleLaneCapture& lane,
   method.workload_family = WorkloadName(lane.workload);
   method.method = method.engine == "scratchbird"
                       ? "native_runtime_route"
-                      : "donor_equivalent_best_method";
+                      : "reference_equivalent_best_method";
   method.best_normal_method = true;
   method.native_bulk_or_best_engine_path = true;
   method.prepared_or_warmed = true;
@@ -315,8 +315,8 @@ opt::BenchmarkMethodEvidence MethodEvidence(const LargeScaleLaneCapture& lane,
   method.skew_profile = lane.skew_profile;
   method.resource_budget_profile = "orh288_smoke_budget";
   method.constraint_policy = "constraints_checked_equivalently";
-  method.donor_reference_only = method.engine != "scratchbird";
-  method.uses_donor_storage_or_finality_for_scratchbird = false;
+  method.reference_reference_only = method.engine != "scratchbird";
+  method.uses_reference_storage_or_finality_for_scratchbird = false;
   method.diagnostic_code = "ORH_288.BEST_METHOD_CONTROL";
   return method;
 }
@@ -387,10 +387,10 @@ void ValidateExecutedLane(const LargeScaleLaneCapture& lane,
     AddDiagnostic(validation,
                   lane.lane_id + ":ORH_288.CONTRACT_ONLY_EVIDENCE");
   }
-  if (!lane.donor_equivalent_controls_present ||
+  if (!lane.reference_equivalent_controls_present ||
       !lane.best_method_equivalence_present) {
     AddDiagnostic(validation,
-                  lane.lane_id + ":ORH_288.DONOR_EQUIVALENT_CONTROLS_MISSING");
+                  lane.lane_id + ":ORH_288.REFERENCE_EQUIVALENT_CONTROLS_MISSING");
   } else {
     const auto methods =
         std::vector<opt::BenchmarkMethodEvidence>{
@@ -509,7 +509,7 @@ void ValidInfrastructureIsCompletedBlocked() {
 void NegativeCasesFailClosed() {
   auto lanes = ValidInfrastructureLanes();
   lanes[0].stale_artifact = true;
-  lanes[2].donor_equivalent_controls_present = false;
+  lanes[2].reference_equivalent_controls_present = false;
   lanes[2].result_hash.clear();
   lanes[3].runtime_evidence.contract_only = true;
   lanes[3].runtime_evidence.runtime_consumed = false;
@@ -532,8 +532,8 @@ void NegativeCasesFailClosed() {
                         "ORH_288.STALE_BENCHMARK_ARTIFACT"),
           "stale artifact diagnostic missing");
   Require(HasDiagnostic(validation.diagnostics,
-                        "ORH_288.DONOR_EQUIVALENT_CONTROLS_MISSING"),
-          "donor controls diagnostic missing: " +
+                        "ORH_288.REFERENCE_EQUIVALENT_CONTROLS_MISSING"),
+          "reference controls diagnostic missing: " +
               JoinDiagnostics(validation.diagnostics));
   Require(HasDiagnostic(validation.diagnostics,
                         "ORH_288.RESULT_HASH_MISSING"),

@@ -64,7 +64,7 @@ struct IndexFamilyBenchmarkEvidenceRow {
   bool transaction_finality_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool provider_authority = false;
   bool runtime_dependency_free = true;
   std::vector<std::string> evidence;

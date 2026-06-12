@@ -282,20 +282,20 @@ void SupportBundleSecurityFailuresFailClosed() {
           "CEIC-054 support authority diagnostic absent");
 }
 
-void SyntheticDonorAndAuthorityClaimsFailClosed() {
+void SyntheticReferenceAndAuthorityClaimsFailClosed() {
   auto report = Report();
-  report.donor_reference_only = false;
-  report.donor_as_authority = true;
-  report.uses_donor_storage_or_finality_for_scratchbird = true;
+  report.reference_reference_only = false;
+  report.reference_as_authority = true;
+  report.uses_reference_storage_or_finality_for_scratchbird = true;
   report.authority.recovery_authority = true;
   report.drift_observations.front().synthetic_only = true;
   report.support_bundle.synthetic_only = true;
   const auto validation =
       opt::ValidateOptimizerSelectivityObservabilityReport(report);
   Require(!validation.ok,
-          "CEIC-054 synthetic donor/authority claims were accepted");
-  Require(HasDiagnostic(validation.diagnostics, "DONOR_AUTHORITY_DRIFT"),
-          "CEIC-054 donor authority diagnostic absent");
+          "CEIC-054 synthetic reference/authority claims were accepted");
+  Require(HasDiagnostic(validation.diagnostics, "REFERENCE_AUTHORITY_DRIFT"),
+          "CEIC-054 reference authority diagnostic absent");
   Require(HasDiagnostic(validation.diagnostics, "FORBIDDEN_AUTHORITY"),
           "CEIC-054 forbidden authority diagnostic absent");
   Require(HasDiagnostic(validation.diagnostics, "SYNTHETIC_OR_PLACEHOLDER"),
@@ -417,7 +417,7 @@ int main() {
   PositiveReportIsAdmissible();
   MissingDriftMetricsFailClosed();
   SupportBundleSecurityFailuresFailClosed();
-  SyntheticDonorAndAuthorityClaimsFailClosed();
+  SyntheticReferenceAndAuthorityClaimsFailClosed();
   PlaceholderEpochAndContractFailClosed();
   AnnSpillPlanFlipFeedbackAndWindowFailuresFailClosed();
   ClusterModesRemainClaimBlocked();

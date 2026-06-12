@@ -70,7 +70,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
         "tokens": (
             "MMCH_ADAPTIVE_MEMORY_PRESSURE_RESPONSE",
             "CEIC-017_MEMORY_PRESSURE_STATE_MACHINE",
-            "memory_pressure.authority_scope=evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority",
+            "memory_pressure.authority_scope=evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority",
             "MemoryPressureActionKind::throttle",
             "MemoryPressureActionKind::prefer_spill",
             "MemoryPressureActionKind::forced_spill",

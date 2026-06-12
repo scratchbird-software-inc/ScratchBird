@@ -20,7 +20,7 @@ inline constexpr const char* kPolicyBlockedIndexAdmissionKey =
 
 struct PolicyBlockedIndexAuthorityClaims {
   bool parser = false;
-  bool donor = false;
+  bool reference = false;
   bool provider = false;
   bool index = false;
   bool security = false;

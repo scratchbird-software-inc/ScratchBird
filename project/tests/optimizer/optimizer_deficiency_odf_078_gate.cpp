@@ -367,7 +367,7 @@ void InsufficientBenefitRemainsAdvisoryAndInvisible() {
   RequireEvidenceHygiene(result);
 }
 
-void NonAuthoritativeParserDonorAndFallbackAuthorityFailClosed() {
+void NonAuthoritativeParserReferenceAndFallbackAuthorityFailClosed() {
   auto request = BaseRequest();
   request.statistics.front().authoritative = false;
   auto result = api::EnginePlanNoSqlStatisticsAdvisor(request);
@@ -378,12 +378,12 @@ void NonAuthoritativeParserDonorAndFallbackAuthorityFailClosed() {
           "ODF-078 non-authoritative stat diagnostic changed");
 
   request = BaseRequest();
-  request.parser_or_donor_authority = true;
+  request.parser_or_reference_authority = true;
   result = api::EnginePlanNoSqlStatisticsAdvisor(request);
   Require(!result.ok,
-          "ODF-078 parser/donor authority did not fail closed");
+          "ODF-078 parser/reference authority did not fail closed");
   Require(DiagnosticContains(result, "SB_NOSQL_STATS_ADVISOR.UNSAFE_AUTHORITY"),
-          "ODF-078 parser/donor authority diagnostic changed");
+          "ODF-078 parser/reference authority diagnostic changed");
 
   request = BaseRequest();
   request.statistics.front().descriptor_scan_selected = true;
@@ -428,7 +428,7 @@ int main() {
   AllSixFamiliesEmitFamilySpecificStatsAndInvisibleCandidates();
   PromotionSucceedsOnlyAfterRequiredProof();
   InsufficientBenefitRemainsAdvisoryAndInvisible();
-  NonAuthoritativeParserDonorAndFallbackAuthorityFailClosed();
+  NonAuthoritativeParserReferenceAndFallbackAuthorityFailClosed();
   SecurityAndClusterGatesFailClosedAtApiBoundary();
   return EXIT_SUCCESS;
 }

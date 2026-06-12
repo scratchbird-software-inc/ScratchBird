@@ -28,7 +28,7 @@ namespace memory = scratchbird::core::memory;
 namespace platform = scratchbird::core::platform;
 
 constexpr std::string_view kAuthorityBoundary =
-    "resource_security_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_or_agent_action_authority";
+    "resource_security_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_or_agent_action_authority";
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';

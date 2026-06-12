@@ -25,7 +25,7 @@ REQUIRED_ARTIFACTS = [
     "PRODUCTION_BUILD_GATE_MATRIX.csv",
     "RELEASE_PROVENANCE_MATRIX.csv",
     "SCALE_BENCHMARK_MATRIX.csv",
-    "DONOR_COMPARISON_COVERAGE_MATRIX.csv",
+    "REFERENCE_COMPARISON_COVERAGE_MATRIX.csv",
     "DURABLE_STORAGE_INDEX_PROOF_MATRIX.csv",
     "SECURITY_PROVIDER_INTEGRATION_MATRIX.csv",
     "CLUSTER_PRODUCTION_BLOCK_MATRIX.csv",
@@ -147,11 +147,11 @@ def gate_benchmark(repo: pathlib.Path) -> None:
     cache_phases = {row["cache_phase"] for row in rows}
     require({"cold", "warm"}.issubset(cache_phases), "benchmark matrix must include cold and warm phases")
     for row in rows:
-        for field in ["p50_ms", "p95_ms", "p99_ms", "route_label", "donor_comparison_set"]:
+        for field in ["p50_ms", "p95_ms", "p99_ms", "route_label", "reference_comparison_set"]:
             require(row.get(field), f"benchmark row {row.get('lane_id')} missing {field}")
-    donors = read_csv(repo, str(ARTIFACTS / "DONOR_COMPARISON_COVERAGE_MATRIX.csv"))
-    require_rows_complete(donors, "DONOR_COMPARISON_COVERAGE_MATRIX.csv")
-    require(len(donors) >= 24, "donor comparison matrix must cover at least 24 donor/reference engines")
+    references = read_csv(repo, str(ARTIFACTS / "REFERENCE_COMPARISON_COVERAGE_MATRIX.csv"))
+    require_rows_complete(references, "REFERENCE_COMPARISON_COVERAGE_MATRIX.csv")
+    require(len(references) >= 24, "reference comparison matrix must cover at least 24 reference/reference engines")
     read_text(repo, "project/tools/benchmark_reproducibility.py")
     cmake = read_text(repo, "project/CMakeLists.txt")
     require("benchmark_clean_cmake_instrumentation_flags_gate" in cmake, "benchmark clean CMake gate missing")

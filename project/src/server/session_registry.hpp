@@ -22,7 +22,12 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace scratchbird::engine::internal_api {
+struct EngineLanguageContext;
+}
 
 namespace scratchbird::server {
 
@@ -113,7 +118,17 @@ struct ServerSessionRecord {
   std::string group_set_hash = "groups/default";
   std::vector<std::string> engine_authorization_trace_tags;
   std::string search_path_hash = "search_path/default";
-  std::string language_profile = "en";
+  std::string language_profile = "sbsql.builtin.recovery.en";
+  std::string language_tag;
+  std::string default_language_tag = "en";
+  std::string input_syntax_profile = "sbsql.syntax.standard";
+  std::string input_language_fallback_tag;
+  std::string common_resource_hash = "builtin.common.sbsql.v1";
+  std::uint64_t language_resource_epoch = 1;
+  std::uint64_t localized_name_epoch = 1;
+  std::uint64_t message_resource_epoch = 1;
+  std::string resource_compatibility_identity = "sbsql.resource.compat.v1";
+  std::string resource_version_identity = "sbsql.resource-pack.v1";
   std::string application_name;
   std::string database_engine_agent_state = "not_started";
   std::uint64_t database_engine_agent_health_generation = 0;
@@ -168,8 +183,61 @@ struct ServerPreparedStatementRecord {
   std::string role_set_hash = "roles/default";
   std::string group_set_hash = "groups/default";
   std::string search_path_hash = "search_path/default";
-  std::string language_profile = "en";
+  std::string language_profile = "sbsql.builtin.recovery.en";
+  std::string language_tag;
+  std::string default_language_tag = "en";
+  std::string input_syntax_profile = "sbsql.syntax.standard";
+  std::string input_language_fallback_tag;
+  std::string common_resource_hash = "builtin.common.sbsql.v1";
+  std::uint64_t language_resource_epoch = 1;
+  std::uint64_t localized_name_epoch = 1;
+  std::uint64_t message_resource_epoch = 1;
+  std::string resource_compatibility_identity = "sbsql.resource.compat.v1";
+  std::string resource_version_identity = "sbsql.resource-pack.v1";
   bool closed = false;
+};
+
+struct ServerLanguageContextIdentity {
+  std::string language_profile_id = "sbsql.builtin.recovery.en";
+  std::string language_tag = "en";
+  std::string default_language_tag = "en";
+  std::string input_syntax_profile = "sbsql.syntax.standard";
+  std::string input_language_fallback_tag;
+  std::string common_resource_hash = "builtin.common.sbsql.v1";
+  std::uint64_t language_resource_epoch = 1;
+  std::uint64_t localized_name_epoch = 1;
+  std::uint64_t message_resource_epoch = 1;
+  std::string resource_compatibility_identity = "sbsql.resource.compat.v1";
+  std::string resource_version_identity = "sbsql.resource-pack.v1";
+};
+
+struct ServerLanguageBundleRecord {
+  std::string bundle_uuid;
+  std::string language_profile_id;
+  std::string language_tag;
+  std::string dialect_profile_uuid;
+  std::string topology_profile_uuid;
+  std::string common_resource_hash;
+  std::string resource_hash;
+  bool loaded = false;
+  bool required_profile = false;
+  std::uint64_t language_resource_epoch = 0;
+};
+
+struct ServerLanguageResourceDirectoryRecord {
+  std::string directory_id;
+  std::string directory_path;
+  std::string manifest_hash;
+  std::string signing_key_id;
+  std::string scan_evidence_id;
+  std::string audit_reason;
+  bool signed_manifest_verified = false;
+  bool admitted_by_security_policy = false;
+  bool compatible_with_server = true;
+  bool active = false;
+  std::uint64_t language_resource_epoch = 0;
+  std::uint64_t localized_name_epoch = 0;
+  std::uint64_t message_resource_epoch = 0;
 };
 
 struct ServerCursorRecord {
@@ -233,6 +301,9 @@ struct ServerSessionRegistry {
   std::map<std::string, ServerRequestRecord> requests_by_uuid;
   std::map<std::string, ServerPreparedStatementRecord> prepared_by_uuid;
   std::map<std::string, ServerCursorRecord> cursors_by_uuid;
+  std::map<std::string, ServerLanguageBundleRecord> language_bundles_by_uuid;
+  std::map<std::string, ServerLanguageResourceDirectoryRecord>
+      language_resource_directories_by_id;
   std::map<std::string, scratchbird::core::agents::DatabaseLocalBackgroundJobScheduler>
       job_schedulers_by_database_uuid;
   std::map<std::string, scratchbird::core::agents::WorkloadResourceQuotaController>
@@ -411,6 +482,13 @@ const char* ServerRequestLifecycleStateName(ServerRequestLifecycleState state);
 const char* ServerDriverTransactionEventName(ServerDriverTransactionEvent event);
 const char* ServerTransactionPressureActionName(ServerTransactionPressureAction action);
 std::string UuidBytesToText(const std::array<std::uint8_t, 16>& uuid);
+ServerLanguageContextIdentity ServerLanguageContextForSession(
+    const ServerSessionRecord& session);
+void ApplyRequestedLanguageProfile(ServerSessionRecord* session,
+                                   std::string_view requested_language_tag);
+void PopulateEngineLanguageContextFromSession(
+    const ServerSessionRecord& session,
+    scratchbird::engine::internal_api::EngineLanguageContext* context);
 
 std::vector<std::uint8_t> EncodeAuthHandoffPayloadForTest(const std::string& principal,
                                                           bool credential_valid,

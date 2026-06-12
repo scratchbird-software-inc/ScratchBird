@@ -75,7 +75,7 @@ bool IsForbiddenAuthorityClaim(const std::string& claim) {
       "security",
       "recovery",
       "parser",
-      "donor",
+      "reference",
       "wal",
       "benchmark",
       "optimizer_plan",
@@ -213,7 +213,7 @@ std::vector<std::string> ReservationEvidence(const std::string& code) {
       "visibility_authority=false",
       "recovery_authority=false",
       "parser_authority=false",
-      "donor_authority=false",
+      "reference_authority=false",
       "client_authority=false"};
 }
 

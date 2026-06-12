@@ -121,6 +121,33 @@ bool HasTrustedUdrProfile(const EngineApiRequest& request) {
          HasOptionToken(request, "register:trusted_cpp_udr");
 }
 
+bool IsTrustedCppRuntimeLanguage(const std::string& runtime_language) {
+  return runtime_language.empty() ||
+         runtime_language == "cpp" ||
+         runtime_language == "c++" ||
+         runtime_language == "cxx" ||
+         runtime_language == "trusted_cpp";
+}
+
+std::string RequestedRuntimeLanguage(const EngineApiRequest& request) {
+  for (const auto& prefix :
+       {"runtime_language:", "udr_runtime:", "runtime:", "language:"}) {
+    const auto value = OptionValue(request, prefix);
+    if (!value.empty()) { return value; }
+  }
+  if (HasOptionToken(request, "non_cpp_udr")) { return "non_cpp"; }
+  return {};
+}
+
+bool RequestsNonCppRuntime(const EngineApiRequest& request,
+                           std::string* runtime_language) {
+  auto requested = RequestedRuntimeLanguage(request);
+  if (runtime_language != nullptr) {
+    *runtime_language = requested.empty() ? "unspecified" : requested;
+  }
+  return !requested.empty() && !IsTrustedCppRuntimeLanguage(requested);
+}
+
 bool IsSupportedUdrAbiToken(const std::string& abi) {
   return abi == "1" ||
          abi == "sb_udr_1" ||
@@ -256,6 +283,9 @@ std::string RuntimeFailureCode(const std::string& runtime_code,
   }
   if (runtime_code == "UDR.RUNTIME.ABI_UNSUPPORTED") {
     return "SB_ENGINE_API_UDR_ABI_UNSUPPORTED";
+  }
+  if (runtime_code == "UDR.RUNTIME.NON_CPP_RUNTIME_FORBIDDEN") {
+    return "SB_ENGINE_API_UDR_NON_CPP_RUNTIME_FORBIDDEN";
   }
   if (runtime_code == "UDR.RUNTIME.PROVENANCE_REQUIRED") {
     return "SB_ENGINE_API_UDR_PROVENANCE_REQUIRED";
@@ -469,6 +499,15 @@ EngineRegisterUdrPackageResult EngineRegisterUdrPackage(const EngineRegisterUdrP
       true,
       false);
   if (!authority.ok) { return authority; }
+  std::string requested_runtime_language;
+  if (RequestsNonCppRuntime(request, &requested_runtime_language)) {
+    EmitUdrMetric("sb_udr_non_cpp_refusal_total", request, "refused", "register", requested_runtime_language);
+    return MakeUdrFailure<EngineRegisterUdrPackageResult>(
+        request.context,
+        kRegisterOperation,
+        "SB_ENGINE_API_UDR_NON_CPP_RUNTIME_FORBIDDEN",
+        "trusted_cpp_udr_runtime_required:" + requested_runtime_language);
+  }
   if (!HasTrustedUdrProfile(request)) {
     EmitUdrMetric("sb_udr_registration_total", request, "refused", "register", "trust_required");
     return MakeUdrFailure<EngineRegisterUdrPackageResult>(
@@ -552,6 +591,7 @@ EngineRegisterUdrPackageResult EngineRegisterUdrPackage(const EngineRegisterUdrP
                                 {"binary_hash", descriptor->binary_hash},
                                 {"signature_policy", descriptor->signature_policy},
                                 {"capability_role", descriptor->capability_role},
+                                {"runtime_language", descriptor->runtime_language},
                                 {"entrypoint_count", std::to_string(descriptor->entrypoints.size())}});
     EmitUdrMetric("sb_udr_registration_total", request, "ok", "register");
   }
@@ -662,6 +702,7 @@ EngineInspectUdrPackageResult EngineInspectUdrPackages(const EngineInspectUdrPac
                                 {"binary_hash", runtime_state ? runtime_state->binary_hash : ""},
                                 {"signature_policy", runtime_state ? runtime_state->signature_policy : ""},
                                 {"capability_role", runtime_state ? runtime_state->capability_role : ""},
+                                {"runtime_language", runtime_state ? runtime_state->runtime_language : ""},
                                 {"entrypoints", runtime_state ? JoinEntrypoints(runtime_state->entrypoint_names) : ""}});
   }
   AddEngineExtensionEvidence(&result, "udr", "inspected");

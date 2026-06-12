@@ -109,11 +109,11 @@ bool BoundRequiresRecheck(const IndexKeyEncodingResult& result) {
 }
 
 OrderedNullUniquenessPolicy EffectiveNullPolicy(OrderedNullUniquenessPolicy requested,
-                                                bool donor_nulls_distinct) {
-  if (requested != OrderedNullUniquenessPolicy::donor_profile_default) {
+                                                bool reference_nulls_distinct) {
+  if (requested != OrderedNullUniquenessPolicy::reference_profile_default) {
     return requested;
   }
-  return donor_nulls_distinct ? OrderedNullUniquenessPolicy::nulls_distinct
+  return reference_nulls_distinct ? OrderedNullUniquenessPolicy::nulls_distinct
                               : OrderedNullUniquenessPolicy::nulls_not_distinct;
 }
 
@@ -149,8 +149,8 @@ IndexPostingEqualityProof EqualityProofFor(const OrderedDuplicateLifecycleReques
   proof.stable_row_uuid_locators = request.stable_row_uuid_locators;
   proof.preserves_mga_visibility_recheck =
       request.preserve_mga_visibility_recheck;
-  proof.parser_or_donor_finality_authority =
-      request.parser_or_donor_finality_authority;
+  proof.parser_or_reference_finality_authority =
+      request.parser_or_reference_finality_authority;
   proof.timestamp_or_uuid_order_finality_authority =
       request.timestamp_or_uuid_order_finality_authority;
   return proof;
@@ -197,20 +197,20 @@ std::string Normalize(std::string value) {
 }
 
 IndexKeySemanticProfile KeyProfile(std::string profile_id,
-                                   bool donor_visible_tiebreak,
+                                   bool reference_visible_tiebreak,
                                    bool bytewise_stable,
                                    bool requires_recheck) {
   IndexKeySemanticProfile profile;
   profile.profile_id = std::move(profile_id);
-  profile.donor_visible_tiebreak = donor_visible_tiebreak;
+  profile.reference_visible_tiebreak = reference_visible_tiebreak;
   profile.bytewise_stable = bytewise_stable;
   profile.requires_recheck = requires_recheck;
   return profile;
 }
 
-OrderedDonorSemanticProfile DonorProfile(OrderedDonorEngine donor,
+OrderedReferenceSemanticProfile ReferenceProfile(OrderedReferenceEngine reference,
                                          const char* profile_id,
-                                         const char* donor_name,
+                                         const char* reference_name,
                                          IndexKeyNullPlacement asc_nulls,
                                          IndexKeyNullPlacement desc_nulls,
                                          OrderedNullUniquenessPolicy unique_null_policy,
@@ -221,15 +221,15 @@ OrderedDonorSemanticProfile DonorProfile(OrderedDonorEngine donor,
                                          bool requires_recheck,
                                          bool fallback_sort,
                                          std::vector<std::string> unsupported) {
-  OrderedDonorSemanticProfile profile;
-  profile.donor = donor;
+  OrderedReferenceSemanticProfile profile;
+  profile.reference = reference;
   profile.profile_id = profile_id;
-  profile.donor_name = donor_name;
+  profile.reference_name = reference_name;
   profile.native_family = IndexFamily::btree;
   profile.ascending_null_placement = asc_nulls;
   profile.descending_null_placement = desc_nulls;
   profile.unique_null_policy = unique_null_policy;
-  profile.key_profile = KeyProfile(profile_id, donor != OrderedDonorEngine::scratchbird, !fallback_sort, requires_recheck);
+  profile.key_profile = KeyProfile(profile_id, reference != OrderedReferenceEngine::scratchbird, !fallback_sort, requires_recheck);
   profile.stores_null_keys = stores_nulls;
   profile.supports_descending_keys = true;
   profile.supports_prefix_seek = true;
@@ -288,8 +288,8 @@ OrderedAliasDecision RefuseAlias(std::string code, std::string key, std::string 
   return decision;
 }
 
-OrderedDonorProfileDecision RefuseDonor(std::string code, std::string key, std::string detail) {
-  OrderedDonorProfileDecision decision;
+OrderedReferenceProfileDecision RefuseReference(std::string code, std::string key, std::string detail) {
+  OrderedReferenceProfileDecision decision;
   decision.status = ErrorStatus();
   decision.admitted = false;
   decision.diagnostic = MakeOrderedAccessDiagnostic(decision.status, std::move(code), std::move(key), std::move(detail));
@@ -476,7 +476,7 @@ OrderedUniquenessDecision DecideOrderedUniquenessPolicy(const OrderedUniquenessR
     return decision;
   }
 
-  const auto effective_null_policy = EffectiveNullPolicy(request.null_policy, request.donor_profile_nulls_distinct);
+  const auto effective_null_policy = EffectiveNullPolicy(request.null_policy, request.reference_profile_nulls_distinct);
   decision.null_exempt_from_conflict = HasNullComponent(request.key_components) &&
                                        effective_null_policy == OrderedNullUniquenessPolicy::nulls_distinct;
   decision.uniqueness_enforced = !decision.null_exempt_from_conflict;
@@ -878,7 +878,7 @@ OrderedAliasDecision DecideOrderedAlias(const OrderedAliasRequest& request) {
                        "index.ordered.alias_unknown",
                        request.requested_family);
   }
-  if (request.donor_requires_native_catalog_identity || request.donor_requires_native_page_metrics) {
+  if (request.reference_requires_native_catalog_identity || request.reference_requires_native_page_metrics) {
     return RefuseAlias("SB-INDEX-ORDERED-ALIAS-NATIVE-REQUIRED",
                        "index.ordered.alias_native_required",
                        request.requested_family);
@@ -911,9 +911,9 @@ OrderedAliasDecision DecideOrderedAlias(const OrderedAliasRequest& request) {
   return decision;
 }
 
-const std::vector<OrderedDonorSemanticProfile>& BuiltinOrderedDonorSemanticProfiles() {
-  static const std::vector<OrderedDonorSemanticProfile> profiles = {
-      DonorProfile(OrderedDonorEngine::scratchbird,
+const std::vector<OrderedReferenceSemanticProfile>& BuiltinOrderedReferenceSemanticProfiles() {
+  static const std::vector<OrderedReferenceSemanticProfile> profiles = {
+      ReferenceProfile(OrderedReferenceEngine::scratchbird,
                    "sb_native_btree",
                    "scratchbird",
                    IndexKeyNullPlacement::nulls_last,
@@ -926,7 +926,7 @@ const std::vector<OrderedDonorSemanticProfile>& BuiltinOrderedDonorSemanticProfi
                    false,
                    false,
                    {}),
-      DonorProfile(OrderedDonorEngine::firebird,
+      ReferenceProfile(OrderedReferenceEngine::firebird,
                    "firebird_btree_ordered",
                    "firebird",
                    IndexKeyNullPlacement::nulls_first,
@@ -939,7 +939,7 @@ const std::vector<OrderedDonorSemanticProfile>& BuiltinOrderedDonorSemanticProfi
                    true,
                    false,
                    {"partial_indexes", "include_covering_columns"}),
-      DonorProfile(OrderedDonorEngine::postgresql,
+      ReferenceProfile(OrderedReferenceEngine::postgresql,
                    "postgresql_btree_ordered",
                    "postgresql",
                    IndexKeyNullPlacement::nulls_last,
@@ -952,7 +952,7 @@ const std::vector<OrderedDonorSemanticProfile>& BuiltinOrderedDonorSemanticProfi
                    false,
                    false,
                    {}),
-      DonorProfile(OrderedDonorEngine::mysql,
+      ReferenceProfile(OrderedReferenceEngine::mysql,
                    "mysql_innodb_btree_ordered",
                    "mysql",
                    IndexKeyNullPlacement::nulls_first,
@@ -965,7 +965,7 @@ const std::vector<OrderedDonorSemanticProfile>& BuiltinOrderedDonorSemanticProfi
                    true,
                    false,
                    {"partial_indexes", "include_covering_columns"}),
-      DonorProfile(OrderedDonorEngine::mariadb,
+      ReferenceProfile(OrderedReferenceEngine::mariadb,
                    "mariadb_innodb_btree_ordered",
                    "mariadb",
                    IndexKeyNullPlacement::nulls_first,
@@ -978,7 +978,7 @@ const std::vector<OrderedDonorSemanticProfile>& BuiltinOrderedDonorSemanticProfi
                    true,
                    false,
                    {"partial_indexes", "include_covering_columns"}),
-      DonorProfile(OrderedDonorEngine::sqlite,
+      ReferenceProfile(OrderedReferenceEngine::sqlite,
                    "sqlite_btree_ordered",
                    "sqlite",
                    IndexKeyNullPlacement::nulls_first,
@@ -991,7 +991,7 @@ const std::vector<OrderedDonorSemanticProfile>& BuiltinOrderedDonorSemanticProfi
                    true,
                    false,
                    {"include_covering_columns"}),
-      DonorProfile(OrderedDonorEngine::duckdb,
+      ReferenceProfile(OrderedReferenceEngine::duckdb,
                    "duckdb_ordered_art_alias",
                    "duckdb",
                    IndexKeyNullPlacement::nulls_last,
@@ -1004,7 +1004,7 @@ const std::vector<OrderedDonorSemanticProfile>& BuiltinOrderedDonorSemanticProfi
                    true,
                    true,
                    {"partial_indexes", "include_covering_columns"}),
-      DonorProfile(OrderedDonorEngine::neo4j,
+      ReferenceProfile(OrderedReferenceEngine::neo4j,
                    "neo4j_range_ordered_alias",
                    "neo4j",
                    IndexKeyNullPlacement::nulls_last,
@@ -1020,53 +1020,53 @@ const std::vector<OrderedDonorSemanticProfile>& BuiltinOrderedDonorSemanticProfi
   return profiles;
 }
 
-const OrderedDonorSemanticProfile* FindOrderedDonorSemanticProfile(OrderedDonorEngine donor,
+const OrderedReferenceSemanticProfile* FindOrderedReferenceSemanticProfile(OrderedReferenceEngine reference,
                                                                    std::string_view profile_id) {
-  for (const auto& profile : BuiltinOrderedDonorSemanticProfiles()) {
-    if (profile.donor == donor && (profile_id.empty() || profile.profile_id == profile_id)) {
+  for (const auto& profile : BuiltinOrderedReferenceSemanticProfiles()) {
+    if (profile.reference == reference && (profile_id.empty() || profile.profile_id == profile_id)) {
       return &profile;
     }
   }
   return nullptr;
 }
 
-OrderedDonorProfileDecision ApplyOrderedDonorSemanticProfile(const OrderedDonorProfileRequest& request) {
-  const auto* profile = FindOrderedDonorSemanticProfile(request.donor, request.profile_id);
+OrderedReferenceProfileDecision ApplyOrderedReferenceSemanticProfile(const OrderedReferenceProfileRequest& request) {
+  const auto* profile = FindOrderedReferenceSemanticProfile(request.reference, request.profile_id);
   if (!profile) {
-    return RefuseDonor("SB-INDEX-ORDERED-DONOR-PROFILE-UNKNOWN",
-                       "index.ordered.donor_profile_unknown",
-                       request.profile_id.empty() ? OrderedDonorEngineName(request.donor) : request.profile_id);
+    return RefuseReference("SB-INDEX-ORDERED-REFERENCE-PROFILE-UNKNOWN",
+                       "index.ordered.reference_profile_unknown",
+                       request.profile_id.empty() ? OrderedReferenceEngineName(request.reference) : request.profile_id);
   }
   if (request.descending_key_requested && !profile->supports_descending_keys) {
-    return RefuseDonor("SB-INDEX-ORDERED-DONOR-DESCENDING-REFUSED",
-                       "index.ordered.donor_descending_refused",
+    return RefuseReference("SB-INDEX-ORDERED-REFERENCE-DESCENDING-REFUSED",
+                       "index.ordered.reference_descending_refused",
                        profile->profile_id);
   }
   if (request.prefix_seek_requested && !profile->supports_prefix_seek) {
-    return RefuseDonor("SB-INDEX-ORDERED-DONOR-PREFIX-REFUSED",
-                       "index.ordered.donor_prefix_refused",
+    return RefuseReference("SB-INDEX-ORDERED-REFERENCE-PREFIX-REFUSED",
+                       "index.ordered.reference_prefix_refused",
                        profile->profile_id);
   }
   if (profile->requires_collation_epoch && !request.collation_epoch_valid) {
-    return RefuseDonor("SB-INDEX-ORDERED-DONOR-COLLATION-EPOCH-STALE",
-                       "index.ordered.donor_collation_epoch_stale",
+    return RefuseReference("SB-INDEX-ORDERED-REFERENCE-COLLATION-EPOCH-STALE",
+                       "index.ordered.reference_collation_epoch_stale",
                        profile->profile_id);
   }
-  if (request.donor_catalog_projection_requested && !profile->catalog_projection_allowed) {
-    return RefuseDonor("SB-INDEX-ORDERED-DONOR-CATALOG-REFUSED",
-                       "index.ordered.donor_catalog_refused",
+  if (request.reference_catalog_projection_requested && !profile->catalog_projection_allowed) {
+    return RefuseReference("SB-INDEX-ORDERED-REFERENCE-CATALOG-REFUSED",
+                       "index.ordered.reference_catalog_refused",
                        profile->profile_id);
   }
 
-  OrderedDonorProfileDecision decision;
+  OrderedReferenceProfileDecision decision;
   decision.status = OkStatus();
   decision.admitted = true;
   decision.profile = *profile;
-  decision.catalog_projection_allowed = profile->catalog_projection_allowed && request.donor_catalog_projection_requested;
-  decision.steps.push_back("load_donor_ordered_semantic_profile");
+  decision.catalog_projection_allowed = profile->catalog_projection_allowed && request.reference_catalog_projection_requested;
+  decision.steps.push_back("load_reference_ordered_semantic_profile");
 
   OrderedAccessRequest access = request.access;
-  access.family = access.family == IndexFamily::unknown || access.family == IndexFamily::donor_emulated
+  access.family = access.family == IndexFamily::unknown || access.family == IndexFamily::reference_emulated
                       ? profile->native_family
                       : access.family;
   access.semantic_profile = profile->key_profile;
@@ -1080,16 +1080,16 @@ OrderedDonorProfileDecision ApplyOrderedDonorSemanticProfile(const OrderedDonorP
     return decision;
   }
   decision.fallback_sort_required = decision.access_plan.fallback_sort_required || profile->may_require_fallback_sort;
-  decision.steps.push_back("plan_native_btree_access_for_donor_profile");
+  decision.steps.push_back("plan_native_btree_access_for_reference_profile");
 
   if (request.uniqueness_requested) {
     OrderedUniquenessRequest uniqueness = request.uniqueness;
-    uniqueness.family = uniqueness.family == IndexFamily::unknown || uniqueness.family == IndexFamily::donor_emulated
+    uniqueness.family = uniqueness.family == IndexFamily::unknown || uniqueness.family == IndexFamily::reference_emulated
                             ? IndexFamily::unique_btree
                             : uniqueness.family;
     uniqueness.semantic_profile = profile->key_profile;
     uniqueness.null_policy = profile->unique_null_policy;
-    uniqueness.donor_profile_nulls_distinct = profile->unique_null_policy != OrderedNullUniquenessPolicy::nulls_not_distinct;
+    uniqueness.reference_profile_nulls_distinct = profile->unique_null_policy != OrderedNullUniquenessPolicy::nulls_not_distinct;
     decision.uniqueness_decision = DecideOrderedUniquenessPolicy(uniqueness);
     if (!decision.uniqueness_decision.ok()) {
       decision.status = decision.uniqueness_decision.status;
@@ -1097,7 +1097,7 @@ OrderedDonorProfileDecision ApplyOrderedDonorSemanticProfile(const OrderedDonorP
       decision.diagnostic = decision.uniqueness_decision.diagnostic;
       return decision;
     }
-    decision.steps.push_back("apply_donor_unique_null_policy");
+    decision.steps.push_back("apply_reference_unique_null_policy");
   } else {
     decision.uniqueness_decision.status = OkStatus();
     decision.uniqueness_decision.admitted = true;
@@ -1107,12 +1107,12 @@ OrderedDonorProfileDecision ApplyOrderedDonorSemanticProfile(const OrderedDonorP
     if ((request.overlay.overlay == OrderedOverlayKind::expression && !profile->supports_expression_indexes) ||
         (request.overlay.overlay == OrderedOverlayKind::partial && !profile->supports_partial_indexes) ||
         (request.overlay.overlay == OrderedOverlayKind::covering && !profile->supports_covering_indexes)) {
-      return RefuseDonor("SB-INDEX-ORDERED-DONOR-OVERLAY-REFUSED",
-                         "index.ordered.donor_overlay_refused",
+      return RefuseReference("SB-INDEX-ORDERED-REFERENCE-OVERLAY-REFUSED",
+                         "index.ordered.reference_overlay_refused",
                          profile->profile_id);
     }
     OrderedOverlayRequest overlay = request.overlay;
-    overlay.family = overlay.family == IndexFamily::unknown || overlay.family == IndexFamily::donor_emulated
+    overlay.family = overlay.family == IndexFamily::unknown || overlay.family == IndexFamily::reference_emulated
                          ? profile->native_family
                          : overlay.family;
     decision.overlay_decision = DecideOrderedOverlayEligibility(overlay);
@@ -1122,14 +1122,14 @@ OrderedDonorProfileDecision ApplyOrderedDonorSemanticProfile(const OrderedDonorP
       decision.diagnostic = decision.overlay_decision.diagnostic;
       return decision;
     }
-    decision.steps.push_back("apply_donor_overlay_policy");
+    decision.steps.push_back("apply_reference_overlay_policy");
   } else {
     decision.overlay_decision.status = OkStatus();
     decision.overlay_decision.admitted = true;
     decision.overlay_decision.eligibility = OrderedOverlayEligibility::eligible_exact;
   }
 
-  decision.steps.push_back("publish_donor_ordered_profile_decision");
+  decision.steps.push_back("publish_reference_ordered_profile_decision");
   return decision;
 }
 
@@ -1176,17 +1176,17 @@ const char* OrderedDuplicateLifecycleActionName(OrderedDuplicateLifecycleAction 
   return "refuse_duplicate";
 }
 
-const char* OrderedDonorEngineName(OrderedDonorEngine donor) {
-  switch (donor) {
-    case OrderedDonorEngine::scratchbird: return "scratchbird";
-    case OrderedDonorEngine::firebird: return "firebird";
-    case OrderedDonorEngine::postgresql: return "postgresql";
-    case OrderedDonorEngine::mysql: return "mysql";
-    case OrderedDonorEngine::mariadb: return "mariadb";
-    case OrderedDonorEngine::sqlite: return "sqlite";
-    case OrderedDonorEngine::duckdb: return "duckdb";
-    case OrderedDonorEngine::neo4j: return "neo4j";
-    case OrderedDonorEngine::unknown: return "unknown";
+const char* OrderedReferenceEngineName(OrderedReferenceEngine reference) {
+  switch (reference) {
+    case OrderedReferenceEngine::scratchbird: return "scratchbird";
+    case OrderedReferenceEngine::firebird: return "firebird";
+    case OrderedReferenceEngine::postgresql: return "postgresql";
+    case OrderedReferenceEngine::mysql: return "mysql";
+    case OrderedReferenceEngine::mariadb: return "mariadb";
+    case OrderedReferenceEngine::sqlite: return "sqlite";
+    case OrderedReferenceEngine::duckdb: return "duckdb";
+    case OrderedReferenceEngine::neo4j: return "neo4j";
+    case OrderedReferenceEngine::unknown: return "unknown";
   }
   return "unknown";
 }

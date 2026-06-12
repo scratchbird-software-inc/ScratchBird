@@ -79,10 +79,10 @@ std::vector<RequirementSeed> RequirementSeeds() {
            "conformance",
            Kind::conformance_gate},
           {"CGC-REQ-DVP",
-           "docs/specifications/chapters/donors/common/"
-           "appendix-donor-version-profile-closure.md",
-           "DVP-DONOR-VERSION-PROFILE-CLOSURE",
-           "donor_compatibility",
+           "docs/specifications/chapters/references/common/"
+           "appendix-reference-version-profile-closure.md",
+           "DVP-REFERENCE-VERSION-PROFILE-CLOSURE",
+           "reference_compatibility",
            Kind::record},
           {"CGC-REQ-CGC",
            "docs/specifications/chapters/implementation-guidance/"

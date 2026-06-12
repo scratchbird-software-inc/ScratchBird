@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "metadata/donor_catalog_projection_policy.hpp"
+#include "metadata/compatibility_catalog_projection_policy.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -115,7 +115,7 @@ const std::string& Field(const std::map<std::string, std::string>& row,
   return it->second;
 }
 
-bool HasEvidence(const functions::DonorCatalogProjectionResult& result,
+bool HasEvidence(const functions::CompatibilityCatalogProjectionResult& result,
                  std::string_view key,
                  std::string_view value) {
   return std::any_of(result.evidence.begin(),
@@ -130,24 +130,24 @@ bool StartsWith(std::string_view value, std::string_view prefix) {
 }
 
 std::string ExpectedManifestResource(std::string_view engine_id) {
-  std::string resource = "donor-emulation/";
+  std::string resource = "compatibility-research/";
   resource.append(engine_id);
   resource.append("/catalog_seed_manifest_full.json");
   return resource;
 }
 
 void VerifyResultAuthority(const std::string& row_id,
-                           const functions::DonorCatalogProjectionResult& result) {
+                           const functions::CompatibilityCatalogProjectionResult& result) {
   Require(!result.parser_execution_authority,
           row_id + " granted parser execution authority");
-  Require(!result.donor_execution_authority,
-          row_id + " accepted donor execution authority");
+  Require(!result.external_execution_authority,
+          row_id + " accepted external execution authority");
   Require(!result.sblr_execution_authority,
           row_id + " granted SBLR execution authority");
   Require(HasEvidence(result, "parser_execution_authority", "false"),
           row_id + " missing parser-authority evidence");
-  Require(HasEvidence(result, "donor_execution_authority", "false"),
-          row_id + " missing donor-authority evidence");
+  Require(HasEvidence(result, "external_execution_authority", "false"),
+          row_id + " missing external-authority evidence");
   Require(HasEvidence(result, "sblr_execution_authority", "false"),
           row_id + " missing SBLR-authority evidence");
 }
@@ -155,19 +155,19 @@ void VerifyResultAuthority(const std::string& row_id,
 void VerifyCatalogRow(const std::map<std::string, std::string>& row) {
   const auto& row_id = Field(row, "inventory_id");
   const auto manifest =
-      functions::ResolveDonorCatalogSeedManifest(Field(row, "engine_id"));
-  Require(manifest.has_value(), row_id + " did not resolve donor seed manifest");
+      functions::ResolveCompatibilityCatalogSeedManifest(Field(row, "engine_id"));
+  Require(manifest.has_value(), row_id + " did not resolve compatibility seed manifest");
   Require(manifest->project_owned_packet,
           row_id + " seed manifest was not project-owned");
   Require(manifest->clean_database_seedable,
           row_id + " seed manifest was not clean-database seedable");
-  Require(!manifest->mutable_by_parser && !manifest->mutable_by_donor,
+  Require(!manifest->mutable_by_parser && !manifest->mutable_by_external,
           row_id + " seed manifest was mutable outside SB catalog authority");
   Require(manifest->manifest_resource == ExpectedManifestResource(Field(row, "engine_id")),
           row_id + " seed manifest resource mismatch");
 
   const auto contract =
-      functions::ResolveDonorCatalogProjectionContract(Field(row, "sb_normalized_target"));
+      functions::ResolveCompatibilityCatalogProjectionContract(Field(row, "sb_normalized_target"));
   Require(contract.has_value(), row_id + " did not resolve catalog projection contract");
   Require(contract->sb_normalized_target == Field(row, "sb_normalized_target"),
           row_id + " normalized target mismatch");
@@ -178,7 +178,7 @@ void VerifyCatalogRow(const std::map<std::string, std::string>& row) {
   Require(contract->requires_materialized_authorization,
           row_id + " catalog projection lacked materialized authorization");
   Require(!contract->parser_execution_authority &&
-              !contract->donor_execution_authority &&
+              !contract->external_execution_authority &&
               !contract->sblr_execution_authority,
           row_id + " catalog projection contract granted unsafe authority");
   Require(StartsWith(contract->sb_system_catalog_source, "sys.catalog."),
@@ -186,8 +186,8 @@ void VerifyCatalogRow(const std::map<std::string, std::string>& row) {
   Require(StartsWith(contract->seed_rowset_id, "sys.catalog."),
           row_id + " seed rowset id did not source sys.catalog");
 
-  const auto redacted = functions::EvaluateDonorCatalogProjection(
-      functions::DonorCatalogProjectionRequest{
+  const auto redacted = functions::EvaluateCompatibilityCatalogProjection(
+      functions::CompatibilityCatalogProjectionRequest{
           Field(row, "engine_id"),
           row_id,
           Field(row, "item_name"),
@@ -207,7 +207,7 @@ void VerifyCatalogRow(const std::map<std::string, std::string>& row) {
   Require(redacted.rows.size() == 1,
           row_id + " catalog projection did not generate exactly one seed row");
   VerifyResultAuthority(row_id, redacted);
-  Require(redacted.diagnostic_code == "SB.DONOR_CATALOG_PROJECTION.READY",
+  Require(redacted.diagnostic_code == "SB.COMPATIBILITY_CATALOG_PROJECTION.READY",
           row_id + " ready diagnostic mismatch");
   Require(redacted.route_contract_id == contract->route_contract_id,
           row_id + " route contract mismatch");
@@ -224,13 +224,13 @@ void VerifyCatalogRow(const std::map<std::string, std::string>& row) {
   const auto& public_row = redacted.rows.front();
   Require(public_row.visible, row_id + " redacted row was not visible");
   Require(public_row.metadata_redacted, row_id + " redacted row flag mismatch");
-  Require(public_row.donor_item_name == "[redacted]",
-          row_id + " redacted row leaked donor item name");
+  Require(public_row.external_item_name == "[redacted]",
+          row_id + " redacted row leaked external item name");
   Require(public_row.catalog_projection_label == "[redacted]",
           row_id + " redacted row leaked projection label");
   Require(public_row.catalog_exposure == "[redacted]",
           row_id + " redacted row leaked catalog exposure");
-  Require(public_row.engine_owned && !public_row.parser_mutable && !public_row.donor_mutable,
+  Require(public_row.engine_owned && !public_row.parser_mutable && !public_row.external_mutable,
           row_id + " redacted row authority flags drifted");
   Require(public_row.sb_system_catalog_source == contract->sb_system_catalog_source,
           row_id + " redacted row source mismatch");
@@ -238,11 +238,11 @@ void VerifyCatalogRow(const std::map<std::string, std::string>& row) {
           row_id + " redacted row seed rowset mismatch");
   Require(public_row.source_manifest_id == manifest->manifest_id,
           row_id + " redacted row source manifest mismatch");
-  Require(public_row.clean_database_state == "present_from_donor_catalog_seed_manifest",
+  Require(public_row.clean_database_state == "present_from_compatibility_catalog_seed_manifest",
           row_id + " redacted row clean database state mismatch");
 
-  const auto visible = functions::EvaluateDonorCatalogProjection(
-      functions::DonorCatalogProjectionRequest{
+  const auto visible = functions::EvaluateCompatibilityCatalogProjection(
+      functions::CompatibilityCatalogProjectionRequest{
           Field(row, "engine_id"),
           row_id,
           Field(row, "item_name"),
@@ -263,7 +263,7 @@ void VerifyCatalogRow(const std::map<std::string, std::string>& row) {
   const auto& visible_row = visible.rows.front();
   Require(!visible_row.metadata_redacted,
           row_id + " visible row redaction flag mismatch");
-  Require(visible_row.donor_item_name == Field(row, "item_name"),
+  Require(visible_row.external_item_name == Field(row, "item_name"),
           row_id + " visible row item name mismatch");
   Require(visible_row.catalog_projection_label == Field(row, "sb_catalog_projection"),
           row_id + " visible row projection label mismatch");
@@ -272,8 +272,8 @@ void VerifyCatalogRow(const std::map<std::string, std::string>& row) {
 }
 
 void VerifyFailClosedCases() {
-  const auto unknown_engine = functions::EvaluateDonorCatalogProjection(
-      functions::DonorCatalogProjectionRequest{
+  const auto unknown_engine = functions::EvaluateCompatibilityCatalogProjection(
+      functions::CompatibilityCatalogProjectionRequest{
           "unknown_engine",
           "unknown",
           "unknown",
@@ -287,12 +287,12 @@ void VerifyFailClosedCases() {
   Require(!unknown_engine.recognized && !unknown_engine.accepted && unknown_engine.denied,
           "unknown engine catalog projection did not fail closed");
   Require(unknown_engine.diagnostic_code ==
-              "SB.DONOR_CATALOG_PROJECTION.UNKNOWN_DONOR_MANIFEST",
+              "SB.COMPATIBILITY_CATALOG_PROJECTION.UNKNOWN_MANIFEST",
           "unknown engine diagnostic mismatch");
   VerifyResultAuthority("unknown_engine", unknown_engine);
 
-  const auto unknown_target = functions::EvaluateDonorCatalogProjection(
-      functions::DonorCatalogProjectionRequest{
+  const auto unknown_target = functions::EvaluateCompatibilityCatalogProjection(
+      functions::CompatibilityCatalogProjectionRequest{
           "mysql",
           "unknown",
           "unknown",
@@ -305,12 +305,12 @@ void VerifyFailClosedCases() {
       });
   Require(!unknown_target.recognized && !unknown_target.accepted && unknown_target.denied,
           "unknown target catalog projection did not fail closed");
-  Require(unknown_target.diagnostic_code == "SB.DONOR_CATALOG_PROJECTION.UNKNOWN_TARGET",
+  Require(unknown_target.diagnostic_code == "SB.COMPATIBILITY_CATALOG_PROJECTION.UNKNOWN_TARGET",
           "unknown target diagnostic mismatch");
   VerifyResultAuthority("unknown_target", unknown_target);
 
-  const auto non_catalog = functions::EvaluateDonorCatalogProjection(
-      functions::DonorCatalogProjectionRequest{
+  const auto non_catalog = functions::EvaluateCompatibilityCatalogProjection(
+      functions::CompatibilityCatalogProjectionRequest{
           "mysql",
           "unknown",
           "unknown",
@@ -324,7 +324,7 @@ void VerifyFailClosedCases() {
   Require(!non_catalog.recognized && !non_catalog.accepted && non_catalog.denied,
           "non-catalog function row did not fail closed");
   Require(non_catalog.diagnostic_code ==
-              "SB.DONOR_CATALOG_PROJECTION.NOT_CATALOG_PROJECTION",
+              "SB.COMPATIBILITY_CATALOG_PROJECTION.NOT_CATALOG_PROJECTION",
           "non-catalog diagnostic mismatch");
   VerifyResultAuthority("non_catalog", non_catalog);
 }
@@ -356,7 +356,7 @@ int main(int argc, char** argv) {
           "extension-items target count mismatch");
   Require(target_counts["SB.EXTENSION.LIST"] == 12,
           "extension-list target count mismatch");
-  Require(engines.size() == 19, "catalog projection donor engine count mismatch");
+  Require(engines.size() == 19, "catalog projection external engine count mismatch");
 
   VerifyFailClosedCases();
 

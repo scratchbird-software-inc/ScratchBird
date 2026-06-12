@@ -12,7 +12,7 @@
 This is a deterministic, local-only gate for the bounded JSON/document slice.
 It cross-checks fixture rows against the canonical surface registry and the
 builtin expression registry, and evaluates the declared simple JSON semantics
-without invoking a parser, donor backend, network path, or storage engine.
+without invoking a parser, reference backend, network path, or storage engine.
 """
 
 from __future__ import annotations

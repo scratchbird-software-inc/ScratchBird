@@ -70,7 +70,7 @@ struct VectorExactRecheckProof {
   bool security_recheck_required = true;
   std::string evidence_ref;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool index_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
@@ -90,7 +90,7 @@ struct VectorExactDescriptor {
   double int8_scale = 0.0;
   i32 int8_zero_point = 0;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool index_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
@@ -107,7 +107,7 @@ struct VectorExactMetricResource {
   bool contract_only_fallback = false;
   bool provider_only_fallback = false;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool index_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
@@ -159,7 +159,7 @@ struct VectorExactPhysicalProvider {
   bool security_authority_claimed = false;
   bool transaction_finality_authority_claimed = false;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool index_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;

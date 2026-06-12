@@ -18,7 +18,7 @@ namespace scratchbird::engine::optimizer {
 // Feedback stability guards are optimizer claim controls. They decide whether
 // feedback-driven plan changes may be admitted, reused, or called
 // benchmark-clean. They are not transaction finality, row visibility, parser,
-// donor, security, or recovery authority.
+// reference, security, or recovery authority.
 struct OptimizerFeedbackPlanChoiceObservation {
   std::string route_label;
   std::string plan_hash;
@@ -34,7 +34,7 @@ struct OptimizerFeedbackPlanChoiceObservation {
   bool benchmark_clean_claim = false;
   bool unsafe_cache_admission = false;
   bool stale_plan_reused = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool metric_finality_or_visibility_authority = false;
   bool cluster_stub_evidence = false;
 };

@@ -113,6 +113,7 @@ add_library(public_page_type_truth_runtime
 target_compile_features(public_page_type_truth_runtime PUBLIC cxx_std_23)
 target_include_directories(public_page_type_truth_runtime PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/storage/page
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/storage/filespace
 )
 target_link_libraries(public_page_type_truth_runtime PUBLIC
   sb_storage_disk
@@ -124,6 +125,7 @@ add_library(public_row_data_page_runtime
 target_compile_features(public_row_data_page_runtime PUBLIC cxx_std_23)
 target_include_directories(public_row_data_page_runtime PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/storage/page
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/storage/filespace
 )
 target_link_libraries(public_row_data_page_runtime PUBLIC
   sb_core_datatypes
@@ -820,6 +822,24 @@ add_test(
 )
 set_tests_properties(public_advanced_datatype_family_gate PROPERTIES
   LABELS "public_release_correctness;public_advanced_datatype_family_gate;PCR-GATE-043;PCR-043;datatypes;advanced_family;descriptor_schema;index_admission;optimizer;compare_hash;fail_closed"
+)
+
+add_executable(public_sbsql_language_release_channel_gate
+  public_sbsql_language_release_channel_gate.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/parsers/sbsql_worker/resources/language_resource_contract.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/wire/parser_server_ipc/parser_ipc_common.cpp
+)
+target_compile_features(public_sbsql_language_release_channel_gate PRIVATE cxx_std_23)
+target_include_directories(public_sbsql_language_release_channel_gate PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/parsers/sbsql_worker
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/wire/parser_server_ipc
+)
+add_test(
+  NAME public_sbsql_language_release_channel_gate
+  COMMAND public_sbsql_language_release_channel_gate
+)
+set_tests_properties(public_sbsql_language_release_channel_gate PROPERTIES
+  LABELS "public_release_correctness;public_sbsql_language_release_channel_gate;SML-092;sbsql_language_resource_contract;release_channel_lifecycle;fail_closed"
 )
 
 # PUBLIC_SBLR_UUID_INTEGRATION_GATE
@@ -1549,7 +1569,7 @@ add_test(
           --output ${CMAKE_CURRENT_BINARY_DIR}/public_row_level_traceability_manifest_gate/public_row_level_traceability_manifest.json
 )
 set_tests_properties(public_row_level_traceability_manifest_gate PROPERTIES
-  LABELS "public_release_correctness;public_row_level_traceability_manifest_gate;ELER-084;ELER-GATE-084;release_hygiene;row_level_traceability_manifest;declared_feature_traceability;donor_sblr_traceability;linux_proof"
+  LABELS "public_release_correctness;public_row_level_traceability_manifest_gate;ELER-084;ELER-GATE-084;release_hygiene;row_level_traceability_manifest;declared_feature_traceability;reference_sblr_traceability;linux_proof"
 )
 
 add_test(
@@ -1589,7 +1609,7 @@ add_test(
           --output ${CMAKE_CURRENT_BINARY_DIR}/public_sbsql_parser_sync_gate/public_sbsql_parser_sync.json
 )
 set_tests_properties(public_sbsql_parser_sync_gate PROPERTIES
-  LABELS "public_release_correctness;public_sbsql_parser_sync_gate;ELER-089;ELER-GATE-089;release_hygiene;sbsql_parser_spec_execution_plan_sync;row_expanded_sync;donor_dialect_paste_through_rejection;linux_proof"
+  LABELS "public_release_correctness;public_sbsql_parser_sync_gate;ELER-089;ELER-GATE-089;release_hygiene;sbsql_parser_spec_execution_plan_sync;row_expanded_sync;compatibility_dialect_paste_through_rejection;linux_proof"
 )
 
 add_executable(public_sanitizer_warning_probe
@@ -1842,6 +1862,7 @@ target_link_libraries(public_secure_defaults_gate PRIVATE
 add_test(
   NAME public_secure_defaults_gate
   COMMAND public_secure_defaults_gate
+          ${CMAKE_CURRENT_BINARY_DIR}/public_secure_defaults_gate/public_secure_defaults_effective_config.json
 )
 set_tests_properties(public_secure_defaults_gate PROPERTIES
   LABELS "public_release_correctness;public_secure_defaults_gate;PCR-GATE-123;PCR-123;ELER-108;ELER-GATE-108;release_hygiene;secure_defaults;startup;config;security;memory;permissions;cluster_boundary;fail_closed;release_artifact_trust;linux_proof"
@@ -2049,7 +2070,7 @@ add_test(
           --evidence-output ${CMAKE_CURRENT_BINARY_DIR}/public_performance_baseline_gate/public_performance_baseline_gate.json
 )
 set_tests_properties(public_performance_baseline_gate PROPERTIES
-  LABELS "public_release_correctness;public_performance_baseline_gate;PCR-GATE-138;PCR-138;performance;capacity;baseline;p50;p95;p99;benchmark_clean;no_donor_dominance;memory;transactions;backup;restore;archive;support_bundle"
+  LABELS "public_release_correctness;public_performance_baseline_gate;PCR-GATE-138;PCR-138;performance;capacity;baseline;p50;p95;p99;benchmark_clean;no_reference_dominance;memory;transactions;backup;restore;archive;support_bundle"
 )
 
 # PUBLIC_INSTALL_SERVICE_GATE
@@ -2170,6 +2191,43 @@ set_tests_properties(public_release_attestation_gate PROPERTIES
   LABELS "public_release_correctness;public_release_attestation_gate;PCR-GATE-146;PCR-146;ELER-108;ELER-GATE-108;release_hygiene;provenance;attestation;source_provenance;generated_provenance;toolchain;reproducible_archive;signature_ready;public_inputs;fail_closed;release_artifact_trust;linux_proof"
 )
 
+# PUBLIC_REFERENCE_MATERIAL_BOUNDARY_GATE
+add_test(
+  NAME public_reference_material_boundary_gate
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/public_reference_material_boundary_gate.py
+          --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+)
+set_tests_properties(public_reference_material_boundary_gate PROPERTIES
+  LABELS "public_release_correctness;public_reference_material_boundary_gate;PCR-GATE-157;PCR-157;reference_material;source_boundary;documentation_boundary;reference_source_absent;external_payloads_untracked;fail_closed"
+)
+
+# INVESTOR_READINESS_SURFACE_GATE
+add_test(
+  NAME investor_readiness_surface_gate
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/investor_readiness_surface_gate.py
+          --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+          --project-root ${CMAKE_CURRENT_SOURCE_DIR}/../..
+          --exclude docs/documentation/draft
+          --output ${CMAKE_CURRENT_BINARY_DIR}/investor_readiness_surface_gate/investor_readiness_surface_gate.json
+)
+set_tests_properties(investor_readiness_surface_gate PROPERTIES
+  LABELS "public_release_correctness;investor_readiness_surface_gate;PCR-GATE-158;PCR-158;investor_readiness;release_hygiene;claims_boundary;driver_release_bucket;benchmark_no_claim;reference_fixture_boundary;fail_closed"
+)
+
+# SPDX_LICENSE_SURFACE_GATE
+add_test(
+  NAME spdx_license_surface_gate
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/spdx_license_surface_gate.py
+          --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+          --output ${CMAKE_CURRENT_BINARY_DIR}/spdx_license_surface_gate/spdx_license_surface_gate.json
+)
+set_tests_properties(spdx_license_surface_gate PROPERTIES
+  LABELS "public_release_correctness;spdx_license_surface_gate;PCR-GATE-159;PCR-159;license;spdx;third_party_notices;sbom;release_hygiene;fail_closed"
+)
+
 # PUBLIC_CONFIG_POLICY_MIGRATION_GATE
 add_test(
   NAME public_config_policy_migration_gate
@@ -2225,15 +2283,15 @@ set_tests_properties(public_platform_env_verify_gate PROPERTIES
 
 # PUBLIC_PROVENANCE_POLICY_GATE
 add_test(
-  NAME public_generated_ai_donor_provenance_gate
+  NAME public_generated_ai_reference_provenance_gate
   COMMAND ${Python3_EXECUTABLE}
-          ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/public_generated_ai_donor_provenance_gate.py
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/public_generated_ai_reference_provenance_gate.py
           --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
-          --csv-output ${CMAKE_CURRENT_BINARY_DIR}/public_generated_ai_donor_provenance_gate/public_generated_ai_donor_provenance_matrix.csv
-          --evidence-output ${CMAKE_CURRENT_BINARY_DIR}/public_generated_ai_donor_provenance_gate/public_generated_ai_donor_provenance_gate.json
+          --csv-output ${CMAKE_CURRENT_BINARY_DIR}/public_generated_ai_reference_provenance_gate/public_generated_ai_reference_provenance_matrix.csv
+          --evidence-output ${CMAKE_CURRENT_BINARY_DIR}/public_generated_ai_reference_provenance_gate/public_generated_ai_reference_provenance_gate.json
 )
-set_tests_properties(public_generated_ai_donor_provenance_gate PROPERTIES
-  LABELS "public_release_correctness;public_generated_ai_donor_provenance_gate;PCR-GATE-154;PCR-154;provenance;generated_code;ai_assisted;donor_derived;copied_reference;public_inputs;human_review;authority_boundary;fail_closed"
+set_tests_properties(public_generated_ai_reference_provenance_gate PROPERTIES
+  LABELS "public_release_correctness;public_generated_ai_reference_provenance_gate;PCR-GATE-154;PCR-154;provenance;generated_code;ai_assisted;reference_derived;copied_reference;public_inputs;human_review;authority_boundary;fail_closed"
 )
 
 if(NOT SB_PUBLIC_RELEASE_EXPORT_NESTED)
@@ -2301,6 +2359,7 @@ set(PUBLIC_RELEASE_CORRECTNESS_BUILD_TARGETS
   public_domain_psql_exact_numeric_gate
   public_datatype_binary_descriptor_integrity_gate
   public_advanced_datatype_family_gate
+  public_sbsql_language_release_channel_gate
   public_sblr_uuid_mga_route_integration_gate
   public_uuid_identity_resolution_gate
   public_agent_readiness_matrix_gate

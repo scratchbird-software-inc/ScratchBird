@@ -131,8 +131,8 @@ void RequireAccepted(
           "MGA visibility recheck evidence missing");
   Require(result.security_recheck_proven,
           "security recheck evidence missing");
-  Require(!result.parser_client_donor_authority,
-          "parser/client/donor authority was accepted");
+  Require(!result.parser_client_reference_authority,
+          "parser/client/reference authority was accepted");
   Require(!result.index_metadata_finality_authority,
           "index metadata became finality/visibility authority");
   Require(!result.index_metadata_recovery_authority,
@@ -149,7 +149,7 @@ void RequireAccepted(
           "root publish authorization evidence missing");
   Require(HasEvidence(result,
                       "corrected_route_capability_limits",
-                      "donor_policy_hash_vector_text_refused"),
+                      "reference_policy_hash_vector_text_refused"),
           "route capability limit evidence missing");
   Require(HasEvidence(result, "mga_visibility_authority",
                       "durable_transaction_inventory"),
@@ -180,10 +180,10 @@ void RequireRejected(
 void VerifyNegativeCases() {
   auto parser_authority = BaseRequest();
   parser_authority.route_label = "orh285.parser_authority";
-  parser_authority.authority.parser_client_or_donor_index_authority = true;
+  parser_authority.authority.parser_client_or_reference_index_authority = true;
   RequireRejected(
       parser_authority,
-      "ORH_PARALLEL_INDEX_CONSTRAINT_VALIDATION.PARSER_CLIENT_DONOR_AUTHORITY");
+      "ORH_PARALLEL_INDEX_CONSTRAINT_VALIDATION.PARSER_CLIENT_REFERENCE_AUTHORITY");
 
   auto metadata_finality = BaseRequest();
   metadata_finality.route_label = "orh285.metadata_finality";
@@ -228,11 +228,11 @@ void VerifyNegativeCases() {
       stale_capability,
       "ORH_PARALLEL_INDEX_CONSTRAINT_VALIDATION.STALE_ROUTE_CAPABILITY");
 
-  auto donor_emulated = BaseRequest();
-  donor_emulated.route_label = "orh285.donor_emulated";
-  donor_emulated.family = idx::IndexFamily::donor_emulated;
+  auto reference_emulated = BaseRequest();
+  reference_emulated.route_label = "orh285.reference_emulated";
+  reference_emulated.family = idx::IndexFamily::reference_emulated;
   RequireRejected(
-      donor_emulated,
+      reference_emulated,
       "ORH_PARALLEL_INDEX_CONSTRAINT_VALIDATION.ROUTE_CAPABILITY_BLOCKED");
 
   auto policy_blocked = BaseRequest();

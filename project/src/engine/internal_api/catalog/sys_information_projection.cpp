@@ -216,7 +216,7 @@ sys.catalog_readable.constraints,catalog_readable,constraints,relation_path;cons
 sys.catalog_readable.indexes,catalog_readable,indexes,index_path;index_name;relation_path;index_family;storage_profile_name;comment_text;visibility_state,Index browser.
 sys.catalog_readable.index_columns,catalog_readable,index_columns,index_path;ordinal_position;key_expression;collation_name;operator_class_name;direction,Ordered index keys and expressions.
 sys.catalog_readable.datatypes,catalog_readable,datatypes,type_path;type_name;type_family;storage_class;wire_class;status;visibility_state,Canonical datatype descriptors.
-sys.catalog_readable.domains,catalog_readable,domains,domain_path;domain_name;base_type_name;domain_kind;status;comment_text;visibility_state,Domains and donor-emulation domains.
+sys.catalog_readable.domains,catalog_readable,domains,domain_path;domain_name;base_type_name;domain_kind;status;comment_text;visibility_state,Domains and reference-emulation domains.
 sys.catalog_readable.domain_elements,catalog_readable,domain_elements,domain_path;element_name;ordinal_position;element_type_name;visibility_state,Compound domain element display.
 sys.catalog_readable.casts,catalog_readable,casts,source_type_name;target_type_name;cast_class;lossiness;status;visibility_state,Cast rule browser.
 sys.catalog_readable.operations,catalog_readable,functions_operators,operation_path;operation_name;operation_kind;argument_display;result_type_name;status;visibility_state,Functions; operators; aggregates; windows; domain operations.
@@ -229,7 +229,7 @@ sys.catalog_readable.privileges,catalog_readable,privileges,subject_path;object_
 sys.catalog_readable.policies,catalog_readable,policies,policy_path;policy_name;policy_kind;status;comment_text;visibility_state,Policy browser.
 sys.catalog_readable.filespaces,catalog_readable,storage,filespace_path;filespace_name;role;status;size_metrics;comment_text;visibility_state,Device paths redacted by policy.
 sys.catalog_readable.page_families,catalog_readable,storage,page_family_name;page_role;layout_version;status;visibility_state,Page family metadata.
-sys.catalog_readable.resources,catalog_readable,resources,resource_path;resource_name;resource_kind;version;status;visibility_state,Timezone; charset; collation; locale; parser; donor resources.
+sys.catalog_readable.resources,catalog_readable,resources,resource_path;resource_name;resource_kind;version;status;visibility_state,Timezone; charset; collation; locale; parser; reference resources.
 sys.catalog_readable.parser_profiles,catalog_readable,parser_profiles,profile_path;profile_name;parser_family;dialect;cache_policy;resource_epoch;visibility_state,Parser package and dialect profile metadata.
 sys.catalog_readable.listeners,catalog_readable,listeners,listener_path;listener_name;network;port;parser_family;status;visibility_state,Listener profiles and parser bindings.
 sys.catalog_readable.metrics_catalog,catalog_readable,metrics,metric_name;scope;units;type;retention_policy;redaction_class,Metric catalog metadata.
@@ -237,7 +237,7 @@ sys.catalog_readable.diagnostics_catalog,catalog_readable,diagnostics,diagnostic
 sys.catalog_readable.settings,catalog_readable,settings,setting_name;setting_value_display;authority;default_source;redaction_state;visibility_state,Secret values redacted by policy.
 sys.catalog_readable.jobs,catalog_readable,jobs,job_path;job_name;job_kind;status;policy_name;metrics_summary;visibility_state,Jobs and maintenance tasks.
 sys.catalog_readable.remote_connections,catalog_readable,remote_connections,connection_path;connection_name;connection_kind;endpoint_display;credential_state;visibility_state,Credentials redacted.
-sys.catalog_readable.emulation_profiles,catalog_readable,emulation_profiles,profile_path;profile_name;donor_family;parser_binding;udr_binding;status;visibility_state,Donor/emulation profile metadata.
+sys.catalog_readable.emulation_profiles,catalog_readable,emulation_profiles,profile_path;profile_name;reference_family;parser_binding;udr_binding;status;visibility_state,Reference/emulation profile metadata.
 sys.information.schemata,information_schema,driver_metadata,catalog_name;schema_name;schema_owner;sql_path,Standard-compatible schema metadata.
 sys.information.tables,information_schema,driver_metadata,table_catalog;table_schema;table_name;table_type;is_insertable_into,Standard-compatible table metadata.
 sys.information.views,information_schema,driver_metadata,table_catalog;table_schema;table_name;view_definition,View metadata redacted by policy.

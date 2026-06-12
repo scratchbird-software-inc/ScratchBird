@@ -81,7 +81,7 @@ IndexSpatialAccessPlan PlanSpatialIndexAccess(const IndexSpatialAccessRequest& r
                     ? request.family
                     : IndexFamily::spatial;
   plan.admitted = true;
-  plan.requires_exact_recheck = request.donor_requires_exact_recheck ||
+  plan.requires_exact_recheck = request.reference_requires_exact_recheck ||
                                 request.predicate == IndexSpatialPredicate::distance_within ||
                                 request.predicate == IndexSpatialPredicate::nearest;
   plan.can_order_by_distance = request.request_distance_order &&
@@ -196,15 +196,15 @@ IndexVectorAdmissionDecision AdmitVectorIndex(const IndexVectorAdmissionRequest&
   return decision;
 }
 
-IndexGraphProfileDecision PlanGraphOrDonorStructureIndex(const IndexGraphProfileRequest& request) {
+IndexGraphProfileDecision PlanGraphOrReferenceStructureIndex(const IndexGraphProfileRequest& request) {
   if (!request.policy_allows_emulation) {
     return RefuseGraph("SB-INDEX-GRAPH-EMULATION-POLICY-REFUSED", "index.graph.emulation_policy_refused");
   }
   IndexGraphProfileDecision decision;
   decision.status = OkStatus();
   decision.admitted = true;
-  decision.emulated = !request.donor_name.empty();
-  decision.semantic_profile_id = Lower(request.donor_name.empty() ? "sb" : request.donor_name) + ":" + Lower(request.donor_surface);
+  decision.emulated = !request.reference_name.empty();
+  decision.semantic_profile_id = Lower(request.reference_name.empty() ? "sb" : request.reference_name) + ":" + Lower(request.reference_surface);
   switch (request.profile) {
     case IndexGraphProfile::vertex_lookup:
     case IndexGraphProfile::edge_lookup:

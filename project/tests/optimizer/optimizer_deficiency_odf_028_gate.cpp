@@ -98,8 +98,8 @@ bool AdmittedWithCommonEvidence(
                  diagnostic_code + " missing MGA finality evidence") &&
          Require(Has(result.evidence, "security_recheck=required"),
                  diagnostic_code + " missing security recheck evidence") &&
-         Require(Has(result.evidence, "parser_or_donor_authority=false"),
-                 diagnostic_code + " missing parser/donor refusal evidence") &&
+         Require(Has(result.evidence, "parser_or_reference_authority=false"),
+                 diagnostic_code + " missing parser/reference refusal evidence") &&
          Require(Has(result.evidence,
                      "stats_visibility_epoch_advanced=metadata_only"),
                  diagnostic_code + " missing visibility epoch evidence") &&
@@ -294,10 +294,10 @@ bool ExactRefusalsCoverPolicySecurityMgaAndEpochs() {
   {
     auto request =
         BaseRequest(opt::OptimizerStatisticsLifecycleTrigger::kAgentAutoMaintenance);
-    request.parser_or_donor_authority = true;
+    request.parser_or_reference_authority = true;
     if (!RefusesWith(request,
-                     "SB_OPT_STATS_LIFECYCLE.UNSAFE_PARSER_DONOR_AUTHORITY",
-                     "unsafe_parser_or_donor_authority")) {
+                     "SB_OPT_STATS_LIFECYCLE.UNSAFE_PARSER_REFERENCE_AUTHORITY",
+                     "unsafe_parser_or_reference_authority")) {
       return false;
     }
   }

@@ -78,7 +78,7 @@ bool RangeSizingValid(const PhysicalZoneRangeSizingMetadata& sizing) {
 
 bool AuthorityClean(const PhysicalZoneRowEvidence& row) {
   return !row.parser_finality_authority_claimed &&
-         !row.donor_finality_authority_claimed &&
+         !row.reference_finality_authority_claimed &&
          !row.write_ahead_log_finality_authority_claimed;
 }
 
@@ -386,7 +386,7 @@ bool RangeRecordValid(const PhysicalZoneRangeSummaryRecord& record) {
       !record.mga_recheck_required ||
       !record.security_recheck_required ||
       record.parser_finality_authority_claimed ||
-      record.donor_finality_authority_claimed ||
+      record.reference_finality_authority_claimed ||
       record.write_ahead_log_finality_authority_claimed ||
       record.base_generation == 0 ||
       record.summary_generation == 0) {
@@ -880,7 +880,7 @@ PhysicalZoneSummaryBuildResult BuildPhysicalZoneSummaryFromBasePageEvidence(
   page.evidence.push_back("mga_recheck_required=true");
   page.evidence.push_back("security_recheck_required=true");
   page.evidence.push_back("summary_visibility_authority=false");
-  page.evidence.push_back("parser_donor_provider_finality_authority=false");
+  page.evidence.push_back("parser_reference_provider_finality_authority=false");
   page.evidence.push_back("write_ahead_log_finality_authority=false");
 
   std::map<u64, PhysicalZoneRangeSummaryRecord> ranges;
@@ -980,7 +980,7 @@ PhysicalZoneSummarySerializeResult SerializePhysicalZoneSummaryPage(
     AppendU8(&out, range.mga_recheck_required ? 1 : 0);
     AppendU8(&out, range.security_recheck_required ? 1 : 0);
     AppendU8(&out, range.parser_finality_authority_claimed ? 1 : 0);
-    AppendU8(&out, range.donor_finality_authority_claimed ? 1 : 0);
+    AppendU8(&out, range.reference_finality_authority_claimed ? 1 : 0);
     AppendU8(&out, range.write_ahead_log_finality_authority_claimed ? 1 : 0);
     AppendU32(&out, static_cast<u32>(range.columns.size()));
     for (const auto& column : range.columns) {
@@ -1092,7 +1092,7 @@ PhysicalZoneSummaryOpenResult OpenPhysicalZoneSummaryPage(
     byte mga_recheck = 0;
     byte security_recheck = 0;
     byte parser_authority = 0;
-    byte donor_authority = 0;
+    byte reference_authority = 0;
     byte log_authority = 0;
     u32 column_count = 0;
     if (!ReadRange(&reader, &range.range) ||
@@ -1106,7 +1106,7 @@ PhysicalZoneSummaryOpenResult OpenPhysicalZoneSummaryPage(
         !reader.ReadU8(&mga_recheck) ||
         !reader.ReadU8(&security_recheck) ||
         !reader.ReadU8(&parser_authority) ||
-        !reader.ReadU8(&donor_authority) ||
+        !reader.ReadU8(&reference_authority) ||
         !reader.ReadU8(&log_authority) ||
         !reader.ReadU32(&column_count)) {
       return OpenFailure(PhysicalZoneSummaryOpenClass::corrupt_payload,
@@ -1119,7 +1119,7 @@ PhysicalZoneSummaryOpenResult OpenPhysicalZoneSummaryPage(
     range.mga_recheck_required = mga_recheck != 0;
     range.security_recheck_required = security_recheck != 0;
     range.parser_finality_authority_claimed = parser_authority != 0;
-    range.donor_finality_authority_claimed = donor_authority != 0;
+    range.reference_finality_authority_claimed = reference_authority != 0;
     range.write_ahead_log_finality_authority_claimed = log_authority != 0;
     for (u32 column_index = 0; column_index < column_count; ++column_index) {
       PhysicalZoneColumnSummary column;
@@ -1301,7 +1301,7 @@ PhysicalZonePruneResult PrunePhysicalZoneSummaryRanges(
   result.evidence.push_back("mga_recheck_required=true");
   result.evidence.push_back("security_recheck_required=true");
   result.evidence.push_back("visibility_finality_authority=false");
-  result.evidence.push_back("parser_donor_provider_finality_authority=false");
+  result.evidence.push_back("parser_reference_provider_finality_authority=false");
   result.evidence.push_back("write_ahead_log_finality_authority=false");
 
   for (const auto& range : request.page.ranges) {

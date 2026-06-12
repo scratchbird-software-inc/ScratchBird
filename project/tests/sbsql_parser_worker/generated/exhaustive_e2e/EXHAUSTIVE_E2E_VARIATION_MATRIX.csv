@@ -7,5 +7,5 @@ expression_runtime_catalog,public_input_snapshot,1534,every datatype function op
 statement_surface_catalog,public_input_snapshot,1049,every non-expression command and statement surface must have replay coverage,ready
 sblr_operation_families,public_input_snapshot,16,every SBLR operation family must be represented and route-classified,ready
 engine_gap_backlog,project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv,932,every engine gap must be closed by engine API/SBLR family gate or cluster fail-closed gate,ready
-donor_alias_backlog,project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/DONOR_ALIAS_COVERAGE_BACKLOG.csv,312,every donor alias must map to native behavior or exact donor-profile refusal,ready
+reference_alias_backlog,project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts/REFERENCE_ALIAS_COVERAGE_BACKLOG.csv,312,every reference alias must map to native behavior or exact reference-profile refusal,ready
 dynamic_stored_procedure_udr_sblr,project/tests/sbsql_parser_worker/generated/exhaustive_e2e/sbsql_exhaustive_e2e_regression_gate.cpp,1,concatenated dynamic SQL must resolve UUIDs through SBSQL UDR then admit and execute only as SBLR,ready

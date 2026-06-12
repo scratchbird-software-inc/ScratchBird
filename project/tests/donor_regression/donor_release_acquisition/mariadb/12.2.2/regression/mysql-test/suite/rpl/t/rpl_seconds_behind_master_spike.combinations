@@ -1,5 +1,0 @@
-[serial]
---slave-parallel-threads=0
-
-[parallel]
---slave-parallel-threads=1

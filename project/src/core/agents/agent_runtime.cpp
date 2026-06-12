@@ -5242,7 +5242,7 @@ std::vector<std::string> ExplainAgentDecision(const AgentTypeDescriptor& descrip
           ";provider_authority_required_for_live=true",
       "explain.row=evidence;evidence_uuid=" + decision.evidence_uuid +
           ";authority_scope=evidence_only" +
-          ";parser_authority=false;donor_authority=false" +
+          ";parser_authority=false;reference_authority=false" +
           ";sidecar_authority=false;transaction_visibility_recovery_authority=false"};
 }
 

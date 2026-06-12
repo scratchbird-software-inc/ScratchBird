@@ -252,7 +252,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts,
   Require(!artifacts.envelope.parser_executes_sql,
           "constructor lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "constructor lowering allowed donor/file effects");
+          "constructor lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload, "\"query_envelope_kind\":\"scalar_projection\""),
           "constructor payload missing scalar projection envelope kind");
   Require(Contains(artifacts.envelope.payload, "\"projection_0_name\":\"") &&
@@ -283,8 +283,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts,
   }
   Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
           "constructor payload did not prove no SQL text authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "constructor payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "constructor payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

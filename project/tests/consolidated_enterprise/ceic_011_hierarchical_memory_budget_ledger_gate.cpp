@@ -329,8 +329,8 @@ void AuthorityBoundaryEvidenceStrings() {
           "CEIC-011 authority string missing recovery boundary");
   Require(authority.find("parser") != std::string::npos,
           "CEIC-011 authority string missing parser boundary");
-  Require(authority.find("donor") != std::string::npos,
-          "CEIC-011 authority string missing donor boundary");
+  Require(authority.find("reference") != std::string::npos,
+          "CEIC-011 authority string missing reference boundary");
   Require(authority.find("benchmark") != std::string::npos,
           "CEIC-011 authority string missing benchmark boundary");
   Require(authority.find("cluster") != std::string::npos,

@@ -165,7 +165,7 @@ VectorizedResultBatchResult FinalizeVectorizedResultBatchFromReservedResource(
     u64 row_count,
     std::vector<ResultBatchColumn> columns,
     bool engine_mga_authoritative,
-    bool parser_or_donor_authority,
+    bool parser_or_reference_authority,
     bool memory_finality_or_visibility_authority,
     bool debug_or_relaxed_path);
 

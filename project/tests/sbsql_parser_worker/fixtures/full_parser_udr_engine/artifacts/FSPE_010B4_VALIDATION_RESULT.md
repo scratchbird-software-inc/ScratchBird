@@ -7,7 +7,7 @@ Search key: `FSPE_010B4_VALIDATION_RESULT`
 
 This artifact closes `FSPE-010B4`: chunked SBPS payload assembly for large SBLR, parameter, result, and message-vector payloads. It does not close `FSPE-010B5` through `FSPE-010B9`.
 
-The implementation is transport-level chunking only. Parser output remains untrusted until server SBLR admission revalidates it, and the engine still executes SBLR/internal procedures rather than SQL text, parser AST, BoundAST, or donor command text.
+The implementation is transport-level chunking only. Parser output remains untrusted until server SBLR admission revalidates it, and the engine still executes SBLR/internal procedures rather than SQL text, parser AST, BoundAST, or reference command text.
 
 ## Validated Coverage
 

@@ -1035,7 +1035,7 @@ add_test(
   COMMAND ceic_051_persisted_optimizer_benchmark_evidence_schema_gate
 )
 set_tests_properties(ceic_051_persisted_optimizer_benchmark_evidence_schema_gate PROPERTIES
-  LABELS "ceic_051_persisted_optimizer_benchmark_evidence_schema_gate;CEIC-051;CEIC-GATE-030;optimizer;benchmark_schema;persisted_evidence;cold_warm;p50_p95_p99;donor_evidence_only;cluster_external_provider_only;authority_boundary"
+  LABELS "ceic_051_persisted_optimizer_benchmark_evidence_schema_gate;CEIC-051;CEIC-GATE-030;optimizer;benchmark_schema;persisted_evidence;cold_warm;p50_p95_p99;reference_evidence_only;cluster_external_provider_only;authority_boundary"
 )
 
 add_executable(
@@ -1057,7 +1057,7 @@ add_test(
   COMMAND ceic_052_optimizer_correctness_oracle_suite_gate
 )
 set_tests_properties(ceic_052_optimizer_correctness_oracle_suite_gate PROPERTIES
-  LABELS "ceic_052_optimizer_correctness_oracle_suite_gate;CEIC-052;CEIC-GATE-031;optimizer;correctness_oracle;baseline_optimized_equivalence;joins;aggregation;windows;topn;dml_locator;document;vector;text;graph;mixed_fusion;donor_evidence_only;cluster_external_provider_only;authority_boundary"
+  LABELS "ceic_052_optimizer_correctness_oracle_suite_gate;CEIC-052;CEIC-GATE-031;optimizer;correctness_oracle;baseline_optimized_equivalence;joins;aggregation;windows;topn;dml_locator;document;vector;text;graph;mixed_fusion;reference_evidence_only;cluster_external_provider_only;authority_boundary"
 )
 
 add_executable(
@@ -1171,25 +1171,25 @@ set_tests_properties(ceic_057_driver_visible_explain_compatibility_gate PROPERTI
 )
 
 add_executable(
-  ceic_058_live_donor_comparison_artifacts_gate
-  ceic_058_live_donor_comparison_artifacts_gate.cpp
+  ceic_058_live_reference_comparison_artifacts_gate
+  ceic_058_live_reference_comparison_artifacts_gate.cpp
 )
 target_compile_features(
-  ceic_058_live_donor_comparison_artifacts_gate
+  ceic_058_live_reference_comparison_artifacts_gate
   PRIVATE
     cxx_std_20
 )
 target_link_libraries(
-  ceic_058_live_donor_comparison_artifacts_gate
+  ceic_058_live_reference_comparison_artifacts_gate
   PRIVATE
     sb_engine_optimizer_contract_only
 )
 add_test(
-  NAME ceic_058_live_donor_comparison_artifacts_gate
-  COMMAND ceic_058_live_donor_comparison_artifacts_gate
+  NAME ceic_058_live_reference_comparison_artifacts_gate
+  COMMAND ceic_058_live_reference_comparison_artifacts_gate
 )
-set_tests_properties(ceic_058_live_donor_comparison_artifacts_gate PROPERTIES
-  LABELS "ceic_058_live_donor_comparison_artifacts_gate;CEIC-058;CEIC-GATE-035;optimizer;donor_comparison;donor_artifact;24_donors;route_equivalence;result_hash;benchmark_schema;non_authority;cluster_external_provider_only;authority_boundary"
+set_tests_properties(ceic_058_live_reference_comparison_artifacts_gate PROPERTIES
+  LABELS "ceic_058_live_reference_comparison_artifacts_gate;CEIC-058;CEIC-GATE-035;optimizer;reference_comparison;reference_artifact;24_references;route_equivalence;result_hash;benchmark_schema;non_authority;cluster_external_provider_only;authority_boundary"
 )
 
 add_executable(
@@ -1254,7 +1254,7 @@ add_test(
           --repo-root "${SB_PRIVATE_REPO_ROOT}"
 )
 set_tests_properties(ceic_062_optimizer_readiness_manifest_gate PROPERTIES
-  LABELS "ceic_062_optimizer_readiness_manifest_gate;CEIC-062;CEIC-GATE-030;CEIC-GATE-033;optimizer;readiness_manifest;live_routes;correctness_oracle;crash_reopen;metrics_feedback;memory_feedback;index_readiness;driver_explain;donor_artifacts;llvm_memory;cluster_external_provider_only;authority_boundary"
+  LABELS "ceic_062_optimizer_readiness_manifest_gate;CEIC-062;CEIC-GATE-030;CEIC-GATE-033;optimizer;readiness_manifest;live_routes;correctness_oracle;crash_reopen;metrics_feedback;memory_feedback;index_readiness;driver_explain;reference_artifacts;llvm_memory;cluster_external_provider_only;authority_boundary"
 )
 
 set(SB_CEIC_085_AGENT_READINESS_MANIFEST_GATE

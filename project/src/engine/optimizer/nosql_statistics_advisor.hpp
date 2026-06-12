@@ -78,7 +78,7 @@ struct NoSqlStatisticsAdvisorRequest {
   bool engine_mga_authoritative = false;
   bool mga_recheck_required = true;
   bool security_recheck_required = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool provider_claims_transaction_finality_authority = false;
   bool provider_claims_visibility_authority = false;
   bool client_claims_visibility_or_finality_authority = false;

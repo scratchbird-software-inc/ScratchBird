@@ -90,8 +90,8 @@ void RequireCommonEvidence(const StreamingResultWindowDecision& decision) {
           "missing MGA recheck evidence");
   Require(HasEvidence(evidence, "base_row_security_recheck_required=true"),
           "missing security recheck evidence");
-  Require(HasEvidence(evidence, "parser_or_donor_authority=false"),
-          "parser/donor authority must be false");
+  Require(HasEvidence(evidence, "parser_or_reference_authority=false"),
+          "parser/reference authority must be false");
   Require(HasEvidence(evidence, "client_visibility_or_finality_authority=false"),
           "client visibility/finality authority must be false");
   Require(HasEvidence(evidence, "write_ahead_or_finality_authority=false"),
@@ -290,13 +290,13 @@ void ProveDisabledPathBoundedLegacyAndRefusal() {
 void ProveUnsafeAuthorityRefused() {
   auto parser =
       DefaultStreamingResultWindowRequest(StreamingResultSurface::kVector);
-  parser.parser_or_donor_authority = true;
+  parser.parser_or_reference_authority = true;
   const auto parser_decision = EvaluateStreamingResultWindow(parser);
   Require(!parser_decision.accepted && parser_decision.fail_closed,
-          "parser/donor authority was not refused");
+          "parser/reference authority was not refused");
   Require(parser_decision.diagnostic_code ==
-              "WIRE.STREAMING_RESULT_WINDOW.UNSAFE_PARSER_OR_DONOR_AUTHORITY",
-          "parser/donor authority diagnostic mismatch");
+              "WIRE.STREAMING_RESULT_WINDOW.UNSAFE_PARSER_OR_REFERENCE_AUTHORITY",
+          "parser/reference authority diagnostic mismatch");
 
   auto client =
       DefaultStreamingResultWindowRequest(StreamingResultSurface::kSql);

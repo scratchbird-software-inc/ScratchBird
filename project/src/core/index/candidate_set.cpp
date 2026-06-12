@@ -76,7 +76,7 @@ std::vector<std::string> BaseCompressedBitmapEvidence(
           "mga_visibility_recheck.required=true",
           "security_authorization_recheck.required=true",
           "candidate_set_finality_authority=false",
-          "parser_or_donor_authority=false",
+          "parser_or_reference_authority=false",
           "provider_finality_authority=false",
           "wal_recovery_or_finality_authority=false"};
 }
@@ -200,7 +200,7 @@ CandidateSetCardinalityResult RefuseCardinality(
 
 CandidateSetResult ValidateAuthority(CandidateSetOperationKind operation,
                                      const CandidateSetAuthorityContext& authority) {
-  if (authority.parser_or_donor_finality_or_visibility_authority ||
+  if (authority.parser_or_reference_finality_or_visibility_authority ||
       authority.client_finality_or_visibility_authority ||
       authority.provider_finality_or_visibility_authority ||
       authority.wal_recovery_or_finality_authority) {
@@ -255,7 +255,7 @@ bool ValidateCompressedBitmapRepresentation(const CandidateSet& set) {
     return false;
   }
   if (set.candidate_set_finality_authority ||
-      set.parser_or_donor_finality_or_visibility_authority ||
+      set.parser_or_reference_finality_or_visibility_authority ||
       set.provider_finality_or_visibility_authority ||
       set.wal_recovery_or_finality_authority ||
       set.final_rows_authorized ||
@@ -879,7 +879,7 @@ std::vector<std::string> CompressedBitmapAlgebraEvidence(
   evidence.push_back("compatibility_bridge.used=false");
   evidence.push_back("candidate_stream_only=true");
   evidence.push_back("candidate_set_finality_authority=false");
-  evidence.push_back("parser_or_donor_authority=false");
+  evidence.push_back("parser_or_reference_authority=false");
   evidence.push_back("provider_finality_authority=false");
   evidence.push_back("wal_recovery_or_finality_authority=false");
   evidence.push_back("exact_recheck.required=true");

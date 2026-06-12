@@ -1,0 +1,1548 @@
+{
+  "seed_manifest_uuid": "08409034-8c4d-5f5c-8bd2-0244269d5b21",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "yugabytedb-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_REFERENCE_CATALOG_SEED_YUGABYTEDB_BETA2_FULL",
+  "seed_manifest_status": "profile_derived_private_seed_manifest",
+  "reference_family": "yugabytedb",
+  "reference_version_profile_id": "yugabytedb_beta2_full",
+  "reference_version_profile_uuid": "3286ad7a-936d-5428-aacf-91dceceb08f6",
+  "reference_exact_version": "YugabyteDB beta2-full compatibility profile",
+  "new_database_recipe_id": "yugabytedb_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-05-10T00:00:00Z",
+  "extraction_tool_ref": "docs/specifications/registries/reference-catalog-source-derived-seed-rows.yaml",
+  "normalization_profile_ref": "embedded:SB_REFERENCE_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "pg_aggregate",
+      "reference_catalog_object_name": "pg_aggregate",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_aggregate",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_aggregate.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_am",
+      "reference_catalog_object_name": "pg_am",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_am",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_am.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_amop",
+      "reference_catalog_object_name": "pg_amop",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_amop",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_amop.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_amproc",
+      "reference_catalog_object_name": "pg_amproc",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_amproc",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_amproc.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_attrdef",
+      "reference_catalog_object_name": "pg_attrdef",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_attrdef",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_attrdef.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_attribute",
+      "reference_catalog_object_name": "pg_attribute",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_attribute",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_attribute.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_auth_members",
+      "reference_catalog_object_name": "pg_auth_members",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_auth_members",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_auth_members.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_authid",
+      "reference_catalog_object_name": "pg_authid",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_authid",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_authid.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_cast",
+      "reference_catalog_object_name": "pg_cast",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_cast",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_cast.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_class",
+      "reference_catalog_object_name": "pg_class",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_class",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_class.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_collation",
+      "reference_catalog_object_name": "pg_collation",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_collation",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_collation.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_constraint",
+      "reference_catalog_object_name": "pg_constraint",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_constraint",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_constraint.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_conversion",
+      "reference_catalog_object_name": "pg_conversion",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_conversion",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_conversion.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_database",
+      "reference_catalog_object_name": "pg_database",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_database",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_database.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_db_role_setting",
+      "reference_catalog_object_name": "pg_db_role_setting",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_db_role_setting",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_db_role_setting.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_default_acl",
+      "reference_catalog_object_name": "pg_default_acl",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_default_acl",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_default_acl.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_depend",
+      "reference_catalog_object_name": "pg_depend",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_depend",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_depend.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_description",
+      "reference_catalog_object_name": "pg_description",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_description",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_description.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_enum",
+      "reference_catalog_object_name": "pg_enum",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_enum",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_enum.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_event_trigger",
+      "reference_catalog_object_name": "pg_event_trigger",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_event_trigger",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_event_trigger.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_extension",
+      "reference_catalog_object_name": "pg_extension",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_extension",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_extension.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_foreign_data_wrapper",
+      "reference_catalog_object_name": "pg_foreign_data_wrapper",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_foreign_data_wrapper",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_foreign_data_wrapper.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_foreign_server",
+      "reference_catalog_object_name": "pg_foreign_server",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_foreign_server",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_foreign_server.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_foreign_table",
+      "reference_catalog_object_name": "pg_foreign_table",
+      "reference_catalog_object_kind": "system_catalog",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_yugabytedb_pg_foreign_table",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_foreign_table.h",
+      "diagnostic_code": "REFERENCE.YUGABYTEDB.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "column_id": "pg_aggregate_object_name",
+      "object_ref": "pg_aggregate",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2f86b689eaf68ed1a2baeddadb1f59ff7ffe5c9bde2e10ba09af4982cc6b48c5"
+    },
+    {
+      "column_id": "pg_aggregate_object_kind",
+      "object_ref": "pg_aggregate",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "bac880340944e86ef62b2a30c05dbd440623f90f31737968ec3414ffeb899630"
+    },
+    {
+      "column_id": "pg_aggregate_source_ref",
+      "object_ref": "pg_aggregate",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "a546bcd496d435b307fcd62d67d8bce339dd139cda4f36a21ef659cb6fe74cc5"
+    },
+    {
+      "column_id": "pg_am_object_name",
+      "object_ref": "pg_am",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "f5f714d801033b25cb17a12a169b7e4f91ada003203d4aacfd18a859b05e1bb0"
+    },
+    {
+      "column_id": "pg_am_object_kind",
+      "object_ref": "pg_am",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "58b73a66b451c9005bf252919f83c0869e3eb4e4bf15d71d52e42521003db92f"
+    },
+    {
+      "column_id": "pg_am_source_ref",
+      "object_ref": "pg_am",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "2208a1ad474853c070fa2374a28d75615bc1d80be860de98e69fa1d82f5a9498"
+    },
+    {
+      "column_id": "pg_amop_object_name",
+      "object_ref": "pg_amop",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "8e3d95f497f11075fc3340d8219851c4c3513ca04e14ef99d1705306c6c3f53c"
+    },
+    {
+      "column_id": "pg_amop_object_kind",
+      "object_ref": "pg_amop",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "1f79d2611c21d0dd19e4eb68e429bd4eefbd59c5763868f59996e7755cc4b306"
+    },
+    {
+      "column_id": "pg_amop_source_ref",
+      "object_ref": "pg_amop",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "8519f5c1195c61fcb6073339f2917cc627fb4fdd73c7a1e16afb9dfd5e7d7f50"
+    },
+    {
+      "column_id": "pg_amproc_object_name",
+      "object_ref": "pg_amproc",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "a72d9b35d5f2fb086340bb0462c2bca18c71961a944795fb19438928f0092462"
+    },
+    {
+      "column_id": "pg_amproc_object_kind",
+      "object_ref": "pg_amproc",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "c6b202a24c8a5fdca21c001e902c808683a4c705e1c551b002b6c88f3944e469"
+    },
+    {
+      "column_id": "pg_amproc_source_ref",
+      "object_ref": "pg_amproc",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "e93bb0e73c4689c637e7e689a22175af6bf34ae21eb347fbfc38070375b8f21b"
+    },
+    {
+      "column_id": "pg_attrdef_object_name",
+      "object_ref": "pg_attrdef",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6127604d7b555ec3aaded6c33412f50832f47d9f5deaf268a7379105ea31d784"
+    },
+    {
+      "column_id": "pg_attrdef_object_kind",
+      "object_ref": "pg_attrdef",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "fc470064dc779a2037fa68117a8091bfb89889887d947f2e6ee67e0953b67dbf"
+    },
+    {
+      "column_id": "pg_attrdef_source_ref",
+      "object_ref": "pg_attrdef",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "37ab6a3b0dbcec60583562bd5382b7bac0a7d91e2d30724fa6ed959e12fb2aee"
+    },
+    {
+      "column_id": "pg_attribute_object_name",
+      "object_ref": "pg_attribute",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2553200aae12247fd3d5d9188b861fd96c1f42ac2642b7b7c1c9383ba28c435d"
+    },
+    {
+      "column_id": "pg_attribute_object_kind",
+      "object_ref": "pg_attribute",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4f38654a94865db6e6fb5fafaa4df712386f276cff7bae097ad6dd0c382bc079"
+    },
+    {
+      "column_id": "pg_attribute_source_ref",
+      "object_ref": "pg_attribute",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "c60c50c9a02198df0e1801a70b48553458f47d0f1db36d1b5e83f6756367925c"
+    },
+    {
+      "column_id": "pg_auth_members_object_name",
+      "object_ref": "pg_auth_members",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "de133714cee63c92191a3102604747f52ee00ce3e3e67e6447b1e3b0417fc7ac"
+    },
+    {
+      "column_id": "pg_auth_members_object_kind",
+      "object_ref": "pg_auth_members",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2ccb21eba5e990f1c029178affa137fd952f5dfd795a1724775be483559112b7"
+    },
+    {
+      "column_id": "pg_auth_members_source_ref",
+      "object_ref": "pg_auth_members",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "0d696abde20ddd72e414a40bdf17e295581ea6286b4db98c38aee434cc88c126"
+    },
+    {
+      "column_id": "pg_authid_object_name",
+      "object_ref": "pg_authid",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7630378c7ff142ceb44634aa653d40c7f8706e7ef9138d45655af1d522f32ca9"
+    },
+    {
+      "column_id": "pg_authid_object_kind",
+      "object_ref": "pg_authid",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d0e5608a0aae6497856d49f3a9fb9d990f92c4794add5c1ce52c22b51b2a39bf"
+    },
+    {
+      "column_id": "pg_authid_source_ref",
+      "object_ref": "pg_authid",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "fe9208140f30261011ad5f88712ca09b7451daa5b2be98808de372aceb666fa3"
+    },
+    {
+      "column_id": "pg_cast_object_name",
+      "object_ref": "pg_cast",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4a2f7457dc7a6645e08482306d523d55030290953c03d1c4442bacf9cb9b49b0"
+    },
+    {
+      "column_id": "pg_cast_object_kind",
+      "object_ref": "pg_cast",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "79360b5f4fe1d55bea69f42817570af7f72c0cf742639258724ce969d85ceba3"
+    },
+    {
+      "column_id": "pg_cast_source_ref",
+      "object_ref": "pg_cast",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "77c868698c08051e7a2b387f3603f3f48c89d7774adf842b58b98fe7f1f9294e"
+    },
+    {
+      "column_id": "pg_class_object_name",
+      "object_ref": "pg_class",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "942125c53add479d82fbc80f596d5d05b11ab011f3fef26dfefe1ef490816fb5"
+    },
+    {
+      "column_id": "pg_class_object_kind",
+      "object_ref": "pg_class",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "fc04cd18976047bcb8d33bbdfaf39de03aaf5da9e6b3f02c3f787a08fef968cd"
+    },
+    {
+      "column_id": "pg_class_source_ref",
+      "object_ref": "pg_class",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "23e3fd0ad99df352dbc8448443428951aecfae405aa49d61e9f68776170bc8d4"
+    },
+    {
+      "column_id": "pg_collation_object_name",
+      "object_ref": "pg_collation",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "70447df609ba2f65d2a14a04906728042fc1a95bda1985cc2fdb129fcb4624a4"
+    },
+    {
+      "column_id": "pg_collation_object_kind",
+      "object_ref": "pg_collation",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "56de29554890857793bb9ccb9bebad2227f37fa073da1292d556b0b94813a908"
+    },
+    {
+      "column_id": "pg_collation_source_ref",
+      "object_ref": "pg_collation",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "9994dfe110a70335b3b18f592cf4f67518dd44a6bf57e658fa38273e884a9791"
+    },
+    {
+      "column_id": "pg_constraint_object_name",
+      "object_ref": "pg_constraint",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2f7ecffc1f6158fc65418a1a1adeea69c98e6dc680fc22e281b39a044f57466a"
+    },
+    {
+      "column_id": "pg_constraint_object_kind",
+      "object_ref": "pg_constraint",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7967c73773c7957bd9d853bc6752e8182369c65d3e674e8465f82f0d03cdc3a6"
+    },
+    {
+      "column_id": "pg_constraint_source_ref",
+      "object_ref": "pg_constraint",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "a8af5980e83b5d2efc4452aaf0e6d642e70006f4532a632aecd97651a4599049"
+    },
+    {
+      "column_id": "pg_conversion_object_name",
+      "object_ref": "pg_conversion",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "84fa804dce45f68895ec7aad7a990b774f8d2ebdf8e76bbef7b94dc4cb1b4e70"
+    },
+    {
+      "column_id": "pg_conversion_object_kind",
+      "object_ref": "pg_conversion",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7937bdc80d0dfc8f84e2e936c6aae980169a55df41238f3f691557acda46cc3f"
+    },
+    {
+      "column_id": "pg_conversion_source_ref",
+      "object_ref": "pg_conversion",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "a7af807ab3da893970328c557fcd7802f24b478edfb5c7d1ca6e0c735f5c8ec7"
+    },
+    {
+      "column_id": "pg_database_object_name",
+      "object_ref": "pg_database",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "cc9fe87444756081b55ca9143af03a9ceb5ff24b9d549bd1b596e3f6d9505259"
+    },
+    {
+      "column_id": "pg_database_object_kind",
+      "object_ref": "pg_database",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "cd762d1340b9255492f2f073ed4d6cd1820dd6669657252237627369e27b0e47"
+    },
+    {
+      "column_id": "pg_database_source_ref",
+      "object_ref": "pg_database",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "89761cd7c1cb9d5942dd0f3959c7060d8db7caeb223eac30eb591e2279c85db8"
+    },
+    {
+      "column_id": "pg_db_role_setting_object_name",
+      "object_ref": "pg_db_role_setting",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4fa18ea0ca58ab57e4f6d77f1c39d18bf5f2251aa346a689c67b1be27fd18727"
+    },
+    {
+      "column_id": "pg_db_role_setting_object_kind",
+      "object_ref": "pg_db_role_setting",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d3318767edebba6b90cf0c2a4fae1444bcb2c3970b88f5874da2f8dc5d77cf60"
+    },
+    {
+      "column_id": "pg_db_role_setting_source_ref",
+      "object_ref": "pg_db_role_setting",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "4fbd1753a7572d2f13d6af51d68e69e4ba179398133690f871847be8f7f339d4"
+    },
+    {
+      "column_id": "pg_default_acl_object_name",
+      "object_ref": "pg_default_acl",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "8abf72683501b08d459a7e1d9337e279509e86b0853d8ebd4f14fea383578c41"
+    },
+    {
+      "column_id": "pg_default_acl_object_kind",
+      "object_ref": "pg_default_acl",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "f1d4f2a65d7e57029643493214ca7dd47f52df259df53e3a7229641e6fdfe746"
+    },
+    {
+      "column_id": "pg_default_acl_source_ref",
+      "object_ref": "pg_default_acl",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "a529b67bbe831710102b251b21102fc5b827da7e5bb0e7d1abd79b57ec45b2c9"
+    },
+    {
+      "column_id": "pg_depend_object_name",
+      "object_ref": "pg_depend",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "9e659374de6a1c7821e62b103cb2b4d590a980ac23b80c0f1d99ad42fbc0fdba"
+    },
+    {
+      "column_id": "pg_depend_object_kind",
+      "object_ref": "pg_depend",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7dc799e73433f9aaf195cec7cbb657a8f21206f9cfce8389624c38c13510c447"
+    },
+    {
+      "column_id": "pg_depend_source_ref",
+      "object_ref": "pg_depend",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "9fbe3b5b900b3e147efc286413ed65cc64f329061615c4d88c2abb02b6bf3bc2"
+    },
+    {
+      "column_id": "pg_description_object_name",
+      "object_ref": "pg_description",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "da5088de48d5ad3a88b91c603fd28959c54d53cda7a83a579a7d7f0cdcd1c110"
+    },
+    {
+      "column_id": "pg_description_object_kind",
+      "object_ref": "pg_description",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "cc4398380603e1fc5ca19e8c97e1caf61608bf4f226f98bfb002a0128fc1360b"
+    },
+    {
+      "column_id": "pg_description_source_ref",
+      "object_ref": "pg_description",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "bddb7e8c31388e68e0ac0ccc488ec874de238295daa1a2ff85c890d612fe748a"
+    },
+    {
+      "column_id": "pg_enum_object_name",
+      "object_ref": "pg_enum",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2c74b08c6a5dcf2341148f5026ccbcdc76a0783f640399031ae65f84b9e376c4"
+    },
+    {
+      "column_id": "pg_enum_object_kind",
+      "object_ref": "pg_enum",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "8368ac3c6b5d0cfa89dbfbd6816ef3688b97905c5325626870b02ef886548de7"
+    },
+    {
+      "column_id": "pg_enum_source_ref",
+      "object_ref": "pg_enum",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "67cbb23db8e73cb540220df8acfa93e25f8d9673006126c8b6e698c84dc508cb"
+    },
+    {
+      "column_id": "pg_event_trigger_object_name",
+      "object_ref": "pg_event_trigger",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2402ef6bdd2def58bfc760258e8c96ded9cc37c244e88ab7c611f6f69323b8ba"
+    },
+    {
+      "column_id": "pg_event_trigger_object_kind",
+      "object_ref": "pg_event_trigger",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "397125fd2d3527863c708cbc26ab138873b6b741a83010b6cc790a55f00c3128"
+    },
+    {
+      "column_id": "pg_event_trigger_source_ref",
+      "object_ref": "pg_event_trigger",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "372cc62044eb684b6427173d8ecde612447224cc908a4e941c94333d256c328d"
+    },
+    {
+      "column_id": "pg_extension_object_name",
+      "object_ref": "pg_extension",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "a0a191d7444057b66d6dc2d0c67dae627fde2c73bbffd5aece06af6dad4e6900"
+    },
+    {
+      "column_id": "pg_extension_object_kind",
+      "object_ref": "pg_extension",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "304fd0eb58dbf506187d95963566301014037f2e05f118e0486a9958c31812d9"
+    },
+    {
+      "column_id": "pg_extension_source_ref",
+      "object_ref": "pg_extension",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "75b340ca4e722f400f6fa94814b0e90c904097204d5a27690a64b3a04007d074"
+    },
+    {
+      "column_id": "pg_foreign_data_wrapper_object_name",
+      "object_ref": "pg_foreign_data_wrapper",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "3864d11a809d8d315449ab487347ac3b3ecf092e1712af884005865956dfb568"
+    },
+    {
+      "column_id": "pg_foreign_data_wrapper_object_kind",
+      "object_ref": "pg_foreign_data_wrapper",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6a1a71f21eede60b89078d8b9de7fc7bfad5914fc3ed086d725636a50744825e"
+    },
+    {
+      "column_id": "pg_foreign_data_wrapper_source_ref",
+      "object_ref": "pg_foreign_data_wrapper",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "0f47042c4e8ad7eea2247eae4941d3aab61b1d3ebd42e9ee1df36dcc874eaba0"
+    },
+    {
+      "column_id": "pg_foreign_server_object_name",
+      "object_ref": "pg_foreign_server",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "5f6cfd49b59efd4a82f7a41c74749fed8985d7c791b3fe2ecd6a5ee76528534d"
+    },
+    {
+      "column_id": "pg_foreign_server_object_kind",
+      "object_ref": "pg_foreign_server",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4eda865af7d5b97847a26f5ebb8a9127c7ea3b21d6a305b192efd0cd83f3d48e"
+    },
+    {
+      "column_id": "pg_foreign_server_source_ref",
+      "object_ref": "pg_foreign_server",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "5007fc869bf470c7872db6c46364419bd507acfe42c9bd2ec227f710a01a2b7b"
+    },
+    {
+      "column_id": "pg_foreign_table_object_name",
+      "object_ref": "pg_foreign_table",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2bcf5c1fefa06c26d7b663d2e34b8133264a120e61e7f792dd0f2c2c825e5fec"
+    },
+    {
+      "column_id": "pg_foreign_table_object_kind",
+      "object_ref": "pg_foreign_table",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "355c2cd02673c65ae55a6b449314c9320fe57c81c009a3c68bf260403164e684"
+    },
+    {
+      "column_id": "pg_foreign_table_source_ref",
+      "object_ref": "pg_foreign_table",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "8bec265632ff6049e3f9058f96c0bf6caa9777a0f768d58cf9da7a73c0055069"
+    }
+  ],
+  "default_row_set": [
+    {
+      "row_id": "yugabytedb.seed.pg_aggregate",
+      "reference_object_ref": "pg_aggregate",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_aggregate",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_aggregate.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "dd3263b46b2e35141ac3f6e9516a9870f8bca74212a10e52a0ea08e892820274"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_am",
+      "reference_object_ref": "pg_am",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_am",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_am.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "bb7d2dc88cb3dd356a7c314105b64ff63a74f93a66844686f65609549742627e"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_amop",
+      "reference_object_ref": "pg_amop",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_amop",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_amop.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "4d472e36a27dcf00f700c553fefb7716ec37f09d5299b4f854d8bcbf70f2ddf4"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_amproc",
+      "reference_object_ref": "pg_amproc",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_amproc",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_amproc.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "d5d7215557563fb3e76b920b110a416953b316c8341800382aac25ab742bfc85"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_attrdef",
+      "reference_object_ref": "pg_attrdef",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_attrdef",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_attrdef.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "4a963b3788ff49fcb12ed266674c3f0307d29c721541892a49877cafaf3e6de0"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_attribute",
+      "reference_object_ref": "pg_attribute",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_attribute",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_attribute.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "2a5a859e427a65bb0dad3a0b62c6300b3fcd5d1bf33affab6f9a8e1a70b20489"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_auth_members",
+      "reference_object_ref": "pg_auth_members",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_auth_members",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_auth_members.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "d5c160dff0f8401c72ff104673069fa2b93ea968ed99a728f474bdd8041319ea"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_authid",
+      "reference_object_ref": "pg_authid",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_authid",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_authid.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "d20c240e15e9d919e569dc5031e12c33ba02bd75c81ad3a122a25f1ae9bf7869"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_cast",
+      "reference_object_ref": "pg_cast",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_cast",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_cast.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "f5c0d08f9ce12b0f8643b92c933464954e6e7bfc55cdfc245c82abbe40ebf8c1"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_class",
+      "reference_object_ref": "pg_class",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_class",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_class.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "03ede9ee03e8e7cc951f484ce3398448d639c6ad64f9c0063c7292d9eec1c683"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_collation",
+      "reference_object_ref": "pg_collation",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_collation",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_collation.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "7a0805230138d483c1c8542a2ba38c956cb10cb2fe780df51af5424a9e04718b"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_constraint",
+      "reference_object_ref": "pg_constraint",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_constraint",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_constraint.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "05e5caaccdc483e126142d6f278e72cd31339b7ae0b52594ae7bb57ae46905e7"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_conversion",
+      "reference_object_ref": "pg_conversion",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_conversion",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_conversion.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "23b786b840ac23d5908242e70b7cb5169e76abef0260f61d89ff6b5415b41234"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_database",
+      "reference_object_ref": "pg_database",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_database",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_database.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "826045a54213a26d99a5fff474f69c49bf88cbefaf857a7fc4ab3317118180fa"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_db_role_setting",
+      "reference_object_ref": "pg_db_role_setting",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_db_role_setting",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_db_role_setting.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "566031d58cde94c4afec5b715c994a18c76c7a31ef963d1104d0f7ff822f72e0"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_default_acl",
+      "reference_object_ref": "pg_default_acl",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_default_acl",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_default_acl.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "577a3aeba2544efe50bccb2e8fb7116d68f98ee8cab12623838f6d63f641c75d"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_depend",
+      "reference_object_ref": "pg_depend",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_depend",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_depend.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "ee3fd219b798f2306a686d9492e3d4f028c01aeeae2fdec3b4070a1a4f92e0af"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_description",
+      "reference_object_ref": "pg_description",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_description",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_description.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "ccd5da6e5e86a2bfafdccf9c30ec13592160563db067aa1c94ec2fc6e7b94b84"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_enum",
+      "reference_object_ref": "pg_enum",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_enum",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_enum.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "27601edccbfbc0976f5ba4c13f8a21213e7c3372469fd803e23f4535dedd6ef5"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_event_trigger",
+      "reference_object_ref": "pg_event_trigger",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_event_trigger",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_event_trigger.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "8b9812998e75767a3e54d6b391bb4f2344be3c0da5573a0242082795fe15caec"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_extension",
+      "reference_object_ref": "pg_extension",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_extension",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_extension.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "1a8a88e771172bf85020ead24f072772d8b52f97f580475a3d994eb134be7bf7"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_foreign_data_wrapper",
+      "reference_object_ref": "pg_foreign_data_wrapper",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_foreign_data_wrapper",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_foreign_data_wrapper.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "c2456d2a470a4a814d6b267269898c1957a87417172c809992316235e7c6b2da"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_foreign_server",
+      "reference_object_ref": "pg_foreign_server",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_foreign_server",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_foreign_server.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "a2179170ac87b20cec0fc6ff72d6cdb87380204c1d040b05352729feda3ddca3"
+    },
+    {
+      "row_id": "yugabytedb.seed.pg_foreign_table",
+      "reference_object_ref": "pg_foreign_table",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_foreign_table",
+      "definition_source_ref": "reference_source_reference:yugabytedb/src/postgres/src/include/catalog/pg_foreign_table.h",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "20596e1610a0c39fd6f76b5ca94c8536172e1180b01a59387d564304fbdc4549"
+    }
+  ],
+  "default_metadata_set": [],
+  "default_security_row_set": [
+    {
+      "row_id": "yugabytedb.security.default_visibility_policy",
+      "principal": "PUBLIC",
+      "secret_material": "redacted_not_applicable",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "row_hash": "199cd347a6c6512e65efde6e8d42f6dcb55f10f24ab28f228735d0ffa4d389ca"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "value_id": "yugabytedb.runtime.database_identity",
+      "value_class": "instance_generated_uuid",
+      "emulation_rule": "generate ScratchBird UUIDv7 at database/profile create and expose only reference-compatible rendering",
+      "row_hash": "60e79d0196990a36999aa7a8c2cb59dcd04c7d90ce42fd7868a41deade28d70e"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "rule_id": "grant_filtered_metadata",
+      "rule": "visible only through reference metadata policy and ScratchBird engine authorization"
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "rule_id": "raw_secret_forbidden",
+      "rule": "raw secrets are never stored in reference seed manifests"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "rule_id": "report_only",
+      "rule": "catalog seed rows are report-only; mutation routes through UUID-backed ScratchBird catalog APIs"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_yugabytedb_pg_aggregate",
+      "reference_object_ref": "pg_aggregate",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "c1fca9f0-1126-59bc-9e46-004520c48081",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_am",
+      "reference_object_ref": "pg_am",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "37e28d8c-b623-577c-8458-4f70d3c8b5b1",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_amop",
+      "reference_object_ref": "pg_amop",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "70862351-0ebb-5c41-ad77-8e488c751ebc",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_amproc",
+      "reference_object_ref": "pg_amproc",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "0e47211a-dc74-5340-9698-e886ad498c54",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_attrdef",
+      "reference_object_ref": "pg_attrdef",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "ad8523b2-9594-5c6b-8cf0-b915ce35a1c5",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_attribute",
+      "reference_object_ref": "pg_attribute",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "0a5255e2-a832-5d4e-a8ce-fcccc93cb9ef",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_auth_members",
+      "reference_object_ref": "pg_auth_members",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "472a3999-e560-5373-9da8-094abc2b11cf",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_authid",
+      "reference_object_ref": "pg_authid",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "c26a6b6e-c3be-5d28-8cf2-6de27899572b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_cast",
+      "reference_object_ref": "pg_cast",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "ea49e8fb-c260-5166-91d7-fa712f2f690e",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_class",
+      "reference_object_ref": "pg_class",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "2e70e125-a204-5d70-ad8f-8c0f69f882e1",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_collation",
+      "reference_object_ref": "pg_collation",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "428b3682-de31-53d7-85f7-3d4781259098",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_constraint",
+      "reference_object_ref": "pg_constraint",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "1b284ac7-8b7d-5e7d-9f42-7dbfb8b8e6fb",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_conversion",
+      "reference_object_ref": "pg_conversion",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "57072c90-1aff-54c1-94bd-daa1452e3f0a",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_database",
+      "reference_object_ref": "pg_database",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "6bfd0975-48e1-56af-a07f-511b513fa665",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_db_role_setting",
+      "reference_object_ref": "pg_db_role_setting",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "8751f332-4d43-5713-8764-67378b32d2c6",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_default_acl",
+      "reference_object_ref": "pg_default_acl",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "f643b3c9-31be-5553-bbfc-b5108f412bd1",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_depend",
+      "reference_object_ref": "pg_depend",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a4dadc5e-1228-59d9-8b8c-ea213ec1fbad",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_description",
+      "reference_object_ref": "pg_description",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "2f97c7e5-2154-5c6e-b805-cbffa47274fa",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_enum",
+      "reference_object_ref": "pg_enum",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "763d7d32-ede0-558b-8179-280d98ad0bcb",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_event_trigger",
+      "reference_object_ref": "pg_event_trigger",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "49f41a6d-045e-579f-9782-7140e745327b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_extension",
+      "reference_object_ref": "pg_extension",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "df45d364-fd8f-55b5-b99e-4b40d7d5fa5f",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_foreign_data_wrapper",
+      "reference_object_ref": "pg_foreign_data_wrapper",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "b98b8931-8b66-58de-826f-d6478c90a6f2",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_foreign_server",
+      "reference_object_ref": "pg_foreign_server",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "f008bd9f-394b-591d-bf99-7f154273632c",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_yugabytedb_pg_foreign_table",
+      "reference_object_ref": "pg_foreign_table",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "8e63ff9f-1ec6-57bc-9599-689145a73665",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "REFERENCE.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "REFERENCE.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "REFERENCE.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "REFERENCE.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "REFERENCE.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "REFERENCE.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "REFERENCE.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "rowset_hashes": {
+    "catalog_object_set": "7ee3de8760393d09444d98664595d2695ec169d37daf1597152d5c2210967e66",
+    "catalog_column_set": "62e4243ef5c5b9ba600e0c471a401a78cbfa20c51d776bc76b1d346df0b0e750",
+    "default_row_set": "b742f416f0998146b1fc8c85ea8662565e439781654af42a8d803a624d1b89f3",
+    "default_metadata_set": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "default_security_row_set": "f0787fbe35c38f76b921fc3533bd796403e4fd7b6a42250e6f4a2643b39c5c09",
+    "default_runtime_generated_value_set": "ef40341b2bf9ee33ddea4f526812706bed66bab96821fe97d3c55d8b7ee4f980",
+    "visibility_rule_set": "e3d11affebfa8ba62fe7e7f0c2014ac363d6d1ac1ccaa3f47aafd18109cdd20c",
+    "redaction_rule_set": "c081d87b2dadb71687177f97c210a024f823fba2383d3e299998c66deee46f2f",
+    "mutation_rule_set": "8b806b0d95bbd92e3c2aeb3d7d4ecd0fd0abc1aaf9c6a14639f8966080719fed",
+    "scratchbird_mapping_set": "7cd28a01f0daa84de50b4aeb0a960a816538a15fdcc20d17e6207c7c943576fe"
+  },
+  "manifest_hash": "7c0a708595596f6e42622ecd3d670ad885875060cbca477bcd2ca5a911d073de"
+}

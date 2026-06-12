@@ -27,7 +27,7 @@ enum class DatatypeCastCategory : u16 {
   lossless_implicit,
   lossless_explicit,
   lossy_explicit,
-  donor_compatibility_explicit,
+  reference_compatibility_explicit,
   domain_to_base,
   base_to_domain,
   forbidden
@@ -80,7 +80,7 @@ struct DatatypeCastRequest {
   DatatypeOperationValue value;
   CanonicalTypeId target_type_id = CanonicalTypeId::unknown;
   bool explicit_cast = false;
-  bool donor_compatibility_profile = false;
+  bool reference_compatibility_profile = false;
 };
 
 struct DatatypeCastResult {
@@ -245,7 +245,7 @@ const char* DatatypeRoundingModeName(DatatypeRoundingMode rounding);
 const char* DatatypeNullOrderingName(DatatypeNullOrdering null_ordering);
 DatatypeCastCategory ClassifyDatatypeCast(CanonicalTypeId source_type_id,
                                           CanonicalTypeId target_type_id,
-                                          bool donor_compatibility_profile = false);
+                                          bool reference_compatibility_profile = false);
 DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request);
 DatatypeExtractResult ExtractDatatypeField(const DatatypeExtractRequest& request);
 DatatypeSetOperationResult EncodeSetValue(const DatatypeSetDescriptor& descriptor,

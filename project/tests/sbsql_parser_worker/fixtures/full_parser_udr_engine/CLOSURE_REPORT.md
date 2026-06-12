@@ -23,7 +23,7 @@ This closure covers the complete SBSQL parser worker, trusted parser-support UDR
 
 ## Residual Non-Blocking Risks
 
-The remaining risks are documented in `artifacts/KNOWN_RISK_BURN_DOWN_REPORT.md`: global donor exact-extraction manifest drift outside this parser-v3/SBSQL closure scope, unrelated broad all-target build linkage risk, and the deterministic seed-data size exception for `function_seed_registry.cpp`. None masks an accepted unimplemented SBSQL surface, open non-cluster engine gap, parser authority leak, or missing message-vector path.
+The remaining risks are documented in `artifacts/KNOWN_RISK_BURN_DOWN_REPORT.md`: global reference exact-extraction manifest drift outside this parser-v3/SBSQL closure scope, unrelated broad all-target build linkage risk, and the deterministic seed-data size exception for `function_seed_registry.cpp`. None masks an accepted unimplemented SBSQL surface, open non-cluster engine gap, parser authority leak, or missing message-vector path.
 
 ## Closure Decision
 

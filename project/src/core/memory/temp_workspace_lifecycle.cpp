@@ -55,7 +55,7 @@ Status OkStatus() {
 constexpr int kSecureTempWorkspaceRandomBytes = 16;
 constexpr int kSecureTempWorkspaceAllocationAttempts = 16;
 constexpr const char* kTempWorkspaceAuthorityBoundary =
-    "resource_security_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_or_agent_action_authority";
+    "resource_security_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_or_agent_action_authority";
 constexpr u64 kTempWorkspaceManifestLegacyFormatVersion = 1;
 constexpr u64 kTempWorkspaceManifestCurrentFormatVersion = 2;
 constexpr const char* kTempWorkspaceManifestVersionV1 = "SB_TEMP_WORKSPACE_MANIFEST_V1";
@@ -2602,7 +2602,7 @@ TempWorkspaceLifecycleManager::MakeDiagnostic(Status status,
                                                      std::move(arguments),
                                                      {},
                                                      "core.memory.temp_workspace",
-                                                     "Use temp workspace diagnostics as resource and security evidence only; transaction finality, visibility, authorization, recovery, parser, donor, and benchmark authority remain with their owning subsystems.");
+                                                     "Use temp workspace diagnostics as resource and security evidence only; transaction finality, visibility, authorization, recovery, parser, reference, and benchmark authority remain with their owning subsystems.");
 }
 
 const char* TempStorageClassName(TempStorageClass value) {
@@ -2711,7 +2711,7 @@ TempWorkspacePlatformSecurityCapabilities CurrentTempWorkspacePlatformSecurityCa
   capabilities.cleanup_supported = true;
   capabilities.evidence.push_back("MMCH_TEMP_WORKSPACE_CROSS_PLATFORM");
   capabilities.evidence.push_back(
-      "temp_workspace.platform_authority_scope=evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_or_agent_action_authority");
+      "temp_workspace.platform_authority_scope=evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_or_agent_action_authority");
 #if defined(_WIN32)
   capabilities.platform_name = "windows";
   capabilities.secure_random_provider = "BCryptGenRandom";

@@ -36,7 +36,7 @@ constexpr u32 kFlagProofNonUniqueExact = 1u << 2;
 constexpr u32 kFlagProofBytewiseStable = 1u << 3;
 constexpr u32 kFlagProofStableRowUuidLocators = 1u << 4;
 constexpr u32 kFlagProofMgaRecheck = 1u << 5;
-constexpr u32 kFlagProofParserDonorAuthority = 1u << 6;
+constexpr u32 kFlagProofParserReferenceAuthority = 1u << 6;
 constexpr u32 kFlagProofTimestampUuidAuthority = 1u << 7;
 constexpr u32 kFlagProofAccepted = 1u << 8;
 constexpr u32 kFlagRecheckRequired = 1u << 9;
@@ -124,8 +124,8 @@ u32 EqualityProofFlags(const IndexPostingList& posting_list) {
   if (proof.preserves_mga_visibility_recheck) {
     flags |= kFlagProofMgaRecheck;
   }
-  if (proof.parser_or_donor_finality_authority) {
-    flags |= kFlagProofParserDonorAuthority;
+  if (proof.parser_or_reference_finality_authority) {
+    flags |= kFlagProofParserReferenceAuthority;
   }
   if (proof.timestamp_or_uuid_order_finality_authority) {
     flags |= kFlagProofTimestampUuidAuthority;
@@ -143,7 +143,7 @@ IndexPostingEqualityProof ProofFromFlags(u32 flags) {
   proof.encoded_key_bytewise_stable = HasFlag(flags, kFlagProofBytewiseStable);
   proof.stable_row_uuid_locators = HasFlag(flags, kFlagProofStableRowUuidLocators);
   proof.preserves_mga_visibility_recheck = HasFlag(flags, kFlagProofMgaRecheck);
-  proof.parser_or_donor_finality_authority = HasFlag(flags, kFlagProofParserDonorAuthority);
+  proof.parser_or_reference_finality_authority = HasFlag(flags, kFlagProofParserReferenceAuthority);
   proof.timestamp_or_uuid_order_finality_authority = HasFlag(flags, kFlagProofTimestampUuidAuthority);
   return proof;
 }
@@ -312,7 +312,7 @@ bool IndexPostingEqualityProofAccepted(const IndexPostingEqualityProof& proof) {
          proof.encoded_key_bytewise_stable &&
          proof.stable_row_uuid_locators &&
          proof.preserves_mga_visibility_recheck &&
-         !proof.parser_or_donor_finality_authority &&
+         !proof.parser_or_reference_finality_authority &&
          !proof.timestamp_or_uuid_order_finality_authority;
 }
 

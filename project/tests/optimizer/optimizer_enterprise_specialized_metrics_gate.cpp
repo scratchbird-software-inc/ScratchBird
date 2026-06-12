@@ -165,12 +165,12 @@ void TestSpecializedMetricPublication() {
 
 void TestSpecializedMetricRefusals() {
   auto sample = GoodSample();
-  sample.authority.parser_or_donor_authority = true;
+  sample.authority.parser_or_reference_authority = true;
   auto refused = opt::PublishSpecializedWorkloadMetrics(sample);
   Require(!refused.ok &&
               refused.diagnostic_code ==
                   "SB_OPTIMIZER_SPECIALIZED_METRICS.UNSAFE_AUTHORITY",
-          "parser/donor specialized authority was not refused");
+          "parser/reference specialized authority was not refused");
 
   sample = GoodSample();
   sample.authority.exact_recheck_preserved = false;

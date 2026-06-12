@@ -153,7 +153,7 @@ void RequireRejected(const db::WritePathBatchingRequest& request,
 
 void VerifyNegativeCases(const std::filesystem::path& root) {
   auto parser_authority = Request(root, "orh284.parser_authority");
-  parser_authority.authority.parser_client_or_donor_write_batch_authority =
+  parser_authority.authority.parser_client_or_reference_write_batch_authority =
       true;
   RequireRejected(parser_authority,
                   "ORH_WRITE_BATCHING_UNSAFE_AUTHORITY",

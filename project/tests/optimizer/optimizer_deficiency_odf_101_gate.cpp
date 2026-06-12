@@ -291,12 +291,12 @@ void FailClosedGuards() {
           "ODF-101 missing MGA recheck did not fail closed");
 
   request = BaseRequest(agents::AdaptiveTuningKnob::kRefreshInterval);
-  request.safety.parser_or_donor_authority = true;
+  request.safety.parser_or_reference_authority = true;
   result = agents::EvaluateAdaptiveTuningController(request);
   Require(!result.ok &&
               result.diagnostic_code ==
                   "SB_AGENT_ADAPTIVE_TUNING.UNSAFE_AUTHORITY",
-          "ODF-101 parser/donor authority did not fail closed");
+          "ODF-101 parser/reference authority did not fail closed");
 
   request = BaseRequest(agents::AdaptiveTuningKnob::kCandidateBudget);
   request.metrics.provider_transaction_finality_authority = true;
@@ -354,9 +354,9 @@ void MetricsEvidenceSerializerIsBenchmarkClean() {
     if (field.first == "benchmark_clean" && field.second == "true") {
       saw_clean = true;
     }
-    Require(!(field.first == "parser_or_donor_authority" &&
+    Require(!(field.first == "parser_or_reference_authority" &&
               field.second == "true"),
-            "ODF-101 metrics evidence claimed parser/donor authority");
+            "ODF-101 metrics evidence claimed parser/reference authority");
     Require(!(field.first == "provider_transaction_finality_authority" &&
               field.second == "true"),
             "ODF-101 metrics evidence claimed provider finality authority");

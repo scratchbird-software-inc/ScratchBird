@@ -611,9 +611,9 @@ std::string behavior_payload() {
   payload += scratchbird::engine::SblrBehaviorStatusName(
       scratchbird::engine::kSblrAccelerationRegistryRow.behavior_status);
   payload += ";";
-  payload += scratchbird::engine::kSblrDonorMetaRegistryRow.family_name;
+  payload += scratchbird::engine::kSblrReferenceMetaRegistryRow.family_name;
   payload += "=";
-  payload += scratchbird::engine::SblrBehaviorStatusName(scratchbird::engine::kSblrDonorMetaRegistryRow.behavior_status);
+  payload += scratchbird::engine::SblrBehaviorStatusName(scratchbird::engine::kSblrReferenceMetaRegistryRow.behavior_status);
   return payload;
 }
 
@@ -971,7 +971,7 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
     if (decoded.status == scratchbird::engine::SblrCodecStatus::version_unsupported) {
       return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4003, code, key);
     }
-    if (decoded.status == scratchbird::engine::SblrCodecStatus::donor_meta_forbidden) {
+    if (decoded.status == scratchbird::engine::SblrCodecStatus::reference_meta_forbidden) {
       return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4004, code, key);
     }
     if (decoded.status == scratchbird::engine::SblrCodecStatus::descriptor_invalid) {

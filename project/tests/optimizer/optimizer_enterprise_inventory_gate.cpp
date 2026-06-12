@@ -57,12 +57,12 @@ void TestNoStubSurfaceClasses() {
   Require(!cluster->production_route_admissible && !cluster->benchmark_clean_admissible,
           "cluster surface is admissible in core production or benchmark-clean route");
 
-  const auto* donor = FindSurface("donor_authority");
-  Require(donor != nullptr, "donor authority removed-claim surface missing");
-  Require(donor->surface_class == opt::EnterpriseOptimizerSurfaceClass::removed_claim,
-          "donor authority is not removed from optimizer authority claims");
-  Require(!donor->production_route_admissible && !donor->benchmark_clean_admissible,
-          "donor authority can satisfy production or benchmark-clean optimizer routes");
+  const auto* reference = FindSurface("reference_authority");
+  Require(reference != nullptr, "reference authority removed-claim surface missing");
+  Require(reference->surface_class == opt::EnterpriseOptimizerSurfaceClass::removed_claim,
+          "reference authority is not removed from optimizer authority claims");
+  Require(!reference->production_route_admissible && !reference->benchmark_clean_admissible,
+          "reference authority can satisfy production or benchmark-clean optimizer routes");
 
   const auto* parser = FindSurface("parser_execution_authority");
   Require(parser != nullptr, "parser authority removed-claim surface missing");

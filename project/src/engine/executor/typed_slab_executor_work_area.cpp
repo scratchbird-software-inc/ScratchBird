@@ -25,7 +25,7 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityScope =
-    "executor.typed_slab.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_plan_or_index_finality_authority";
+    "executor.typed_slab.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_plan_or_index_finality_authority";
 
 struct ExecutorFrame {
   u64 frame_id = 0;
@@ -78,7 +78,7 @@ ExecutorTypedSlabWorkAreaResult Refuse(ExecutorTypedSlabWorkAreaRequest request,
 bool UnsafeAuthority(const ExecutorTypedSlabWorkAreaRequest& request) {
   return !request.engine_mga_snapshot_bound ||
          !request.transaction_inventory_authoritative ||
-         request.parser_or_donor_authority ||
+         request.parser_or_reference_authority ||
          request.memory_finality_or_visibility_authority;
 }
 

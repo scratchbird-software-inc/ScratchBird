@@ -36,7 +36,7 @@ struct CatalogOverlayInstallState {
 };
 
 std::string EscapeJson(std::string_view text) {
-  return scratchbird::parser::donor::EscapeJson(text);
+  return scratchbird::parser::compatibility::EscapeJson(text);
 }
 
 std::string BoolJson(bool value) {
@@ -154,15 +154,15 @@ std::string ManagementInventoryJson(std::string_view render_policy) {
   out << "{\"package\":\"sbup_opensearch_sql_ppl\","
       << "\"package_logical_name\":\"opensearch_sql_ppl-v3_6\","
       << "\"package_call_name\":\"sbup_opensearch_sql_ppl\","
-      << "\"donor_family\":\"opensearch_sql_ppl\","
+      << "\"reference_family\":\"opensearch_sql_ppl\","
       << "\"management_abi_version\":\"1.0\","
       << "\"routine_count\":" << std::size(kManagementOperations) << ','
       << "\"native_sbsql_excluded\":true,"
       << "\"parser_authority\":false,"
       << "\"engine_authorizes_before_udr\":true,"
       << "\"mga_transaction_authority\":\"scratchbird_engine\","
-      << "\"donor_storage_authority\":false,"
-      << "\"donor_recovery_authority\":false,"
+      << "\"reference_storage_authority\":false,"
+      << "\"reference_recovery_authority\":false,"
       << "\"real_opensearch_sql_ppl_file_effects\":false,"
       << "\"inventory_detail\":\""
       << (include_details ? "release" : "summary") << "\","
@@ -556,7 +556,7 @@ UdrResult sbu_opensearch_sql_ppl_management_package_request(std::string_view ope
   UdrResult failure;
   if (!IsManagementOperation(operation_name)) {
     return Diagnostic("UDR.OPENSEARCH_SQL_PPL.MGMT_OPERATION_UNKNOWN",
-                      "OpenSearch SQL/PPL management package request names must be registered in the standard donor management ABI.");
+                      "OpenSearch SQL/PPL management package request names must be registered in the standard compatibility management ABI.");
   }
   if (!RequireTrustedContext(context_packet, function_name,
                              required_context, failure)) {
@@ -595,12 +595,12 @@ UdrResult sbu_opensearch_sql_ppl_management_package_request(std::string_view ope
           "\"mga_transaction_authority\":\"scratchbird_engine\","
           "\"requires_mga_transaction\":" +
               BoolJson(ManagementOperationMutates(operation_name)) + ","
-          "\"donor_storage_authority\":false,"
-          "\"donor_recovery_authority\":false,"
+          "\"reference_storage_authority\":false,"
+          "\"reference_recovery_authority\":false,"
           "\"real_opensearch_sql_ppl_file_effects\":false,"
           "\"exact_refusal\":" + BoolJson(refused) + ","
           "\"idempotency_state\":\"engine_request_uuid_bound\","
-          "\"support_evidence_ref\":\"project/tests/donor_regression/opensearch_sql_ppl/management_package_abi/management_package_abi_manifest.csv\"}",
+          "\"support_evidence_ref\":\"project/tests/reference_regression/opensearch_sql_ppl/management_package_abi/management_package_abi_manifest.csv\"}",
           scratchbird::parser::opensearch_sql_ppl::MessageVectorToJson({})};
 }
 

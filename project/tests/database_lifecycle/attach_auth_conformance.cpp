@@ -9,6 +9,7 @@
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
 #include "database_lifecycle.hpp"
+#include "database_lifecycle_test_memory.hpp"
 #include "uuid.hpp"
 
 #include <array>
@@ -39,6 +40,8 @@ constexpr std::string_view kVerifier =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 constexpr std::string_view kWrongVerifier =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+constexpr std::string_view kAlicePrincipalUuid =
+    "019e108d-1700-7000-8000-0000000007aa";
 
 struct AuthFixture {
   std::array<std::uint8_t, 16> connection_uuid{};
@@ -77,6 +80,10 @@ bool HasDiagnostic(const SessionOperationResult& result, std::string_view code) 
 bool PayloadContains(const SessionOperationResult& result, std::string_view needle) {
   const std::string text(result.payload.begin(), result.payload.end());
   return text.find(needle) != std::string::npos;
+}
+
+bool Contains(std::string_view text, std::string_view needle) {
+  return text.find(needle) != std::string_view::npos;
 }
 
 std::string FinalityState(const ServerSessionRegistry& registry, const sbps::Frame& frame) {
@@ -119,9 +126,14 @@ void CreateOpenDatabase(const std::filesystem::path& path) {
 void WriteAuthStore(const std::filesystem::path& database_path,
                     std::string_view principal = "alice",
                     std::string_view verifier = kVerifier) {
-  std::ofstream out(database_path.string() + ".sb.local_password_auth", std::ios::trunc);
-  out << principal << "\tlocal_password\t" << verifier << '\n';
-  Require(static_cast<bool>(out), "local password auth store write failed");
+  scratchbird::tests::database_lifecycle::CreateDurableLocalPasswordPrincipal(
+      database_path,
+      kDatabaseUuid,
+      kAlicePrincipalUuid,
+      principal,
+      verifier,
+      7,
+      "DBLC-007");
 }
 
 HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
@@ -146,18 +158,19 @@ HostedEngineState MakeNoDatabaseState() {
 }
 
 std::string Evidence(std::string_view principal, std::string_view verifier) {
-  std::string evidence = "scheme=local_password_v1;principal=";
-  evidence += principal;
-  evidence += ";verifier=";
-  evidence += verifier;
-  return evidence;
+  return scratchbird::tests::database_lifecycle::DurableLocalPasswordEvidence(
+      principal,
+      kAlicePrincipalUuid,
+      verifier,
+      "right:CONNECT");
 }
 
 std::vector<std::uint8_t> AuthPayload(const std::array<std::uint8_t, 16>& connection_uuid,
                                       std::string_view principal = "alice",
                                       std::string_view requested_database = "default",
                                       std::string_view verifier = kVerifier,
-                                      bool credential_invalid = false) {
+                                      bool credential_invalid = false,
+                                      std::string_view requested_language = "en") {
   std::vector<std::uint8_t> out;
   PutUuid(&out, connection_uuid);
   out.push_back(1);
@@ -167,7 +180,7 @@ std::vector<std::uint8_t> AuthPayload(const std::array<std::uint8_t, 16>& connec
   PutString(&out, "local_password");
   PutString(&out, principal);
   PutString(&out, requested_database);
-  PutString(&out, "en");
+  PutString(&out, requested_language);
   PutString(&out, Evidence(principal, verifier));
   return out;
 }
@@ -199,11 +212,17 @@ sbps::Frame MakeFrame(sbps::MessageType type,
 AuthFixture Authenticate(ServerSessionRegistry* registry,
                          const HostedEngineState& engine_state,
                          std::string_view principal = "alice",
-                         std::string_view requested_database = "default") {
+                         std::string_view requested_database = "default",
+                         std::string_view requested_language = "en") {
   AuthFixture fixture;
   fixture.connection_uuid = sbps::MakeUuidV7Bytes();
   fixture.frame = MakeFrame(sbps::MessageType::kAuthHandoff,
-                            AuthPayload(fixture.connection_uuid, principal, requested_database),
+                            AuthPayload(fixture.connection_uuid,
+                                        principal,
+                                        requested_database,
+                                        kVerifier,
+                                        false,
+                                        requested_language),
                             fixture.connection_uuid);
   const auto result = scratchbird::server::HandleAuthHandoff(registry, engine_state, fixture.frame);
   if (!result.accepted) {
@@ -258,9 +277,76 @@ void TestAcceptedAuthAttach(const std::filesystem::path& database_path) {
   Require(session.auth_context_uuid == auth.auth_context_uuid, "session did not bind auth context");
   Require(session.database_path == database_path.string(), "session did not bind hosted database path");
   Require(session.database_uuid == kDatabaseUuid, "session did not bind hosted database UUID");
+  Require(session.language_profile == "sbsql.builtin.recovery.en",
+          "session did not carry built-in language profile id");
+  Require(session.language_tag == "en",
+          "session did not carry requested language tag");
+  Require(session.default_language_tag == "en",
+          "session did not carry default language tag");
+  Require(session.input_syntax_profile == "sbsql.syntax.standard",
+          "session did not carry input syntax profile");
+  Require(session.common_resource_hash == "builtin.common.sbsql.v1",
+          "session did not carry common resource hash");
+  Require(session.language_resource_epoch != 0 &&
+              session.localized_name_epoch != 0 &&
+              session.message_resource_epoch != 0,
+          "session did not carry language resource epochs");
+  Require(session.resource_compatibility_identity == "sbsql.resource.compat.v1",
+          "session did not carry resource compatibility identity");
+  Require(session.resource_version_identity == "sbsql.resource-pack.v1",
+          "session did not carry resource version identity");
   Require(session.local_transaction_id != 0, "attach did not admit the required active transaction");
   Require(!session.transaction_uuid.empty(), "attach did not bind the active transaction UUID");
   Require(PayloadContains(attach, "accepted"), "attach result did not report accepted outcome");
+  const auto status = scratchbird::server::SessionRegistryStatusJson(registry);
+  Require(Contains(status, "\"language_profile_id\":\"sbsql.builtin.recovery.en\""),
+          "session status omitted language profile id");
+  Require(Contains(status, "\"language_tag\":\"en\""),
+          "session status omitted language tag");
+  Require(Contains(status, "\"common_resource_hash\":\"builtin.common.sbsql.v1\""),
+          "session status omitted common resource hash");
+}
+
+void TestNonDefaultLanguageContextIdentity() {
+  scratchbird::server::ServerSessionRecord session;
+  session.session_uuid = sbps::MakeUuidV7Bytes();
+  session.connection_uuid = sbps::MakeUuidV7Bytes();
+  session.auth_context_uuid = sbps::MakeUuidV7Bytes();
+  session.principal_claim = "alice";
+
+  scratchbird::server::ApplyRequestedLanguageProfile(&session, "fr-CA");
+
+  const auto language = scratchbird::server::ServerLanguageContextForSession(session);
+  Require(language.language_profile_id == "sbsql.language-profile.fr-CA",
+          "non-default language profile id was not derived");
+  Require(language.language_tag == "fr-CA",
+          "non-default language tag was not retained");
+  Require(language.default_language_tag == "en",
+          "non-default language context lost default fallback tag");
+  Require(language.input_syntax_profile == "sbsql.syntax.standard",
+          "non-default language context lost input syntax profile");
+  Require(language.common_resource_hash == "builtin.common.sbsql.v1",
+          "non-default language context lost common resource hash");
+  Require(language.language_resource_epoch != 0 &&
+              language.localized_name_epoch != 0 &&
+              language.message_resource_epoch != 0,
+          "non-default language context lost resource epochs");
+  Require(language.resource_compatibility_identity == "sbsql.resource.compat.v1",
+          "non-default language context lost compatibility identity");
+  Require(language.resource_version_identity == "sbsql.resource-pack.v1",
+          "non-default language context lost resource version identity");
+
+  ServerSessionRegistry registry;
+  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
+  const auto status = scratchbird::server::SessionRegistryStatusJson(registry);
+  Require(Contains(status, "\"language_profile_id\":\"sbsql.language-profile.fr-CA\""),
+          "session status omitted non-default language profile id");
+  Require(Contains(status, "\"language_tag\":\"fr-CA\""),
+          "session status omitted non-default language tag");
+  Require(Contains(status, "\"resource_compatibility_identity\":\"sbsql.resource.compat.v1\""),
+          "session status omitted resource compatibility identity");
+  Require(Contains(status, "\"resource_version_identity\":\"sbsql.resource-pack.v1\""),
+          "session status omitted resource version identity");
 }
 
 void TestAuthRefusals(const std::filesystem::path& database_path) {
@@ -453,12 +539,15 @@ void TestAuthDoesNotPermitParserBypass(const std::filesystem::path& database_pat
 }  // namespace
 
 int main() {
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "database_lifecycle_attach_auth_conformance");
   const auto temp_dir = MakeTempDir();
   const auto database_path = temp_dir / "dblc007_attach_auth.sbdb";
   CreateOpenDatabase(database_path);
   WriteAuthStore(database_path);
 
   TestAcceptedAuthAttach(database_path);
+  TestNonDefaultLanguageContextIdentity();
   TestAuthRefusals(database_path);
   TestAttachRefusals(database_path);
   TestLifecycleAndAuthorizationFences(database_path);

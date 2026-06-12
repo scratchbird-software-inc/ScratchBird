@@ -179,7 +179,7 @@ bool AppliesRuntimeFeedbackSafely() {
   const auto result = opt::PlanEnterpriseRelationalOperator(request);
 
   auto unsafe = request;
-  unsafe.runtime_feedback.parser_or_donor_authority = true;
+  unsafe.runtime_feedback.parser_or_reference_authority = true;
   const auto unsafe_result = opt::PlanEnterpriseRelationalOperator(unsafe);
 
   return Require(result.ok, "feedback-backed sort was rejected") &&

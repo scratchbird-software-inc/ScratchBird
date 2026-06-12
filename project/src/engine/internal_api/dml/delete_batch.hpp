@@ -19,7 +19,7 @@ namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_DELETE_BATCH_CONTEXT_CORE
 // Engine-owned delete optimization context. This layer accepts UUID-bound engine
-// inputs only; parser/donor names must already be resolved before it is built.
+// inputs only; parser/reference names must already be resolved before it is built.
 
 // SEARCH_KEY: SB_PID003_DELETE_BATCH_CONTEXT
 
@@ -27,7 +27,7 @@ enum class DeleteBatchMode {
   singleton_row_uuid,
   predicate_scan,
   indexed_predicate,
-  donor_bulk,
+  reference_bulk,
   native_bulk
 };
 

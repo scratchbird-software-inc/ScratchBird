@@ -279,8 +279,8 @@ void RequireRegistryAndDispatch(const MemoryRouteRow& row) {
           Message(row, "engine_dispatch", "transaction finality authority was granted"));
   Require(HasEvidence(dispatch.api_result, "recovery_authority", "false"),
           Message(row, "engine_dispatch", "recovery authority was granted"));
-  Require(HasEvidence(dispatch.api_result, "donor_wal_recovery_authority", "false"),
-          Message(row, "engine_dispatch", "donor/WAL recovery authority was granted"));
+  Require(HasEvidence(dispatch.api_result, "reference_wal_recovery_authority", "false"),
+          Message(row, "engine_dispatch", "reference/WAL recovery authority was granted"));
   Require(HasEvidence(dispatch.api_result, "private_provider_dispatch", "false"),
           Message(row, "engine_dispatch", "private provider dispatch was granted"));
   Require(HasEvidence(dispatch.api_result, "physical_action_dispatched", "false"),

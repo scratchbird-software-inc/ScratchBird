@@ -78,7 +78,7 @@ struct AsyncPageIoOperation {
   std::string expected_publication_marker;
   bool publication_marker_required = true;
   bool durable_transaction_inventory_authority = true;
-  bool parser_or_donor_finality_authority = false;
+  bool parser_or_reference_finality_authority = false;
   bool client_finality_authority = false;
   bool provider_finality_authority = false;
   bool write_ahead_log_finality_authority = false;

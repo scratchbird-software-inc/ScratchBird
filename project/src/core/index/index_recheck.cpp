@@ -175,7 +175,7 @@ void AddBaseEvidence(EngineOwnedExactRecheckResult* result,
                   result->security_authority);
   AddBoolEvidence(result, "recovery_authority", result->recovery_authority);
   AddBoolEvidence(result, "parser_authority", result->parser_authority);
-  AddBoolEvidence(result, "donor_authority", result->donor_authority);
+  AddBoolEvidence(result, "reference_authority", result->reference_authority);
   AddBoolEvidence(result, "wal_authority", result->wal_authority);
   AddBoolEvidence(result, "provider_authority", result->provider_authority);
   AddBoolEvidence(result, "benchmark_authority", result->benchmark_authority);
@@ -214,7 +214,7 @@ EngineOwnedExactRecheckResult BaseResult(
   result.security_authority = false;
   result.recovery_authority = false;
   result.parser_authority = false;
-  result.donor_authority = false;
+  result.reference_authority = false;
   result.wal_authority = false;
   result.provider_authority = false;
   result.benchmark_authority = false;
@@ -333,7 +333,7 @@ bool EngineOwnedExactRecheckAuthorityBoundaryClear(
          !boundary.security_authority &&
          !boundary.recovery_authority &&
          !boundary.parser_authority &&
-         !boundary.donor_authority &&
+         !boundary.reference_authority &&
          !boundary.wal_authority &&
          !boundary.provider_authority &&
          !boundary.benchmark_authority &&
@@ -377,7 +377,7 @@ EngineOwnedExactRecheckResult ApplyEngineOwnedExactRecheck(
         EngineOwnedExactRecheckStatus::missing_local_transaction_id,
         "local transaction id is required for engine MGA visibility recheck");
   }
-  if (request.authority_boundary.donor_authority ||
+  if (request.authority_boundary.reference_authority ||
       request.authority_boundary.parser_authority ||
       request.authority_boundary.wal_authority ||
       request.authority_boundary.provider_authority ||
@@ -385,14 +385,14 @@ EngineOwnedExactRecheckResult ApplyEngineOwnedExactRecheck(
     return RefuseExactRecheck(
         request,
         EngineOwnedExactRecheckStatus::external_authority_refused,
-        "donor parser WAL provider and local-cluster surfaces cannot provide exact recheck authority");
+        "reference parser WAL provider and local-cluster surfaces cannot provide exact recheck authority");
   }
   if (!EngineOwnedExactRecheckAuthorityBoundaryClear(
           request.authority_boundary)) {
     return RefuseExactRecheck(
         request,
         EngineOwnedExactRecheckStatus::forbidden_authority_claim,
-        "exact recheck evidence must not claim transaction finality visibility authorization security recovery parser donor WAL provider benchmark optimizer plan index finality cluster or agent authority");
+        "exact recheck evidence must not claim transaction finality visibility authorization security recovery parser reference WAL provider benchmark optimizer plan index finality cluster or agent authority");
   }
   if (!EngineOwnedExactRecheckSuccessorClaimsClear(
           request.successor_claims)) {

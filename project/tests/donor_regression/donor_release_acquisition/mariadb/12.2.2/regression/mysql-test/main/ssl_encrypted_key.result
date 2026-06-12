@@ -1,8 +1,0 @@
-SELECT @@ssl_passphrase;
-@@ssl_passphrase
-pass:
-have_ssl
-1
-FLUSH SSL;
-have_ssl
-1

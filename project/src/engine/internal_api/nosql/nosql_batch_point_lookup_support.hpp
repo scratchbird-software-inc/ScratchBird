@@ -49,7 +49,7 @@ EngineNoSqlBatchLookupAuthorityFromSelection(
       selection.provider_visibility_authority ||
       selection.index_transaction_finality_authority ||
       selection.delta_overlay_transaction_finality_authority;
-  authority.parser_or_donor_finality_or_visibility_authority =
+  authority.parser_or_reference_finality_or_visibility_authority =
       selection.parser_transaction_finality_authority;
   authority.wal_recovery_or_finality_authority =  // wal-not-authority
       selection.write_ahead_log_transaction_finality_authority;  // wal-not-authority

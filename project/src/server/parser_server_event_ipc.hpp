@@ -47,6 +47,20 @@ enum class ParserServerEventTrustMode {
   embedded_in_process
 };
 
+struct ParserServerEventLanguageContext {
+  std::string language_profile_id = "sbsql.builtin.recovery.en";
+  std::string language_tag = "en";
+  std::string default_language_tag = "en";
+  std::string input_syntax_profile = "sbsql.syntax.standard";
+  std::string input_language_fallback_tag;
+  std::string common_resource_hash = "builtin.common.sbsql.v1";
+  std::uint64_t language_resource_epoch = 1;
+  std::uint64_t localized_name_epoch = 1;
+  std::uint64_t message_resource_epoch = 1;
+  std::string resource_compatibility_identity = "sbsql.resource.compat.v1";
+  std::string resource_version_identity = "sbsql.resource-pack.v1";
+};
+
 struct ParserServerEventEngineContext {
   ParserServerEventTrustMode trust_mode = ParserServerEventTrustMode::server_isolated;
   std::string request_id;
@@ -69,6 +83,7 @@ struct ParserServerEventEngineContext {
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
   std::uint64_t name_resolution_epoch = 0;
+  ParserServerEventLanguageContext language_context;
   std::vector<std::string> trace_tags;
 };
 

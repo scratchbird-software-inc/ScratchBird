@@ -27,8 +27,8 @@ enum class IndexCanonicalOperation : u32 {
   move = 8,
   query_candidates = 9,
   explain = 10,
-  donor_catalog_projection = 11,
-  unsupported_donor_feature = 12,
+  reference_catalog_projection = 11,
+  unsupported_reference_feature = 12,
   validate_index_family = 13,
   repair_index_family = 14,
   rebuild_index_family = 15,
@@ -43,11 +43,11 @@ struct IndexSblrOperationEnvelope {
   std::string semantic_profile_id = "sb_native_default";
   bool names_resolved_to_uuids = true;
   bool contains_sql_text = false;
-  bool parser_surface_is_donor = false;
+  bool parser_surface_is_reference = false;
   IndexValidationRepairFamily validation_family =
       IndexValidationRepairFamily::ordered_table_candidate_set;
-  std::string donor_name;
-  std::string donor_command;
+  std::string reference_name;
+  std::string reference_command;
 };
 
 struct IndexApiPlan {
@@ -55,7 +55,7 @@ struct IndexApiPlan {
   bool admitted = false;
   bool mutates_state = false;
   bool parser_shaping_required = true;
-  bool donor_catalog_projection = false;
+  bool reference_catalog_projection = false;
   bool emulated = false;
   bool policy_blocked = false;
   std::vector<std::string> steps;
@@ -68,7 +68,7 @@ IndexApiPlan BindIndexSblrOperation(const IndexSblrOperationEnvelope& envelope);
 IndexValidationRepairResult BindIndexValidationRepairSblrOperation(
     const IndexSblrOperationEnvelope& envelope,
     IndexValidationRepairRequest request);
-IndexApiPlan MapDonorIndexCommandToCanonicalOperation(const IndexSblrOperationEnvelope& envelope);
+IndexApiPlan MapReferenceIndexCommandToCanonicalOperation(const IndexSblrOperationEnvelope& envelope);
 DiagnosticRecord MakeIndexApiSblrDiagnostic(Status status,
                                             std::string diagnostic_code,
                                             std::string message_key,

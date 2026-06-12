@@ -148,7 +148,7 @@ CompressionPolicyDecision BaseDecision(const CompressionPolicyRequest& request) 
       request.exact_semantic_equivalence_proven;
   decision.exact_binary_equivalence_proven =
       request.exact_binary_equivalence_proven;
-  decision.parser_or_donor_authority = request.parser_or_donor_authority;
+  decision.parser_or_reference_authority = request.parser_or_reference_authority;
   decision.wal_or_finality_authority = request.wal_or_finality_authority;
   decision.update_hot = request.update_hot;
   decision.random_access = request.random_access;
@@ -234,8 +234,8 @@ CompressionPolicyDecision BaseDecision(const CompressionPolicyRequest& request) 
   AddEvidence(&decision, "compression_threshold_hot_update_extra_margin=" +
                              std::to_string(
                                  decision.threshold.hot_update_extra_margin));
-  AddEvidence(&decision, "parser_or_donor_authority=" +
-                             std::string(request.parser_or_donor_authority
+  AddEvidence(&decision, "parser_or_reference_authority=" +
+                             std::string(request.parser_or_reference_authority
                                              ? "true"
                                              : "false"));
   AddEvidence(&decision, "wal_or_finality_authority=" +
@@ -545,7 +545,7 @@ CompressionPolicyRequest DefaultCompressionPolicyRequest(
   request.exact_uncompressed_fallback_available = true;
   request.exact_semantic_equivalence_proven = true;
   request.exact_binary_equivalence_proven = true;
-  request.parser_or_donor_authority = false;
+  request.parser_or_reference_authority = false;
   request.wal_or_finality_authority = false;
   request.update_hot = false;
   request.random_access = false;
@@ -561,9 +561,9 @@ CompressionPolicyRequest DefaultCompressionPolicyRequest(
 CompressionPolicyDecision EvaluateCompressionPolicy(
     const CompressionPolicyRequest& request) {
   auto decision = BaseDecision(request);
-  if (request.parser_or_donor_authority) {
+  if (request.parser_or_reference_authority) {
     return Refuse(std::move(decision),
-                  "compression_policy.unsafe_parser_or_donor_authority");
+                  "compression_policy.unsafe_parser_or_reference_authority");
   }
   if (request.wal_or_finality_authority) {
     return Refuse(std::move(decision),

@@ -846,7 +846,7 @@ EngineRecordLifecycleMetricResult EngineRecordLifecycleMetric(
                      {"cache_invalidation_recorded",
                       result.cache_invalidation_recorded ? "true" : "false"},
                      {"parser_finality_authority", "false"},
-                     {"donor_finality_authority", "false"}});
+                     {"reference_finality_authority", "false"}});
   return result;
 }
 

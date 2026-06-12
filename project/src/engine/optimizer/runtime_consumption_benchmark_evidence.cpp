@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // SEARCH_KEY: OEIC_OPTIMIZER_MAINTAINABILITY_REFACTOR
-// Runtime benchmark, donor-comparison, route-equivalence, and driver-visible
+// Runtime benchmark, reference-comparison, route-equivalence, and driver-visible
 // evidence validators are kept separate from core runtime-consumption
 // classification so the enterprise optimizer evidence surface remains
 // auditable by domain.
@@ -34,7 +34,7 @@ bool Empty(std::string_view value) {
   return value.empty();
 }
 
-void RequireField(DonorDominanceTargetValidation* validation,
+void RequireField(ReferenceDominanceTargetValidation* validation,
                   bool present,
                   std::string field_name) {
   if (!present) validation->missing_fields.push_back(std::move(field_name));
@@ -56,10 +56,10 @@ bool Positive(double value) {
   return value > 0.0;
 }
 
-// 24-donor benchmark comparison contract. Donors remain reference evidence only;
+// 24-reference benchmark comparison contract. References remain reference evidence only;
 // none of these names can become ScratchBird transaction, visibility, storage,
 // parser, security, or recovery authority.
-bool IsDonorEngine(std::string_view engine) {
+bool IsReferenceEngine(std::string_view engine) {
   return engine == "firebird" || engine == "mysql" ||
          engine == "postgresql" || engine == "sqlite" ||
          engine == "mariadb" || engine == "oracle" ||
@@ -133,7 +133,7 @@ void AddDiagnostic(DriverVisibleExplainRouteValidation* validation,
 }
 
 bool HasAuthorityDrift(const OptimizerBenchmarkRouteLaneEvidence& lane) {
-  return lane.donor_as_authority || lane.benchmark_evidence_authority ||
+  return lane.reference_as_authority || lane.benchmark_evidence_authority ||
          lane.transaction_finality_authority || lane.visibility_authority ||
          lane.security_authority || lane.recovery_authority;
 }
@@ -218,9 +218,9 @@ void AddBinaryFastPathFallback(BenchmarkResultFastPathValidation* validation,
 
 }  // namespace
 
-DonorDominanceTargetValidation ValidateDonorDominanceTargetEvidence(
-    const DonorDominanceTargetEvidence& evidence) {
-  DonorDominanceTargetValidation validation;
+ReferenceDominanceTargetValidation ValidateReferenceDominanceTargetEvidence(
+    const ReferenceDominanceTargetEvidence& evidence) {
+  ReferenceDominanceTargetValidation validation;
 
   RequireField(&validation, !Empty(evidence.workload), "workload");
   RequireField(&validation, !Empty(evidence.category), "category");
@@ -239,11 +239,11 @@ DonorDominanceTargetValidation ValidateDonorDominanceTargetEvidence(
                  evidence.comparable_status == "comparable",
                  "comparable_status");
     RequireField(&validation,
-                 !Empty(evidence.donor_best_engine),
-                 "donor_best_engine");
+                 !Empty(evidence.reference_best_engine),
+                 "reference_best_engine");
     RequireField(&validation,
-                 Positive(evidence.donor_best_duration_ms),
-                 "donor_best_duration_ms");
+                 Positive(evidence.reference_best_duration_ms),
+                 "reference_best_duration_ms");
     RequireField(&validation,
                  Positive(evidence.dominance_target_duration_ms),
                  "dominance_target_duration_ms");
@@ -259,15 +259,15 @@ DonorDominanceTargetValidation ValidateDonorDominanceTargetEvidence(
                    "scratchbird_prior_duration_ms");
     }
     if (evidence.dominance_target_rule !=
-        "strictly_less_than_donor_best_duration") {
+        "strictly_less_than_reference_best_duration") {
       validation.diagnostics.push_back(
-          "comparable dominance target must be strictly_less_than_donor_best_duration");
+          "comparable dominance target must be strictly_less_than_reference_best_duration");
     }
     if (Positive(evidence.dominance_target_duration_ms) &&
-        Positive(evidence.donor_best_duration_ms) &&
-        evidence.dominance_target_duration_ms >= evidence.donor_best_duration_ms) {
+        Positive(evidence.reference_best_duration_ms) &&
+        evidence.dominance_target_duration_ms >= evidence.reference_best_duration_ms) {
       validation.diagnostics.push_back(
-          "dominance target must be faster than donor_best_duration_ms");
+          "dominance target must be faster than reference_best_duration_ms");
     }
   } else {
     RequireField(&validation,
@@ -279,54 +279,54 @@ DonorDominanceTargetValidation ValidateDonorDominanceTargetEvidence(
     RequireField(&validation,
                  !Empty(evidence.exact_blocker_rule),
                  "exact_blocker_rule");
-    if (!evidence.donor_best_engine.empty() ||
-        Positive(evidence.donor_best_duration_ms)) {
+    if (!evidence.reference_best_engine.empty() ||
+        Positive(evidence.reference_best_duration_ms)) {
       validation.diagnostics.push_back(
-          "non-comparable workload cannot assert donor-best timing");
+          "non-comparable workload cannot assert reference-best timing");
     }
   }
 
   validation.ok = validation.missing_fields.empty() &&
                   validation.diagnostics.empty();
   if (validation.ok) {
-    validation.diagnostic_code = "SB_ORH_DONOR_DOMINANCE_TARGET.OK";
+    validation.diagnostic_code = "SB_ORH_REFERENCE_DOMINANCE_TARGET.OK";
   } else if (!validation.missing_fields.empty()) {
     validation.diagnostic_code =
-        "SB_ORH_DONOR_DOMINANCE_TARGET.MISSING_REQUIRED_FIELD";
+        "SB_ORH_REFERENCE_DOMINANCE_TARGET.MISSING_REQUIRED_FIELD";
   } else {
     validation.diagnostic_code =
-        "SB_ORH_DONOR_DOMINANCE_TARGET.INVALID_CONTRACT";
+        "SB_ORH_REFERENCE_DOMINANCE_TARGET.INVALID_CONTRACT";
   }
   return validation;
 }
 
-DonorDominanceTargetSetValidation ValidateDonorDominanceTargetSet(
-    const std::vector<DonorDominanceTargetEvidence>& evidence,
+ReferenceDominanceTargetSetValidation ValidateReferenceDominanceTargetSet(
+    const std::vector<ReferenceDominanceTargetEvidence>& evidence,
     const std::vector<std::string>& required_workloads) {
-  DonorDominanceTargetSetValidation validation;
+  ReferenceDominanceTargetSetValidation validation;
   std::set<std::string> seen;
   for (const auto& item : evidence) {
-    const auto item_validation = ValidateDonorDominanceTargetEvidence(item);
+    const auto item_validation = ValidateReferenceDominanceTargetEvidence(item);
     if (!item_validation.ok) {
       validation.diagnostics.push_back(item.workload + ":" +
                                        item_validation.diagnostic_code);
     }
     if (!seen.insert(item.workload).second) {
       validation.diagnostics.push_back(
-          item.workload + ":SB_ORH_DONOR_DOMINANCE_TARGET.DUPLICATE_WORKLOAD");
+          item.workload + ":SB_ORH_REFERENCE_DOMINANCE_TARGET.DUPLICATE_WORKLOAD");
     }
   }
   for (const auto& workload : required_workloads) {
     if (seen.find(workload) == seen.end()) {
       validation.diagnostics.push_back(
-          workload + ":SB_ORH_DONOR_DOMINANCE_TARGET.MISSING_WORKLOAD");
+          workload + ":SB_ORH_REFERENCE_DOMINANCE_TARGET.MISSING_WORKLOAD");
     }
   }
 
   validation.ok = validation.diagnostics.empty();
   validation.diagnostic_code =
-      validation.ok ? "SB_ORH_DONOR_DOMINANCE_TARGET_SET.OK"
-                    : "SB_ORH_DONOR_DOMINANCE_TARGET_SET.INVALID";
+      validation.ok ? "SB_ORH_REFERENCE_DOMINANCE_TARGET_SET.OK"
+                    : "SB_ORH_REFERENCE_DOMINANCE_TARGET_SET.INVALID";
   return validation;
 }
 
@@ -402,12 +402,12 @@ BenchmarkEquivalenceValidation ValidateBestMethodBenchmarkEquivalence(
                     method.engine +
                         ":SB_ORH_BEST_METHOD_EQUIVALENCE.BEST_ENGINE_PATH_UNPROVEN");
     }
-    if (IsDonorEngine(method.engine) && !method.donor_reference_only) {
+    if (IsReferenceEngine(method.engine) && !method.reference_reference_only) {
       AddDiagnostic(&validation,
                     method.engine +
-                        ":SB_ORH_BEST_METHOD_EQUIVALENCE.DONOR_NOT_REFERENCE_ONLY");
+                        ":SB_ORH_BEST_METHOD_EQUIVALENCE.REFERENCE_NOT_REFERENCE_ONLY");
     }
-    if (method.uses_donor_storage_or_finality_for_scratchbird) {
+    if (method.uses_reference_storage_or_finality_for_scratchbird) {
       AddDiagnostic(&validation,
                     method.engine +
                         ":SB_ORH_BEST_METHOD_EQUIVALENCE.MGA_AUTHORITY_DRIFT");
@@ -528,18 +528,18 @@ BenchmarkMethodologyValidation ValidateBenchmarkMethodologyEvidence(
           run,
           "SB_ORH_BENCHMARK_METHODOLOGY.LATEST_SCRATCHBIRD_BASELINE_MISSING");
     }
-    if (run.donor_equivalent_baseline_id.empty() ||
-        run.donor_equivalent_engine.empty() ||
-        run.donor_equivalent_baseline_p50_us <= 0.0) {
+    if (run.reference_equivalent_baseline_id.empty() ||
+        run.reference_equivalent_engine.empty() ||
+        run.reference_equivalent_baseline_p50_us <= 0.0) {
       AddDiagnostic(
           &validation,
           run,
-          "SB_ORH_BENCHMARK_METHODOLOGY.DONOR_EQUIVALENT_BASELINE_MISSING");
-    } else if (!IsDonorEngine(run.donor_equivalent_engine)) {
+          "SB_ORH_BENCHMARK_METHODOLOGY.REFERENCE_EQUIVALENT_BASELINE_MISSING");
+    } else if (!IsReferenceEngine(run.reference_equivalent_engine)) {
       AddDiagnostic(
           &validation,
           run,
-          "SB_ORH_BENCHMARK_METHODOLOGY.DONOR_EQUIVALENT_ENGINE_UNSUPPORTED");
+          "SB_ORH_BENCHMARK_METHODOLOGY.REFERENCE_EQUIVALENT_ENGINE_UNSUPPORTED");
     }
     if (run.methodology_only == run.performance_proof) {
       AddDiagnostic(&validation,
@@ -970,7 +970,7 @@ BenchmarkResultFastPathValidation ValidateBenchmarkResultFastPathEvidence(
 
 OptimizerBenchmarkRouteEvidenceValidation ValidateOptimizerBenchmarkRouteEvidence(
     const std::vector<OptimizerBenchmarkRouteLaneEvidence>& lanes,
-    bool donor_comparison_required) {
+    bool reference_comparison_required) {
   OptimizerBenchmarkRouteEvidenceValidation validation;
   if (lanes.empty()) {
     validation.diagnostic_code = "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.NO_LANES";
@@ -1020,26 +1020,26 @@ OptimizerBenchmarkRouteEvidenceValidation ValidateOptimizerBenchmarkRouteEvidenc
                     lane,
                     "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.STALE_OR_UNTRUSTED");
     }
-    const bool donor_required =
-        donor_comparison_required || lane.donor_comparison_required;
-    if (donor_required &&
-        (lane.donor_comparison_id.empty() || lane.donor_engine.empty() ||
-         lane.donor_oracle_result_hash.empty())) {
+    const bool reference_required =
+        reference_comparison_required || lane.reference_comparison_required;
+    if (reference_required &&
+        (lane.reference_comparison_id.empty() || lane.reference_engine.empty() ||
+         lane.reference_oracle_result_hash.empty())) {
       AddDiagnostic(
           &validation,
           lane,
-          "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.DONOR_COMPARISON_MISSING");
+          "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.REFERENCE_COMPARISON_MISSING");
     }
-    if (!lane.donor_engine.empty() && !IsDonorEngine(lane.donor_engine)) {
+    if (!lane.reference_engine.empty() && !IsReferenceEngine(lane.reference_engine)) {
       AddDiagnostic(
           &validation,
           lane,
-          "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.DONOR_ENGINE_UNSUPPORTED");
+          "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.REFERENCE_ENGINE_UNSUPPORTED");
     }
-    if (!lane.donor_reference_only || HasAuthorityDrift(lane)) {
+    if (!lane.reference_reference_only || HasAuthorityDrift(lane)) {
       AddDiagnostic(&validation,
                     lane,
-                    "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.DONOR_AUTHORITY_DRIFT");
+                    "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.REFERENCE_AUTHORITY_DRIFT");
     }
     if (lane.benchmark_clean_claim) benchmark_clean_claimed = true;
   }

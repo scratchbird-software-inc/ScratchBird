@@ -1,2 +1,0 @@
-call sys.optimizer_switch_on();
-call sys.optimizer_switch_off();

@@ -531,7 +531,7 @@ def run_gate(repo_root: pathlib.Path, scan_roots: Iterable[str], allowlist_path:
         "ceic_memory_source_gate=pass:"
         f"files={len(iter_source_files(repo_root, scan_roots))} "
         f"allowed={len(allowlist)} "
-        "authority=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action"
+        "authority=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action"
     )
     return 0
 

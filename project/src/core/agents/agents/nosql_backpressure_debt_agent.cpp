@@ -206,7 +206,7 @@ bool AuthoritySafe(const NoSqlBackpressureDebtAuthority& authority) {
          authority.grants_proven &&
          authority.row_mga_recheck_required &&
          authority.row_security_recheck_required &&
-         !authority.parser_or_donor_authority &&
+         !authority.parser_or_reference_authority &&
          !authority.provider_transaction_finality_authority &&
          !authority.provider_visibility_authority &&
          !authority.client_autocommit_authority &&
@@ -233,7 +233,7 @@ void AddAuthorityEvidence(NoSqlBackpressureDebtAgentResult* result,
               authority.row_security_recheck_required ? "required" : "missing");
   AddEvidence(result,
               "parser_executes_sql",
-              authority.parser_or_donor_authority ? "true" : "false");
+              authority.parser_or_reference_authority ? "true" : "false");
   AddEvidence(result,
               "wal_recovery_authority",
               authority.wal_recovery_authority ? "true" : "false");

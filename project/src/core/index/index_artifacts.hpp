@@ -20,7 +20,7 @@ namespace scratchbird::core::index {
 enum class IndexArtifactOperation : u32 {
   export_definition = 1,
   import_definition = 2,
-  donor_import = 3,
+  reference_import = 3,
   seed_bind = 4,
   version_compare = 5
 };
@@ -30,7 +30,7 @@ struct IndexArtifactRequest {
   TypedUuid index_uuid;
   IndexFamily family = IndexFamily::unknown;
   std::string semantic_profile_id = "sb_native_default";
-  std::string donor_name;
+  std::string reference_name;
   bool preserve_uuid = true;
   bool policy_allows_import = false;
   bool resource_epoch_current = true;

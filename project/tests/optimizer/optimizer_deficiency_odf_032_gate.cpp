@@ -541,7 +541,7 @@ void UnsafeRoutesFailClosed() {
                EqualsPredicate("id", "1"),
                {"odf032.disable_mga_visibility_recheck=true",
                 "odf032.disable_security_recheck=true",
-                "odf032.parser_or_donor_authority=true"});
+                "odf032.parser_or_reference_authority=true"});
     RequireUnsafeRouteRefused(deleted, "missing MGA recheck");
     Require(EvidenceContains(deleted.evidence,
                              "dml_target_access_plan_refusal",
@@ -549,8 +549,8 @@ void UnsafeRoutesFailClosed() {
             "ODF-032 missing security recheck evidence missing");
     Require(EvidenceContains(deleted.evidence,
                              "dml_target_access_plan_refusal",
-                             "unsafe parser/donor authority"),
-            "ODF-032 unsafe parser/donor authority evidence missing");
+                             "unsafe parser/reference authority"),
+            "ODF-032 unsafe parser/reference authority evidence missing");
     Commit(context);
   }
 }

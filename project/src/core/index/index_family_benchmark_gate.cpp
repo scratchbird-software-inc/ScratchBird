@@ -308,7 +308,7 @@ IndexFamilyBenchmarkEvidenceRow BaseRow(
   AddEvidence(&row, "catalog_authority", "false");
   AddEvidence(&row, "execution_authority", "false");
   AddEvidence(&row, "parser_authority", "false");
-  AddEvidence(&row, "donor_authority", "false");
+  AddEvidence(&row, "reference_authority", "false");
   AddEvidence(&row, "provider_authority", "false");
   AddEvidence(&row, "transaction_finality_authority", "false");
   AddEvidence(&row, "visibility_authority", "false");

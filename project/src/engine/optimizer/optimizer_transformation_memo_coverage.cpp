@@ -50,7 +50,7 @@ bool HasForbiddenAuthority(
          authority.authorization_security_authority ||
          authority.recovery_authority ||
          authority.parser_authority ||
-         authority.donor_authority ||
+         authority.reference_authority ||
          authority.wal_authority ||
          authority.benchmark_authority ||
          authority.optimizer_plan_authority ||
@@ -226,10 +226,10 @@ void ValidateRule(OptimizerTransformationMemoValidation* validation,
                   prefix +
                       ":SB_OPT_TRANSFORMATION_MEMO.UNBOUNDED_OR_NONDETERMINISTIC_RULE");
   }
-  if (!rule.no_plan_authority_claim || !rule.no_parser_donor_authority ||
-      rule.placeholder_evidence || rule.donor_as_authority ||
-      !rule.donor_reference_only ||
-      rule.uses_donor_storage_or_finality_for_scratchbird ||
+  if (!rule.no_plan_authority_claim || !rule.no_parser_reference_authority ||
+      rule.placeholder_evidence || rule.reference_as_authority ||
+      !rule.reference_reference_only ||
+      rule.uses_reference_storage_or_finality_for_scratchbird ||
       HasForbiddenAuthority(rule.authority)) {
     AddDiagnostic(validation,
                   prefix +
@@ -379,8 +379,8 @@ ValidateOptimizerTransformationMemoCoverageReport(
                   prefix +
                       ":SB_OPT_TRANSFORMATION_MEMO.MEMO_NONDETERMINISTIC_OR_AUTHORITY");
   }
-  if (!report.donor_reference_only || report.donor_as_authority ||
-      report.uses_donor_storage_or_finality_for_scratchbird ||
+  if (!report.reference_reference_only || report.reference_as_authority ||
+      report.uses_reference_storage_or_finality_for_scratchbird ||
       HasForbiddenAuthority(report.authority)) {
     AddDiagnostic(&validation,
                   prefix + ":SB_OPT_TRANSFORMATION_MEMO.FORBIDDEN_AUTHORITY");

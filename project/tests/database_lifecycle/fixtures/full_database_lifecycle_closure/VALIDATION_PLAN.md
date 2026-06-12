@@ -43,10 +43,10 @@ Search key: `DATABASE-LIFECYCLE-VALIDATION-PLAN`
 | `database_lifecycle_security_principal` | Security principal, role, privilege, policy, user, group, grant, revoke, row-security, definer-rights, cache invalidation, audit, authorization, and MGA visibility tests. |
 | `database_lifecycle_storage_allocation` | Storage allocation, free-space map, page-map, extent reservation, page ownership, reusable-space, compaction, crash recovery, and filespace-coupling tests. |
 | `database_lifecycle_executable_object` | Routine, procedure, function, trigger, event trigger, package, stored SBLR, dependency, permission, invalidation, side-effect, and unload/quiesce tests. |
-| `database_lifecycle_sequence_generator` | Sequence, generator, identity, cache-window, persistence, transaction-interaction, crash-recovery, donor-mapping, and diagnostic tests. |
+| `database_lifecycle_sequence_generator` | Sequence, generator, identity, cache-window, persistence, transaction-interaction, crash-recovery, reference-mapping, and diagnostic tests. |
 | `database_lifecycle_supportability_evidence` | Operational log, audit evidence, retention, rotation, redaction, export, support-bundle, shutdown flush, diagnostic access, and protected-material filtering tests. |
 | `database_lifecycle_capability_profile` | Installed capability, parser profile, edition gate, feature flag, package availability, policy epoch, downgrade refusal, and diagnostic tests. |
-| `database_lifecycle_replication_boundary` | Replication, CDC, changefeed, live-ingest, publication, subscription, slot, route, retention, security, donor mapping, and standalone fail-closed boundary tests. |
+| `database_lifecycle_replication_boundary` | Replication, CDC, changefeed, live-ingest, publication, subscription, slot, route, retention, security, reference mapping, and standalone fail-closed boundary tests. |
 | `database_lifecycle_existing_reconciliation` | Existing manager, listener, parser, server, IPC, session, filespace, catalog, index, concurrency, temporary workspace, event, encryption, resource seed, MGA GC, jobs, cluster-boundary, security principal, storage allocation, executable object, sequence generator, supportability, capability, replication, UDR, agent, cache, configuration, security, backup, resource, and workload implementation reconciliation tests. |
 | `database_lifecycle_protocol_versioning` | SBWP/TLS, parser IPC, management IPC, lifecycle state file, filespace header, manifest, catalog row, and configuration epoch versioning, migration, downgrade, and fail-closed refusal tests. |
 | `database_lifecycle_admin_cli` | CLI/admin/client lifecycle command authorization, diagnostics, audit, idempotency, force shutdown, inspect, verify, repair, health, status, and drop tests. |
@@ -58,7 +58,7 @@ Search key: `DATABASE-LIFECYCLE-VALIDATION-PLAN`
 | `database_lifecycle_catalog_index_profile` | System catalog physical index profile tests proving UUID exact lookups use hash-capable equality profiles where enabled, B-tree is used only for ordered/group/prefix/generation/history access or bootstrap fallback, `sys.catalog` base tables do not duplicate human-facing SQL object names, and the identity resolver is the sole human-name authority. |
 | `database_lifecycle_sys_information_projection` | `sys.information` projection tests proving SQL-standard information schema views and ScratchBird extended user-friendly catalog views join `sys.catalog` UUID tables to the information projection resolver with authorization filtering language fallback redaction and MGA snapshot visibility while clients use `sys.information` instead of raw `sys.catalog` for database metadata. |
 | `database_lifecycle_parser_route` | SBSQL parser lifecycle command mapping and end-to-end response rendering. |
-| `database_lifecycle_donor_mapping` | FirebirdSQL and donor lifecycle mapping/emulation diagnostics. |
+| `database_lifecycle_reference_mapping` | FirebirdSQL and reference lifecycle mapping/emulation diagnostics. |
 | `database_lifecycle_fault_injection` | Partial create, interrupted tx1/tx2, unclean shutdown, stale owner, corruption, auth denial, memory/resource pressure, and cluster path fail-closed tests. |
 | `database_lifecycle_exhaustive` | Generated replay of every lifecycle operation, state transition, invalid transition, and route classification. |
 | `database_lifecycle_release` | Final zero-open audit, release declaration, and no-overclaim gates. |
@@ -122,7 +122,7 @@ ctest --test-dir build --output-on-failure -L database_lifecycle_shutdown_notifi
 ctest --test-dir build --output-on-failure -L database_lifecycle_catalog_index_profile
 ctest --test-dir build --output-on-failure -L database_lifecycle_sys_information_projection
 ctest --test-dir build --output-on-failure -L database_lifecycle_parser_route
-ctest --test-dir build --output-on-failure -L database_lifecycle_donor_mapping
+ctest --test-dir build --output-on-failure -L database_lifecycle_reference_mapping
 ctest --test-dir build --output-on-failure -L database_lifecycle_fault_injection
 ctest --test-dir build --output-on-failure -L database_lifecycle_exhaustive
 ctest --test-dir build --output-on-failure -L database_lifecycle_release
@@ -136,12 +136,12 @@ Static gates must prove:
 
 - no authoritative WAL/finality substitution was introduced;
 - no parser accepts or denies authentication as authority;
-- no donor parser or donor tool executes SQL inside the engine boundary;
+- no reference parser or reference tool executes SQL inside the engine boundary;
 - no cluster lifecycle path is taken without cluster authority;
 - no placeholder, TODO, stub, future, or deferred lifecycle behavior remains in accepted code paths;
 - no filespace identity is accepted from path, timestamp, physical order, page number, or UUID ordering instead of durable filespace UUIDv7 registry/header/manifest evidence;
 - no database/engine lifecycle agent becomes transaction, storage, catalog, security, authentication, authorization, policy, or SBLR execution authority;
-- no create-database, open, attach, transaction, lifecycle, parser, route, security, resource, supportability, donor, replication, or cluster-boundary behavior uses an implicit default policy outside `public_input_snapshot`;
+- no create-database, open, attach, transaction, lifecycle, parser, route, security, resource, supportability, reference, replication, or cluster-boundary behavior uses an implicit default policy outside `public_input_snapshot`;
 - no default policy family, property, default value, override class, or seed-state value is hardcoded outside the manifest-listed machine-readable default policy registry and generated seed-data path;
 - no `POLICY.*` diagnostic can be emitted unless it has canonical diagnostic-code and diagnostic-shape registry rows and a message-vector mapping;
 - no default policy registry/conformance artifact listed in `public_contract_snapshot` is ignored, missing, duplicated in the manifest, or untrackable by repository hygiene checks;
@@ -170,7 +170,7 @@ Static gates must prove:
 - no hash index is used for range, order, prefix, language fallback ordering, generation ordering, or history traversal; hash indexes are exact equality accelerators with exact-key collision recheck;
 - no page allocation, free-space map, page ownership, extent reservation, compaction, or reusable-space state bypasses filespace identity or recovery evidence;
 - no routine, procedure, function, trigger, event trigger, package, stored SBLR, or executable dependency bypasses catalog dependency invalidation, authorization, side-effect policy, or UDR authority boundaries;
-- no sequence, generator, or identity cache window becomes transaction finality, catalog truth, or donor-owned state;
+- no sequence, generator, or identity cache window becomes transaction finality, catalog truth, or reference-owned state;
 - no operational log, audit evidence, support bundle, export, or diagnostic access path exposes protected material or skips retention/redaction policy;
 - no installed capability, parser profile, edition gate, feature flag, or package availability check enables unsupported lifecycle behavior or bypasses policy epochs;
 - no replication, CDC, changefeed, live-ingest, publication, subscription, or slot route is admitted without exact engine authority or explicit standalone fail-closed behavior;
@@ -299,10 +299,10 @@ The final regression suite must include:
 - Security principal lifecycle covers users, roles, groups, grants, revokes, row security, definer rights, policy rows, cache invalidation, audit, authorization, and MGA visibility.
 - Storage allocation lifecycle covers page allocation, free-space maps, page ownership, extent reservations, reusable space, compaction, crash recovery, and filespace coupling.
 - Executable object lifecycle covers routines, procedures, functions, triggers, event triggers, packages, stored SBLR, dependencies, permissions, invalidation, side effects, and unload/quiesce behavior.
-- Sequence generator lifecycle covers sequence identity, generator state, identity columns, cache windows, persistence, transaction interaction, crash recovery, donor mapping, and diagnostics.
+- Sequence generator lifecycle covers sequence identity, generator state, identity columns, cache windows, persistence, transaction interaction, crash recovery, reference mapping, and diagnostics.
 - Operational evidence lifecycle covers logs, audit evidence, retention, rotation, redaction, export, support bundles, shutdown flush, diagnostic access, and protected-material filtering.
 - Capability profile lifecycle covers installed capabilities, parser profiles, edition gates, feature flags, package availability, policy epochs, downgrade refusal, and diagnostics.
-- Replication boundary lifecycle covers replication, CDC, changefeed, live ingest, publication, subscription, slot, route, retention, security, donor mapping, and standalone fail-closed behavior.
+- Replication boundary lifecycle covers replication, CDC, changefeed, live ingest, publication, subscription, slot, route, retention, security, reference mapping, and standalone fail-closed behavior.
 
 ## Shutdown Notification Scenarios
 

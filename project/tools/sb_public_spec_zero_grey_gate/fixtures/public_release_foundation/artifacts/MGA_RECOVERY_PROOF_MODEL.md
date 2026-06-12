@@ -21,7 +21,7 @@ The authoritative recovery model remains MGA. Recovery proof must use:
 - operation envelopes
 - checksums and coverage proofs
 
-Recovery proof must not introduce WAL, redo-log, donor MVCC, parser-owned
+Recovery proof must not introduce WAL, redo-log, reference MVCC, parser-owned
 transaction semantics, or external stream authority. Backup, delta, archive, and
 PITR streams are evidence and transport surfaces only; they are not the source of
 truth for visibility or transaction finality.

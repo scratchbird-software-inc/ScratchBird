@@ -38,7 +38,7 @@ bool UnsafeAuthority(const ExecutorOperatorMemoryAuthority& authority) {
   return !authority.engine_mga_snapshot_bound ||
          !authority.transaction_inventory_authoritative ||
          !authority.security_recheck_required ||
-         authority.parser_client_or_donor_memory_authority ||
+         authority.parser_client_or_reference_memory_authority ||
          authority.memory_visibility_or_finality_authority ||
          authority.memory_recovery_authority ||
          authority.memory_authorization_authority;
@@ -90,7 +90,7 @@ ExecutorReservationBackedMemoryResult Refuse(
   result.evidence.push_back("executor.reservation_backed_memory.operator_kind=" +
                             std::string(OperatorKindName(operator_kind)));
   result.evidence.push_back(
-      "executor.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_index_or_agent_authority");
+      "executor.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_index_or_agent_authority");
   return result;
 }
 
@@ -148,7 +148,7 @@ ExecutorReservationBackedMemoryResult AllocateExecutorOperatorFromReservedResour
   result.evidence.push_back("executor.reservation_backed_memory.resource_passed=true");
   result.evidence.push_back("executor.reservation_backed_memory.after_reservation=true");
   result.evidence.push_back(
-      "executor.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_index_or_agent_authority");
+      "executor.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_index_or_agent_authority");
   return result;
 }
 

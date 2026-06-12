@@ -248,7 +248,7 @@ struct PerformanceOptimizationSurfaceSnapshot {
       PerformanceOptimizationExactRefusalSurface{}};
 
   bool parser_finality_authority = false;
-  bool donor_finality_authority = false;
+  bool reference_finality_authority = false;
   bool client_finality_authority = false;
   bool storage_shortcut_finality_authority = false;
   bool wal_recovery_authority = false;
@@ -312,7 +312,7 @@ struct EngineInspectPerformanceOptimizationSurfaceResult : EngineApiResult {
   bool support_bundle_ready = false;
   bool sys_view_contract_ready = false;
   bool parser_finality_authority = false;
-  bool donor_finality_authority = false;
+  bool reference_finality_authority = false;
   std::string management_api_json;
   std::string support_bundle_json;
 };

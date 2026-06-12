@@ -409,8 +409,8 @@ void RequireNoOverclaims(
           "CEIC-039 must not claim CEIC-042");
   Require(!result.all_index_readiness_claimed,
           "CEIC-039 must not claim all-index readiness");
-  Require(!result.donor_dominance_claimed,
-          "CEIC-039 must not claim donor dominance");
+  Require(!result.reference_dominance_claimed,
+          "CEIC-039 must not claim reference dominance");
   Require(!result.enterprise_readiness_claimed,
           "CEIC-039 must not claim enterprise readiness");
 }
@@ -471,7 +471,7 @@ void ValidSpecializedFamiliesAreAdmitted() {
   }
 }
 
-void PriorDonorPolicyAndClusterPathsFailClosed() {
+void PriorReferencePolicyAndClusterPathsFailClosed() {
   RequireStatus(
       index::AdmitSpecializedPersistentProviderClosure(
           RequestFor(index::IndexFamily::btree)),
@@ -485,15 +485,15 @@ void PriorDonorPolicyAndClusterPathsFailClosed() {
           already_closed_by_prior_slice,
       "hash prior slice closure was not refused");
 
-  index::SpecializedPersistentProviderClosureRequest donor;
-  donor.family = index::IndexFamily::donor_emulated;
-  donor.route = index::IndexRouteKind::sql_select;
-  donor.provider_id = "donor";
+  index::SpecializedPersistentProviderClosureRequest reference;
+  reference.family = index::IndexFamily::reference_emulated;
+  reference.route = index::IndexRouteKind::sql_select;
+  reference.provider_id = "reference";
   RequireStatus(
-      index::AdmitSpecializedPersistentProviderClosure(donor),
+      index::AdmitSpecializedPersistentProviderClosure(reference),
       index::SpecializedPersistentProviderClosureStatus::
-          donor_emulated_non_runtime,
-      "donor-emulated family was not refused");
+          reference_emulated_non_runtime,
+      "reference-emulated family was not refused");
 
   index::SpecializedPersistentProviderClosureRequest policy;
   policy.family = index::IndexFamily::policy_blocked;
@@ -687,7 +687,7 @@ void AuthorityAndSuccessorOverclaimsFailClosed() {
 
 int main() {
   ValidSpecializedFamiliesAreAdmitted();
-  PriorDonorPolicyAndClusterPathsFailClosed();
+  PriorReferencePolicyAndClusterPathsFailClosed();
   DependencyFailuresFailClosed();
   IdentityAndProofFailuresFailClosed();
   CandidateAndExactFallbackFailuresFailClosed();

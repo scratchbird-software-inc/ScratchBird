@@ -16,7 +16,7 @@ The full SBSQL parser/UDR/server/engine closure execution_plan is move eligible 
 | `SBSQL_SURFACE_REGISTRY.csv` | 2,619 | `PARSER_COVERAGE_REPORT.md`; `SURFACE_IMPLEMENTATION_BACKLOG.csv`; `sbsql_generated_full_surface_conformance` |
 | `SBSQL_TO_SBLR_OPERATION_MATRIX.csv` | 2,619 | `PARSER_COVERAGE_REPORT.md`; parser lowering/verifier and server admission gates |
 | `SBSQL_ENGINE_GAP_MATRIX.csv` | 932 | `SERVER_ENGINE_GAP_CLOSURE_REPORT.md`; 816 non-cluster rows closed by engine API/SBLR family gate and 116 cluster-private rows fail closed |
-| `DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv` | 312 | `DONOR_ALIAS_RENDERING_REPORT.md`; donor alias rendering gate |
+| `REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv` | 312 | `REFERENCE_ALIAS_RENDERING_REPORT.md`; reference alias rendering gate |
 | `BATCH_ROW_MEMBERSHIP.csv` | 2,619 | deterministic registry-family batching and generated regression fixture membership |
 | `SEMANTIC_ORACLE_AUTHORITY_MAP.csv` | 2,619 | independent expected-result authority for generated fixtures |
 | Exhaustive E2E regression | 2,619 surfaces | `EXHAUSTIVE_E2E_REGRESSION_REPORT.md`; `sbsql_exhaustive_e2e_regression_gate` |

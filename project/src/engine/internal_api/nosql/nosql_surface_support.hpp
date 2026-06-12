@@ -639,8 +639,8 @@ TResult EngineNoSqlPublishHeavyImmutableGeneration(
       EngineNoSqlOptionBool(request, "heavy_generation.uuid_ordering_authority");
   validation.event_stream_authority =
       EngineNoSqlOptionBool(request, "heavy_generation.event_stream_authority");
-  validation.donor_authority =
-      EngineNoSqlOptionBool(request, "heavy_generation.donor_authority");
+  validation.reference_authority =
+      EngineNoSqlOptionBool(request, "heavy_generation.reference_authority");
   validation.write_ahead_authority =  // wal-not-authority
       EngineNoSqlOptionBool(request, "heavy_generation.write_ahead_authority");  // wal-not-authority
   validation.cluster_provider_routed = false;

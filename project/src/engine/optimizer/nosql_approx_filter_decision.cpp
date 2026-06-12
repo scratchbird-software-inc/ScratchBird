@@ -52,7 +52,7 @@ NoSqlApproxFilterDecisionResult Refuse(std::string code,
   AddEvidence(&result, "mga_visibility_authority=engine_recheck_required");
   AddEvidence(&result, "mga_finality_authority=engine_transaction_inventory");
   AddEvidence(&result, "security_recheck=required");
-  AddEvidence(&result, "parser_or_donor_authority=false");
+  AddEvidence(&result, "parser_or_reference_authority=false");
   AddEvidence(&result, "provider_transaction_finality_authority=false");
   AddEvidence(&result, "provider_visibility_authority=false");
   AddEvidence(&result, "client_visibility_or_finality_authority=false");
@@ -305,7 +305,7 @@ void AddCommonAuthorityEvidence(NoSqlApproxFilterDecisionResult* result) {
   AddEvidence(result, "security_context=present");
   AddEvidence(result, "security_snapshot_bound=true");
   AddEvidence(result, "grants_proven=true");
-  AddEvidence(result, "parser_or_donor_authority=false");
+  AddEvidence(result, "parser_or_reference_authority=false");
   AddEvidence(result, "provider_transaction_finality_authority=false");
   AddEvidence(result, "provider_visibility_authority=false");
   AddEvidence(result, "client_visibility_or_finality_authority=false");
@@ -373,7 +373,7 @@ NoSqlApproxFilterDecisionResult EvaluateNoSqlApproxFilterDecision(
     return Refuse("SB_NOSQL_APPROX_FILTER.SECURITY_PROOF_REQUIRED",
                   "security_snapshot_or_grants_proof_required");
   }
-  if (request.parser_or_donor_authority ||
+  if (request.parser_or_reference_authority ||
       request.provider_claims_transaction_finality_authority ||
       request.provider_claims_visibility_authority ||
       request.client_claims_visibility_or_finality_authority ||

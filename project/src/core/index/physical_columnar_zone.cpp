@@ -76,7 +76,7 @@ bool EncodedKeySafe(std::string_view value) {
 bool AuthorityClean(const PhysicalColumnarZoneRowEvidence& row) {
   return row.authoritative_columnar_page_evidence &&
          !row.parser_finality_authority_claimed &&
-         !row.donor_finality_authority_claimed &&
+         !row.reference_finality_authority_claimed &&
          !row.provider_finality_authority_claimed &&
          !row.write_ahead_log_finality_authority_claimed &&
          !row.summary_visibility_authority_claimed &&
@@ -318,7 +318,7 @@ SegmentValidationClass ValidateSegment(const PhysicalColumnarZoneSegment& segmen
       !segment.exact_recheck_required ||
       segment.visibility_finality_authority ||
       segment.parser_finality_authority_claimed ||
-      segment.donor_finality_authority_claimed ||
+      segment.reference_finality_authority_claimed ||
       segment.provider_finality_authority_claimed ||
       segment.write_ahead_log_finality_authority_claimed) {
     return SegmentValidationClass::authority_claimed;
@@ -870,7 +870,7 @@ PhysicalColumnarZoneBuildResult BuildPhysicalColumnarZoneFromPageEvidence(
   segment.evidence.push_back("security_recheck_required=true");
   segment.evidence.push_back("exact_recheck_required=true");
   segment.evidence.push_back("summary_visibility_finality_authority=false");
-  segment.evidence.push_back("parser_donor_provider_finality_authority=false");
+  segment.evidence.push_back("parser_reference_provider_finality_authority=false");
   segment.evidence.push_back("write_ahead_log_finality_authority=false");
   segment.evidence.push_back("compression_policy_storage_runtime_evidence_only=true");
   segment.evidence.push_back("compression_exact_fallback_equivalence_required=true");
@@ -961,7 +961,7 @@ PhysicalColumnarZoneSerializeResult SerializePhysicalColumnarZoneSegment(
   AppendU8(&out, segment.exact_recheck_required ? 1 : 0);
   AppendU8(&out, segment.visibility_finality_authority ? 1 : 0);
   AppendU8(&out, segment.parser_finality_authority_claimed ? 1 : 0);
-  AppendU8(&out, segment.donor_finality_authority_claimed ? 1 : 0);
+  AppendU8(&out, segment.reference_finality_authority_claimed ? 1 : 0);
   AppendU8(&out, segment.provider_finality_authority_claimed ? 1 : 0);
   AppendU8(&out, segment.write_ahead_log_finality_authority_claimed ? 1 : 0);
 
@@ -1075,7 +1075,7 @@ PhysicalColumnarZoneOpenResult OpenPhysicalColumnarZoneSegment(
   byte exact = 0;
   byte visibility = 0;
   byte parser = 0;
-  byte donor = 0;
+  byte reference = 0;
   byte provider = 0;
   byte log = 0;
   if (!reader.ReadString(&segment.relation_uuid) ||
@@ -1088,7 +1088,7 @@ PhysicalColumnarZoneOpenResult OpenPhysicalColumnarZoneSegment(
       !reader.ReadU8(&exact) ||
       !reader.ReadU8(&visibility) ||
       !reader.ReadU8(&parser) ||
-      !reader.ReadU8(&donor) ||
+      !reader.ReadU8(&reference) ||
       !reader.ReadU8(&provider) ||
       !reader.ReadU8(&log)) {
     return OpenFailure(PhysicalColumnarZoneOpenClass::truncated_payload,
@@ -1100,7 +1100,7 @@ PhysicalColumnarZoneOpenResult OpenPhysicalColumnarZoneSegment(
   segment.exact_recheck_required = exact != 0;
   segment.visibility_finality_authority = visibility != 0;
   segment.parser_finality_authority_claimed = parser != 0;
-  segment.donor_finality_authority_claimed = donor != 0;
+  segment.reference_finality_authority_claimed = reference != 0;
   segment.provider_finality_authority_claimed = provider != 0;
   segment.write_ahead_log_finality_authority_claimed = log != 0;
 
@@ -1338,7 +1338,7 @@ PhysicalColumnarZonePruneResult PrunePhysicalColumnarZone(
   result.evidence.push_back("security_recheck_required=true");
   result.evidence.push_back("exact_recheck_required=true");
   result.evidence.push_back("visibility_finality_authority=false");
-  result.evidence.push_back("parser_donor_provider_finality_authority=false");
+  result.evidence.push_back("parser_reference_provider_finality_authority=false");
   result.evidence.push_back("write_ahead_log_finality_authority=false");
 
   for (const auto& group : request.segment.row_groups) {

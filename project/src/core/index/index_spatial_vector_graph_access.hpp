@@ -79,7 +79,7 @@ struct IndexSpatialAccessRequest {
   IndexSpatialResourceDescriptor resource;
   std::vector<byte> query_shape_token;
   bool request_distance_order = false;
-  bool donor_requires_exact_recheck = true;
+  bool reference_requires_exact_recheck = true;
 };
 
 struct IndexSpatialAccessPlan {
@@ -133,8 +133,8 @@ struct IndexVectorAdmissionDecision {
 
 struct IndexGraphProfileRequest {
   IndexGraphProfile profile = IndexGraphProfile::vertex_lookup;
-  std::string donor_name;
-  std::string donor_surface;
+  std::string reference_name;
+  std::string reference_surface;
   bool requires_range_order = false;
   bool requires_text_analysis = false;
   bool requires_vector_similarity = false;
@@ -155,7 +155,7 @@ struct IndexGraphProfileDecision {
 
 IndexSpatialAccessPlan PlanSpatialIndexAccess(const IndexSpatialAccessRequest& request);
 IndexVectorAdmissionDecision AdmitVectorIndex(const IndexVectorAdmissionRequest& request);
-IndexGraphProfileDecision PlanGraphOrDonorStructureIndex(const IndexGraphProfileRequest& request);
+IndexGraphProfileDecision PlanGraphOrReferenceStructureIndex(const IndexGraphProfileRequest& request);
 const char* IndexVectorAlgorithmName(IndexVectorAlgorithm algorithm);
 DiagnosticRecord MakeIndexSpatialVectorGraphDiagnostic(Status status,
                                                        std::string diagnostic_code,

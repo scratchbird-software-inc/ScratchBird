@@ -119,7 +119,7 @@ EngineMemoryManagementResult MemoryFailure(
   result.transaction_finality_authority = false;
   result.visibility_authority = false;
   result.recovery_authority = false;
-  result.donor_or_wal_recovery_authority = false;
+  result.reference_or_wal_recovery_authority = false;
   result.private_provider_dispatch = false;
   result.physical_action_dispatched = false;
   AddApiBehaviorEvidence(&result,
@@ -128,7 +128,7 @@ EngineMemoryManagementResult MemoryFailure(
   AddApiBehaviorEvidence(&result, "parser_memory_authority", "false");
   AddApiBehaviorEvidence(&result, "transaction_finality_authority", "false");
   AddApiBehaviorEvidence(&result, "recovery_authority", "false");
-  AddApiBehaviorEvidence(&result, "donor_wal_recovery_authority", "false");
+  AddApiBehaviorEvidence(&result, "reference_wal_recovery_authority", "false");
   return result;
 }
 
@@ -163,7 +163,7 @@ EngineApiDiagnostic ValidateCommon(const EngineMemoryManagementRequest& request)
       request.transaction_finality_authority ||
       request.visibility_authority ||
       request.recovery_authority ||
-      request.donor_or_wal_recovery_authority ||
+      request.reference_or_wal_recovery_authority ||
       request.private_provider_dispatch_requested) {
     return MakeEngineApiDiagnostic("MEMORY.UNSAFE_AUTHORITY_BOUNDARY",
                                    "memory.unsafe_authority_boundary",
@@ -641,7 +641,7 @@ void AddSuccessRows(EngineMemoryManagementResult* result,
        {"transaction_finality_authority", "false"},
        {"visibility_authority", "false"},
        {"recovery_authority", "false"},
-       {"donor_wal_recovery_authority", "false"},
+       {"reference_wal_recovery_authority", "false"},
        {"private_provider_dispatch", "false"},
        {"physical_action_dispatched", "false"},
        {"mga_visibility_authority", "durable_transaction_inventory"},
@@ -796,7 +796,7 @@ void AddSuccessEvidence(EngineMemoryManagementResult* result,
   AddApiBehaviorEvidence(result, "transaction_finality_authority", "false");
   AddApiBehaviorEvidence(result, "visibility_authority", "false");
   AddApiBehaviorEvidence(result, "recovery_authority", "false");
-  AddApiBehaviorEvidence(result, "donor_wal_recovery_authority", "false");
+  AddApiBehaviorEvidence(result, "reference_wal_recovery_authority", "false");
   AddApiBehaviorEvidence(result,
                          "durable_state_changed",
                          result->durable_state_changed ? "true" : "false");

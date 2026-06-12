@@ -275,7 +275,7 @@ bool ApplyKeyValue(ListenerConfig* cfg, std::string_view raw_key, std::string_vi
 }
 
 void ApplyProfileDefaults(ListenerConfig* cfg) {
-  if (auto profile = FindDonorProtocolProfile(cfg->protocol_family)) {
+  if (auto profile = FindReferenceProtocolProfile(cfg->protocol_family)) {
     if (cfg->parser_package.empty()) {
       cfg->parser_package = profile->default_parser_package;
     }
@@ -290,8 +290,8 @@ void ApplyProfileDefaults(ListenerConfig* cfg) {
 
 bool ValidateConfig(const ListenerConfig& cfg, std::vector<proto::Diagnostic>* diagnostics) {
   bool ok = true;
-  if (!FindDonorProtocolProfile(cfg.protocol_family)) {
-    AddError(diagnostics, "LISTENER.CONFIG.UNKNOWN_PROTOCOL_FAMILY", "protocol_family is not a registered source-backed donor family", {{"protocol_family", cfg.protocol_family}});
+  if (!FindReferenceProtocolProfile(cfg.protocol_family)) {
+    AddError(diagnostics, "LISTENER.CONFIG.UNKNOWN_PROTOCOL_FAMILY", "protocol_family is not a registered source-backed reference family", {{"protocol_family", cfg.protocol_family}});
     ok = false;
   }
   if (cfg.database_selector.empty()) {
@@ -397,8 +397,8 @@ bool ValidateConfig(const ListenerConfig& cfg, std::vector<proto::Diagnostic>* d
 
 } // namespace
 
-const std::vector<DonorProtocolProfile>& DonorProtocolProfiles() {
-  static const std::vector<DonorProtocolProfile> profiles = {
+const std::vector<ReferenceProtocolProfile>& ReferenceProtocolProfiles() {
+  static const std::vector<ReferenceProtocolProfile> profiles = {
       {"apache_ignite", "sbp_apache_ignite", "ignite.sql.v1", 10800, false},
       {"cassandra", "sbp_cassandra", "cql.v3", 9042, false},
       {"clickhouse", "sbp_clickhouse", "clickhouse.sql.v1", 9000, false},
@@ -429,9 +429,9 @@ const std::vector<DonorProtocolProfile>& DonorProtocolProfiles() {
   return profiles;
 }
 
-std::optional<DonorProtocolProfile> FindDonorProtocolProfile(std::string_view family) {
+std::optional<ReferenceProtocolProfile> FindReferenceProtocolProfile(std::string_view family) {
   const std::string needle = Lower(std::string(family));
-  for (const auto& profile : DonorProtocolProfiles()) {
+  for (const auto& profile : ReferenceProtocolProfiles()) {
     if (profile.family == needle) {
       return profile;
     }
@@ -565,7 +565,7 @@ std::string HelpText() {
       << "  --validate-config                validate configuration and exit\n"
       << "  --foreground|-F                  run in foreground\n"
       << "  --managed                        run under SBsrv/SBmgr control\n"
-      << "  --protocol-family=<family>       source-backed donor or sbsql family\n"
+      << "  --protocol-family=<family>       source-backed reference or sbsql family\n"
       << "  --database-selector=<selector>   opaque server-side database selector\n"
       << "  --server-endpoint=<endpoint>     SBsrv IPC endpoint for parser workers\n"
       << "  --parser-executable=<path>       parser worker executable; SBParser is the core parser worker\n"

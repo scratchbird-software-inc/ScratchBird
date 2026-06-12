@@ -11,7 +11,7 @@ coverage gate.
 Scope boundary:
 
 - FSPE-011 validates mechanical coverage across the canonical surface, operation,
-  engine-gap, donor-alias, message-vector, batch, and oracle matrices.
+  engine-gap, reference-alias, message-vector, batch, and oracle matrices.
 - FSPE-011 does not claim durable per-row semantic fixture execution for every
   parser, CST, AST, BoundAST, SBLR, UDR, server, and engine route.
 - Durable fixture execution remains owned by FSPE-011A through FSPE-011F.
@@ -22,7 +22,7 @@ Validated coverage:
 - The generated registry contains 2,617 stable surface rows and matches the generated count constant.
 - Canonical surface, surface-status, SBLR operation, surface backlog, batch membership, and semantic-oracle rows match the generated registry by stable surface ID.
 - Engine gap coverage reconciles 932 canonical/backlog rows and validates non-cluster versus cluster-private closure status.
-- Donor alias coverage reconciles 312 canonical/backlog rows and validates exact mapped-or-refused behavior metadata.
+- Reference alias coverage reconciles 312 canonical/backlog rows and validates exact mapped-or-refused behavior metadata.
 - Message-vector fixture coverage reconciles 41 concrete diagnostic rows across parser, UDR, server, engine, listener, manager, and agent origins.
 - Registry batching reconciles 77 batch rows against observed generated surface membership.
 
@@ -41,7 +41,7 @@ Observed results:
 
 - `sbsql_generated_full_surface_conformance`: 1/1 passed.
 - `sbsql_parser_worker`: 23/23 passed with the generated full-surface conformance probe included.
-- Direct probe summary: `surfaces=2617 operation_rows=2617 operation_families=19 engine_gaps=932 donor_aliases=312 message_vectors=41 batches=77`.
+- Direct probe summary: `surfaces=2617 operation_rows=2617 operation_families=19 engine_gaps=932 reference_aliases=312 message_vectors=41 batches=77`.
 
 ## Remaining FSPE-011 Closure Gaps
 

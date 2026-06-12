@@ -47,7 +47,7 @@ bool RatioInvalid(double value) {
 }
 
 bool UnsafeAuthority(const EnterpriseGraphDocumentMetric& metric) {
-  return metric.parser_or_donor_authority ||
+  return metric.parser_or_reference_authority ||
          metric.client_authority ||
          metric.metric_finality_or_visibility_authority ||
          metric.provider_finality_or_visibility_authority ||

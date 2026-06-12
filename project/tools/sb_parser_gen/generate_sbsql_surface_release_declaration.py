@@ -53,7 +53,7 @@ COLUMNS = [
     "auth_route_ref",
     "sblr_round_trip_ref",
     "catalog_seed_ref",
-    "donor_alias_ref",
+    "reference_alias_ref",
     "remaining_risk",
     "release_status",
 ]
@@ -205,7 +205,7 @@ def main() -> int:
                 "auth_route_ref": f"{auth_row['fixture_path']}#{auth_row['fixture_status']}",
                 "sblr_round_trip_ref": f"{round_row['fixture_path']}#{round_row['fixture_status']}",
                 "catalog_seed_ref": "function_seed_registry_or_catalog_seed_gate_when_applicable",
-                "donor_alias_ref": "donor_alias_matrix_when_applicable",
+                "reference_alias_ref": "reference_alias_matrix_when_applicable",
                 "remaining_risk": risk,
                 "release_status": release_status,
             }

@@ -119,7 +119,7 @@ void AddCommonAcceptedEvidence(const DmlRowLocatorStreamRequest& request,
   AddEvidence(result, "security_recheck", "required");
   AddEvidence(result, "mga_finality_authority",
               "engine_transaction_inventory");
-  AddEvidence(result, "parser_or_donor_authority", "false");
+  AddEvidence(result, "parser_or_reference_authority", "false");
   AddEvidence(result, "index_or_cache_finality_authority", "false");
   AddEvidence(result, "runtime_route_capability", "false");
   AddEvidence(result, "index_benchmark_clean", "false");
@@ -317,8 +317,8 @@ DmlRowLocatorStreamResult BuildDmlRowLocatorStream(
   if (!request.security_recheck_planned) {
     return Fail("security_recheck_required", std::move(result));
   }
-  if (request.parser_or_donor_authority) {
-    return Fail("parser_or_donor_authority_forbidden", std::move(result));
+  if (request.parser_or_reference_authority) {
+    return Fail("parser_or_reference_authority_forbidden", std::move(result));
   }
   if (request.index_or_cache_finality_authority) {
     return Fail("index_or_cache_finality_authority_forbidden",

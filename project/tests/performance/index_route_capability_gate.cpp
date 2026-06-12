@@ -125,7 +125,7 @@ void RequireDmlWriteMatrix() {
       const bool accepted =
           descriptor.completion ==
               idx::IndexCompletionStatus::accepted_requires_full_implementation &&
-          descriptor.persistence != idx::IndexPersistenceClass::donor_emulated &&
+          descriptor.persistence != idx::IndexPersistenceClass::reference_emulated &&
           descriptor.persistence != idx::IndexPersistenceClass::policy_blocked;
       if (accepted) {
         Require(state.route_complete() && state.supports_write &&
@@ -238,15 +238,15 @@ void RequireOptimizerConsumesRouteMatrix() {
 }
 
 void RequireBlockedMappingsStayBlocked() {
-  const auto& donor = Route(idx::IndexRouteKind::sql_select,
-                            idx::IndexFamily::donor_emulated);
-  Require(!donor.route_complete() && !donor.family_physical_complete,
-          "donor-emulated route became physical authority");
+  const auto& reference = Route(idx::IndexRouteKind::sql_select,
+                            idx::IndexFamily::reference_emulated);
+  Require(!reference.route_complete() && !reference.family_physical_complete,
+          "reference-emulated route became physical authority");
   const auto diagnostic = idx::MakeIndexRouteCapabilityDiagnostic(
       platform::Status{platform::StatusCode::platform_required_feature_missing,
                        platform::Severity::warning,
                        platform::Subsystem::engine},
-      donor);
+      reference);
   Require(diagnostic.source_component == "sb_core_index.route_capability",
           "route diagnostic source mismatch");
 }

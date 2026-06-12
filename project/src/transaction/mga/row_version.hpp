@@ -149,7 +149,7 @@ struct HotStableRowHeadProofInput {
   VisibilitySnapshot visibility_snapshot;
   bool exact_index_keys_unchanged = false;
   bool same_page_budget_available = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
 };
 
 struct HotStableRowHeadDecisionResult {

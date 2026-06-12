@@ -289,7 +289,7 @@ ResourceGovernanceAdmissionResult Finish(
   Add(&result.evidence,
       "resource_governance.mga_finality_authority=engine_transaction_inventory");
   Add(&result.evidence, "resource_governance.security_authority=engine");
-  Add(&result.evidence, "resource_governance.parser_or_donor_authority=false");
+  Add(&result.evidence, "resource_governance.parser_or_reference_authority=false");
   Add(&result.evidence,
       "resource_governance.provider_transaction_finality_authority=false");
   Add(&result.evidence,
@@ -471,7 +471,7 @@ ResourceGovernanceAdmissionResult AdmitResourceGovernance(
   }
   if (!request.descriptor.engine_mga_authoritative ||
       !request.descriptor.security_authoritative ||
-      request.descriptor.parser_or_donor_authority ||
+      request.descriptor.parser_or_reference_authority ||
       request.descriptor.provider_transaction_finality_authority ||
       request.descriptor.provider_visibility_authority ||
       request.descriptor.provider_recovery_authority ||
@@ -583,7 +583,7 @@ ResourceGovernanceReservationLedger::Acquire(
       "resource_reservation.operation_id=" +
           request.admission.operation_id);
   Add(&result.evidence,
-      "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
   for (const auto& item : result.admission.evidence) {
     Add(&result.evidence, "resource_reservation.admission." + item);
   }
@@ -688,7 +688,7 @@ ResourceGovernanceReservationLedger::Release(
       "resource_reservation.release_reason=" +
           std::string(ResourceGovernanceReservationReleaseReasonName(reason)));
   Add(&result.evidence,
-      "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = active_.find(token_id);
@@ -739,7 +739,7 @@ ResourceGovernanceReservationLedger::ReleaseOwnerReservations(
       "resource_reservation.cleanup_reason=" +
           std::string(ResourceGovernanceReservationReleaseReasonName(reason)));
   Add(&result.evidence,
-      "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   std::lock_guard<std::mutex> lock(mutex_);
   for (auto it = active_.begin(); it != active_.end();) {
@@ -778,7 +778,7 @@ ResourceGovernanceReservationLedger::ExpireReservations(std::uint64_t now_tick) 
   Add(&result.evidence,
       "resource_reservation.now_tick=" + std::to_string(now_tick));
   Add(&result.evidence,
-      "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   std::lock_guard<std::mutex> lock(mutex_);
   for (auto it = active_.begin(); it != active_.end();) {
@@ -909,7 +909,7 @@ HierarchicalMemoryBudgetReserveResult HierarchicalMemoryBudgetLedger::Reserve(
       "hierarchical_memory.requested_bytes=" +
           std::to_string(request.bytes));
   Add(&result.evidence,
-      "hierarchical_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "hierarchical_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   if (request.operation_id.empty() || request.owner_scope.empty() ||
       request.leaf_scope_id.empty() || request.bytes == 0) {
@@ -1013,7 +1013,7 @@ HierarchicalMemoryBudgetReleaseResult HierarchicalMemoryBudgetLedger::Release(
   Add(&result.evidence, "hierarchical_memory.ledger_id=" + ledger_id_);
   Add(&result.evidence, "hierarchical_memory.token_id=" + token_id);
   Add(&result.evidence,
-      "hierarchical_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "hierarchical_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = active_.find(token_id);
@@ -1064,7 +1064,7 @@ HierarchicalMemoryBudgetLedger::ReleaseOwnerReservations(
   Add(&combined.evidence, "hierarchical_memory.ledger_id=" + ledger_id_);
   Add(&combined.evidence, "hierarchical_memory.owner_scope=" + owner_scope);
   Add(&combined.evidence,
-      "hierarchical_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "hierarchical_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   std::vector<std::string> tokens;
   {

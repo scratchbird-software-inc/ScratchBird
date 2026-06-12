@@ -111,7 +111,7 @@ That appendix closes the byte layout for:
    precision, signedness, backend profile requirement, and unsupported reason
    when unavailable.
 5. Casts, comparisons, index eligibility, and silent-narrowing refusal are
-   descriptor/registry metadata, not donor or driver convention.
+   descriptor/registry metadata, not reference or driver convention.
 6. Generated keys are visible only through the explicit
    `result_set_kind=generated_keys` discriminator.
 7. OUT/INOUT/RETURN values are returned through explicit result-column classes

@@ -75,7 +75,7 @@ OptimizedPathResourceGovernanceResult BaseResult(
   Add(&result.evidence,
       "optimized_resource.finality_authority=engine_mga_transaction_inventory");
   Add(&result.evidence,
-      "optimized_resource.parser_or_donor_authority=false");
+      "optimized_resource.parser_or_reference_authority=false");
   Add(&result.evidence,
       "optimized_resource.recovery_authority=engine_mga_recovery");
   return result;

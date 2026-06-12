@@ -13,7 +13,7 @@
 // Signed policy inheritance and override resolution for operational agents.
 // This resolver validates already-signed lifecycle inputs and produces
 // evidence-only resolved policy state. It does not own transaction finality,
-// visibility, authorization/security, recovery, parser execution, donor
+// visibility, authorization/security, recovery, parser execution, reference
 // behavior, WAL recovery, benchmark truth, optimizer plans, index finality,
 // provider finality, cluster authority, memory authority, or agent actions.
 

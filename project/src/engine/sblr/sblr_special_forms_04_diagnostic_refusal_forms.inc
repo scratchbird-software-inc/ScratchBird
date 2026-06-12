@@ -42,7 +42,7 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
                                 std::string_view target_descriptor_id,
                                 const SblrExecutionContext& context,
                                 bool explicit_cast,
-                                bool donor_compatibility_profile) {
+                                bool reference_compatibility_profile) {
   const auto target_type = CanonicalTypeFromDescriptor(target_descriptor_id);
   if (target_type == datatypes::CanonicalTypeId::unknown) {
     return SpecialFormFailure(operation_id,
@@ -57,7 +57,7 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
   request.value.is_null = value.is_null;
   request.target_type_id = target_type;
   request.explicit_cast = explicit_cast;
-  request.donor_compatibility_profile = donor_compatibility_profile;
+  request.reference_compatibility_profile = reference_compatibility_profile;
 
   if (!value.is_null && request.value.type_id == datatypes::CanonicalTypeId::unknown) {
     return SpecialFormFailure(operation_id,

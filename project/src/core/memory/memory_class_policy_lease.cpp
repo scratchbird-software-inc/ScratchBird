@@ -19,7 +19,7 @@ using scratchbird::core::platform::MakeDiagnostic;
 using scratchbird::core::platform::StatusCode;
 
 constexpr const char* kClassLeaseAuthorityScope =
-    "memory_class_policy_lease.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority";
+    "memory_class_policy_lease.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority";
 
 Status LeaseStatus(StatusCode code, Severity severity) {
   return {code, severity, Subsystem::memory};
@@ -63,7 +63,7 @@ bool SafeProvenance(const HierarchicalMemoryBudgetProvenance& provenance,
     *reason = "engine_mga_and_memory_evidence_only_provenance_required";
     return false;
   }
-  if (provenance.parser_authority || provenance.donor_authority ||
+  if (provenance.parser_authority || provenance.reference_authority ||
       provenance.transaction_finality_authority ||
       provenance.visibility_authority || provenance.recovery_authority ||
       provenance.authorization_authority || provenance.benchmark_authority ||
@@ -145,7 +145,7 @@ DiagnosticRecord MakeLeaseDiagnostic(
       std::move(arguments),
       {},
       "core.memory.memory_class_policy_lease",
-      "Treat memory class lease rows as governed memory evidence only; do not use them as transaction, visibility, security, recovery, parser, donor, optimizer, index, cluster, or agent authority.");
+      "Treat memory class lease rows as governed memory evidence only; do not use them as transaction, visibility, security, recovery, parser, reference, optimizer, index, cluster, or agent authority.");
 }
 
 bool ProtectedRequestSafe(const MemoryBudgetLeaseRequest& request) {
@@ -1262,7 +1262,7 @@ void MemoryClassPolicyLeaseManager::AttachDecisionEvidence(
   decision->evidence.push_back(
       "memory_class_policy_lease.no_authority.recovery=true");
   decision->evidence.push_back(
-      "memory_class_policy_lease.no_authority.parser_donor_wal=true");
+      "memory_class_policy_lease.no_authority.parser_reference_wal=true");
   decision->evidence.push_back(
       "memory_class_policy_lease.no_authority.benchmark_optimizer_index_agent=true");
   decision->evidence.push_back(

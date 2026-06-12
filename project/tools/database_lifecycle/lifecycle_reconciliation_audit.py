@@ -346,7 +346,7 @@ SURFACES = (
         ("project/src/engine/internal_api/lifecycle/sequence_generator_lifecycle.cpp",),
         ("project/tests/database_lifecycle/sequence_generator_conformance.cpp",),
         ("database_lifecycle_sequence_generator",),
-        ("Sequence", "donor_mapping"),
+        ("Sequence", "reference_mapping"),
     ),
     SurfaceRequirement(
         "supportability evidence",
@@ -533,10 +533,10 @@ MARKER_RE = re.compile(
 )
 
 AUTHORITY_SHORTCUT_RE = re.compile(
-    r"(\bWAL\b|write-ahead|\bredo\b|\bundo\b|SQLite|sqlite3|PRAGMA|journal_mode|donor).{0,96}"
+    r"(\bWAL\b|write-ahead|\bredo\b|\bundo\b|SQLite|sqlite3|PRAGMA|journal_mode|reference).{0,96}"
     r"(recovery|finality|authority|backend|storage|transaction|commit|rollback)|"
     r"(recovery|finality|authority|backend|storage|transaction|commit|rollback).{0,96}"
-    r"(\bWAL\b|write-ahead|\bredo\b|\bundo\b|SQLite|sqlite3|PRAGMA|journal_mode|donor)",
+    r"(\bWAL\b|write-ahead|\bredo\b|\bundo\b|SQLite|sqlite3|PRAGMA|journal_mode|reference)",
     re.IGNORECASE,
 )
 
@@ -545,7 +545,7 @@ PARSER_DRIVER_DRIFT_RE = re.compile(
     r"PRAGMA\s+journal_mode|journal_mode\s*=|"
     r"transaction_inventory\.hpp|local_transaction_store\.hpp|"
     r"engine\s+owns\s+commit|parser\s+owns\s+commit|driver\s+owns\s+commit|"
-    r"parser\s+finality|driver\s+finality|donor\s+finality",
+    r"parser\s+finality|driver\s+finality|reference\s+finality",
     re.IGNORECASE,
 )
 
@@ -578,7 +578,7 @@ def allowed_marker(path: Path, line: str) -> bool:
 def allowed_authority_shortcut(path: Path, line: str) -> bool:
     rel = path.as_posix()
     lowered = line.lower()
-    if "donor_finality_authority" in lowered and "false" in lowered:
+    if "reference_finality_authority" in lowered and "false" in lowered:
         return True
     if any(
         token in lowered
@@ -596,22 +596,22 @@ def allowed_authority_shortcut(path: Path, line: str) -> bool:
             "not_engine",
             "evidence only",
             "classification evidence only",
-            "rather than inheriting donor shortcuts",
+            "rather than inheriting reference shortcuts",
             "not durable authority",
             "no wal",
             "no_wal",
             "wal_not_authority",
             "wal_or_redo_authority",
             "authoritative_wal",
-            "authority:donor",
+            "authority:reference",
             "authority:sqlite",
-            "donor_shortcut",
+            "reference_shortcut",
             "sqlite_shortcut",
-            "zero donor file effects",
+            "zero reference file effects",
         )
     ):
         return True
-    if "donor_" in lowered and (
+    if "reference_" in lowered and (
         "mapping" in lowered
         or "_behavior" in lowered
         or "compat" in lowered
@@ -628,13 +628,13 @@ def allowed_authority_shortcut(path: Path, line: str) -> bool:
         or "no_wal" in lowered
     ):
         return True
-    if "donor" in lowered and (
+    if "reference" in lowered and (
         "not authority" in lowered
         or "alias only" in lowered
         or "compatibility" in lowered
         or "requires engine policy" in lowered
         or "fails closed" in lowered
-        or "rather than inheriting donor shortcuts" in lowered
+        or "rather than inheriting reference shortcuts" in lowered
     ):
         return True
     if "project/drivers/driver/odbc/src/odbc_driver.cpp" in rel and "sqlexecdirect" in lowered:

@@ -615,26 +615,26 @@ void TestParserBypassAndTransactionFinalityAreRejectedOrEngineRouted() {
           "DBLC-017 transaction SBLR did not require engine/public-ABI dispatch");
 }
 
-void TestDonorBypassIsDiagnosticOnly() {
+void TestReferenceBypassIsDiagnosticOnly() {
   const auto backup = fb::ParseStatement("BACKUP DATABASE 'safe.fdb' TO 'safe.fbk'");
   Require(backup.ok, "DBLC-017 Firebird backup parse failed");
   Require(backup.exact_emulated_diagnostic,
           "DBLC-017 Firebird backup was not represented as exact diagnostic");
-  Require(!backup.real_firebird_file_effects && !backup.donor_engine_sql_executed,
-          "DBLC-017 Firebird backup admitted donor file or SQL authority");
+  Require(!backup.real_firebird_file_effects && !backup.reference_engine_sql_executed,
+          "DBLC-017 Firebird backup admitted reference file or SQL authority");
   Require(Contains(backup.message_vector_json, "FIREBIRD.EMULATION.NON_FILE_SURFACE"),
           "DBLC-017 Firebird backup diagnostic code missing");
   Require(!Contains(backup.sblr_envelope, "BACKUP DATABASE"),
-          "DBLC-017 Firebird diagnostic leaked donor SQL text");
+          "DBLC-017 Firebird diagnostic leaked reference SQL text");
 
   const auto create_database = fb::ParseStatement("CREATE DATABASE 'safe.fdb'");
   Require(create_database.ok && create_database.scratchbird_lifecycle_api,
           "DBLC-017 Firebird create did not map to ScratchBird lifecycle API");
   Require(!create_database.real_firebird_file_effects &&
-              !create_database.donor_engine_sql_executed,
-          "DBLC-017 Firebird create admitted donor side effects");
+              !create_database.reference_engine_sql_executed,
+          "DBLC-017 Firebird create admitted reference side effects");
   Require(Contains(create_database.sblr_envelope, "\"sql_text_included\":false"),
-          "DBLC-017 Firebird lifecycle envelope did not exclude donor SQL text");
+          "DBLC-017 Firebird lifecycle envelope did not exclude reference SQL text");
 }
 
 api::EngineUuid TestEngineUuid(std::string_view suffix) {
@@ -707,7 +707,7 @@ int main() {
   TestEngineAuthDenialFailsClosed(&cleanup);
   TestAuthReplayAndTlsDowngradeFailClosed(&cleanup);
   TestParserBypassAndTransactionFinalityAreRejectedOrEngineRouted();
-  TestDonorBypassIsDiagnosticOnly();
+  TestReferenceBypassIsDiagnosticOnly();
   TestClusterPathFailsClosed();
   std::cout << "DBLC_P17_HARDENED=passed\n";
   std::cout << "database_lifecycle_fault_injection=passed\n";

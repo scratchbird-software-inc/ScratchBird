@@ -39,7 +39,7 @@ void RequireField(RuntimeConsumptionValidation* validation,
   if (!present) validation->missing_fields.push_back(std::move(field_name));
 }
 
-void RequireField(DonorDominanceTargetValidation* validation,
+void RequireField(ReferenceDominanceTargetValidation* validation,
                   bool present,
                   std::string field_name) {
   if (!present) validation->missing_fields.push_back(std::move(field_name));
@@ -61,7 +61,7 @@ bool Positive(double value) {
   return value > 0.0;
 }
 
-bool IsDonorEngine(std::string_view engine) {
+bool IsReferenceEngine(std::string_view engine) {
   return engine == "firebird" || engine == "mysql" ||
          engine == "postgresql" || engine == "sqlite" ||
          engine == "mariadb" || engine == "oracle" ||
@@ -135,7 +135,7 @@ void AddDiagnostic(DriverVisibleExplainRouteValidation* validation,
 }
 
 bool HasAuthorityDrift(const OptimizerBenchmarkRouteLaneEvidence& lane) {
-  return lane.donor_as_authority || lane.benchmark_evidence_authority ||
+  return lane.reference_as_authority || lane.benchmark_evidence_authority ||
          lane.transaction_finality_authority || lane.visibility_authority ||
          lane.security_authority || lane.recovery_authority;
 }

@@ -53,7 +53,7 @@ struct TypedSlabPoolAuthority {
   bool engine_mga_authoritative = true;
   bool transaction_inventory_authoritative = true;
   bool security_or_policy_checked = true;
-  bool parser_or_donor_finality_authority = false;
+  bool parser_or_reference_finality_authority = false;
   bool memory_visibility_or_finality_authority = false;
   bool memory_recovery_authority = false;
   bool memory_authorization_authority = false;

@@ -12,7 +12,7 @@
 // Engine-owned online maintenance progress, cancellation, resume, and
 // crash-safe publication control. This layer records operation lifecycle and
 // checkpoint state only; it is not transaction finality, visibility, parser,
-// donor, catalog, or recovery authority.
+// reference, catalog, or recovery authority.
 
 #include "agent_runtime.hpp"
 #include "agent_workload_resource_quota.hpp"

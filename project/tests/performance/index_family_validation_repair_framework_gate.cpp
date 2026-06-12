@@ -115,7 +115,7 @@ void RequireNoAuthority(const idx::IndexFamilyValidationRepairResult& result) {
   Require(!result.catalog_authority, "catalog authority was claimed");
   Require(!result.parser_authority, "parser authority was claimed");
   Require(!result.provider_authority, "provider authority was claimed");
-  Require(!result.donor_authority, "donor authority was claimed");
+  Require(!result.reference_authority, "reference authority was claimed");
   Require(!result.transaction_finality_authority,
           "transaction authority was claimed");
   Require(!result.visibility_authority, "visibility authority was claimed");
@@ -181,7 +181,7 @@ void ProveCompleteFamiliesValidateAndRepairWithProof() {
     Require(state != nullptr,
             "missing state for complete-family proof " + descriptor.id);
     if (!state->physically_complete() || !state->runtime_available ||
-        descriptor.persistence == idx::IndexPersistenceClass::donor_emulated ||
+        descriptor.persistence == idx::IndexPersistenceClass::reference_emulated ||
         descriptor.persistence == idx::IndexPersistenceClass::policy_blocked) {
       continue;
     }
@@ -218,7 +218,7 @@ void ProveAcceptedNativeFamiliesAreComplete() {
     Require(state != nullptr,
             "missing state for accepted-family completion proof " +
                 descriptor.id);
-    if (descriptor.persistence == idx::IndexPersistenceClass::donor_emulated ||
+    if (descriptor.persistence == idx::IndexPersistenceClass::reference_emulated ||
         descriptor.persistence == idx::IndexPersistenceClass::policy_blocked) {
       continue;
     }
@@ -240,24 +240,24 @@ void ProveAcceptedNativeFamiliesAreComplete() {
   Require(saw_complete, "accepted native completion coverage missing");
 }
 
-void ProveDonorAndPolicyStayNonPhysical() {
+void ProveReferenceAndPolicyStayNonPhysical() {
   const UuidFactory uuids;
-  const auto* donor = idx::FindBuiltinIndexFamily(idx::IndexFamily::donor_emulated);
+  const auto* reference = idx::FindBuiltinIndexFamily(idx::IndexFamily::reference_emulated);
   const auto* policy = idx::FindBuiltinIndexFamily(idx::IndexFamily::policy_blocked);
-  Require(donor != nullptr, "donor-emulated descriptor missing");
+  Require(reference != nullptr, "reference-emulated descriptor missing");
   Require(policy != nullptr, "policy-blocked descriptor missing");
 
-  const auto donor_result = idx::ExecuteIndexFamilyValidationRepairOperation(
-      Request(uuids, *donor, idx::IndexValidationRepairOperation::repair, 30000));
-  Require(!donor_result.ok() && donor_result.fail_closed,
-          "donor-emulated mapping became physical");
-  Require(donor_result.open_state ==
+  const auto reference_result = idx::ExecuteIndexFamilyValidationRepairOperation(
+      Request(uuids, *reference, idx::IndexValidationRepairOperation::repair, 30000));
+  Require(!reference_result.ok() && reference_result.fail_closed,
+          "reference-emulated mapping became physical");
+  Require(reference_result.open_state ==
               idx::IndexFamilyValidationRepairOpenState::non_physical_refused,
-          "donor-emulated open state changed");
-  Require(donor_result.diagnostic.diagnostic_code ==
-              "IRC.INDEX_REPAIR.DONOR_EMULATED.NON_AUTHORITY_MAPPING",
-          "donor-emulated diagnostic changed");
-  RequireNoAuthority(donor_result);
+          "reference-emulated open state changed");
+  Require(reference_result.diagnostic.diagnostic_code ==
+              "IRC.INDEX_REPAIR.REFERENCE_EMULATED.NON_AUTHORITY_MAPPING",
+          "reference-emulated diagnostic changed");
+  RequireNoAuthority(reference_result);
 
   const auto policy_result = idx::ExecuteIndexFamilyValidationRepairOperation(
       Request(uuids, *policy, idx::IndexValidationRepairOperation::validate, 31000));
@@ -352,7 +352,7 @@ int main() {
   ProveEveryBuiltinFamilyHasAPath();
   ProveCompleteFamiliesValidateAndRepairWithProof();
   ProveAcceptedNativeFamiliesAreComplete();
-  ProveDonorAndPolicyStayNonPhysical();
+  ProveReferenceAndPolicyStayNonPhysical();
   ProveReadOnlyAndMissingCatalogProofRefusals();
   ProveRedactionKeepsStateAndHidesSensitiveDetail();
   return EXIT_SUCCESS;

@@ -40,7 +40,7 @@ REQUIRED_TOKENS = {
         "DiagnosticShapeIdForCode",
         "IsRetryableDiagnosticCode",
         "parser_finality_authority",
-        "donor_finality_authority",
+        "reference_finality_authority",
     ],
     "project/src/server/server_observability.cpp": [
         "RecordServerLifecycleObservability",
@@ -68,7 +68,7 @@ REQUIRED_TOKENS = {
     ],
     "project/src/engine/internal_api/diagnostics/diagnostic_rendering.cpp": [
         "parser_finality_authority_must_be_false",
-        "donor_finality_authority_must_be_false",
+        "reference_finality_authority_must_be_false",
         "diagnostic_public_shape_required",
         "diagnostic_private_shape_required",
     ],

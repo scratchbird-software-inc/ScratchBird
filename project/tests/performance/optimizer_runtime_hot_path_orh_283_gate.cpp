@@ -162,7 +162,7 @@ void VerifyPositiveRoutes(const std::filesystem::path& root) {
 void VerifyNegativeRoutes(const std::filesystem::path& root) {
   auto parser_authority =
       Request(root, exec::TempSpillRouteKind::kSort, "orh283.parser_authority");
-  parser_authority.authority.parser_client_or_donor_spill_authority = true;
+  parser_authority.authority.parser_client_or_reference_spill_authority = true;
   RequireRejected(parser_authority,
                   "ORH_SORT_SPILL_UNSAFE_AUTHORITY",
                   "temp_spill_metadata_is_advisory_only");

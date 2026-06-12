@@ -36,7 +36,7 @@ struct EngineLocalizedName {
   std::string path;
   std::string name;
   bool default_name = false;
-  std::string donor_id;
+  std::string reference_id;
   std::string dialect_profile_uuid;
   std::string identifier_profile_uuid;
   std::string case_fold_profile_uuid;
@@ -62,8 +62,17 @@ struct EngineIdentifierResolutionProfile {
 };
 
 struct EngineLanguageContext {
+  std::string language_profile_id = "sbsql.builtin.recovery.en";
   std::string language_tag = "en";
   std::string default_language_tag = "en";
+  std::string input_syntax_profile = "sbsql.syntax.standard";
+  std::string input_language_fallback_tag;
+  std::string common_resource_hash = "builtin.common.sbsql.v1";
+  EngineApiU64 language_resource_epoch = 0;
+  EngineApiU64 localized_name_epoch = 0;
+  EngineApiU64 message_resource_epoch = 0;
+  std::string resource_compatibility_identity = "sbsql.resource.compat.v1";
+  std::string resource_version_identity = "sbsql.resource-pack.v1";
 };
 
 struct EngineIdentifierAtom {
@@ -305,7 +314,7 @@ struct EngineRequestContext {
   EngineUuid current_package_uuid;
   std::vector<EngineUuid> search_path_schema_uuids;
   std::string identifier_profile_uuid = "sbsql_v3";
-  std::string donor_profile_uuid;
+  std::string reference_profile_uuid;
   EngineApiU64 catalog_generation_id = 0;
   EngineApiU64 security_epoch = 0;
   EngineApiU64 resource_epoch = 0;

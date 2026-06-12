@@ -1,4 +1,0 @@
-!include ../my.cnf
-
-[mysqld]
-default_time_zone="-7:00"

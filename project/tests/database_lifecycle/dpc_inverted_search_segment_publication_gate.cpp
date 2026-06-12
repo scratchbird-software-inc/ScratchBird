@@ -138,7 +138,7 @@ void ProveInvisibleUntilValidationAndMgaPublish() {
                 !row.timestamp_ordering_authority &&
                 !row.uuid_ordering_authority &&
                 !row.event_stream_authority &&
-                !row.donor_authority &&
+                !row.reference_authority &&
                 !row.write_ahead_authority,
             "DPC-043 evidence accepted external finality authority");
     if (row.state == idx::InvertedSearchSegmentState::building) {
@@ -354,13 +354,13 @@ void ProveAuthorityClaimsRejected() {
   request.timestamp_ordering_authority = true;
   request.uuid_ordering_authority = true;
   request.event_stream_authority = true;
-  request.donor_authority = true;
+  request.reference_authority = true;
   request.write_ahead_authority = true;
   idx::InvertedSearchSegmentLedger ledger;
   const auto refused =
       idx::StartInvertedSearchSegmentBuild(&ledger, request);
   Require(!refused.ok(),
-          "DPC-043 parser/client/timestamp/UUID/event/donor/write-ahead authority claim was accepted");
+          "DPC-043 parser/client/timestamp/UUID/event/reference/write-ahead authority claim was accepted");
   Require(refused.diagnostic.diagnostic_code ==
               "INDEX.SEARCH_SEGMENT.EXTERNAL_AUTHORITY_REJECTED",
           "DPC-043 external authority rejection diagnostic changed");

@@ -64,6 +64,13 @@ void SeedEngineAuthenticatedContext(sbsql::SbsqlTestWireSession* session) {
   context.effective_group_uuids = {"00000000-0000-7000-8000-000000000016"};
   context.search_path = {"public"};
   context.dialect_profile_uuid = "sbsql/default";
+  context.language_profile = "sbsql.builtin.recovery.en";
+  context.language_tag = "en";
+  context.input_syntax_profile = "sbsql.syntax.standard";
+  context.input_language_fallback_tag.clear();
+  context.common_resource_hash = "builtin.common.sbsql.v1";
+  context.resource_compatibility_identity = "sbsql.resource.compat.v1";
+  context.resource_version_identity = "sbsql.resource-pack.v1";
   context.policy_profile_uuid = "policy/default";
   context.transaction_context = "read_only_prepare";
   context.catalog_epoch = 7;
@@ -71,8 +78,39 @@ void SeedEngineAuthenticatedContext(sbsql::SbsqlTestWireSession* session) {
   context.grant_epoch = 13;
   context.descriptor_epoch = 17;
   context.udr_epoch = 19;
+  context.language_resource_epoch = 23;
+  context.localized_name_epoch = 29;
+  context.message_resource_epoch = 31;
   context.result_rendering_policy = "result/default";
   context.metric_redaction_policy = "redaction/default";
+}
+
+template <typename Mutator>
+void VerifySessionLanguageDimensionMiss(std::string_view label, Mutator mutator) {
+  sbsql::SblrTemplateCache cache(16);
+  sbsql::ParserMetrics base_metrics;
+  const auto config = Config();
+  sbsql::SbsqlTestWireSession base_session(config, &base_metrics, &cache);
+  SeedEngineAuthenticatedContext(&base_session);
+  const auto first = base_session.RunPipeline("select 1", false);
+  Require(first.accepted,
+          std::string(label) + " base lowering was not accepted diagnostics=" +
+              DiagnosticCodes(first.messages));
+  const auto second = base_session.RunPipeline("select 1", false);
+  Require(second.frontdoor_cache_hit,
+          std::string(label) + " base cache seed did not hit");
+
+  sbsql::ParserMetrics changed_metrics;
+  sbsql::SbsqlTestWireSession changed_session(config, &changed_metrics, &cache);
+  SeedEngineAuthenticatedContext(&changed_session);
+  auto& context = const_cast<sbsql::SessionContext&>(changed_session.session());
+  mutator(context);
+  const auto changed = changed_session.RunPipeline("select 1", false);
+  Require(changed.accepted,
+          std::string(label) + " changed lowering was not accepted diagnostics=" +
+              DiagnosticCodes(changed.messages));
+  Require(!changed.frontdoor_cache_hit,
+          std::string(label) + " change reused stale front-door cache entry");
 }
 
 void RunFrontdoorCacheHitPath() {
@@ -174,6 +212,37 @@ void RunDimensionMisses() {
               DiagnosticCodes(parameter_changed.messages));
   Require(!parameter_changed.frontdoor_cache_hit,
           "parameter shape change reused stale front-door cache entry");
+
+  VerifySessionLanguageDimensionMiss("language profile", [](sbsql::SessionContext& context) {
+    context.language_profile = "019f1000-0000-7000-8000-000000000101";
+  });
+  VerifySessionLanguageDimensionMiss("language tag", [](sbsql::SessionContext& context) {
+    context.language_tag = "fr-CA";
+  });
+  VerifySessionLanguageDimensionMiss("input syntax profile", [](sbsql::SessionContext& context) {
+    context.input_syntax_profile = "sbsql.syntax.en-fallback";
+  });
+  VerifySessionLanguageDimensionMiss("input fallback tag", [](sbsql::SessionContext& context) {
+    context.input_language_fallback_tag = "en";
+  });
+  VerifySessionLanguageDimensionMiss("common resource hash", [](sbsql::SessionContext& context) {
+    context.common_resource_hash = "common.hash.fr-CA";
+  });
+  VerifySessionLanguageDimensionMiss("language resource epoch", [](sbsql::SessionContext& context) {
+    context.language_resource_epoch = 37;
+  });
+  VerifySessionLanguageDimensionMiss("localized name epoch", [](sbsql::SessionContext& context) {
+    context.localized_name_epoch = 41;
+  });
+  VerifySessionLanguageDimensionMiss("message resource epoch", [](sbsql::SessionContext& context) {
+    context.message_resource_epoch = 43;
+  });
+  VerifySessionLanguageDimensionMiss("resource compatibility identity", [](sbsql::SessionContext& context) {
+    context.resource_compatibility_identity = "sbsql.resource.compat.v2";
+  });
+  VerifySessionLanguageDimensionMiss("resource version identity", [](sbsql::SessionContext& context) {
+    context.resource_version_identity = "sbsql.resource-pack.v2";
+  });
 }
 
 void RunNormalizationSafety() {

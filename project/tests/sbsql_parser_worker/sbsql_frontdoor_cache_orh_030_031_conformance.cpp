@@ -57,8 +57,16 @@ sbsql::CacheKey BaseKey(std::uint64_t shape_hash = 1001) {
   key.group_set_hash = "groups/reporting";
   key.search_path_hash = "search/public";
   key.language_profile = "en-US";
+  key.language_tag = "en-US";
+  key.input_syntax_profile = "sbsql.syntax.standard";
   key.policy_profile = "policy/default";
   key.parser_profile = "parser/default";
+  key.common_resource_hash = "common.hash.en-US";
+  key.language_resource_epoch = 31;
+  key.localized_name_epoch = 29;
+  key.message_resource_epoch = 37;
+  key.resource_compatibility_identity = "sbsql.resource.compat.v1";
+  key.resource_version_identity = "sbsql.resource-pack.v1";
   key.result_contract_hash = "result/default";
   return key;
 }
@@ -156,7 +164,7 @@ void VerifyCompactKeyAndStableDiagnostics() {
   const auto key = BaseKey(91);
   const auto stable_key = key.StableKey();
   const auto compact_key = key.CompactKey();
-  Require(Contains(stable_key, "sbsql-cache-v6"),
+  Require(Contains(stable_key, "sbsql-cache-v8"),
           "stable diagnostic key lost cache version");
   Require(Contains(stable_key, "connection/orh-cache"),
           "stable diagnostic key lost full connection dimension");

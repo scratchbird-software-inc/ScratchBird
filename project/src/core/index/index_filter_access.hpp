@@ -219,7 +219,7 @@ struct RedisEqualityAliasRequest {
   RedisEqualityAliasKind kind = RedisEqualityAliasKind::unsupported;
   std::string command_or_type;
   bool native_helper_enabled = true;
-  bool donor_emulation_enabled = true;
+  bool reference_emulation_enabled = true;
   bool exact_semantics_required = true;
 };
 

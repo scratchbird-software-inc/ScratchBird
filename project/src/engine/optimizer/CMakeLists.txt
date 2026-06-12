@@ -67,7 +67,7 @@ if(NOT TARGET sb_engine_optimizer_contract_only)
     optimizer_hot_point_lookup.cpp
     optimizer_index_costing.cpp
     optimizer_join_controls_enterprise.cpp
-    optimizer_live_donor_comparison_artifacts.cpp
+    optimizer_live_reference_comparison_artifacts.cpp
     optimizer_memory_feedback_bridge.cpp
     optimizer_memory_spill_feedback_enterprise.cpp
     optimizer_metric_manifest.cpp

@@ -647,7 +647,7 @@ struct ResultColumnDescriptor {
   ExecutionTypeDescriptor descriptor;
   std::string semantic_name;
   std::string native_rendering_name;
-  std::string donor_rendering_name;
+  std::string reference_rendering_name;
   bool nullable = true;
 };
 
@@ -801,7 +801,7 @@ ValidateExecutionRelationDescriptor(
               column_descriptor_result.status, column_index};
     }
     if (column.semantic_name.empty() || column.native_rendering_name.empty() ||
-        column.donor_rendering_name.empty()) {
+        column.reference_rendering_name.empty()) {
       return {
           ExecutionRelationDescriptorStatus::column_rendering_metadata_required,
           ExecutionDataPacketStatus::ok, column_index};
@@ -2400,7 +2400,7 @@ enum class ExecutionComparisonKeyKind : std::uint8_t {
   temporal = 2,
   text_collation = 3,
   domain = 4,
-  donor_compatible = 5
+  reference_compatible = 5
 };
 
 constexpr bool ExecutionComparisonKeyKindIsValid(
@@ -2411,7 +2411,7 @@ constexpr bool ExecutionComparisonKeyKindIsValid(
     case ExecutionComparisonKeyKind::temporal:
     case ExecutionComparisonKeyKind::text_collation:
     case ExecutionComparisonKeyKind::domain:
-    case ExecutionComparisonKeyKind::donor_compatible:
+    case ExecutionComparisonKeyKind::reference_compatible:
       return true;
   }
   return false;
@@ -2462,7 +2462,7 @@ struct ExecutionComparisonKeyDescriptor {
   Uuid collation_uuid{};
   Uuid timezone_uuid{};
   Uuid domain_uuid{};
-  std::string donor_profile_name;
+  std::string reference_profile_name;
   std::vector<std::uint8_t> canonical_payload;
   bool lossy = false;
   bool requires_recheck = false;
@@ -2497,8 +2497,8 @@ enum class ExecutionComparisonKeyStatus : std::uint8_t {
   domain_flag_required = 23,
   domain_uuid_required = 24,
   domain_uuid_mismatch = 25,
-  donor_profile_required = 26,
-  donor_recheck_required = 27
+  reference_profile_required = 26,
+  reference_recheck_required = 27
 };
 
 constexpr std::string_view ExecutionComparisonKeyStatusName(
@@ -2556,10 +2556,10 @@ constexpr std::string_view ExecutionComparisonKeyStatusName(
       return "domain_uuid_required";
     case ExecutionComparisonKeyStatus::domain_uuid_mismatch:
       return "domain_uuid_mismatch";
-    case ExecutionComparisonKeyStatus::donor_profile_required:
-      return "donor_profile_required";
-    case ExecutionComparisonKeyStatus::donor_recheck_required:
-      return "donor_recheck_required";
+    case ExecutionComparisonKeyStatus::reference_profile_required:
+      return "reference_profile_required";
+    case ExecutionComparisonKeyStatus::reference_recheck_required:
+      return "reference_recheck_required";
   }
   return "unknown_status";
 }
@@ -2708,12 +2708,12 @@ ValidateExecutionComparisonKeyDescriptor(
       return {ExecutionComparisonKeyStatus::domain_uuid_mismatch};
     }
   }
-  if (key.key_kind == ExecutionComparisonKeyKind::donor_compatible) {
-    if (key.donor_profile_name.empty()) {
-      return {ExecutionComparisonKeyStatus::donor_profile_required};
+  if (key.key_kind == ExecutionComparisonKeyKind::reference_compatible) {
+    if (key.reference_profile_name.empty()) {
+      return {ExecutionComparisonKeyStatus::reference_profile_required};
     }
     if (key.lossy && !key.requires_recheck) {
-      return {ExecutionComparisonKeyStatus::donor_recheck_required};
+      return {ExecutionComparisonKeyStatus::reference_recheck_required};
     }
   }
   return {};
@@ -2747,7 +2747,7 @@ constexpr bool ExecutionNumericRoundingModeIsValid(
 enum class ExecutionNumericOverflowPolicy : std::uint8_t {
   error = 0,
   saturate = 1,
-  donor_compatible = 2
+  reference_compatible = 2
 };
 
 constexpr bool ExecutionNumericOverflowPolicyIsValid(
@@ -2755,7 +2755,7 @@ constexpr bool ExecutionNumericOverflowPolicyIsValid(
   switch (policy) {
     case ExecutionNumericOverflowPolicy::error:
     case ExecutionNumericOverflowPolicy::saturate:
-    case ExecutionNumericOverflowPolicy::donor_compatible:
+    case ExecutionNumericOverflowPolicy::reference_compatible:
       return true;
   }
   return false;
@@ -2764,7 +2764,7 @@ constexpr bool ExecutionNumericOverflowPolicyIsValid(
 enum class ExecutionNumericSpecialValuePolicy : std::uint8_t {
   reject = 0,
   allow_with_descriptor = 1,
-  donor_compatible = 2
+  reference_compatible = 2
 };
 
 constexpr bool ExecutionNumericSpecialValuePolicyIsValid(
@@ -2772,7 +2772,7 @@ constexpr bool ExecutionNumericSpecialValuePolicyIsValid(
   switch (policy) {
     case ExecutionNumericSpecialValuePolicy::reject:
     case ExecutionNumericSpecialValuePolicy::allow_with_descriptor:
-    case ExecutionNumericSpecialValuePolicy::donor_compatible:
+    case ExecutionNumericSpecialValuePolicy::reference_compatible:
       return true;
   }
   return false;
@@ -2815,8 +2815,8 @@ struct ExecutionNumericEdgePolicyDescriptor {
   std::uint32_t scale = 0;
   bool decimal_floating_context = false;
   std::uint32_t decimal_context_precision = 0;
-  std::string donor_profile_name;
-  bool donor_difference_documented = false;
+  std::string reference_profile_name;
+  bool reference_difference_documented = false;
   bool descriptor_authoritative = true;
   bool parser_independent = true;
 };
@@ -2843,8 +2843,8 @@ enum class ExecutionNumericEdgePolicyStatus : std::uint8_t {
   scale_exceeds_precision = 18,
   decimal_context_required = 19,
   signed_zero_not_supported = 20,
-  donor_profile_required = 21,
-  donor_difference_required = 22
+  reference_profile_required = 21,
+  reference_difference_required = 22
 };
 
 constexpr std::string_view ExecutionNumericEdgePolicyStatusName(
@@ -2892,10 +2892,10 @@ constexpr std::string_view ExecutionNumericEdgePolicyStatusName(
       return "decimal_context_required";
     case ExecutionNumericEdgePolicyStatus::signed_zero_not_supported:
       return "signed_zero_not_supported";
-    case ExecutionNumericEdgePolicyStatus::donor_profile_required:
-      return "donor_profile_required";
-    case ExecutionNumericEdgePolicyStatus::donor_difference_required:
-      return "donor_difference_required";
+    case ExecutionNumericEdgePolicyStatus::reference_profile_required:
+      return "reference_profile_required";
+    case ExecutionNumericEdgePolicyStatus::reference_difference_required:
+      return "reference_difference_required";
   }
   return "unknown_status";
 }
@@ -2910,14 +2910,14 @@ struct ExecutionNumericEdgePolicyValidationResult {
   }
 };
 
-constexpr bool ExecutionNumericEdgePolicyUsesDonor(
+constexpr bool ExecutionNumericEdgePolicyUsesReference(
     const ExecutionNumericEdgePolicyDescriptor& policy) noexcept {
   return policy.overflow_policy ==
-             ExecutionNumericOverflowPolicy::donor_compatible ||
+             ExecutionNumericOverflowPolicy::reference_compatible ||
          policy.nan_policy ==
-             ExecutionNumericSpecialValuePolicy::donor_compatible ||
+             ExecutionNumericSpecialValuePolicy::reference_compatible ||
          policy.infinity_policy ==
-             ExecutionNumericSpecialValuePolicy::donor_compatible;
+             ExecutionNumericSpecialValuePolicy::reference_compatible;
 }
 
 inline ExecutionNumericEdgePolicyValidationResult
@@ -2992,9 +2992,9 @@ ValidateExecutionNumericEdgePolicyDescriptor(
       policy.infinity_policy ==
           ExecutionNumericSpecialValuePolicy::allow_with_descriptor ||
       policy.nan_policy ==
-          ExecutionNumericSpecialValuePolicy::donor_compatible ||
+          ExecutionNumericSpecialValuePolicy::reference_compatible ||
       policy.infinity_policy ==
-          ExecutionNumericSpecialValuePolicy::donor_compatible;
+          ExecutionNumericSpecialValuePolicy::reference_compatible;
   if ((policy.decimal_floating_context || special_value_allowed) &&
       policy.decimal_context_precision == 0) {
     return {ExecutionNumericEdgePolicyStatus::decimal_context_required};
@@ -3003,12 +3003,12 @@ ValidateExecutionNumericEdgePolicyDescriptor(
       policy.signed_zero_policy == ExecutionNumericSignedZeroPolicy::preserve) {
     return {ExecutionNumericEdgePolicyStatus::signed_zero_not_supported};
   }
-  if (ExecutionNumericEdgePolicyUsesDonor(policy)) {
-    if (policy.donor_profile_name.empty()) {
-      return {ExecutionNumericEdgePolicyStatus::donor_profile_required};
+  if (ExecutionNumericEdgePolicyUsesReference(policy)) {
+    if (policy.reference_profile_name.empty()) {
+      return {ExecutionNumericEdgePolicyStatus::reference_profile_required};
     }
-    if (!policy.donor_difference_documented) {
-      return {ExecutionNumericEdgePolicyStatus::donor_difference_required};
+    if (!policy.reference_difference_documented) {
+      return {ExecutionNumericEdgePolicyStatus::reference_difference_required};
     }
   }
   return {};
@@ -4726,7 +4726,7 @@ enum class ExecutionDomainKind : std::uint8_t {
   composite = 2,
   container = 3,
   opaque = 4,
-  donor_compatibility = 5
+  reference_compatibility = 5
 };
 
 enum class ExecutionDomainDefaultPolicy : std::uint8_t {
@@ -4765,13 +4765,13 @@ enum class ExecutionDomainStorageCodec : std::uint8_t {
   compressed = 2,
   encrypted = 3,
   external_locator = 4,
-  donor_native = 5
+  reference_native = 5
 };
 
 enum class ExecutionDomainCastPolicy : std::uint8_t {
   explicit_only = 0,
   implicit_safe = 1,
-  donor_compatibility = 2,
+  reference_compatibility = 2,
   forbidden = 3
 };
 
@@ -4798,7 +4798,7 @@ constexpr bool ExecutionDomainKindIsValid(
     case ExecutionDomainKind::composite:
     case ExecutionDomainKind::container:
     case ExecutionDomainKind::opaque:
-    case ExecutionDomainKind::donor_compatibility:
+    case ExecutionDomainKind::reference_compatibility:
       return true;
   }
   return false;
@@ -4862,7 +4862,7 @@ constexpr bool ExecutionDomainStorageCodecIsValid(
     case ExecutionDomainStorageCodec::compressed:
     case ExecutionDomainStorageCodec::encrypted:
     case ExecutionDomainStorageCodec::external_locator:
-    case ExecutionDomainStorageCodec::donor_native:
+    case ExecutionDomainStorageCodec::reference_native:
       return true;
   }
   return false;
@@ -4873,7 +4873,7 @@ constexpr bool ExecutionDomainCastPolicyIsValid(
   switch (policy) {
     case ExecutionDomainCastPolicy::explicit_only:
     case ExecutionDomainCastPolicy::implicit_safe:
-    case ExecutionDomainCastPolicy::donor_compatibility:
+    case ExecutionDomainCastPolicy::reference_compatibility:
     case ExecutionDomainCastPolicy::forbidden:
       return true;
   }
@@ -4916,12 +4916,12 @@ struct ExecutionDomainConstraintDescriptor {
   bool parser_independent = true;
 };
 
-struct ExecutionDomainDonorMetadata {
+struct ExecutionDomainReferenceMetadata {
   bool present = false;
-  Uuid donor_profile_uuid{};
-  Uuid donor_mapping_uuid{};
-  std::string donor_family;
-  std::string donor_type_name;
+  Uuid reference_profile_uuid{};
+  Uuid reference_mapping_uuid{};
+  std::string reference_family;
+  std::string reference_type_name;
   bool descriptor_authoritative = true;
   bool parser_independent = true;
 };
@@ -4967,7 +4967,7 @@ struct ExecutionDomainDescriptor {
       ExecutionDomainElementAddressingPolicy::scalar_value;
   Uuid element_addressing_policy_uuid{};
   std::uint64_t element_addressing_policy_epoch = 0;
-  ExecutionDomainDonorMetadata donor_metadata;
+  ExecutionDomainReferenceMetadata reference_metadata;
   bool descriptor_authoritative = true;
   bool parser_independent = true;
 };
@@ -5029,13 +5029,13 @@ enum class ExecutionDomainDescriptorStatus : std::uint8_t {
   element_addressing_policy_epoch_required = 53,
   compound_element_addressing_required = 54,
   opaque_element_addressing_required = 55,
-  donor_metadata_required = 56,
-  donor_profile_uuid_required = 57,
-  donor_mapping_uuid_required = 58,
-  donor_family_required = 59,
-  donor_type_name_required = 60,
-  donor_metadata_not_authoritative = 61,
-  donor_metadata_parser_dependent = 62
+  reference_metadata_required = 56,
+  reference_profile_uuid_required = 57,
+  reference_mapping_uuid_required = 58,
+  reference_family_required = 59,
+  reference_type_name_required = 60,
+  reference_metadata_not_authoritative = 61,
+  reference_metadata_parser_dependent = 62
 };
 
 constexpr std::string_view ExecutionDomainDescriptorStatusName(
@@ -5156,20 +5156,20 @@ constexpr std::string_view ExecutionDomainDescriptorStatusName(
       return "compound_element_addressing_required";
     case ExecutionDomainDescriptorStatus::opaque_element_addressing_required:
       return "opaque_element_addressing_required";
-    case ExecutionDomainDescriptorStatus::donor_metadata_required:
-      return "donor_metadata_required";
-    case ExecutionDomainDescriptorStatus::donor_profile_uuid_required:
-      return "donor_profile_uuid_required";
-    case ExecutionDomainDescriptorStatus::donor_mapping_uuid_required:
-      return "donor_mapping_uuid_required";
-    case ExecutionDomainDescriptorStatus::donor_family_required:
-      return "donor_family_required";
-    case ExecutionDomainDescriptorStatus::donor_type_name_required:
-      return "donor_type_name_required";
-    case ExecutionDomainDescriptorStatus::donor_metadata_not_authoritative:
-      return "donor_metadata_not_authoritative";
-    case ExecutionDomainDescriptorStatus::donor_metadata_parser_dependent:
-      return "donor_metadata_parser_dependent";
+    case ExecutionDomainDescriptorStatus::reference_metadata_required:
+      return "reference_metadata_required";
+    case ExecutionDomainDescriptorStatus::reference_profile_uuid_required:
+      return "reference_profile_uuid_required";
+    case ExecutionDomainDescriptorStatus::reference_mapping_uuid_required:
+      return "reference_mapping_uuid_required";
+    case ExecutionDomainDescriptorStatus::reference_family_required:
+      return "reference_family_required";
+    case ExecutionDomainDescriptorStatus::reference_type_name_required:
+      return "reference_type_name_required";
+    case ExecutionDomainDescriptorStatus::reference_metadata_not_authoritative:
+      return "reference_metadata_not_authoritative";
+    case ExecutionDomainDescriptorStatus::reference_metadata_parser_dependent:
+      return "reference_metadata_parser_dependent";
   }
   return "unknown_status";
 }
@@ -5479,32 +5479,32 @@ ValidateExecutionDomainDescriptor(
                 opaque_element_addressing_required};
   }
 
-  if (descriptor.domain_kind == ExecutionDomainKind::donor_compatibility &&
-      !descriptor.donor_metadata.present) {
-    return {ExecutionDomainDescriptorStatus::donor_metadata_required};
+  if (descriptor.domain_kind == ExecutionDomainKind::reference_compatibility &&
+      !descriptor.reference_metadata.present) {
+    return {ExecutionDomainDescriptorStatus::reference_metadata_required};
   }
-  if (descriptor.donor_metadata.present) {
+  if (descriptor.reference_metadata.present) {
     if (ExecutionDataPacketUuidIsNil(
-            descriptor.donor_metadata.donor_profile_uuid)) {
-      return {ExecutionDomainDescriptorStatus::donor_profile_uuid_required};
+            descriptor.reference_metadata.reference_profile_uuid)) {
+      return {ExecutionDomainDescriptorStatus::reference_profile_uuid_required};
     }
     if (ExecutionDataPacketUuidIsNil(
-            descriptor.donor_metadata.donor_mapping_uuid)) {
-      return {ExecutionDomainDescriptorStatus::donor_mapping_uuid_required};
+            descriptor.reference_metadata.reference_mapping_uuid)) {
+      return {ExecutionDomainDescriptorStatus::reference_mapping_uuid_required};
     }
-    if (descriptor.donor_metadata.donor_family.empty()) {
-      return {ExecutionDomainDescriptorStatus::donor_family_required};
+    if (descriptor.reference_metadata.reference_family.empty()) {
+      return {ExecutionDomainDescriptorStatus::reference_family_required};
     }
-    if (descriptor.donor_metadata.donor_type_name.empty()) {
-      return {ExecutionDomainDescriptorStatus::donor_type_name_required};
+    if (descriptor.reference_metadata.reference_type_name.empty()) {
+      return {ExecutionDomainDescriptorStatus::reference_type_name_required};
     }
-    if (!descriptor.donor_metadata.descriptor_authoritative) {
+    if (!descriptor.reference_metadata.descriptor_authoritative) {
       return {ExecutionDomainDescriptorStatus::
-                  donor_metadata_not_authoritative};
+                  reference_metadata_not_authoritative};
     }
-    if (!descriptor.donor_metadata.parser_independent) {
+    if (!descriptor.reference_metadata.parser_independent) {
       return {ExecutionDomainDescriptorStatus::
-                  donor_metadata_parser_dependent};
+                  reference_metadata_parser_dependent};
     }
   }
 
@@ -5959,7 +5959,7 @@ enum class DomainResourcePolicy : std::uint8_t {
   inherit_source = 1,
   inherit_target = 2,
   explicit_resource = 3,
-  donor_compatibility = 4
+  reference_compatibility = 4
 };
 
 constexpr bool DomainResourcePolicyIsValid(
@@ -5969,7 +5969,7 @@ constexpr bool DomainResourcePolicyIsValid(
     case DomainResourcePolicy::inherit_source:
     case DomainResourcePolicy::inherit_target:
     case DomainResourcePolicy::explicit_resource:
-    case DomainResourcePolicy::donor_compatibility:
+    case DomainResourcePolicy::reference_compatibility:
       return true;
   }
   return false;
@@ -5978,7 +5978,7 @@ constexpr bool DomainResourcePolicyIsValid(
 constexpr bool DomainResourcePolicyRequiresUuid(
     DomainResourcePolicy policy) noexcept {
   return policy == DomainResourcePolicy::explicit_resource ||
-         policy == DomainResourcePolicy::donor_compatibility;
+         policy == DomainResourcePolicy::reference_compatibility;
 }
 
 enum class DomainDeterminism : std::uint8_t {
@@ -6009,7 +6009,7 @@ enum class DomainCostClass : std::uint8_t {
   constant = 0,
   linear = 1,
   external = 2,
-  donor = 3,
+  reference = 3,
   user_defined = 4
 };
 
@@ -6018,7 +6018,7 @@ constexpr bool DomainCostClassIsValid(DomainCostClass cost_class) noexcept {
     case DomainCostClass::constant:
     case DomainCostClass::linear:
     case DomainCostClass::external:
-    case DomainCostClass::donor:
+    case DomainCostClass::reference:
     case DomainCostClass::user_defined:
       return true;
   }
@@ -6052,7 +6052,7 @@ enum class DomainDescriptorImplementationKind : std::uint8_t {
   built_in = 0,
   native_sblr = 1,
   cpp_udr = 2,
-  donor_native = 3,
+  reference_native = 3,
   refused = 4
 };
 
@@ -6062,7 +6062,7 @@ constexpr bool DomainDescriptorImplementationKindIsValid(
     case DomainDescriptorImplementationKind::built_in:
     case DomainDescriptorImplementationKind::native_sblr:
     case DomainDescriptorImplementationKind::cpp_udr:
-    case DomainDescriptorImplementationKind::donor_native:
+    case DomainDescriptorImplementationKind::reference_native:
     case DomainDescriptorImplementationKind::refused:
       return true;
   }
@@ -6086,7 +6086,7 @@ enum class DomainCastRuleKind : std::uint8_t {
   implicit = 0,
   assignment = 1,
   explicit_only = 2,
-  donor_compatibility = 3,
+  reference_compatibility = 3,
   prohibited = 4
 };
 
@@ -6095,7 +6095,7 @@ constexpr bool DomainCastRuleKindIsValid(DomainCastRuleKind kind) noexcept {
     case DomainCastRuleKind::implicit:
     case DomainCastRuleKind::assignment:
     case DomainCastRuleKind::explicit_only:
-    case DomainCastRuleKind::donor_compatibility:
+    case DomainCastRuleKind::reference_compatibility:
     case DomainCastRuleKind::prohibited:
       return true;
   }
@@ -7036,9 +7036,9 @@ ValidateDomainOperationDescriptor(
   return {};
 }
 
-// SEARCH_KEY: DTC-DONOR-TYPE-COVERAGE
-// SEARCH_KEY: EDR-DONOR-TYPE-CAPABILITY
-enum class DonorTypeRepresentationClass : std::uint8_t {
+// SEARCH_KEY: DTC-REFERENCE-TYPE-COVERAGE
+// SEARCH_KEY: EDR-REFERENCE-TYPE-CAPABILITY
+enum class ReferenceTypeRepresentationClass : std::uint8_t {
   native_descriptor = 0,
   domain_compatibility = 1,
   opaque_bridge = 2,
@@ -7047,47 +7047,47 @@ enum class DonorTypeRepresentationClass : std::uint8_t {
   deferred = 5
 };
 
-constexpr bool DonorTypeRepresentationClassIsValid(
-    DonorTypeRepresentationClass representation_class) noexcept {
+constexpr bool ReferenceTypeRepresentationClassIsValid(
+    ReferenceTypeRepresentationClass representation_class) noexcept {
   switch (representation_class) {
-    case DonorTypeRepresentationClass::native_descriptor:
-    case DonorTypeRepresentationClass::domain_compatibility:
-    case DonorTypeRepresentationClass::opaque_bridge:
-    case DonorTypeRepresentationClass::external_locator:
-    case DonorTypeRepresentationClass::refused:
-    case DonorTypeRepresentationClass::deferred:
+    case ReferenceTypeRepresentationClass::native_descriptor:
+    case ReferenceTypeRepresentationClass::domain_compatibility:
+    case ReferenceTypeRepresentationClass::opaque_bridge:
+    case ReferenceTypeRepresentationClass::external_locator:
+    case ReferenceTypeRepresentationClass::refused:
+    case ReferenceTypeRepresentationClass::deferred:
       return true;
   }
   return false;
 }
 
-constexpr bool DonorTypeRepresentationIsExecutable(
-    DonorTypeRepresentationClass representation_class) noexcept {
-  return representation_class != DonorTypeRepresentationClass::refused &&
-         representation_class != DonorTypeRepresentationClass::deferred;
+constexpr bool ReferenceTypeRepresentationIsExecutable(
+    ReferenceTypeRepresentationClass representation_class) noexcept {
+  return representation_class != ReferenceTypeRepresentationClass::refused &&
+         representation_class != ReferenceTypeRepresentationClass::deferred;
 }
 
-constexpr bool DonorTypeRepresentationRequiresDomain(
-    DonorTypeRepresentationClass representation_class) noexcept {
+constexpr bool ReferenceTypeRepresentationRequiresDomain(
+    ReferenceTypeRepresentationClass representation_class) noexcept {
   return representation_class ==
-             DonorTypeRepresentationClass::domain_compatibility ||
-         representation_class == DonorTypeRepresentationClass::opaque_bridge;
+             ReferenceTypeRepresentationClass::domain_compatibility ||
+         representation_class == ReferenceTypeRepresentationClass::opaque_bridge;
 }
 
-constexpr bool DonorTypeRepresentationRequiresExternalLocatorSafety(
-    DonorTypeRepresentationClass representation_class) noexcept {
-  return representation_class == DonorTypeRepresentationClass::external_locator;
+constexpr bool ReferenceTypeRepresentationRequiresExternalLocatorSafety(
+    ReferenceTypeRepresentationClass representation_class) noexcept {
+  return representation_class == ReferenceTypeRepresentationClass::external_locator;
 }
 
-constexpr bool DonorTypeRepresentationRequiresOpaqueLifecycle(
-    DonorTypeRepresentationClass representation_class) noexcept {
-  return representation_class == DonorTypeRepresentationClass::opaque_bridge;
+constexpr bool ReferenceTypeRepresentationRequiresOpaqueLifecycle(
+    ReferenceTypeRepresentationClass representation_class) noexcept {
+  return representation_class == ReferenceTypeRepresentationClass::opaque_bridge;
 }
 
 enum class ExecutionTypeCapabilityState : std::uint8_t {
   supported = 0,
   descriptor_cast = 1,
-  donor_runtime = 2,
+  reference_runtime = 2,
   cpp_udr_bridge = 3,
   llvm_accelerated = 4,
   refused = 5,
@@ -7099,7 +7099,7 @@ constexpr bool ExecutionTypeCapabilityStateIsValid(
   switch (state) {
     case ExecutionTypeCapabilityState::supported:
     case ExecutionTypeCapabilityState::descriptor_cast:
-    case ExecutionTypeCapabilityState::donor_runtime:
+    case ExecutionTypeCapabilityState::reference_runtime:
     case ExecutionTypeCapabilityState::cpp_udr_bridge:
     case ExecutionTypeCapabilityState::llvm_accelerated:
     case ExecutionTypeCapabilityState::refused:
@@ -7126,14 +7126,14 @@ constexpr bool ExecutionTypeCapabilityStateRequiresLlvm(
   return state == ExecutionTypeCapabilityState::llvm_accelerated;
 }
 
-struct DonorTypeMappingDescriptor {
+struct ReferenceTypeMappingDescriptor {
   Uuid mapping_uuid{};
-  Uuid donor_profile_uuid{};
+  Uuid reference_profile_uuid{};
   std::uint64_t mapping_epoch = 0;
-  std::string donor_family;
-  std::string donor_type_name;
-  DonorTypeRepresentationClass representation_class =
-      DonorTypeRepresentationClass::native_descriptor;
+  std::string reference_family;
+  std::string reference_type_name;
+  ReferenceTypeRepresentationClass representation_class =
+      ReferenceTypeRepresentationClass::native_descriptor;
   std::string decision_reason;
   Uuid canonical_descriptor_uuid{};
   ExecutionTypeDescriptor canonical_descriptor;
@@ -7152,13 +7152,13 @@ struct DonorTypeMappingDescriptor {
   bool parser_independent = true;
 };
 
-enum class DonorTypeMappingDescriptorStatus : std::uint8_t {
+enum class ReferenceTypeMappingDescriptorStatus : std::uint8_t {
   ok = 0,
   mapping_uuid_required = 1,
-  donor_profile_uuid_required = 2,
+  reference_profile_uuid_required = 2,
   mapping_epoch_required = 3,
-  donor_family_required = 4,
-  donor_type_name_required = 5,
+  reference_family_required = 4,
+  reference_type_name_required = 5,
   descriptor_not_authoritative = 6,
   descriptor_parser_dependent = 7,
   representation_class_invalid = 8,
@@ -7173,7 +7173,7 @@ enum class DonorTypeMappingDescriptorStatus : std::uint8_t {
   domain_descriptor_invalid = 17,
   domain_uuid_mismatch = 18,
   domain_kind_mismatch = 19,
-  domain_donor_metadata_mismatch = 20,
+  domain_reference_metadata_mismatch = 20,
   cast_rule_uuid_required = 21,
   cast_rule_descriptor_invalid = 22,
   cast_rule_uuid_mismatch = 23,
@@ -7184,75 +7184,75 @@ enum class DonorTypeMappingDescriptorStatus : std::uint8_t {
   opaque_lifecycle_required = 28
 };
 
-constexpr std::string_view DonorTypeMappingDescriptorStatusName(
-    DonorTypeMappingDescriptorStatus status) noexcept {
+constexpr std::string_view ReferenceTypeMappingDescriptorStatusName(
+    ReferenceTypeMappingDescriptorStatus status) noexcept {
   switch (status) {
-    case DonorTypeMappingDescriptorStatus::ok:
+    case ReferenceTypeMappingDescriptorStatus::ok:
       return "ok";
-    case DonorTypeMappingDescriptorStatus::mapping_uuid_required:
+    case ReferenceTypeMappingDescriptorStatus::mapping_uuid_required:
       return "mapping_uuid_required";
-    case DonorTypeMappingDescriptorStatus::donor_profile_uuid_required:
-      return "donor_profile_uuid_required";
-    case DonorTypeMappingDescriptorStatus::mapping_epoch_required:
+    case ReferenceTypeMappingDescriptorStatus::reference_profile_uuid_required:
+      return "reference_profile_uuid_required";
+    case ReferenceTypeMappingDescriptorStatus::mapping_epoch_required:
       return "mapping_epoch_required";
-    case DonorTypeMappingDescriptorStatus::donor_family_required:
-      return "donor_family_required";
-    case DonorTypeMappingDescriptorStatus::donor_type_name_required:
-      return "donor_type_name_required";
-    case DonorTypeMappingDescriptorStatus::descriptor_not_authoritative:
+    case ReferenceTypeMappingDescriptorStatus::reference_family_required:
+      return "reference_family_required";
+    case ReferenceTypeMappingDescriptorStatus::reference_type_name_required:
+      return "reference_type_name_required";
+    case ReferenceTypeMappingDescriptorStatus::descriptor_not_authoritative:
       return "descriptor_not_authoritative";
-    case DonorTypeMappingDescriptorStatus::descriptor_parser_dependent:
+    case ReferenceTypeMappingDescriptorStatus::descriptor_parser_dependent:
       return "descriptor_parser_dependent";
-    case DonorTypeMappingDescriptorStatus::representation_class_invalid:
+    case ReferenceTypeMappingDescriptorStatus::representation_class_invalid:
       return "representation_class_invalid";
-    case DonorTypeMappingDescriptorStatus::decision_reason_required:
+    case ReferenceTypeMappingDescriptorStatus::decision_reason_required:
       return "decision_reason_required";
-    case DonorTypeMappingDescriptorStatus::inactive_mapping_has_execution_binding:
+    case ReferenceTypeMappingDescriptorStatus::inactive_mapping_has_execution_binding:
       return "inactive_mapping_has_execution_binding";
-    case DonorTypeMappingDescriptorStatus::
+    case ReferenceTypeMappingDescriptorStatus::
         canonical_descriptor_uuid_required:
       return "canonical_descriptor_uuid_required";
-    case DonorTypeMappingDescriptorStatus::canonical_descriptor_invalid:
+    case ReferenceTypeMappingDescriptorStatus::canonical_descriptor_invalid:
       return "canonical_descriptor_invalid";
-    case DonorTypeMappingDescriptorStatus::canonical_descriptor_uuid_mismatch:
+    case ReferenceTypeMappingDescriptorStatus::canonical_descriptor_uuid_mismatch:
       return "canonical_descriptor_uuid_mismatch";
-    case DonorTypeMappingDescriptorStatus::domain_descriptor_required:
+    case ReferenceTypeMappingDescriptorStatus::domain_descriptor_required:
       return "domain_descriptor_required";
-    case DonorTypeMappingDescriptorStatus::domain_descriptor_not_allowed:
+    case ReferenceTypeMappingDescriptorStatus::domain_descriptor_not_allowed:
       return "domain_descriptor_not_allowed";
-    case DonorTypeMappingDescriptorStatus::domain_uuid_required:
+    case ReferenceTypeMappingDescriptorStatus::domain_uuid_required:
       return "domain_uuid_required";
-    case DonorTypeMappingDescriptorStatus::domain_descriptor_invalid:
+    case ReferenceTypeMappingDescriptorStatus::domain_descriptor_invalid:
       return "domain_descriptor_invalid";
-    case DonorTypeMappingDescriptorStatus::domain_uuid_mismatch:
+    case ReferenceTypeMappingDescriptorStatus::domain_uuid_mismatch:
       return "domain_uuid_mismatch";
-    case DonorTypeMappingDescriptorStatus::domain_kind_mismatch:
+    case ReferenceTypeMappingDescriptorStatus::domain_kind_mismatch:
       return "domain_kind_mismatch";
-    case DonorTypeMappingDescriptorStatus::domain_donor_metadata_mismatch:
-      return "domain_donor_metadata_mismatch";
-    case DonorTypeMappingDescriptorStatus::cast_rule_uuid_required:
+    case ReferenceTypeMappingDescriptorStatus::domain_reference_metadata_mismatch:
+      return "domain_reference_metadata_mismatch";
+    case ReferenceTypeMappingDescriptorStatus::cast_rule_uuid_required:
       return "cast_rule_uuid_required";
-    case DonorTypeMappingDescriptorStatus::cast_rule_descriptor_invalid:
+    case ReferenceTypeMappingDescriptorStatus::cast_rule_descriptor_invalid:
       return "cast_rule_descriptor_invalid";
-    case DonorTypeMappingDescriptorStatus::cast_rule_uuid_mismatch:
+    case ReferenceTypeMappingDescriptorStatus::cast_rule_uuid_mismatch:
       return "cast_rule_uuid_mismatch";
-    case DonorTypeMappingDescriptorStatus::operation_uuid_required:
+    case ReferenceTypeMappingDescriptorStatus::operation_uuid_required:
       return "operation_uuid_required";
-    case DonorTypeMappingDescriptorStatus::operation_descriptor_invalid:
+    case ReferenceTypeMappingDescriptorStatus::operation_descriptor_invalid:
       return "operation_descriptor_invalid";
-    case DonorTypeMappingDescriptorStatus::operation_uuid_mismatch:
+    case ReferenceTypeMappingDescriptorStatus::operation_uuid_mismatch:
       return "operation_uuid_mismatch";
-    case DonorTypeMappingDescriptorStatus::external_locator_safety_required:
+    case ReferenceTypeMappingDescriptorStatus::external_locator_safety_required:
       return "external_locator_safety_required";
-    case DonorTypeMappingDescriptorStatus::opaque_lifecycle_required:
+    case ReferenceTypeMappingDescriptorStatus::opaque_lifecycle_required:
       return "opaque_lifecycle_required";
   }
   return "unknown_status";
 }
 
-struct DonorTypeMappingDescriptorValidationResult {
-  DonorTypeMappingDescriptorStatus status =
-      DonorTypeMappingDescriptorStatus::ok;
+struct ReferenceTypeMappingDescriptorValidationResult {
+  ReferenceTypeMappingDescriptorStatus status =
+      ReferenceTypeMappingDescriptorStatus::ok;
   ExecutionDataPacketStatus descriptor_status = ExecutionDataPacketStatus::ok;
   ExecutionDomainDescriptorStatus domain_status =
       ExecutionDomainDescriptorStatus::ok;
@@ -7261,12 +7261,12 @@ struct DonorTypeMappingDescriptorValidationResult {
       DomainOperationDescriptorStatus::ok;
 
   bool ok() const noexcept {
-    return status == DonorTypeMappingDescriptorStatus::ok;
+    return status == ReferenceTypeMappingDescriptorStatus::ok;
   }
 };
 
-inline bool DonorTypeMappingHasExecutionBinding(
-    const DonorTypeMappingDescriptor& descriptor) noexcept {
+inline bool ReferenceTypeMappingHasExecutionBinding(
+    const ReferenceTypeMappingDescriptor& descriptor) noexcept {
   return !ExecutionDataPacketUuidIsNil(descriptor.canonical_descriptor_uuid) ||
          !ExecutionDataPacketUuidIsNil(
              descriptor.canonical_descriptor.descriptor_uuid) ||
@@ -7274,144 +7274,144 @@ inline bool DonorTypeMappingHasExecutionBinding(
          descriptor.operation_descriptor_present;
 }
 
-inline bool DonorTypeMappingDomainMetadataMatches(
-    const DonorTypeMappingDescriptor& descriptor) noexcept {
-  const auto& metadata = descriptor.domain_descriptor.donor_metadata;
+inline bool ReferenceTypeMappingDomainMetadataMatches(
+    const ReferenceTypeMappingDescriptor& descriptor) noexcept {
+  const auto& metadata = descriptor.domain_descriptor.reference_metadata;
   return metadata.present &&
-         ExecutionDataPacketUuidEquals(metadata.donor_profile_uuid,
-                                       descriptor.donor_profile_uuid) &&
-         ExecutionDataPacketUuidEquals(metadata.donor_mapping_uuid,
+         ExecutionDataPacketUuidEquals(metadata.reference_profile_uuid,
+                                       descriptor.reference_profile_uuid) &&
+         ExecutionDataPacketUuidEquals(metadata.reference_mapping_uuid,
                                        descriptor.mapping_uuid) &&
-         metadata.donor_family == descriptor.donor_family &&
-         metadata.donor_type_name == descriptor.donor_type_name;
+         metadata.reference_family == descriptor.reference_family &&
+         metadata.reference_type_name == descriptor.reference_type_name;
 }
 
-inline DonorTypeMappingDescriptorValidationResult
-ValidateDonorTypeMappingDescriptor(
-    const DonorTypeMappingDescriptor& descriptor) {
+inline ReferenceTypeMappingDescriptorValidationResult
+ValidateReferenceTypeMappingDescriptor(
+    const ReferenceTypeMappingDescriptor& descriptor) {
   if (ExecutionDataPacketUuidIsNil(descriptor.mapping_uuid)) {
-    return {DonorTypeMappingDescriptorStatus::mapping_uuid_required};
+    return {ReferenceTypeMappingDescriptorStatus::mapping_uuid_required};
   }
-  if (ExecutionDataPacketUuidIsNil(descriptor.donor_profile_uuid)) {
-    return {DonorTypeMappingDescriptorStatus::donor_profile_uuid_required};
+  if (ExecutionDataPacketUuidIsNil(descriptor.reference_profile_uuid)) {
+    return {ReferenceTypeMappingDescriptorStatus::reference_profile_uuid_required};
   }
   if (descriptor.mapping_epoch == 0) {
-    return {DonorTypeMappingDescriptorStatus::mapping_epoch_required};
+    return {ReferenceTypeMappingDescriptorStatus::mapping_epoch_required};
   }
-  if (descriptor.donor_family.empty()) {
-    return {DonorTypeMappingDescriptorStatus::donor_family_required};
+  if (descriptor.reference_family.empty()) {
+    return {ReferenceTypeMappingDescriptorStatus::reference_family_required};
   }
-  if (descriptor.donor_type_name.empty()) {
-    return {DonorTypeMappingDescriptorStatus::donor_type_name_required};
+  if (descriptor.reference_type_name.empty()) {
+    return {ReferenceTypeMappingDescriptorStatus::reference_type_name_required};
   }
   if (!descriptor.descriptor_authoritative) {
-    return {DonorTypeMappingDescriptorStatus::descriptor_not_authoritative};
+    return {ReferenceTypeMappingDescriptorStatus::descriptor_not_authoritative};
   }
   if (!descriptor.parser_independent) {
-    return {DonorTypeMappingDescriptorStatus::descriptor_parser_dependent};
+    return {ReferenceTypeMappingDescriptorStatus::descriptor_parser_dependent};
   }
-  if (!DonorTypeRepresentationClassIsValid(
+  if (!ReferenceTypeRepresentationClassIsValid(
           descriptor.representation_class)) {
-    return {DonorTypeMappingDescriptorStatus::representation_class_invalid};
+    return {ReferenceTypeMappingDescriptorStatus::representation_class_invalid};
   }
 
-  if (!DonorTypeRepresentationIsExecutable(descriptor.representation_class)) {
+  if (!ReferenceTypeRepresentationIsExecutable(descriptor.representation_class)) {
     if (descriptor.decision_reason.empty()) {
-      return {DonorTypeMappingDescriptorStatus::decision_reason_required};
+      return {ReferenceTypeMappingDescriptorStatus::decision_reason_required};
     }
-    if (DonorTypeMappingHasExecutionBinding(descriptor)) {
+    if (ReferenceTypeMappingHasExecutionBinding(descriptor)) {
       return {
-          DonorTypeMappingDescriptorStatus::inactive_mapping_has_execution_binding};
+          ReferenceTypeMappingDescriptorStatus::inactive_mapping_has_execution_binding};
     }
     return {};
   }
 
   if (ExecutionDataPacketUuidIsNil(descriptor.canonical_descriptor_uuid)) {
     return {
-        DonorTypeMappingDescriptorStatus::canonical_descriptor_uuid_required};
+        ReferenceTypeMappingDescriptorStatus::canonical_descriptor_uuid_required};
   }
   const auto canonical_result =
       ValidateExecutionDataPacketDescriptor(descriptor.canonical_descriptor, 0);
   if (!canonical_result.ok()) {
-    return {DonorTypeMappingDescriptorStatus::canonical_descriptor_invalid,
+    return {ReferenceTypeMappingDescriptorStatus::canonical_descriptor_invalid,
             canonical_result.status};
   }
   if (!ExecutionDataPacketUuidEquals(
           descriptor.canonical_descriptor.descriptor_uuid,
           descriptor.canonical_descriptor_uuid)) {
     return {
-        DonorTypeMappingDescriptorStatus::canonical_descriptor_uuid_mismatch};
+        ReferenceTypeMappingDescriptorStatus::canonical_descriptor_uuid_mismatch};
   }
 
-  if (DonorTypeRepresentationRequiresDomain(
+  if (ReferenceTypeRepresentationRequiresDomain(
           descriptor.representation_class) &&
       !descriptor.domain_descriptor_present) {
-    return {DonorTypeMappingDescriptorStatus::domain_descriptor_required};
+    return {ReferenceTypeMappingDescriptorStatus::domain_descriptor_required};
   }
   if (descriptor.representation_class ==
-          DonorTypeRepresentationClass::native_descriptor &&
+          ReferenceTypeRepresentationClass::native_descriptor &&
       descriptor.domain_descriptor_present) {
-    return {DonorTypeMappingDescriptorStatus::domain_descriptor_not_allowed};
+    return {ReferenceTypeMappingDescriptorStatus::domain_descriptor_not_allowed};
   }
   if (descriptor.domain_descriptor_present) {
     if (ExecutionDataPacketUuidIsNil(descriptor.domain_uuid)) {
-      return {DonorTypeMappingDescriptorStatus::domain_uuid_required};
+      return {ReferenceTypeMappingDescriptorStatus::domain_uuid_required};
     }
     const auto domain_result =
         ValidateExecutionDomainDescriptor(descriptor.domain_descriptor);
     if (!domain_result.ok()) {
-      return {DonorTypeMappingDescriptorStatus::domain_descriptor_invalid,
+      return {ReferenceTypeMappingDescriptorStatus::domain_descriptor_invalid,
               ExecutionDataPacketStatus::ok, domain_result.status};
     }
     if (!ExecutionDataPacketUuidEquals(descriptor.domain_uuid,
                                       descriptor.domain_descriptor.domain_uuid)) {
-      return {DonorTypeMappingDescriptorStatus::domain_uuid_mismatch};
+      return {ReferenceTypeMappingDescriptorStatus::domain_uuid_mismatch};
     }
     if (descriptor.representation_class ==
-            DonorTypeRepresentationClass::domain_compatibility &&
+            ReferenceTypeRepresentationClass::domain_compatibility &&
         descriptor.domain_descriptor.domain_kind !=
-            ExecutionDomainKind::donor_compatibility) {
-      return {DonorTypeMappingDescriptorStatus::domain_kind_mismatch};
+            ExecutionDomainKind::reference_compatibility) {
+      return {ReferenceTypeMappingDescriptorStatus::domain_kind_mismatch};
     }
     if (descriptor.representation_class ==
-            DonorTypeRepresentationClass::opaque_bridge &&
+            ReferenceTypeRepresentationClass::opaque_bridge &&
         descriptor.domain_descriptor.domain_kind !=
             ExecutionDomainKind::opaque) {
-      return {DonorTypeMappingDescriptorStatus::domain_kind_mismatch};
+      return {ReferenceTypeMappingDescriptorStatus::domain_kind_mismatch};
     }
     if (descriptor.representation_class ==
-            DonorTypeRepresentationClass::domain_compatibility &&
-        !DonorTypeMappingDomainMetadataMatches(descriptor)) {
-      return {DonorTypeMappingDescriptorStatus::domain_donor_metadata_mismatch};
+            ReferenceTypeRepresentationClass::domain_compatibility &&
+        !ReferenceTypeMappingDomainMetadataMatches(descriptor)) {
+      return {ReferenceTypeMappingDescriptorStatus::domain_reference_metadata_mismatch};
     }
   }
 
   if (descriptor.cast_rule_present) {
     if (ExecutionDataPacketUuidIsNil(descriptor.cast_rule_uuid)) {
-      return {DonorTypeMappingDescriptorStatus::cast_rule_uuid_required};
+      return {ReferenceTypeMappingDescriptorStatus::cast_rule_uuid_required};
     }
     const auto cast_result =
         ValidateDomainCastRuleDescriptor(descriptor.cast_rule_descriptor);
     if (!cast_result.ok()) {
-      return {DonorTypeMappingDescriptorStatus::cast_rule_descriptor_invalid,
+      return {ReferenceTypeMappingDescriptorStatus::cast_rule_descriptor_invalid,
               cast_result.descriptor_status,
               ExecutionDomainDescriptorStatus::ok, cast_result.status};
     }
     if (!ExecutionDataPacketUuidEquals(
             descriptor.cast_rule_uuid,
             descriptor.cast_rule_descriptor.cast_rule_uuid)) {
-      return {DonorTypeMappingDescriptorStatus::cast_rule_uuid_mismatch};
+      return {ReferenceTypeMappingDescriptorStatus::cast_rule_uuid_mismatch};
     }
   }
 
   if (descriptor.operation_descriptor_present) {
     if (ExecutionDataPacketUuidIsNil(descriptor.operation_uuid)) {
-      return {DonorTypeMappingDescriptorStatus::operation_uuid_required};
+      return {ReferenceTypeMappingDescriptorStatus::operation_uuid_required};
     }
     const auto operation_result =
         ValidateDomainOperationDescriptor(descriptor.operation_descriptor);
     if (!operation_result.ok()) {
-      return {DonorTypeMappingDescriptorStatus::operation_descriptor_invalid,
+      return {ReferenceTypeMappingDescriptorStatus::operation_descriptor_invalid,
               operation_result.descriptor_status,
               ExecutionDomainDescriptorStatus::ok, DomainCastRuleStatus::ok,
               operation_result.status};
@@ -7419,20 +7419,20 @@ ValidateDonorTypeMappingDescriptor(
     if (!ExecutionDataPacketUuidEquals(
             descriptor.operation_uuid,
             descriptor.operation_descriptor.operation_uuid)) {
-      return {DonorTypeMappingDescriptorStatus::operation_uuid_mismatch};
+      return {ReferenceTypeMappingDescriptorStatus::operation_uuid_mismatch};
     }
   }
 
-  if (DonorTypeRepresentationRequiresExternalLocatorSafety(
+  if (ReferenceTypeRepresentationRequiresExternalLocatorSafety(
           descriptor.representation_class) &&
       !descriptor.external_locator_safe) {
-    return {DonorTypeMappingDescriptorStatus::
+    return {ReferenceTypeMappingDescriptorStatus::
                 external_locator_safety_required};
   }
-  if (DonorTypeRepresentationRequiresOpaqueLifecycle(
+  if (ReferenceTypeRepresentationRequiresOpaqueLifecycle(
           descriptor.representation_class) &&
       !descriptor.opaque_lifecycle_managed) {
-    return {DonorTypeMappingDescriptorStatus::opaque_lifecycle_required};
+    return {ReferenceTypeMappingDescriptorStatus::opaque_lifecycle_required};
   }
 
   return {};
@@ -7441,7 +7441,7 @@ ValidateDonorTypeMappingDescriptor(
 struct ExecutionTypeCapabilityDescriptor {
   Uuid capability_uuid{};
   Uuid mapping_uuid{};
-  Uuid donor_profile_uuid{};
+  Uuid reference_profile_uuid{};
   Uuid canonical_descriptor_uuid{};
   std::uint64_t capability_epoch = 0;
   std::string stable_name;
@@ -7466,7 +7466,7 @@ struct ExecutionTypeCapabilityDescriptor {
   bool external_locator_allowed = false;
   bool external_locator_policy_safe = false;
   bool opaque_lifecycle_managed = false;
-  bool donor_superiority_matrix_entry_present = false;
+  bool reference_superiority_matrix_entry_present = false;
   bool descriptor_authoritative = true;
   bool parser_independent = true;
 };
@@ -7475,7 +7475,7 @@ enum class ExecutionTypeCapabilityDescriptorStatus : std::uint8_t {
   ok = 0,
   capability_uuid_required = 1,
   mapping_uuid_required = 2,
-  donor_profile_uuid_required = 3,
+  reference_profile_uuid_required = 3,
   canonical_descriptor_uuid_required = 4,
   capability_epoch_required = 5,
   stable_name_required = 6,
@@ -7483,7 +7483,7 @@ enum class ExecutionTypeCapabilityDescriptorStatus : std::uint8_t {
   descriptor_parser_dependent = 8,
   mapping_descriptor_invalid = 9,
   mapping_uuid_mismatch = 10,
-  donor_profile_uuid_mismatch = 11,
+  reference_profile_uuid_mismatch = 11,
   canonical_descriptor_uuid_mismatch = 12,
   literal_policy_invalid = 13,
   bind_policy_invalid = 14,
@@ -7501,7 +7501,7 @@ enum class ExecutionTypeCapabilityDescriptorStatus : std::uint8_t {
   llvm_acceleration_descriptor_epoch_required = 26,
   external_locator_policy_required = 27,
   opaque_lifecycle_required = 28,
-  donor_superiority_matrix_required = 29
+  reference_superiority_matrix_required = 29
 };
 
 constexpr std::string_view ExecutionTypeCapabilityDescriptorStatusName(
@@ -7513,8 +7513,8 @@ constexpr std::string_view ExecutionTypeCapabilityDescriptorStatusName(
       return "capability_uuid_required";
     case ExecutionTypeCapabilityDescriptorStatus::mapping_uuid_required:
       return "mapping_uuid_required";
-    case ExecutionTypeCapabilityDescriptorStatus::donor_profile_uuid_required:
-      return "donor_profile_uuid_required";
+    case ExecutionTypeCapabilityDescriptorStatus::reference_profile_uuid_required:
+      return "reference_profile_uuid_required";
     case ExecutionTypeCapabilityDescriptorStatus::
         canonical_descriptor_uuid_required:
       return "canonical_descriptor_uuid_required";
@@ -7530,8 +7530,8 @@ constexpr std::string_view ExecutionTypeCapabilityDescriptorStatusName(
       return "mapping_descriptor_invalid";
     case ExecutionTypeCapabilityDescriptorStatus::mapping_uuid_mismatch:
       return "mapping_uuid_mismatch";
-    case ExecutionTypeCapabilityDescriptorStatus::donor_profile_uuid_mismatch:
-      return "donor_profile_uuid_mismatch";
+    case ExecutionTypeCapabilityDescriptorStatus::reference_profile_uuid_mismatch:
+      return "reference_profile_uuid_mismatch";
     case ExecutionTypeCapabilityDescriptorStatus::
         canonical_descriptor_uuid_mismatch:
       return "canonical_descriptor_uuid_mismatch";
@@ -7576,8 +7576,8 @@ constexpr std::string_view ExecutionTypeCapabilityDescriptorStatusName(
     case ExecutionTypeCapabilityDescriptorStatus::opaque_lifecycle_required:
       return "opaque_lifecycle_required";
     case ExecutionTypeCapabilityDescriptorStatus::
-        donor_superiority_matrix_required:
-      return "donor_superiority_matrix_required";
+        reference_superiority_matrix_required:
+      return "reference_superiority_matrix_required";
   }
   return "unknown_status";
 }
@@ -7585,8 +7585,8 @@ constexpr std::string_view ExecutionTypeCapabilityDescriptorStatusName(
 struct ExecutionTypeCapabilityDescriptorValidationResult {
   ExecutionTypeCapabilityDescriptorStatus status =
       ExecutionTypeCapabilityDescriptorStatus::ok;
-  DonorTypeMappingDescriptorStatus mapping_status =
-      DonorTypeMappingDescriptorStatus::ok;
+  ReferenceTypeMappingDescriptorStatus mapping_status =
+      ReferenceTypeMappingDescriptorStatus::ok;
 
   bool ok() const noexcept {
     return status == ExecutionTypeCapabilityDescriptorStatus::ok;
@@ -7635,7 +7635,7 @@ constexpr bool ExecutionTypeCapabilityHasActiveCapability(
 
 inline ExecutionTypeCapabilityDescriptorValidationResult
 ValidateExecutionTypeCapabilityDescriptor(
-    const DonorTypeMappingDescriptor& mapping,
+    const ReferenceTypeMappingDescriptor& mapping,
     const ExecutionTypeCapabilityDescriptor& descriptor) {
   if (ExecutionDataPacketUuidIsNil(descriptor.capability_uuid)) {
     return {ExecutionTypeCapabilityDescriptorStatus::capability_uuid_required};
@@ -7643,9 +7643,9 @@ ValidateExecutionTypeCapabilityDescriptor(
   if (ExecutionDataPacketUuidIsNil(descriptor.mapping_uuid)) {
     return {ExecutionTypeCapabilityDescriptorStatus::mapping_uuid_required};
   }
-  if (ExecutionDataPacketUuidIsNil(descriptor.donor_profile_uuid)) {
+  if (ExecutionDataPacketUuidIsNil(descriptor.reference_profile_uuid)) {
     return {
-        ExecutionTypeCapabilityDescriptorStatus::donor_profile_uuid_required};
+        ExecutionTypeCapabilityDescriptorStatus::reference_profile_uuid_required};
   }
   if (descriptor.capability_epoch == 0) {
     return {ExecutionTypeCapabilityDescriptorStatus::
@@ -7663,7 +7663,7 @@ ValidateExecutionTypeCapabilityDescriptor(
                 descriptor_parser_dependent};
   }
 
-  const auto mapping_result = ValidateDonorTypeMappingDescriptor(mapping);
+  const auto mapping_result = ValidateReferenceTypeMappingDescriptor(mapping);
   if (!mapping_result.ok()) {
     return {ExecutionTypeCapabilityDescriptorStatus::mapping_descriptor_invalid,
             mapping_result.status};
@@ -7672,12 +7672,12 @@ ValidateExecutionTypeCapabilityDescriptor(
                                     mapping.mapping_uuid)) {
     return {ExecutionTypeCapabilityDescriptorStatus::mapping_uuid_mismatch};
   }
-  if (!ExecutionDataPacketUuidEquals(descriptor.donor_profile_uuid,
-                                    mapping.donor_profile_uuid)) {
+  if (!ExecutionDataPacketUuidEquals(descriptor.reference_profile_uuid,
+                                    mapping.reference_profile_uuid)) {
     return {
-        ExecutionTypeCapabilityDescriptorStatus::donor_profile_uuid_mismatch};
+        ExecutionTypeCapabilityDescriptorStatus::reference_profile_uuid_mismatch};
   }
-  if (DonorTypeRepresentationIsExecutable(mapping.representation_class)) {
+  if (ReferenceTypeRepresentationIsExecutable(mapping.representation_class)) {
     if (ExecutionDataPacketUuidIsNil(descriptor.canonical_descriptor_uuid)) {
       return {ExecutionTypeCapabilityDescriptorStatus::
                   canonical_descriptor_uuid_required};
@@ -7709,7 +7709,7 @@ ValidateExecutionTypeCapabilityDescriptor(
   }
 
   const bool mapping_executable =
-      DonorTypeRepresentationIsExecutable(mapping.representation_class);
+      ReferenceTypeRepresentationIsExecutable(mapping.representation_class);
   if (!mapping_executable &&
       ExecutionTypeCapabilityHasActiveCapability(descriptor)) {
     return {ExecutionTypeCapabilityDescriptorStatus::
@@ -7759,7 +7759,7 @@ ValidateExecutionTypeCapabilityDescriptor(
   }
 
   if ((mapping.representation_class ==
-           DonorTypeRepresentationClass::external_locator ||
+           ReferenceTypeRepresentationClass::external_locator ||
        descriptor.external_locator_allowed) &&
       (!descriptor.external_locator_allowed ||
        !descriptor.external_locator_policy_safe ||
@@ -7768,15 +7768,15 @@ ValidateExecutionTypeCapabilityDescriptor(
                 external_locator_policy_required};
   }
   if (mapping.representation_class ==
-          DonorTypeRepresentationClass::opaque_bridge &&
+          ReferenceTypeRepresentationClass::opaque_bridge &&
       (!descriptor.opaque_lifecycle_managed ||
        !mapping.opaque_lifecycle_managed)) {
     return {ExecutionTypeCapabilityDescriptorStatus::
                 opaque_lifecycle_required};
   }
-  if (!descriptor.donor_superiority_matrix_entry_present) {
+  if (!descriptor.reference_superiority_matrix_entry_present) {
     return {ExecutionTypeCapabilityDescriptorStatus::
-                donor_superiority_matrix_required};
+                reference_superiority_matrix_required};
   }
 
   return {};
@@ -7853,7 +7853,7 @@ enum class TypeOperationKind : std::uint8_t {
   domain_function = 7,
   domain_cast = 8,
   domain_operation = 9,
-  donor_method = 10
+  reference_method = 10
 };
 
 constexpr bool TypeOperationKindIsValid(TypeOperationKind kind) noexcept {
@@ -7868,7 +7868,7 @@ constexpr bool TypeOperationKindIsValid(TypeOperationKind kind) noexcept {
     case TypeOperationKind::domain_function:
     case TypeOperationKind::domain_cast:
     case TypeOperationKind::domain_operation:
-    case TypeOperationKind::donor_method:
+    case TypeOperationKind::reference_method:
       return true;
   }
   return false;
@@ -7884,7 +7884,7 @@ constexpr bool TypeOperationKindRequiresDomainOperation(
   return kind == TypeOperationKind::domain_operator ||
          kind == TypeOperationKind::domain_function ||
          kind == TypeOperationKind::domain_operation ||
-         kind == TypeOperationKind::donor_method;
+         kind == TypeOperationKind::reference_method;
 }
 
 constexpr bool TypeOperationKindRequiresAggregateState(
@@ -7905,7 +7905,7 @@ enum class TypeOperationImplementationTarget : std::uint8_t {
   sblr_routine = 3,
   cpp_udr = 4,
   llvm_native = 5,
-  donor_native = 6
+  reference_native = 6
 };
 
 constexpr bool TypeOperationImplementationTargetIsValid(
@@ -7917,7 +7917,7 @@ constexpr bool TypeOperationImplementationTargetIsValid(
     case TypeOperationImplementationTarget::sblr_routine:
     case TypeOperationImplementationTarget::cpp_udr:
     case TypeOperationImplementationTarget::llvm_native:
-    case TypeOperationImplementationTarget::donor_native:
+    case TypeOperationImplementationTarget::reference_native:
       return true;
   }
   return false;
@@ -8047,7 +8047,7 @@ struct TypeOperationSblrBindingDescriptor {
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
   std::string definition_hash;
-  Uuid donor_profile_uuid{};
+  Uuid reference_profile_uuid{};
   Uuid fallback_reference_uuid{};
   std::string diagnostic_search_key;
   bool source_sql_diagnostic_only = true;
@@ -8075,7 +8075,7 @@ struct TypeOperationCacheKeyDescriptor {
   std::uint64_t cpp_udr_package_version = 0;
   Uuid llvm_artifact_uuid{};
   std::uint64_t llvm_artifact_version = 0;
-  Uuid donor_profile_uuid{};
+  Uuid reference_profile_uuid{};
 };
 
 struct TypeOperationDiagnosticVector {
@@ -8088,7 +8088,7 @@ struct TypeOperationDiagnosticVector {
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
   std::uint64_t implementation_version = 0;
-  Uuid donor_profile_uuid{};
+  Uuid reference_profile_uuid{};
   bool redaction_state_declared = true;
 };
 
@@ -8105,8 +8105,8 @@ struct TypeOperationRegistryEntry {
   std::uint64_t resource_epoch = 0;
   std::uint64_t implementation_version = 0;
   std::string stable_name;
-  std::string donor_family;
-  std::string donor_version_profile;
+  std::string reference_family;
+  std::string reference_version_profile;
   std::string definition_hash;
   std::string diagnostic_search_key;
   std::string conformance_key;
@@ -8160,9 +8160,9 @@ struct TypeOperationRegistryEntry {
   TypeOperationSblrBindingDescriptor sblr_binding;
   bool cache_key_present = true;
   TypeOperationCacheKeyDescriptor cache_key;
-  bool donor_method_binding_present = false;
-  Uuid donor_profile_uuid{};
-  std::string donor_method_name;
+  bool reference_method_binding_present = false;
+  Uuid reference_profile_uuid{};
+  std::string reference_method_name;
   std::string inverse_rendering_policy;
   std::vector<TypeOperationDiagnosticVector> diagnostics;
   bool descriptor_authoritative = true;
@@ -8308,8 +8308,8 @@ enum class TypeOperationRegistryStatus : std::uint8_t {
   cache_key_result_uuid_mismatch = 120,
   cache_key_cpp_udr_missing = 121,
   cache_key_llvm_missing = 122,
-  cache_key_donor_profile_missing = 123,
-  donor_method_binding_invalid = 124,
+  cache_key_reference_profile_missing = 123,
+  reference_method_binding_invalid = 124,
   diagnostic_vector_required = 125,
   diagnostic_code_required = 126,
   diagnostic_redaction_state_required = 127,
@@ -8573,10 +8573,10 @@ constexpr std::string_view TypeOperationRegistryStatusName(
       return "cache_key_cpp_udr_missing";
     case TypeOperationRegistryStatus::cache_key_llvm_missing:
       return "cache_key_llvm_missing";
-    case TypeOperationRegistryStatus::cache_key_donor_profile_missing:
-      return "cache_key_donor_profile_missing";
-    case TypeOperationRegistryStatus::donor_method_binding_invalid:
-      return "donor_method_binding_invalid";
+    case TypeOperationRegistryStatus::cache_key_reference_profile_missing:
+      return "cache_key_reference_profile_missing";
+    case TypeOperationRegistryStatus::reference_method_binding_invalid:
+      return "reference_method_binding_invalid";
     case TypeOperationRegistryStatus::diagnostic_vector_required:
       return "diagnostic_vector_required";
     case TypeOperationRegistryStatus::diagnostic_code_required:
@@ -9045,9 +9045,9 @@ inline TypeOperationRegistryValidationResult ValidateTypeOperationCacheKey(
             ExecutionDataPacketStatus::ok, DomainCastRuleStatus::ok,
             DomainOperationDescriptorStatus::ok, entry_index, 0};
   }
-  if (entry.donor_method_binding_present &&
-      ExecutionDataPacketUuidIsNil(cache_key.donor_profile_uuid)) {
-    return {TypeOperationRegistryStatus::cache_key_donor_profile_missing,
+  if (entry.reference_method_binding_present &&
+      ExecutionDataPacketUuidIsNil(cache_key.reference_profile_uuid)) {
+    return {TypeOperationRegistryStatus::cache_key_reference_profile_missing,
             ExecutionDataPacketStatus::ok, DomainCastRuleStatus::ok,
             DomainOperationDescriptorStatus::ok, entry_index, 0};
   }
@@ -9391,12 +9391,12 @@ ValidateTypeOperationRegistryEntry(const TypeOperationRegistryEntry& entry,
     return cache_result;
   }
 
-  if (entry.donor_method_binding_present &&
-      (ExecutionDataPacketUuidIsNil(entry.donor_profile_uuid) ||
-       entry.donor_family.empty() || entry.donor_version_profile.empty() ||
-       entry.donor_method_name.empty() ||
+  if (entry.reference_method_binding_present &&
+      (ExecutionDataPacketUuidIsNil(entry.reference_profile_uuid) ||
+       entry.reference_family.empty() || entry.reference_version_profile.empty() ||
+       entry.reference_method_name.empty() ||
        entry.inverse_rendering_policy.empty())) {
-    return {TypeOperationRegistryStatus::donor_method_binding_invalid,
+    return {TypeOperationRegistryStatus::reference_method_binding_invalid,
             ExecutionDataPacketStatus::ok, DomainCastRuleStatus::ok,
             DomainOperationDescriptorStatus::ok, entry_index, 0};
   }
@@ -9732,7 +9732,7 @@ struct CanonicalComparisonContract {
   Uuid collation_uuid{};
   std::string timezone_policy;
   std::uint64_t resource_epoch = 0;
-  Uuid donor_profile_uuid{};
+  Uuid reference_profile_uuid{};
   std::vector<TypeIndexFamily> index_equivalence_class;
   bool supports_equality = true;
   bool supports_ordering = false;
@@ -9744,7 +9744,7 @@ struct CanonicalComparisonContract {
   bool hash_consistent_with_equality = true;
   bool ordering_consistent_with_ordered_index = true;
   bool grouping_consistent_with_equality = true;
-  bool donor_policy_declared = true;
+  bool reference_policy_declared = true;
   bool descriptor_authoritative = true;
   bool parser_independent = true;
 };
@@ -9811,8 +9811,8 @@ struct IndexCompatibilityDescriptor {
   bool resource_change_rebuild_required = true;
   TypeIndexLossinessPolicy lossiness_policy = TypeIndexLossinessPolicy::exact;
   bool exact_recheck_required = false;
-  Uuid donor_profile_uuid{};
-  bool donor_compatibility_declared = true;
+  Uuid reference_profile_uuid{};
+  bool reference_compatibility_declared = true;
   bool descriptor_authoritative = true;
   bool parser_independent = true;
 };
@@ -9917,7 +9917,7 @@ struct TypeOptimizerCacheKeyDescriptor {
   std::uint64_t schema_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
-  Uuid donor_profile_uuid{};
+  Uuid reference_profile_uuid{};
   Uuid parser_family_uuid{};
   std::string plan_cache_key_hash;
   bool includes_descriptor = true;
@@ -9930,7 +9930,7 @@ struct TypeOptimizerCacheKeyDescriptor {
   bool includes_schema_epoch = true;
   bool includes_security_epoch = true;
   bool includes_resource_epoch = true;
-  bool includes_donor_when_present = true;
+  bool includes_reference_when_present = true;
   bool parser_family_untrusted_context_only = true;
 };
 
@@ -9943,7 +9943,7 @@ struct TypeOptimizerDiagnosticVector {
   Uuid statistics_uuid{};
   std::uint64_t resource_epoch = 0;
   std::uint64_t security_epoch = 0;
-  Uuid donor_profile_uuid{};
+  Uuid reference_profile_uuid{};
   bool conservative_planning_allowed = false;
   bool redaction_state_declared = true;
 };
@@ -9962,7 +9962,7 @@ struct TypeOptimizerDecisionInput {
   std::uint64_t schema_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
-  Uuid donor_profile_uuid{};
+  Uuid reference_profile_uuid{};
   TypeOptimizerAdmissionState admission_result =
       TypeOptimizerAdmissionState::admitted;
   ExecutionTypeDescriptor descriptor;
@@ -9988,8 +9988,8 @@ struct TypeOptimizerDecisionInput {
   bool conservative_estimation_allowed = false;
   bool security_policy_permits = true;
   bool uses_protected_statistics = false;
-  bool donor_compatibility_required = false;
-  bool donor_semantics_preserved = true;
+  bool reference_compatibility_required = false;
+  bool reference_semantics_preserved = true;
   bool selected_lossy_index = false;
   bool exact_recheck_obligation_present = false;
   bool udr_metadata_requested = false;
@@ -10092,7 +10092,7 @@ enum class TypeIndexStatsOptimizerStatus : std::uint16_t {
   selectivity_unknown_not_explicit = 74,
   selectivity_incompatible_stats_not_rejected = 75,
   security_policy_refused = 76,
-  donor_semantics_unsupported = 77,
+  reference_semantics_unsupported = 77,
   non_cpp_udr_metadata_forbidden = 78,
   udr_metadata_untrusted = 79,
   cache_key_required = 80,
@@ -10277,8 +10277,8 @@ constexpr std::string_view TypeIndexStatsOptimizerStatusName(
       return "selectivity_incompatible_stats_not_rejected";
     case TypeIndexStatsOptimizerStatus::security_policy_refused:
       return "security_policy_refused";
-    case TypeIndexStatsOptimizerStatus::donor_semantics_unsupported:
-      return "donor_semantics_unsupported";
+    case TypeIndexStatsOptimizerStatus::reference_semantics_unsupported:
+      return "reference_semantics_unsupported";
     case TypeIndexStatsOptimizerStatus::non_cpp_udr_metadata_forbidden:
       return "non_cpp_udr_metadata_forbidden";
     case TypeIndexStatsOptimizerStatus::udr_metadata_untrusted:
@@ -10532,10 +10532,10 @@ ValidateCanonicalComparisonContract(
             ExecutionDataPacketStatus::ok, TypeOperationRegistryStatus::ok,
             DomainElementPathStatus::ok, decision_index, 0};
   }
-  if (decision.donor_compatibility_required &&
-      (ExecutionDataPacketUuidIsNil(contract.donor_profile_uuid) ||
-       !contract.donor_policy_declared)) {
-    return {TypeIndexStatsOptimizerStatus::donor_semantics_unsupported,
+  if (decision.reference_compatibility_required &&
+      (ExecutionDataPacketUuidIsNil(contract.reference_profile_uuid) ||
+       !contract.reference_policy_declared)) {
+    return {TypeIndexStatsOptimizerStatus::reference_semantics_unsupported,
             ExecutionDataPacketStatus::ok, TypeOperationRegistryStatus::ok,
             DomainElementPathStatus::ok, decision_index, 0};
   }
@@ -10755,10 +10755,10 @@ ValidateIndexCompatibilityDescriptor(
             ExecutionDataPacketStatus::ok, TypeOperationRegistryStatus::ok,
             DomainElementPathStatus::ok, decision_index, 0};
   }
-  if (decision.donor_compatibility_required &&
-      (ExecutionDataPacketUuidIsNil(descriptor.donor_profile_uuid) ||
-       !descriptor.donor_compatibility_declared)) {
-    return {TypeIndexStatsOptimizerStatus::donor_semantics_unsupported,
+  if (decision.reference_compatibility_required &&
+      (ExecutionDataPacketUuidIsNil(descriptor.reference_profile_uuid) ||
+       !descriptor.reference_compatibility_declared)) {
+    return {TypeIndexStatsOptimizerStatus::reference_semantics_unsupported,
             ExecutionDataPacketStatus::ok, TypeOperationRegistryStatus::ok,
             DomainElementPathStatus::ok, decision_index, 0};
   }
@@ -11014,8 +11014,8 @@ ValidateTypeOptimizerCacheKey(
             ExecutionDataPacketStatus::ok, TypeOperationRegistryStatus::ok,
             DomainElementPathStatus::ok, decision_index, 0};
   }
-  if (decision.donor_compatibility_required &&
-      !cache_key.includes_donor_when_present) {
+  if (decision.reference_compatibility_required &&
+      !cache_key.includes_reference_when_present) {
     return {TypeIndexStatsOptimizerStatus::cache_key_dependency_missing,
             ExecutionDataPacketStatus::ok, TypeOperationRegistryStatus::ok,
             DomainElementPathStatus::ok, decision_index, 0};
@@ -11250,9 +11250,9 @@ inline TypeIndexStatsOptimizerValidationResult ValidateTypeOptimizerDecision(
             ExecutionDataPacketStatus::ok, TypeOperationRegistryStatus::ok,
             DomainElementPathStatus::ok, decision_index, 0};
   }
-  if (decision.donor_compatibility_required &&
-      !decision.donor_semantics_preserved) {
-    return {TypeIndexStatsOptimizerStatus::donor_semantics_unsupported,
+  if (decision.reference_compatibility_required &&
+      !decision.reference_semantics_preserved) {
+    return {TypeIndexStatsOptimizerStatus::reference_semantics_unsupported,
             ExecutionDataPacketStatus::ok, TypeOperationRegistryStatus::ok,
             DomainElementPathStatus::ok, decision_index, 0};
   }
@@ -11518,7 +11518,7 @@ ValidateTypeIndexStatsOptimizerContract(
       "sys.metrics.optimizer.type_index_stats.unknown_selectivity_count",
       "sys.metrics.optimizer.type_index_stats.plan_cache_invalidations",
       "sys.metrics.optimizer.type_index_stats.udr_metadata_refusal_count",
-      "sys.metrics.optimizer.type_index_stats.donor_semantics_refusal_count",
+      "sys.metrics.optimizer.type_index_stats.reference_semantics_refusal_count",
       "sys.metrics.optimizer.type_index_stats.recheck_required_plan_count"};
   for (std::string_view metric : required_metrics) {
     if (!TypeIndexStatsOptimizerMetricPresent(contract, metric)) {
@@ -11557,7 +11557,7 @@ ValidateTypeIndexStatsOptimizerContract(
 enum class TypeMetadataExposureClass : std::uint8_t {
   canonical = 0,
   driver_rendered = 1,
-  donor_rendered = 2,
+  reference_rendered = 2,
   support_redacted = 3,
   security_redacted = 4,
   render_only = 5,
@@ -11571,7 +11571,7 @@ constexpr bool TypeMetadataExposureClassIsValid(
   switch (exposure) {
     case TypeMetadataExposureClass::canonical:
     case TypeMetadataExposureClass::driver_rendered:
-    case TypeMetadataExposureClass::donor_rendered:
+    case TypeMetadataExposureClass::reference_rendered:
     case TypeMetadataExposureClass::support_redacted:
     case TypeMetadataExposureClass::security_redacted:
     case TypeMetadataExposureClass::render_only:
@@ -11588,7 +11588,7 @@ enum class DriverMetadataFamily : std::uint8_t {
   jdbc = 1,
   dotnet = 2,
   native = 3,
-  donor_specific = 4
+  reference_specific = 4
 };
 
 constexpr bool DriverMetadataFamilyIsValid(
@@ -11598,7 +11598,7 @@ constexpr bool DriverMetadataFamilyIsValid(
     case DriverMetadataFamily::jdbc:
     case DriverMetadataFamily::dotnet:
     case DriverMetadataFamily::native:
-    case DriverMetadataFamily::donor_specific:
+    case DriverMetadataFamily::reference_specific:
       return true;
   }
   return false;
@@ -11695,7 +11695,7 @@ enum class DriverMetadataSearchability : std::uint8_t {
   full_text = 3,
   spatial = 4,
   vector = 5,
-  donor_defined = 6,
+  reference_defined = 6,
   unknown_by_policy = 7
 };
 
@@ -11708,7 +11708,7 @@ constexpr bool DriverMetadataSearchabilityIsValid(
     case DriverMetadataSearchability::full_text:
     case DriverMetadataSearchability::spatial:
     case DriverMetadataSearchability::vector:
-    case DriverMetadataSearchability::donor_defined:
+    case DriverMetadataSearchability::reference_defined:
     case DriverMetadataSearchability::unknown_by_policy:
       return true;
   }
@@ -11758,11 +11758,11 @@ constexpr bool TypeMetadataRedactionStateIsValid(
 }
 
 enum class TypeMetadataDiagnosticPhase : std::uint8_t {
-  donor_parse = 0,
-  donor_translation = 1,
+  reference_parse = 0,
+  reference_translation = 1,
   scratchbird_execution = 2,
   cpp_udr_bridge = 3,
-  donor_rendering = 4,
+  reference_rendering = 4,
   metadata_exposure = 5,
   backup_restore = 6,
   replication = 7,
@@ -11773,11 +11773,11 @@ enum class TypeMetadataDiagnosticPhase : std::uint8_t {
 constexpr bool TypeMetadataDiagnosticPhaseIsValid(
     TypeMetadataDiagnosticPhase phase) noexcept {
   switch (phase) {
-    case TypeMetadataDiagnosticPhase::donor_parse:
-    case TypeMetadataDiagnosticPhase::donor_translation:
+    case TypeMetadataDiagnosticPhase::reference_parse:
+    case TypeMetadataDiagnosticPhase::reference_translation:
     case TypeMetadataDiagnosticPhase::scratchbird_execution:
     case TypeMetadataDiagnosticPhase::cpp_udr_bridge:
-    case TypeMetadataDiagnosticPhase::donor_rendering:
+    case TypeMetadataDiagnosticPhase::reference_rendering:
     case TypeMetadataDiagnosticPhase::metadata_exposure:
     case TypeMetadataDiagnosticPhase::backup_restore:
     case TypeMetadataDiagnosticPhase::replication:
@@ -11796,7 +11796,7 @@ struct TypeMetadataCatalogExposureModel {
   std::uint64_t resource_epoch = 0;
   bool type_descriptors_exposed = true;
   bool domain_descriptors_exposed = true;
-  bool donor_mappings_exposed = true;
+  bool reference_mappings_exposed = true;
   bool capabilities_exposed = true;
   bool operations_exposed = true;
   bool index_statistics_exposed = true;
@@ -11806,7 +11806,7 @@ struct TypeMetadataCatalogExposureModel {
   bool uuid_authority_preserved = true;
   bool display_names_non_authoritative = true;
   bool security_policy_applied = true;
-  bool donor_views_do_not_create_authority = true;
+  bool reference_views_do_not_create_authority = true;
   bool status_and_version_exposed = true;
 };
 
@@ -11816,8 +11816,8 @@ struct DriverTypeMetadataDescriptor {
   Uuid domain_uuid{};
   std::uint64_t descriptor_epoch = 0;
   ExecutionTypeDescriptor descriptor;
-  std::string donor_family;
-  std::string donor_version_profile;
+  std::string reference_family;
+  std::string reference_version_profile;
   DriverMetadataFamily driver_family = DriverMetadataFamily::native;
   std::string type_name;
   std::string native_type_code;
@@ -11850,7 +11850,7 @@ struct DriverTypeMetadataDescriptor {
   Uuid diagnostic_policy_ref{};
   std::string definition_hash;
   bool canonical_descriptor_authority_preserved = true;
-  bool donor_name_not_authority = true;
+  bool reference_name_not_authority = true;
   bool protocol_code_not_authority = true;
   bool derived_without_execution = true;
 };
@@ -11862,8 +11862,8 @@ struct TypeMetadataDiagnosticPayload {
   Uuid descriptor_uuid{};
   Uuid domain_uuid{};
   Uuid operation_uuid{};
-  std::string donor_family;
-  std::string donor_version_profile;
+  std::string reference_family;
+  std::string reference_version_profile;
   DriverMetadataFamily driver_family = DriverMetadataFamily::native;
   TypeMetadataCompatibilityClass compatibility_class =
       TypeMetadataCompatibilityClass::native_or_better;
@@ -11874,8 +11874,8 @@ struct TypeMetadataDiagnosticPayload {
   TypeMetadataRedactionState redaction_state =
       TypeMetadataRedactionState::none;
   std::string stable_search_key;
-  std::vector<std::string> donor_message_vector;
-  bool donor_message_permitted = false;
+  std::vector<std::string> reference_message_vector;
+  bool reference_message_permitted = false;
   bool protected_values_redacted = true;
   bool hidden_metadata_redacted = true;
   bool bridge_targets_redacted = true;
@@ -11972,9 +11972,9 @@ struct UnsupportedDegradedTypeContract {
 struct TypeTestingCorpusDescriptor {
   Uuid corpus_uuid{};
   Uuid descriptor_uuid{};
-  Uuid donor_mapping_uuid{};
+  Uuid reference_mapping_uuid{};
   std::string conformance_manifest_hash;
-  bool implemented_donor_mapping = false;
+  bool implemented_reference_mapping = false;
   bool creation_metadata_case = true;
   bool literal_bind_case = true;
   bool cast_case = true;
@@ -11993,8 +11993,8 @@ struct TypeMetadataCacheKeyDescriptor {
   Uuid domain_uuid{};
   std::string domain_stack_hash;
   DriverMetadataFamily driver_family = DriverMetadataFamily::native;
-  std::string donor_family;
-  std::string donor_version_profile;
+  std::string reference_family;
+  std::string reference_version_profile;
   std::uint64_t schema_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t resource_epoch = 0;
@@ -12005,7 +12005,7 @@ struct TypeMetadataCacheKeyDescriptor {
   bool includes_descriptor = true;
   bool includes_domain_when_present = true;
   bool includes_driver_family = true;
-  bool includes_donor_when_present = true;
+  bool includes_reference_when_present = true;
   bool includes_schema_epoch = true;
   bool includes_security_epoch = true;
   bool includes_resource_epoch = true;
@@ -12058,7 +12058,7 @@ enum class TypeMetadataDiagnosticsStatus : std::uint16_t {
   driver_descriptor_epoch_mismatch = 16,
   driver_family_invalid = 17,
   driver_family_coverage_missing = 18,
-  driver_donor_family_required = 19,
+  driver_reference_family_required = 19,
   driver_type_name_required = 20,
   driver_numeric_metadata_invalid = 21,
   driver_policy_enum_invalid = 22,
@@ -12075,7 +12075,7 @@ enum class TypeMetadataDiagnosticsStatus : std::uint16_t {
   diagnostic_policy_enum_invalid = 33,
   diagnostic_search_key_required = 34,
   diagnostic_redaction_failed = 35,
-  donor_message_not_permitted = 36,
+  reference_message_not_permitted = 36,
   backup_profile_required = 37,
   backup_profile_uuid_required = 38,
   backup_profile_identity_missing = 39,
@@ -12150,8 +12150,8 @@ constexpr std::string_view TypeMetadataDiagnosticsStatusName(
       return "driver_family_invalid";
     case TypeMetadataDiagnosticsStatus::driver_family_coverage_missing:
       return "driver_family_coverage_missing";
-    case TypeMetadataDiagnosticsStatus::driver_donor_family_required:
-      return "driver_donor_family_required";
+    case TypeMetadataDiagnosticsStatus::driver_reference_family_required:
+      return "driver_reference_family_required";
     case TypeMetadataDiagnosticsStatus::driver_type_name_required:
       return "driver_type_name_required";
     case TypeMetadataDiagnosticsStatus::driver_numeric_metadata_invalid:
@@ -12184,8 +12184,8 @@ constexpr std::string_view TypeMetadataDiagnosticsStatusName(
       return "diagnostic_search_key_required";
     case TypeMetadataDiagnosticsStatus::diagnostic_redaction_failed:
       return "diagnostic_redaction_failed";
-    case TypeMetadataDiagnosticsStatus::donor_message_not_permitted:
-      return "donor_message_not_permitted";
+    case TypeMetadataDiagnosticsStatus::reference_message_not_permitted:
+      return "reference_message_not_permitted";
     case TypeMetadataDiagnosticsStatus::backup_profile_required:
       return "backup_profile_required";
     case TypeMetadataDiagnosticsStatus::backup_profile_uuid_required:
@@ -12296,7 +12296,7 @@ ValidateTypeMetadataCatalogExposure(
     return {TypeMetadataDiagnosticsStatus::catalog_epoch_required};
   }
   if (!exposure.type_descriptors_exposed ||
-      !exposure.domain_descriptors_exposed || !exposure.donor_mappings_exposed ||
+      !exposure.domain_descriptors_exposed || !exposure.reference_mappings_exposed ||
       !exposure.capabilities_exposed || !exposure.operations_exposed ||
       !exposure.index_statistics_exposed || !exposure.driver_metadata_exposed ||
       !exposure.backup_replication_exposed ||
@@ -12306,7 +12306,7 @@ ValidateTypeMetadataCatalogExposure(
   if (!exposure.uuid_authority_preserved ||
       !exposure.display_names_non_authoritative ||
       !exposure.security_policy_applied ||
-      !exposure.donor_views_do_not_create_authority ||
+      !exposure.reference_views_do_not_create_authority ||
       !exposure.status_and_version_exposed) {
     return {TypeMetadataDiagnosticsStatus::
                 catalog_false_authority_guard_missing};
@@ -12345,9 +12345,9 @@ ValidateDriverTypeMetadataDescriptor(
     return {TypeMetadataDiagnosticsStatus::driver_family_invalid,
             ExecutionDataPacketStatus::ok, row_index};
   }
-  if (row.driver_family == DriverMetadataFamily::donor_specific &&
-      (row.donor_family.empty() || row.donor_version_profile.empty())) {
-    return {TypeMetadataDiagnosticsStatus::driver_donor_family_required,
+  if (row.driver_family == DriverMetadataFamily::reference_specific &&
+      (row.reference_family.empty() || row.reference_version_profile.empty())) {
+    return {TypeMetadataDiagnosticsStatus::driver_reference_family_required,
             ExecutionDataPacketStatus::ok, row_index};
   }
   if (row.type_name.empty()) {
@@ -12391,7 +12391,7 @@ ValidateDriverTypeMetadataDescriptor(
             ExecutionDataPacketStatus::ok, row_index};
   }
   if (!row.canonical_descriptor_authority_preserved ||
-      !row.donor_name_not_authority || !row.protocol_code_not_authority ||
+      !row.reference_name_not_authority || !row.protocol_code_not_authority ||
       !row.derived_without_execution) {
     return {TypeMetadataDiagnosticsStatus::
                 driver_false_authority_guard_missing,
@@ -12449,9 +12449,9 @@ ValidateTypeMetadataDiagnosticPayload(
     return {TypeMetadataDiagnosticsStatus::diagnostic_redaction_failed,
             ExecutionDataPacketStatus::ok, row_index};
   }
-  if (!diagnostic.donor_message_vector.empty() &&
-      !diagnostic.donor_message_permitted) {
-    return {TypeMetadataDiagnosticsStatus::donor_message_not_permitted,
+  if (!diagnostic.reference_message_vector.empty() &&
+      !diagnostic.reference_message_permitted) {
+    return {TypeMetadataDiagnosticsStatus::reference_message_not_permitted,
             ExecutionDataPacketStatus::ok, row_index};
   }
   return {};
@@ -12620,8 +12620,8 @@ inline TypeMetadataDiagnosticsValidationResult ValidateTypeTestingCorpus(
     return {TypeMetadataDiagnosticsStatus::testing_corpus_manifest_required,
             ExecutionDataPacketStatus::ok, row_index};
   }
-  if (corpus.implemented_donor_mapping &&
-      (ExecutionDataPacketUuidIsNil(corpus.donor_mapping_uuid) ||
+  if (corpus.implemented_reference_mapping &&
+      (ExecutionDataPacketUuidIsNil(corpus.reference_mapping_uuid) ||
        !corpus.creation_metadata_case || !corpus.literal_bind_case ||
        !corpus.cast_case || !corpus.operation_case || !corpus.index_case ||
        !corpus.statistics_case || !corpus.backup_restore_case ||
@@ -12658,9 +12658,9 @@ inline TypeMetadataDiagnosticsValidationResult ValidateTypeMetadataCacheKey(
        cache_key.domain_stack_hash.empty())) {
     return {TypeMetadataDiagnosticsStatus::cache_key_dependency_missing};
   }
-  if (!cache_key.donor_family.empty() &&
-      (!cache_key.includes_donor_when_present ||
-       cache_key.donor_version_profile.empty())) {
+  if (!cache_key.reference_family.empty() &&
+      (!cache_key.includes_reference_when_present ||
+       cache_key.reference_version_profile.empty())) {
     return {TypeMetadataDiagnosticsStatus::cache_key_dependency_missing};
   }
   if (!cache_key.parser_family_untrusted_context_only) {
@@ -12704,7 +12704,7 @@ ValidateTypeMetadataDiagnosticsDriverContract(
   constexpr DriverMetadataFamily required_driver_families[] = {
       DriverMetadataFamily::odbc, DriverMetadataFamily::jdbc,
       DriverMetadataFamily::dotnet, DriverMetadataFamily::native,
-      DriverMetadataFamily::donor_specific};
+      DriverMetadataFamily::reference_specific};
   for (const auto family : required_driver_families) {
     if (!TypeMetadataDiagnosticsHasDriverFamily(contract, family)) {
       return {TypeMetadataDiagnosticsStatus::driver_family_coverage_missing};
@@ -12795,7 +12795,7 @@ ValidateTypeMetadataDiagnosticsDriverContract(
   constexpr std::string_view required_metrics[] = {
       "sys.metrics.type_metadata.catalog_query_count",
       "sys.metrics.type_metadata.driver_metadata_query_count",
-      "sys.metrics.type_metadata.donor_metadata_query_count",
+      "sys.metrics.type_metadata.reference_metadata_query_count",
       "sys.metrics.type_metadata.hidden_row_count",
       "sys.metrics.type_metadata.redacted_field_count",
       "sys.metrics.type_metadata.unsupported_type_count",
@@ -12820,7 +12820,7 @@ ValidateTypeMetadataDiagnosticsDriverContract(
 
 // SEARCH_KEY: EDC-DETAIL-CLOSURE-MATRICES
 // SEARCH_KEY: EDC-CANONICAL-TYPE-FAMILY-INVENTORY
-// SEARCH_KEY: EDC-DONOR-TYPE-COVERAGE-MATRIX
+// SEARCH_KEY: EDC-REFERENCE-TYPE-COVERAGE-MATRIX
 // SEARCH_KEY: EDC-OPERATION-REGISTRY-SEED-MATRIX
 // SEARCH_KEY: EDC-CAST-REGISTRY-SEED-MATRIX
 // SEARCH_KEY: EDC-AGGREGATE-WINDOW-SEED-MATRIX
@@ -12832,7 +12832,7 @@ ValidateTypeMetadataDiagnosticsDriverContract(
 // SEARCH_KEY: EDC-CONFORMANCE-CORPUS-SEED-MATRIX
 enum class ExecutionDetailClosureMatrixKind : std::uint8_t {
   canonical_type_family = 0,
-  donor_type_coverage = 1,
+  reference_type_coverage = 1,
   operation_registry = 2,
   cast_registry = 3,
   aggregate_window = 4,
@@ -12848,7 +12848,7 @@ constexpr bool ExecutionDetailClosureMatrixKindIsValid(
     ExecutionDetailClosureMatrixKind kind) noexcept {
   switch (kind) {
     case ExecutionDetailClosureMatrixKind::canonical_type_family:
-    case ExecutionDetailClosureMatrixKind::donor_type_coverage:
+    case ExecutionDetailClosureMatrixKind::reference_type_coverage:
     case ExecutionDetailClosureMatrixKind::operation_registry:
     case ExecutionDetailClosureMatrixKind::cast_registry:
     case ExecutionDetailClosureMatrixKind::aggregate_window:
@@ -12868,8 +12868,8 @@ constexpr std::string_view ExecutionDetailClosureMatrixKindSearchKey(
   switch (kind) {
     case ExecutionDetailClosureMatrixKind::canonical_type_family:
       return "EDC-CANONICAL-TYPE-FAMILY-INVENTORY";
-    case ExecutionDetailClosureMatrixKind::donor_type_coverage:
-      return "EDC-DONOR-TYPE-COVERAGE-MATRIX";
+    case ExecutionDetailClosureMatrixKind::reference_type_coverage:
+      return "EDC-REFERENCE-TYPE-COVERAGE-MATRIX";
     case ExecutionDetailClosureMatrixKind::operation_registry:
       return "EDC-OPERATION-REGISTRY-SEED-MATRIX";
     case ExecutionDetailClosureMatrixKind::cast_registry:
@@ -12917,7 +12917,7 @@ constexpr bool ExecutionDetailClosureCoverageStatusIsValid(
 
 enum class ExecutionDetailClosureRowScope : std::uint8_t {
   native = 0,
-  donor = 1,
+  reference = 1,
   parser = 2,
   driver = 3,
   engine = 4,
@@ -12937,7 +12937,7 @@ constexpr bool ExecutionDetailClosureRowScopeIsValid(
     ExecutionDetailClosureRowScope scope) noexcept {
   switch (scope) {
     case ExecutionDetailClosureRowScope::native:
-    case ExecutionDetailClosureRowScope::donor:
+    case ExecutionDetailClosureRowScope::reference:
     case ExecutionDetailClosureRowScope::parser:
     case ExecutionDetailClosureRowScope::driver:
     case ExecutionDetailClosureRowScope::engine:
@@ -13089,7 +13089,7 @@ enum class ExecutionDetailClosureClaimScope : std::uint8_t {
   specification_ready = 0,
   implementation_ready = 1,
   release_ready = 2,
-  donor_compatible = 3,
+  reference_compatible = 3,
   driver_visible = 4,
   backup_safe = 5,
   replication_safe = 6,
@@ -13103,7 +13103,7 @@ constexpr bool ExecutionDetailClosureClaimScopeIsValid(
     case ExecutionDetailClosureClaimScope::specification_ready:
     case ExecutionDetailClosureClaimScope::implementation_ready:
     case ExecutionDetailClosureClaimScope::release_ready:
-    case ExecutionDetailClosureClaimScope::donor_compatible:
+    case ExecutionDetailClosureClaimScope::reference_compatible:
     case ExecutionDetailClosureClaimScope::driver_visible:
     case ExecutionDetailClosureClaimScope::backup_safe:
     case ExecutionDetailClosureClaimScope::replication_safe:
@@ -13122,7 +13122,7 @@ constexpr bool ExecutionDetailClosureClaimRequiresImplementationTrace(
 constexpr bool ExecutionDetailClosureClaimRequiresConformance(
     ExecutionDetailClosureClaimScope scope) noexcept {
   return scope == ExecutionDetailClosureClaimScope::release_ready ||
-         scope == ExecutionDetailClosureClaimScope::donor_compatible ||
+         scope == ExecutionDetailClosureClaimScope::reference_compatible ||
          scope == ExecutionDetailClosureClaimScope::driver_visible ||
          scope == ExecutionDetailClosureClaimScope::backup_safe ||
          scope == ExecutionDetailClosureClaimScope::replication_safe ||
@@ -13157,7 +13157,7 @@ enum class ExecutionDetailClosureSupersessionReason : std::uint8_t {
   split_row = 2,
   merged_row = 3,
   renamed_subject = 4,
-  moved_to_donor_matrix = 5,
+  moved_to_reference_matrix = 5,
   moved_to_chapter_15 = 6,
   human_decision = 7
 };
@@ -13170,7 +13170,7 @@ constexpr bool ExecutionDetailClosureSupersessionReasonIsValid(
     case ExecutionDetailClosureSupersessionReason::split_row:
     case ExecutionDetailClosureSupersessionReason::merged_row:
     case ExecutionDetailClosureSupersessionReason::renamed_subject:
-    case ExecutionDetailClosureSupersessionReason::moved_to_donor_matrix:
+    case ExecutionDetailClosureSupersessionReason::moved_to_reference_matrix:
     case ExecutionDetailClosureSupersessionReason::moved_to_chapter_15:
     case ExecutionDetailClosureSupersessionReason::human_decision:
       return true;
@@ -13526,7 +13526,7 @@ constexpr bool ExecutionDetailClosureSurfaceRequiredForMatrix(
              surface_kind == ExecutionDetailClosureSurfaceKind::storage_encoding ||
              surface_kind == ExecutionDetailClosureSurfaceKind::diagnostic ||
              surface_kind == ExecutionDetailClosureSurfaceKind::documentation;
-    case ExecutionDetailClosureMatrixKind::donor_type_coverage:
+    case ExecutionDetailClosureMatrixKind::reference_type_coverage:
       return surface_kind == ExecutionDetailClosureSurfaceKind::descriptor ||
              surface_kind == ExecutionDetailClosureSurfaceKind::domain ||
              surface_kind == ExecutionDetailClosureSurfaceKind::literal_bind ||
@@ -13998,7 +13998,7 @@ ValidateExecutionDetailClosureRegistry(
   }
   constexpr ExecutionDetailClosureMatrixKind required_kinds[] = {
       ExecutionDetailClosureMatrixKind::canonical_type_family,
-      ExecutionDetailClosureMatrixKind::donor_type_coverage,
+      ExecutionDetailClosureMatrixKind::reference_type_coverage,
       ExecutionDetailClosureMatrixKind::operation_registry,
       ExecutionDetailClosureMatrixKind::cast_registry,
       ExecutionDetailClosureMatrixKind::aggregate_window,
@@ -14115,7 +14115,7 @@ ValidateExecutionDetailClosureRegistry(
 // SEARCH_KEY: DER-DIAGNOSTIC-ERROR-CODE-REGISTRY
 // SEARCH_KEY: RRV-RESOURCE-REGISTRY-VERSIONING
 // SEARCH_KEY: PSG-PARSER-SBLR-GRAMMAR-EXPANSION
-// SEARCH_KEY: DSM-DONOR-SPECIFIC-TYPE-MATRICES
+// SEARCH_KEY: DSM-REFERENCE-SPECIFIC-TYPE-MATRICES
 // SEARCH_KEY: CEE-CANONICAL-ENCODING-EXAMPLES
 // SEARCH_KEY: CMM-COMPATIBILITY-MODE-MATRIX
 // SEARCH_KEY: CTM-CONFORMANCE-TEST-MANIFEST-FORMAT
@@ -14124,7 +14124,7 @@ ValidateExecutionDetailClosureRegistry(
 // SEARCH_KEY: PSF-PARSER-SBLR-FORMAL-GRAMMAR
 // SEARCH_KEY: NEE-NORMATIVE-ENCODING-EXAMPLES
 // SEARCH_KEY: CMI-CONFORMANCE-MANIFEST-INVENTORY
-// SEARCH_KEY: DVP-DONOR-VERSION-PROFILE-CLOSURE
+// SEARCH_KEY: DVP-REFERENCE-VERSION-PROFILE-CLOSURE
 // SEARCH_KEY: CGC-COMMERCIAL-GRADE-COMPLETION-GATES
 enum class RemainingDetailClosureControlKind : std::uint8_t {
   system_catalog_schema = 0,
@@ -14132,7 +14132,7 @@ enum class RemainingDetailClosureControlKind : std::uint8_t {
   diagnostic_registry = 2,
   resource_registry_versioning = 3,
   parser_sblr_grammar_expansion = 4,
-  donor_specific_type_matrices = 5,
+  reference_specific_type_matrices = 5,
   canonical_encoding_examples = 6,
   compatibility_mode_matrix = 7,
   conformance_test_manifest_format = 8,
@@ -14141,7 +14141,7 @@ enum class RemainingDetailClosureControlKind : std::uint8_t {
   parser_sblr_formal_grammar = 11,
   normative_encoding_examples = 12,
   conformance_manifest_inventory = 13,
-  donor_version_profile_closure = 14,
+  reference_version_profile_closure = 14,
   commercial_grade_completion_gates = 15
 };
 
@@ -14153,7 +14153,7 @@ constexpr bool RemainingDetailClosureControlKindIsValid(
     case RemainingDetailClosureControlKind::diagnostic_registry:
     case RemainingDetailClosureControlKind::resource_registry_versioning:
     case RemainingDetailClosureControlKind::parser_sblr_grammar_expansion:
-    case RemainingDetailClosureControlKind::donor_specific_type_matrices:
+    case RemainingDetailClosureControlKind::reference_specific_type_matrices:
     case RemainingDetailClosureControlKind::canonical_encoding_examples:
     case RemainingDetailClosureControlKind::compatibility_mode_matrix:
     case RemainingDetailClosureControlKind::conformance_test_manifest_format:
@@ -14162,7 +14162,7 @@ constexpr bool RemainingDetailClosureControlKindIsValid(
     case RemainingDetailClosureControlKind::parser_sblr_formal_grammar:
     case RemainingDetailClosureControlKind::normative_encoding_examples:
     case RemainingDetailClosureControlKind::conformance_manifest_inventory:
-    case RemainingDetailClosureControlKind::donor_version_profile_closure:
+    case RemainingDetailClosureControlKind::reference_version_profile_closure:
     case RemainingDetailClosureControlKind::commercial_grade_completion_gates:
       return true;
   }
@@ -14182,8 +14182,8 @@ constexpr std::string_view RemainingDetailClosureControlSearchKey(
       return "RRV-RESOURCE-REGISTRY-VERSIONING";
     case RemainingDetailClosureControlKind::parser_sblr_grammar_expansion:
       return "PSG-PARSER-SBLR-GRAMMAR-EXPANSION";
-    case RemainingDetailClosureControlKind::donor_specific_type_matrices:
-      return "DSM-DONOR-SPECIFIC-TYPE-MATRICES";
+    case RemainingDetailClosureControlKind::reference_specific_type_matrices:
+      return "DSM-REFERENCE-SPECIFIC-TYPE-MATRICES";
     case RemainingDetailClosureControlKind::canonical_encoding_examples:
       return "CEE-CANONICAL-ENCODING-EXAMPLES";
     case RemainingDetailClosureControlKind::compatibility_mode_matrix:
@@ -14200,8 +14200,8 @@ constexpr std::string_view RemainingDetailClosureControlSearchKey(
       return "NEE-NORMATIVE-ENCODING-EXAMPLES";
     case RemainingDetailClosureControlKind::conformance_manifest_inventory:
       return "CMI-CONFORMANCE-MANIFEST-INVENTORY";
-    case RemainingDetailClosureControlKind::donor_version_profile_closure:
-      return "DVP-DONOR-VERSION-PROFILE-CLOSURE";
+    case RemainingDetailClosureControlKind::reference_version_profile_closure:
+      return "DVP-REFERENCE-VERSION-PROFILE-CLOSURE";
     case RemainingDetailClosureControlKind::commercial_grade_completion_gates:
       return "CGC-COMMERCIAL-GRADE-COMPLETION-GATES";
   }
@@ -14235,7 +14235,7 @@ enum class RemainingDetailClosureSurfaceKind : std::uint8_t {
   diagnostic_registry = 2,
   resource_versioning = 3,
   parser_sblr_lowering = 4,
-  donor_matrix_file = 5,
+  reference_matrix_file = 5,
   canonical_encoding_example = 6,
   compatibility_mode = 7,
   conformance_manifest = 8,
@@ -14244,7 +14244,7 @@ enum class RemainingDetailClosureSurfaceKind : std::uint8_t {
   formal_grammar = 11,
   normative_encoding_example = 12,
   manifest_inventory = 13,
-  donor_version_profile = 14,
+  reference_version_profile = 14,
   commercial_gate = 15,
   security = 16,
   diagnostic = 17,
@@ -14260,7 +14260,7 @@ constexpr bool RemainingDetailClosureSurfaceKindIsValid(
     case RemainingDetailClosureSurfaceKind::diagnostic_registry:
     case RemainingDetailClosureSurfaceKind::resource_versioning:
     case RemainingDetailClosureSurfaceKind::parser_sblr_lowering:
-    case RemainingDetailClosureSurfaceKind::donor_matrix_file:
+    case RemainingDetailClosureSurfaceKind::reference_matrix_file:
     case RemainingDetailClosureSurfaceKind::canonical_encoding_example:
     case RemainingDetailClosureSurfaceKind::compatibility_mode:
     case RemainingDetailClosureSurfaceKind::conformance_manifest:
@@ -14269,7 +14269,7 @@ constexpr bool RemainingDetailClosureSurfaceKindIsValid(
     case RemainingDetailClosureSurfaceKind::formal_grammar:
     case RemainingDetailClosureSurfaceKind::normative_encoding_example:
     case RemainingDetailClosureSurfaceKind::manifest_inventory:
-    case RemainingDetailClosureSurfaceKind::donor_version_profile:
+    case RemainingDetailClosureSurfaceKind::reference_version_profile:
     case RemainingDetailClosureSurfaceKind::commercial_gate:
     case RemainingDetailClosureSurfaceKind::security:
     case RemainingDetailClosureSurfaceKind::diagnostic:
@@ -14338,7 +14338,7 @@ struct RemainingDetailClosureControlRecord {
   std::string control_hash;
   bool descriptor_authority_preserved = true;
   bool parser_boundary_preserved = true;
-  bool donor_sql_not_engine_authority = true;
+  bool reference_sql_not_engine_authority = true;
   bool security_policy_enforced = true;
   bool resource_invalidation_declared = true;
   bool silent_fallback_forbidden = true;
@@ -14559,8 +14559,8 @@ RemainingDetailClosurePrimarySurfaceKind(
       return RemainingDetailClosureSurfaceKind::resource_versioning;
     case RemainingDetailClosureControlKind::parser_sblr_grammar_expansion:
       return RemainingDetailClosureSurfaceKind::parser_sblr_lowering;
-    case RemainingDetailClosureControlKind::donor_specific_type_matrices:
-      return RemainingDetailClosureSurfaceKind::donor_matrix_file;
+    case RemainingDetailClosureControlKind::reference_specific_type_matrices:
+      return RemainingDetailClosureSurfaceKind::reference_matrix_file;
     case RemainingDetailClosureControlKind::canonical_encoding_examples:
       return RemainingDetailClosureSurfaceKind::canonical_encoding_example;
     case RemainingDetailClosureControlKind::compatibility_mode_matrix:
@@ -14577,8 +14577,8 @@ RemainingDetailClosurePrimarySurfaceKind(
       return RemainingDetailClosureSurfaceKind::normative_encoding_example;
     case RemainingDetailClosureControlKind::conformance_manifest_inventory:
       return RemainingDetailClosureSurfaceKind::manifest_inventory;
-    case RemainingDetailClosureControlKind::donor_version_profile_closure:
-      return RemainingDetailClosureSurfaceKind::donor_version_profile;
+    case RemainingDetailClosureControlKind::reference_version_profile_closure:
+      return RemainingDetailClosureSurfaceKind::reference_version_profile;
     case RemainingDetailClosureControlKind::commercial_grade_completion_gates:
       return RemainingDetailClosureSurfaceKind::commercial_gate;
   }
@@ -14708,7 +14708,7 @@ ValidateRemainingDetailClosureControl(
   }
   if (!control.descriptor_authority_preserved ||
       !control.parser_boundary_preserved ||
-      !control.donor_sql_not_engine_authority) {
+      !control.reference_sql_not_engine_authority) {
     return {RemainingDetailClosureStatus::parser_authority_violation,
             control_index};
   }
@@ -14744,7 +14744,7 @@ ValidateRemainingDetailClosureControl(
       RemainingDetailClosureSurfaceKind::diagnostic_registry,
       RemainingDetailClosureSurfaceKind::resource_versioning,
       RemainingDetailClosureSurfaceKind::parser_sblr_lowering,
-      RemainingDetailClosureSurfaceKind::donor_matrix_file,
+      RemainingDetailClosureSurfaceKind::reference_matrix_file,
       RemainingDetailClosureSurfaceKind::canonical_encoding_example,
       RemainingDetailClosureSurfaceKind::compatibility_mode,
       RemainingDetailClosureSurfaceKind::conformance_manifest,
@@ -14753,7 +14753,7 @@ ValidateRemainingDetailClosureControl(
       RemainingDetailClosureSurfaceKind::formal_grammar,
       RemainingDetailClosureSurfaceKind::normative_encoding_example,
       RemainingDetailClosureSurfaceKind::manifest_inventory,
-      RemainingDetailClosureSurfaceKind::donor_version_profile,
+      RemainingDetailClosureSurfaceKind::reference_version_profile,
       RemainingDetailClosureSurfaceKind::commercial_gate,
       RemainingDetailClosureSurfaceKind::security,
       RemainingDetailClosureSurfaceKind::diagnostic,
@@ -14896,7 +14896,7 @@ ValidateRemainingDetailClosureRegistry(
       RemainingDetailClosureControlKind::diagnostic_registry,
       RemainingDetailClosureControlKind::resource_registry_versioning,
       RemainingDetailClosureControlKind::parser_sblr_grammar_expansion,
-      RemainingDetailClosureControlKind::donor_specific_type_matrices,
+      RemainingDetailClosureControlKind::reference_specific_type_matrices,
       RemainingDetailClosureControlKind::canonical_encoding_examples,
       RemainingDetailClosureControlKind::compatibility_mode_matrix,
       RemainingDetailClosureControlKind::conformance_test_manifest_format,
@@ -14905,7 +14905,7 @@ ValidateRemainingDetailClosureRegistry(
       RemainingDetailClosureControlKind::parser_sblr_formal_grammar,
       RemainingDetailClosureControlKind::normative_encoding_examples,
       RemainingDetailClosureControlKind::conformance_manifest_inventory,
-      RemainingDetailClosureControlKind::donor_version_profile_closure,
+      RemainingDetailClosureControlKind::reference_version_profile_closure,
       RemainingDetailClosureControlKind::commercial_grade_completion_gates};
   for (const auto kind : required_controls) {
     if (!RemainingDetailClosureHasControlKind(registry, kind)) {
@@ -15174,7 +15174,7 @@ enum class CommercialGradeContradictionKind : std::uint8_t {
   transaction_conflict = 6,
   security_conflict = 7,
   cluster_conflict = 8,
-  donor_conflict = 9,
+  reference_conflict = 9,
   unsupported_conflict = 10
 };
 
@@ -15190,7 +15190,7 @@ constexpr bool CommercialGradeContradictionKindIsValid(
     case CommercialGradeContradictionKind::transaction_conflict:
     case CommercialGradeContradictionKind::security_conflict:
     case CommercialGradeContradictionKind::cluster_conflict:
-    case CommercialGradeContradictionKind::donor_conflict:
+    case CommercialGradeContradictionKind::reference_conflict:
     case CommercialGradeContradictionKind::unsupported_conflict:
       return true;
   }
@@ -16237,7 +16237,7 @@ enum class CanonicalScalarCastRank : std::uint8_t {
   lossless_cross_family = 4,
   assignment_checked = 5,
   explicit_lossy = 6,
-  donor_compatibility = 7,
+  reference_compatibility = 7,
   cpp_udr_bridge = 8
 };
 
@@ -16251,7 +16251,7 @@ constexpr bool CanonicalScalarCastRankIsValid(
     case CanonicalScalarCastRank::lossless_cross_family:
     case CanonicalScalarCastRank::assignment_checked:
     case CanonicalScalarCastRank::explicit_lossy:
-    case CanonicalScalarCastRank::donor_compatibility:
+    case CanonicalScalarCastRank::reference_compatibility:
     case CanonicalScalarCastRank::cpp_udr_bridge:
       return true;
   }
@@ -16285,20 +16285,20 @@ constexpr bool CanonicalScalarOperationFamilyIsValid(
   return false;
 }
 
-enum class CanonicalScalarDonorBehavior : std::uint8_t {
+enum class CanonicalScalarReferenceBehavior : std::uint8_t {
   exact = 0,
   emulated_with_difference = 1,
   unsupported_by_version = 2,
   refused_by_policy = 3
 };
 
-constexpr bool CanonicalScalarDonorBehaviorIsValid(
-    CanonicalScalarDonorBehavior behavior) noexcept {
+constexpr bool CanonicalScalarReferenceBehaviorIsValid(
+    CanonicalScalarReferenceBehavior behavior) noexcept {
   switch (behavior) {
-    case CanonicalScalarDonorBehavior::exact:
-    case CanonicalScalarDonorBehavior::emulated_with_difference:
-    case CanonicalScalarDonorBehavior::unsupported_by_version:
-    case CanonicalScalarDonorBehavior::refused_by_policy:
+    case CanonicalScalarReferenceBehavior::exact:
+    case CanonicalScalarReferenceBehavior::emulated_with_difference:
+    case CanonicalScalarReferenceBehavior::unsupported_by_version:
+    case CanonicalScalarReferenceBehavior::refused_by_policy:
       return true;
   }
   return false;
@@ -16416,7 +16416,7 @@ struct ScalarCastOperationRule {
   bool special_value_policy_checked = false;
   bool currency_policy_checked = false;
   bool security_policy_checked = false;
-  bool donor_profile_checked = false;
+  bool reference_profile_checked = false;
   bool result_descriptor_declared = false;
   bool no_silent_fallback = false;
   std::string failure_diagnostic_code;
@@ -16437,13 +16437,13 @@ struct ScalarTransportProfileRecord {
   std::string transport_hash;
 };
 
-struct ScalarDonorMappingRecord {
-  Uuid donor_mapping_uuid{};
+struct ScalarReferenceMappingRecord {
+  Uuid reference_mapping_uuid{};
   Uuid descriptor_uuid{};
-  std::string donor_profile_key;
-  std::string donor_type_name;
-  CanonicalScalarDonorBehavior behavior =
-      CanonicalScalarDonorBehavior::refused_by_policy;
+  std::string reference_profile_key;
+  std::string reference_type_name;
+  CanonicalScalarReferenceBehavior behavior =
+      CanonicalScalarReferenceBehavior::refused_by_policy;
   std::string diagnostic_code;
   std::string mapping_hash;
 };
@@ -16468,13 +16468,13 @@ struct CanonicalScalarDatatypeRegistry {
   std::vector<ScalarLiteralBindResolutionRule> literal_bind_rules;
   std::vector<ScalarCastOperationRule> cast_operation_rules;
   std::vector<ScalarTransportProfileRecord> transport_profiles;
-  std::vector<ScalarDonorMappingRecord> donor_mappings;
+  std::vector<ScalarReferenceMappingRecord> reference_mappings;
   std::vector<CanonicalScalarConformanceGateRecord> conformance_gates;
   std::vector<std::string> diagnostic_codes;
   std::vector<std::string> local_metric_names;
   bool descriptor_authority_preserved = true;
   bool parser_sblr_boundary_preserved = true;
-  bool donor_names_not_authority = true;
+  bool reference_names_not_authority = true;
   bool storage_wire_representation_not_authority = true;
   bool driver_metadata_hint_only = true;
   bool mga_authority_preserved = true;
@@ -16496,7 +16496,7 @@ enum class CanonicalScalarDatatypeStatus : std::uint16_t {
   literal_bind_rules_required = 7,
   cast_operation_rules_required = 8,
   transport_profiles_required = 9,
-  donor_mapping_records_required = 10,
+  reference_mapping_records_required = 10,
   conformance_gate_records_required = 11,
   authority_invariant_violation = 12,
   descriptor_record_missing = 13,
@@ -16529,8 +16529,8 @@ enum class CanonicalScalarDatatypeStatus : std::uint16_t {
   transport_profile_missing = 40,
   transport_profile_incomplete = 41,
   transport_recovery_authority_violation = 42,
-  donor_mapping_missing = 43,
-  donor_mapping_incomplete = 44,
+  reference_mapping_missing = 43,
+  reference_mapping_incomplete = 44,
   conformance_gate_missing = 45,
   conformance_gate_failed = 46,
   diagnostic_vector_missing = 47,
@@ -16561,8 +16561,8 @@ constexpr std::string_view CanonicalScalarDatatypeStatusName(
       return "cast_operation_rules_required";
     case CanonicalScalarDatatypeStatus::transport_profiles_required:
       return "transport_profiles_required";
-    case CanonicalScalarDatatypeStatus::donor_mapping_records_required:
-      return "donor_mapping_records_required";
+    case CanonicalScalarDatatypeStatus::reference_mapping_records_required:
+      return "reference_mapping_records_required";
     case CanonicalScalarDatatypeStatus::conformance_gate_records_required:
       return "conformance_gate_records_required";
     case CanonicalScalarDatatypeStatus::authority_invariant_violation:
@@ -16628,10 +16628,10 @@ constexpr std::string_view CanonicalScalarDatatypeStatusName(
       return "transport_profile_incomplete";
     case CanonicalScalarDatatypeStatus::transport_recovery_authority_violation:
       return "transport_recovery_authority_violation";
-    case CanonicalScalarDatatypeStatus::donor_mapping_missing:
-      return "donor_mapping_missing";
-    case CanonicalScalarDatatypeStatus::donor_mapping_incomplete:
-      return "donor_mapping_incomplete";
+    case CanonicalScalarDatatypeStatus::reference_mapping_missing:
+      return "reference_mapping_missing";
+    case CanonicalScalarDatatypeStatus::reference_mapping_incomplete:
+      return "reference_mapping_incomplete";
     case CanonicalScalarDatatypeStatus::conformance_gate_missing:
       return "conformance_gate_missing";
     case CanonicalScalarDatatypeStatus::conformance_gate_failed:
@@ -16749,10 +16749,10 @@ inline bool CanonicalScalarHasTransportProfileForDescriptor(
   return false;
 }
 
-inline bool CanonicalScalarHasDonorMappingForDescriptor(
+inline bool CanonicalScalarHasReferenceMappingForDescriptor(
     const CanonicalScalarDatatypeRegistry& registry,
     const Uuid& descriptor_uuid) noexcept {
-  for (const auto& mapping : registry.donor_mappings) {
+  for (const auto& mapping : registry.reference_mappings) {
     if (ExecutionDataPacketUuidEquals(mapping.descriptor_uuid,
                                       descriptor_uuid)) {
       return true;
@@ -16979,7 +16979,7 @@ ValidateCanonicalScalarCastOperationRule(
       !rule.special_value_policy_checked ||
       !rule.currency_policy_checked ||
       !rule.security_policy_checked ||
-      !rule.donor_profile_checked ||
+      !rule.reference_profile_checked ||
       !rule.result_descriptor_declared || !rule.no_silent_fallback) {
     return {CanonicalScalarDatatypeStatus::cast_operation_checks_incomplete,
             0, 0, rule_index};
@@ -17016,17 +17016,17 @@ ValidateCanonicalScalarTransportProfile(
 }
 
 inline CanonicalScalarDatatypeValidationResult
-ValidateCanonicalScalarDonorMapping(
+ValidateCanonicalScalarReferenceMapping(
     const CanonicalScalarDatatypeRegistry& registry,
-    const ScalarDonorMappingRecord& mapping,
+    const ScalarReferenceMappingRecord& mapping,
     std::size_t rule_index) {
-  if (ExecutionDataPacketUuidIsNil(mapping.donor_mapping_uuid) ||
+  if (ExecutionDataPacketUuidIsNil(mapping.reference_mapping_uuid) ||
       CanonicalScalarFindDescriptorByUuid(registry,
                                          mapping.descriptor_uuid) == nullptr ||
-      mapping.donor_profile_key.empty() || mapping.donor_type_name.empty() ||
-      !CanonicalScalarDonorBehaviorIsValid(mapping.behavior) ||
+      mapping.reference_profile_key.empty() || mapping.reference_type_name.empty() ||
+      !CanonicalScalarReferenceBehaviorIsValid(mapping.behavior) ||
       mapping.diagnostic_code.empty() || mapping.mapping_hash.empty()) {
-    return {CanonicalScalarDatatypeStatus::donor_mapping_incomplete, 0, 0,
+    return {CanonicalScalarDatatypeStatus::reference_mapping_incomplete, 0, 0,
             rule_index};
   }
   return {};
@@ -17080,15 +17080,15 @@ ValidateCanonicalScalarDatatypeRegistry(
   if (registry.transport_profiles.empty()) {
     return {CanonicalScalarDatatypeStatus::transport_profiles_required};
   }
-  if (registry.donor_mappings.empty()) {
-    return {CanonicalScalarDatatypeStatus::donor_mapping_records_required};
+  if (registry.reference_mappings.empty()) {
+    return {CanonicalScalarDatatypeStatus::reference_mapping_records_required};
   }
   if (registry.conformance_gates.empty()) {
     return {CanonicalScalarDatatypeStatus::conformance_gate_records_required};
   }
   if (!registry.descriptor_authority_preserved ||
       !registry.parser_sblr_boundary_preserved ||
-      !registry.donor_names_not_authority ||
+      !registry.reference_names_not_authority ||
       !registry.storage_wire_representation_not_authority ||
       !registry.driver_metadata_hint_only ||
       !registry.mga_authority_preserved ||
@@ -17178,9 +17178,9 @@ ValidateCanonicalScalarDatatypeRegistry(
             registry, descriptor.descriptor_uuid)) {
       return {CanonicalScalarDatatypeStatus::transport_profile_missing};
     }
-    if (!CanonicalScalarHasDonorMappingForDescriptor(
+    if (!CanonicalScalarHasReferenceMappingForDescriptor(
             registry, descriptor.descriptor_uuid)) {
-      return {CanonicalScalarDatatypeStatus::donor_mapping_missing};
+      return {CanonicalScalarDatatypeStatus::reference_mapping_missing};
     }
   }
   for (std::size_t rule_index = 0;
@@ -17192,9 +17192,9 @@ ValidateCanonicalScalarDatatypeRegistry(
     }
   }
   for (std::size_t rule_index = 0;
-       rule_index < registry.donor_mappings.size(); ++rule_index) {
-    const auto mapping_result = ValidateCanonicalScalarDonorMapping(
-        registry, registry.donor_mappings[rule_index], rule_index);
+       rule_index < registry.reference_mappings.size(); ++rule_index) {
+    const auto mapping_result = ValidateCanonicalScalarReferenceMapping(
+        registry, registry.reference_mappings[rule_index], rule_index);
     if (!mapping_result.ok()) {
       return mapping_result;
     }
@@ -17252,7 +17252,7 @@ ValidateCanonicalScalarDatatypeRegistry(
       "SCALAR.CURRENCY_MISMATCH",
       "SCALAR.BACKEND_UNAVAILABLE",
       "SCALAR.RAW_HOST_ENCODING_REFUSED",
-      "SCALAR.DONOR.MAPPING_MISSING",
+      "SCALAR.REFERENCE.MAPPING_MISSING",
       "SCALAR.TRANSPORT.UNSUPPORTED",
       "SCALAR.MERGE.MANUAL_REVIEW_REQUIRED",
       "float128_backend_unavailable",
@@ -17282,7 +17282,7 @@ ValidateCanonicalScalarDatatypeRegistry(
       "sys.metrics.datatypes.scalar.float128.raw_host_encoding_refusals_total",
       "sys.metrics.datatypes.scalar.money.currency_mismatches_total",
       "sys.metrics.datatypes.scalar.transport.refusals_total",
-      "sys.metrics.datatypes.scalar.donor.mapping_misses_total",
+      "sys.metrics.datatypes.scalar.reference.mapping_misses_total",
       "sys.metrics.datatypes.scalar.merge.manual_review_required_total"};
   for (std::string_view metric : required_metrics) {
     if (!CanonicalScalarHasMetric(registry, metric)) {
@@ -17302,7 +17302,7 @@ ValidateCanonicalScalarDatatypeRegistry(
 // SEARCH_KEY: NVD-REQUIRED-NATIVE-SUBSTRATE-FAMILIES
 // SEARCH_KEY: NVD-DOMAIN-ONLY-FAMILIES
 // SEARCH_KEY: NVD-OPAQUE-UDR-BRIDGE-FAMILIES
-// SEARCH_KEY: NVD-DONOR-FAMILY-DECISIONS
+// SEARCH_KEY: NVD-REFERENCE-FAMILY-DECISIONS
 // SEARCH_KEY: NVD-FULL-SUPPORT-RULE
 enum class NativeDomainDecisionClass : std::uint8_t {
   native_substrate = 0,
@@ -17345,7 +17345,7 @@ constexpr bool NativeDomainDecisionClassRequiresNativeSubstrate(
          decision_class != NativeDomainDecisionClass::render_only_metadata;
 }
 
-enum class NativeDomainDonorFamily : std::uint8_t {
+enum class NativeDomainReferenceFamily : std::uint8_t {
   postgresql = 0,
   firebird = 1,
   mysql_mariadb = 2,
@@ -17362,35 +17362,35 @@ enum class NativeDomainDonorFamily : std::uint8_t {
   neo4j = 13,
   influxdb = 14,
   milvus = 15,
-  non_donor = 16
+  non_reference = 16
 };
 
-constexpr bool NativeDomainDonorFamilyIsValid(
-    NativeDomainDonorFamily family) noexcept {
+constexpr bool NativeDomainReferenceFamilyIsValid(
+    NativeDomainReferenceFamily family) noexcept {
   switch (family) {
-    case NativeDomainDonorFamily::postgresql:
-    case NativeDomainDonorFamily::firebird:
-    case NativeDomainDonorFamily::mysql_mariadb:
-    case NativeDomainDonorFamily::oracle:
-    case NativeDomainDonorFamily::sql_server:
-    case NativeDomainDonorFamily::db2:
-    case NativeDomainDonorFamily::sqlite:
-    case NativeDomainDonorFamily::cassandra:
-    case NativeDomainDonorFamily::mongodb:
-    case NativeDomainDonorFamily::clickhouse:
-    case NativeDomainDonorFamily::duckdb:
-    case NativeDomainDonorFamily::opensearch:
-    case NativeDomainDonorFamily::redis:
-    case NativeDomainDonorFamily::neo4j:
-    case NativeDomainDonorFamily::influxdb:
-    case NativeDomainDonorFamily::milvus:
-    case NativeDomainDonorFamily::non_donor:
+    case NativeDomainReferenceFamily::postgresql:
+    case NativeDomainReferenceFamily::firebird:
+    case NativeDomainReferenceFamily::mysql_mariadb:
+    case NativeDomainReferenceFamily::oracle:
+    case NativeDomainReferenceFamily::sql_server:
+    case NativeDomainReferenceFamily::db2:
+    case NativeDomainReferenceFamily::sqlite:
+    case NativeDomainReferenceFamily::cassandra:
+    case NativeDomainReferenceFamily::mongodb:
+    case NativeDomainReferenceFamily::clickhouse:
+    case NativeDomainReferenceFamily::duckdb:
+    case NativeDomainReferenceFamily::opensearch:
+    case NativeDomainReferenceFamily::redis:
+    case NativeDomainReferenceFamily::neo4j:
+    case NativeDomainReferenceFamily::influxdb:
+    case NativeDomainReferenceFamily::milvus:
+    case NativeDomainReferenceFamily::non_reference:
       return true;
   }
   return false;
 }
 
-enum class NativeDomainDonorTypeCategory : std::uint8_t {
+enum class NativeDomainReferenceTypeCategory : std::uint8_t {
   scalar = 0,
   compound = 1,
   collection = 2,
@@ -17406,41 +17406,41 @@ enum class NativeDomainDonorTypeCategory : std::uint8_t {
   unsupported = 12
 };
 
-constexpr bool NativeDomainDonorTypeCategoryIsValid(
-    NativeDomainDonorTypeCategory category) noexcept {
+constexpr bool NativeDomainReferenceTypeCategoryIsValid(
+    NativeDomainReferenceTypeCategory category) noexcept {
   switch (category) {
-    case NativeDomainDonorTypeCategory::scalar:
-    case NativeDomainDonorTypeCategory::compound:
-    case NativeDomainDonorTypeCategory::collection:
-    case NativeDomainDonorTypeCategory::document:
-    case NativeDomainDonorTypeCategory::spatial:
-    case NativeDomainDonorTypeCategory::vector:
-    case NativeDomainDonorTypeCategory::graph:
-    case NativeDomainDonorTypeCategory::timeseries:
-    case NativeDomainDonorTypeCategory::locator:
-    case NativeDomainDonorTypeCategory::pseudo:
-    case NativeDomainDonorTypeCategory::opaque:
-    case NativeDomainDonorTypeCategory::extension:
-    case NativeDomainDonorTypeCategory::unsupported:
+    case NativeDomainReferenceTypeCategory::scalar:
+    case NativeDomainReferenceTypeCategory::compound:
+    case NativeDomainReferenceTypeCategory::collection:
+    case NativeDomainReferenceTypeCategory::document:
+    case NativeDomainReferenceTypeCategory::spatial:
+    case NativeDomainReferenceTypeCategory::vector:
+    case NativeDomainReferenceTypeCategory::graph:
+    case NativeDomainReferenceTypeCategory::timeseries:
+    case NativeDomainReferenceTypeCategory::locator:
+    case NativeDomainReferenceTypeCategory::pseudo:
+    case NativeDomainReferenceTypeCategory::opaque:
+    case NativeDomainReferenceTypeCategory::extension:
+    case NativeDomainReferenceTypeCategory::unsupported:
       return true;
   }
   return false;
 }
 
-enum class NativeDomainDonorCoverageState : std::uint8_t {
+enum class NativeDomainReferenceCoverageState : std::uint8_t {
   none = 0,
   partial = 1,
-  complete_for_claimed_donors = 2,
-  complete_for_all_targeted_donors = 3
+  complete_for_claimed_references = 2,
+  complete_for_all_targeted_references = 3
 };
 
-constexpr bool NativeDomainDonorCoverageStateIsValid(
-    NativeDomainDonorCoverageState state) noexcept {
+constexpr bool NativeDomainReferenceCoverageStateIsValid(
+    NativeDomainReferenceCoverageState state) noexcept {
   switch (state) {
-    case NativeDomainDonorCoverageState::none:
-    case NativeDomainDonorCoverageState::partial:
-    case NativeDomainDonorCoverageState::complete_for_claimed_donors:
-    case NativeDomainDonorCoverageState::complete_for_all_targeted_donors:
+    case NativeDomainReferenceCoverageState::none:
+    case NativeDomainReferenceCoverageState::partial:
+    case NativeDomainReferenceCoverageState::complete_for_claimed_references:
+    case NativeDomainReferenceCoverageState::complete_for_all_targeted_references:
       return true;
   }
   return false;
@@ -17539,8 +17539,8 @@ struct DatatypeDecisionRecord {
   Uuid backup_restore_profile_uuid{};
   Uuid transport_profile_uuid{};
   Uuid diagnostic_profile_uuid{};
-  NativeDomainDonorCoverageState donor_coverage_state =
-      NativeDomainDonorCoverageState::none;
+  NativeDomainReferenceCoverageState reference_coverage_state =
+      NativeDomainReferenceCoverageState::none;
   Uuid cxx_udr_package_uuid{};
   std::string unsupported_reason;
   NativeDomainConformanceStatus conformance_status =
@@ -17558,13 +17558,13 @@ struct DatatypeDecisionRecord {
   std::string decision_hash;
 };
 
-struct DonorDatatypeMappingRecord {
+struct ReferenceDatatypeMappingRecord {
   Uuid mapping_uuid{};
-  NativeDomainDonorFamily donor_family = NativeDomainDonorFamily::non_donor;
-  std::string donor_version_range;
-  std::string donor_type_name;
-  NativeDomainDonorTypeCategory donor_type_category =
-      NativeDomainDonorTypeCategory::scalar;
+  NativeDomainReferenceFamily reference_family = NativeDomainReferenceFamily::non_reference;
+  std::string reference_version_range;
+  std::string reference_type_name;
+  NativeDomainReferenceTypeCategory reference_type_category =
+      NativeDomainReferenceTypeCategory::scalar;
   Uuid scratchbird_decision_uuid{};
   Uuid literal_policy_uuid{};
   Uuid bind_policy_uuid{};
@@ -17596,9 +17596,9 @@ struct CompoundDomainElementRecord {
   std::string element_hash;
 };
 
-struct DonorFamilyFullSupportClaimRecord {
+struct ReferenceFamilyFullSupportClaimRecord {
   Uuid claim_uuid{};
-  NativeDomainDonorFamily donor_family = NativeDomainDonorFamily::non_donor;
+  NativeDomainReferenceFamily reference_family = NativeDomainReferenceFamily::non_reference;
   std::uint32_t expected_type_row_count = 0;
   std::uint32_t mapped_type_row_count = 0;
   std::string conformance_manifest_hash;
@@ -17622,16 +17622,16 @@ struct NativeDomainDatatypeDecisionRegistry {
   std::string registry_name;
   std::string root_search_key;
   std::vector<DatatypeDecisionRecord> decisions;
-  std::vector<DonorDatatypeMappingRecord> donor_mappings;
+  std::vector<ReferenceDatatypeMappingRecord> reference_mappings;
   std::vector<CompoundDomainElementRecord> compound_elements;
-  std::vector<DonorFamilyFullSupportClaimRecord> full_support_claims;
+  std::vector<ReferenceFamilyFullSupportClaimRecord> full_support_claims;
   std::vector<NativeDomainConformanceGateRecord> conformance_gates;
   std::vector<std::string> diagnostic_codes;
   std::vector<std::string> local_metric_names;
   bool descriptor_authority_preserved = true;
   bool uuid_identity_preserved = true;
   bool parser_sblr_boundary_preserved = true;
-  bool donor_compatibility_not_authority = true;
+  bool reference_compatibility_not_authority = true;
   bool non_cpp_udr_forbidden = true;
   bool unsupported_diagnostics_required = true;
   bool full_support_requires_complete_mappings = true;
@@ -17645,14 +17645,14 @@ enum class NativeDomainDatatypeDecisionStatus : std::uint16_t {
   registry_name_required = 3,
   root_search_key_required = 4,
   decision_records_required = 5,
-  donor_mapping_records_required = 6,
+  reference_mapping_records_required = 6,
   conformance_gate_records_required = 7,
   authority_invariant_violation = 8,
   decision_record_missing = 9,
   decision_uuid_required = 10,
   decision_identity_incomplete = 11,
   decision_class_invalid = 12,
-  donor_coverage_state_invalid = 13,
+  reference_coverage_state_invalid = 13,
   conformance_status_invalid = 14,
   native_substrate_missing = 15,
   descriptor_missing = 16,
@@ -17667,10 +17667,10 @@ enum class NativeDomainDatatypeDecisionStatus : std::uint16_t {
   unsupported_reason_missing = 25,
   non_cpp_udr_allowed = 26,
   decision_duplicate = 27,
-  donor_mapping_missing = 28,
-  donor_mapping_incomplete = 29,
-  donor_mapping_orphan = 30,
-  donor_mapping_policy_missing = 31,
+  reference_mapping_missing = 28,
+  reference_mapping_incomplete = 29,
+  reference_mapping_orphan = 30,
+  reference_mapping_policy_missing = 31,
   unsupported_behavior_missing = 32,
   full_support_overclaim = 33,
   conformance_gate_missing = 34,
@@ -17695,8 +17695,8 @@ constexpr std::string_view NativeDomainDatatypeDecisionStatusName(
       return "root_search_key_required";
     case NativeDomainDatatypeDecisionStatus::decision_records_required:
       return "decision_records_required";
-    case NativeDomainDatatypeDecisionStatus::donor_mapping_records_required:
-      return "donor_mapping_records_required";
+    case NativeDomainDatatypeDecisionStatus::reference_mapping_records_required:
+      return "reference_mapping_records_required";
     case NativeDomainDatatypeDecisionStatus::conformance_gate_records_required:
       return "conformance_gate_records_required";
     case NativeDomainDatatypeDecisionStatus::authority_invariant_violation:
@@ -17709,8 +17709,8 @@ constexpr std::string_view NativeDomainDatatypeDecisionStatusName(
       return "decision_identity_incomplete";
     case NativeDomainDatatypeDecisionStatus::decision_class_invalid:
       return "decision_class_invalid";
-    case NativeDomainDatatypeDecisionStatus::donor_coverage_state_invalid:
-      return "donor_coverage_state_invalid";
+    case NativeDomainDatatypeDecisionStatus::reference_coverage_state_invalid:
+      return "reference_coverage_state_invalid";
     case NativeDomainDatatypeDecisionStatus::conformance_status_invalid:
       return "conformance_status_invalid";
     case NativeDomainDatatypeDecisionStatus::native_substrate_missing:
@@ -17739,14 +17739,14 @@ constexpr std::string_view NativeDomainDatatypeDecisionStatusName(
       return "non_cpp_udr_allowed";
     case NativeDomainDatatypeDecisionStatus::decision_duplicate:
       return "decision_duplicate";
-    case NativeDomainDatatypeDecisionStatus::donor_mapping_missing:
-      return "donor_mapping_missing";
-    case NativeDomainDatatypeDecisionStatus::donor_mapping_incomplete:
-      return "donor_mapping_incomplete";
-    case NativeDomainDatatypeDecisionStatus::donor_mapping_orphan:
-      return "donor_mapping_orphan";
-    case NativeDomainDatatypeDecisionStatus::donor_mapping_policy_missing:
-      return "donor_mapping_policy_missing";
+    case NativeDomainDatatypeDecisionStatus::reference_mapping_missing:
+      return "reference_mapping_missing";
+    case NativeDomainDatatypeDecisionStatus::reference_mapping_incomplete:
+      return "reference_mapping_incomplete";
+    case NativeDomainDatatypeDecisionStatus::reference_mapping_orphan:
+      return "reference_mapping_orphan";
+    case NativeDomainDatatypeDecisionStatus::reference_mapping_policy_missing:
+      return "reference_mapping_policy_missing";
     case NativeDomainDatatypeDecisionStatus::unsupported_behavior_missing:
       return "unsupported_behavior_missing";
     case NativeDomainDatatypeDecisionStatus::full_support_overclaim:
@@ -17836,7 +17836,7 @@ inline bool NativeDomainHasDecisionClass(
 inline bool NativeDomainHasMappingForDecision(
     const NativeDomainDatatypeDecisionRegistry& registry,
     const Uuid& decision_uuid) noexcept {
-  for (const auto& mapping : registry.donor_mappings) {
+  for (const auto& mapping : registry.reference_mappings) {
     if (ExecutionDataPacketUuidEquals(mapping.scratchbird_decision_uuid,
                                       decision_uuid)) {
       return true;
@@ -17911,9 +17911,9 @@ ValidateNativeDomainDecision(
     return {NativeDomainDatatypeDecisionStatus::decision_class_invalid,
             decision_index};
   }
-  if (!NativeDomainDonorCoverageStateIsValid(
-          decision.donor_coverage_state)) {
-    return {NativeDomainDatatypeDecisionStatus::donor_coverage_state_invalid,
+  if (!NativeDomainReferenceCoverageStateIsValid(
+          decision.reference_coverage_state)) {
+    return {NativeDomainDatatypeDecisionStatus::reference_coverage_state_invalid,
             decision_index};
   }
   if (!NativeDomainConformanceStatusIsValid(
@@ -18004,7 +18004,7 @@ ValidateNativeDomainDecision(
             decision_index};
   }
   if (!NativeDomainHasMappingForDecision(registry, decision.decision_uuid)) {
-    return {NativeDomainDatatypeDecisionStatus::donor_mapping_missing,
+    return {NativeDomainDatatypeDecisionStatus::reference_mapping_missing,
             decision_index};
   }
   for (std::size_t other_index = decision_index + 1;
@@ -18021,24 +18021,24 @@ ValidateNativeDomainDecision(
 }
 
 inline NativeDomainDatatypeDecisionValidationResult
-ValidateNativeDomainDonorMapping(
+ValidateNativeDomainReferenceMapping(
     const NativeDomainDatatypeDecisionRegistry& registry,
-    const DonorDatatypeMappingRecord& mapping,
+    const ReferenceDatatypeMappingRecord& mapping,
     std::size_t mapping_index) {
   const auto* decision =
       NativeDomainFindDecisionByUuid(registry,
                                      mapping.scratchbird_decision_uuid);
   if (ExecutionDataPacketUuidIsNil(mapping.mapping_uuid) ||
-      !NativeDomainDonorFamilyIsValid(mapping.donor_family) ||
-      mapping.donor_version_range.empty() ||
-      mapping.donor_type_name.empty() ||
-      !NativeDomainDonorTypeCategoryIsValid(mapping.donor_type_category) ||
+      !NativeDomainReferenceFamilyIsValid(mapping.reference_family) ||
+      mapping.reference_version_range.empty() ||
+      mapping.reference_type_name.empty() ||
+      !NativeDomainReferenceTypeCategoryIsValid(mapping.reference_type_category) ||
       mapping.mapping_hash.empty()) {
-    return {NativeDomainDatatypeDecisionStatus::donor_mapping_incomplete, 0,
+    return {NativeDomainDatatypeDecisionStatus::reference_mapping_incomplete, 0,
             mapping_index};
   }
   if (decision == nullptr) {
-    return {NativeDomainDatatypeDecisionStatus::donor_mapping_orphan, 0,
+    return {NativeDomainDatatypeDecisionStatus::reference_mapping_orphan, 0,
             mapping_index};
   }
   if (!NativeDomainUnsupportedBehaviorIsValid(mapping.unsupported_behavior)) {
@@ -18065,7 +18065,7 @@ ValidateNativeDomainDonorMapping(
        ExecutionDataPacketUuidIsNil(mapping.storage_policy_uuid) ||
        ExecutionDataPacketUuidIsNil(mapping.transport_policy_uuid) ||
        ExecutionDataPacketUuidIsNil(mapping.diagnostic_policy_uuid))) {
-    return {NativeDomainDatatypeDecisionStatus::donor_mapping_policy_missing,
+    return {NativeDomainDatatypeDecisionStatus::reference_mapping_policy_missing,
             0, mapping_index};
   }
   if (mapping.full_support_claimed && mapping.conformance_test_id.empty()) {
@@ -18099,10 +18099,10 @@ ValidateNativeDomainCompoundElement(
 
 inline NativeDomainDatatypeDecisionValidationResult
 ValidateNativeDomainFullSupportClaim(
-    const DonorFamilyFullSupportClaimRecord& claim,
+    const ReferenceFamilyFullSupportClaimRecord& claim,
     std::size_t mapping_index) {
   if (ExecutionDataPacketUuidIsNil(claim.claim_uuid) ||
-      !NativeDomainDonorFamilyIsValid(claim.donor_family) ||
+      !NativeDomainReferenceFamilyIsValid(claim.reference_family) ||
       claim.expected_type_row_count == 0 ||
       claim.conformance_manifest_hash.empty() || claim.claim_hash.empty()) {
     return {NativeDomainDatatypeDecisionStatus::full_support_overclaim, 0,
@@ -18153,8 +18153,8 @@ ValidateNativeDomainDatatypeDecisionRegistry(
   if (registry.decisions.empty()) {
     return {NativeDomainDatatypeDecisionStatus::decision_records_required};
   }
-  if (registry.donor_mappings.empty()) {
-    return {NativeDomainDatatypeDecisionStatus::donor_mapping_records_required};
+  if (registry.reference_mappings.empty()) {
+    return {NativeDomainDatatypeDecisionStatus::reference_mapping_records_required};
   }
   if (registry.conformance_gates.empty()) {
     return {NativeDomainDatatypeDecisionStatus::
@@ -18163,7 +18163,7 @@ ValidateNativeDomainDatatypeDecisionRegistry(
   if (!registry.descriptor_authority_preserved ||
       !registry.uuid_identity_preserved ||
       !registry.parser_sblr_boundary_preserved ||
-      !registry.donor_compatibility_not_authority ||
+      !registry.reference_compatibility_not_authority ||
       !registry.non_cpp_udr_forbidden ||
       !registry.unsupported_diagnostics_required ||
       !registry.full_support_requires_complete_mappings) {
@@ -18237,9 +18237,9 @@ ValidateNativeDomainDatatypeDecisionRegistry(
     }
   }
   for (std::size_t mapping_index = 0;
-       mapping_index < registry.donor_mappings.size(); ++mapping_index) {
-    const auto mapping_result = ValidateNativeDomainDonorMapping(
-        registry, registry.donor_mappings[mapping_index], mapping_index);
+       mapping_index < registry.reference_mappings.size(); ++mapping_index) {
+    const auto mapping_result = ValidateNativeDomainReferenceMapping(
+        registry, registry.reference_mappings[mapping_index], mapping_index);
     if (!mapping_result.ok()) {
       return mapping_result;
     }
@@ -18295,8 +18295,8 @@ ValidateNativeDomainDatatypeDecisionRegistry(
       "sys.metrics.datatype.decisions.domain_total",
       "sys.metrics.datatype.decisions.deferred_total",
       "sys.metrics.datatype.decisions.unsupported_total",
-      "sys.metrics.datatype.donor_mappings.total",
-      "sys.metrics.datatype.donor_mappings.incomplete_total",
+      "sys.metrics.datatype.reference_mappings.total",
+      "sys.metrics.datatype.reference_mappings.incomplete_total",
       "sys.metrics.datatype.diagnostics.unsupported_by_version_total",
       "sys.metrics.datatype.diagnostics.unsupported_by_policy_total",
       "sys.metrics.datatype.diagnostics.requires_cxx_udr_total",
@@ -18409,7 +18409,7 @@ struct CanonicalDatatypeFamilyDescriptorRecord {
   bool diagnostic_profile_present = true;
   bool metric_profile_present = true;
   bool conformance_profile_present = true;
-  bool donor_mapping_required_or_refused = true;
+  bool reference_mapping_required_or_refused = true;
   bool merge_policy_present = true;
   bool parser_render_not_authority = true;
   bool write_after_delta_not_recovery_authority = true;
@@ -18433,7 +18433,7 @@ struct CanonicalDatatypeFamilyOperationContractRecord {
   bool index_statistics_admission_declared = true;
   bool backup_transport_declared = true;
   bool merge_reconciliation_declared = true;
-  bool donor_compatibility_declared = true;
+  bool reference_compatibility_declared = true;
   bool unsupported_behavior_diagnostic = true;
   bool descriptor_bound = true;
   bool parser_text_not_authority = true;
@@ -18487,7 +18487,7 @@ struct CanonicalDatatypeFamilyRegistry {
   bool descriptor_authority_preserved = true;
   bool uuid_identity_preserved = true;
   bool parser_sblr_boundary_preserved = true;
-  bool donor_compatibility_not_authority = true;
+  bool reference_compatibility_not_authority = true;
   bool non_cpp_udr_forbidden = true;
   bool unsupported_diagnostics_required = true;
   bool cluster_metrics_guarded_by_cluster_governance = true;
@@ -18710,7 +18710,7 @@ ValidateCanonicalDatatypeFamilyDescriptor(
       !descriptor.diagnostic_profile_present ||
       !descriptor.metric_profile_present ||
       !descriptor.conformance_profile_present ||
-      !descriptor.donor_mapping_required_or_refused ||
+      !descriptor.reference_mapping_required_or_refused ||
       !descriptor.merge_policy_present ||
       !descriptor.parser_render_not_authority ||
       !descriptor.write_after_delta_not_recovery_authority ||
@@ -18761,7 +18761,7 @@ ValidateCanonicalDatatypeFamilyOperationContract(
       !contract.index_statistics_admission_declared ||
       !contract.backup_transport_declared ||
       !contract.merge_reconciliation_declared ||
-      !contract.donor_compatibility_declared ||
+      !contract.reference_compatibility_declared ||
       !contract.unsupported_behavior_diagnostic ||
       !contract.descriptor_bound ||
       !contract.parser_text_not_authority ||
@@ -18850,7 +18850,7 @@ ValidateCanonicalDatatypeFamilyRegistry(
   if (!registry.descriptor_authority_preserved ||
       !registry.uuid_identity_preserved ||
       !registry.parser_sblr_boundary_preserved ||
-      !registry.donor_compatibility_not_authority ||
+      !registry.reference_compatibility_not_authority ||
       !registry.non_cpp_udr_forbidden ||
       !registry.unsupported_diagnostics_required ||
       !registry.write_after_delta_not_recovery_authority ||
@@ -18878,7 +18878,7 @@ ValidateCanonicalDatatypeFamilyRegistry(
           {CanonicalDatatypeFamilyGroup::temporal_interval, "mixed_interval"},
           {CanonicalDatatypeFamilyGroup::temporal_interval, "fixed_duration"},
           {CanonicalDatatypeFamilyGroup::temporal_interval,
-           "donor_duration_domain"},
+           "reference_duration_domain"},
           {CanonicalDatatypeFamilyGroup::identity_network_lob, "uuid"},
           {CanonicalDatatypeFamilyGroup::identity_network_lob, "guid_domain"},
           {CanonicalDatatypeFamilyGroup::identity_network_lob,
@@ -19126,7 +19126,7 @@ ValidateCanonicalDatatypeFamilyRegistry(
       "CTI.INTERVAL.CALENDAR_OPERATION_REFUSED",
       "CINL.IDENTITY.DESCRIPTOR_INVALID",
       "CINL.IDENTITY.INVALID_LITERAL",
-      "CINL.IDENTITY.DONOR_ORDERING_MISMATCH",
+      "CINL.IDENTITY.REFERENCE_ORDERING_MISMATCH",
       "CINL.IDENTITY.GENERATION_FENCED",
       "CINL.NETWORK.DESCRIPTOR_INVALID",
       "CINL.NETWORK.INVALID_ADDRESS",
@@ -19225,7 +19225,7 @@ ValidateCanonicalDatatypeFamilyRegistry(
       "sys.metrics.datatypes.pseudotype.visibility_denials_total",
       "sys.metrics.datatypes.opaque.udr_package_misses_total",
       "sys.metrics.datatypes.family.transport_refusals_total",
-      "sys.metrics.datatypes.family.donor_mapping_misses_total",
+      "sys.metrics.datatypes.family.reference_mapping_misses_total",
       "sys.metrics.datatypes.family.merge_manual_review_total"};
   for (std::string_view metric : required_metrics) {
     if (!CanonicalDatatypeFamilyHasMetric(registry, metric)) {
@@ -19241,21 +19241,21 @@ ValidateCanonicalDatatypeFamilyRegistry(
 // SEARCH_KEY: EDR-CANONICAL-MODIFIER
 // SEARCH_KEY: descriptor hash
 // SEARCH_KEY: vector_layout
-struct ExecutionTypeDonorModifier {
+struct ExecutionTypeReferenceModifier {
   std::string name;
   std::string value;
 };
 
 struct ExecutionTypeModifierCanonicalizationInput {
   ExecutionTypeDescriptor descriptor;
-  std::vector<ExecutionTypeDonorModifier> donor_modifiers;
+  std::vector<ExecutionTypeReferenceModifier> reference_modifiers;
   bool range_subtype_present = false;
   bool array_element_present = false;
 };
 
 struct ExecutionTypeModifierCanonicalForm {
   ExecutionTypeDescriptor descriptor;
-  std::vector<ExecutionTypeDonorModifier> donor_modifiers;
+  std::vector<ExecutionTypeReferenceModifier> reference_modifiers;
   std::string canonical_modifier_key;
   std::string descriptor_identity_digest;
 };
@@ -19283,8 +19283,8 @@ enum class ExecutionTypeModifierCanonicalizationStatus : std::uint8_t {
   domain_stack_without_domain_uuid = 19,
   domain_stack_current_uuid_mismatch = 20,
   element_descriptor_uuid_required = 21,
-  donor_modifier_name_required = 22,
-  donor_modifier_duplicate = 23
+  reference_modifier_name_required = 22,
+  reference_modifier_duplicate = 23
 };
 
 constexpr std::string_view ExecutionTypeModifierCanonicalizationStatusName(
@@ -19341,10 +19341,10 @@ constexpr std::string_view ExecutionTypeModifierCanonicalizationStatusName(
     case ExecutionTypeModifierCanonicalizationStatus::
         element_descriptor_uuid_required:
       return "element_descriptor_uuid_required";
-    case ExecutionTypeModifierCanonicalizationStatus::donor_modifier_name_required:
-      return "donor_modifier_name_required";
-    case ExecutionTypeModifierCanonicalizationStatus::donor_modifier_duplicate:
-      return "donor_modifier_duplicate";
+    case ExecutionTypeModifierCanonicalizationStatus::reference_modifier_name_required:
+      return "reference_modifier_name_required";
+    case ExecutionTypeModifierCanonicalizationStatus::reference_modifier_duplicate:
+      return "reference_modifier_duplicate";
   }
   return "unknown_status";
 }
@@ -19639,31 +19639,31 @@ CanonicalizeExecutionTypeModifiers(
             ExecutionDataPacketStatus::ok, {}};
   }
 
-  form.donor_modifiers = input.donor_modifiers;
-  for (auto& modifier : form.donor_modifiers) {
+  form.reference_modifiers = input.reference_modifiers;
+  for (auto& modifier : form.reference_modifiers) {
     modifier.name = ExecutionTypeModifierCanonicalToken(modifier.name);
     modifier.value = ExecutionTypeModifierCanonicalToken(modifier.value);
     if (modifier.name.empty()) {
       return {ExecutionTypeModifierCanonicalizationStatus::
-                  donor_modifier_name_required,
+                  reference_modifier_name_required,
               ExecutionDataPacketStatus::ok, {}};
     }
   }
-  std::sort(form.donor_modifiers.begin(), form.donor_modifiers.end(),
-            [](const ExecutionTypeDonorModifier& left,
-               const ExecutionTypeDonorModifier& right) {
+  std::sort(form.reference_modifiers.begin(), form.reference_modifiers.end(),
+            [](const ExecutionTypeReferenceModifier& left,
+               const ExecutionTypeReferenceModifier& right) {
               if (left.name != right.name) {
                 return left.name < right.name;
               }
               return left.value < right.value;
             });
-  for (std::size_t index = 1; index < form.donor_modifiers.size(); ++index) {
-    if (form.donor_modifiers[index - 1].name ==
-            form.donor_modifiers[index].name &&
-        form.donor_modifiers[index - 1].value ==
-            form.donor_modifiers[index].value) {
+  for (std::size_t index = 1; index < form.reference_modifiers.size(); ++index) {
+    if (form.reference_modifiers[index - 1].name ==
+            form.reference_modifiers[index].name &&
+        form.reference_modifiers[index - 1].value ==
+            form.reference_modifiers[index].value) {
       return {ExecutionTypeModifierCanonicalizationStatus::
-                  donor_modifier_duplicate,
+                  reference_modifier_duplicate,
               ExecutionDataPacketStatus::ok, {}};
     }
   }
@@ -19700,8 +19700,8 @@ CanonicalizeExecutionTypeModifiers(
     ExecutionTypeModifierAppendUuidKey(
         key, "element", form.descriptor.element_descriptor_uuid);
   }
-  for (const auto& modifier : form.donor_modifiers) {
-    key.append(";donor:");
+  for (const auto& modifier : form.reference_modifiers) {
+    key.append(";reference:");
     key.append(modifier.name);
     key.push_back('=');
     key.append(modifier.value);
@@ -19737,7 +19737,7 @@ enum class EnumSetStorageKind : std::uint8_t {
   bitset = 1,
   list = 2,
   string = 3,
-  donor_native = 4
+  reference_native = 4
 };
 
 constexpr bool EnumSetStorageKindIsValid(EnumSetStorageKind kind) noexcept {
@@ -19746,7 +19746,7 @@ constexpr bool EnumSetStorageKindIsValid(EnumSetStorageKind kind) noexcept {
     case EnumSetStorageKind::bitset:
     case EnumSetStorageKind::list:
     case EnumSetStorageKind::string:
-    case EnumSetStorageKind::donor_native:
+    case EnumSetStorageKind::reference_native:
       return true;
   }
   return false;
@@ -19755,7 +19755,7 @@ constexpr bool EnumSetStorageKindIsValid(EnumSetStorageKind kind) noexcept {
 enum class EnumSetUnknownLabelPolicy : std::uint8_t {
   reject = 0,
   map_to_unknown_label = 1,
-  donor_compatibility = 2
+  reference_compatibility = 2
 };
 
 constexpr bool EnumSetUnknownLabelPolicyIsValid(
@@ -19763,7 +19763,7 @@ constexpr bool EnumSetUnknownLabelPolicyIsValid(
   switch (policy) {
     case EnumSetUnknownLabelPolicy::reject:
     case EnumSetUnknownLabelPolicy::map_to_unknown_label:
-    case EnumSetUnknownLabelPolicy::donor_compatibility:
+    case EnumSetUnknownLabelPolicy::reference_compatibility:
       return true;
   }
   return false;
@@ -19774,7 +19774,7 @@ struct EnumSetLabelDescriptor {
   std::uint32_t ordinal = 0;
   std::string stable_name;
   std::string canonical_rendering;
-  std::string donor_rendering_name;
+  std::string reference_rendering_name;
   std::vector<std::string> aliases;
 };
 
@@ -19791,7 +19791,7 @@ struct EnumSetRepresentationDescriptor {
       EnumSetUnknownLabelPolicy::reject;
   std::vector<EnumSetLabelDescriptor> labels;
   Uuid unknown_label_uuid{};
-  Uuid donor_profile_uuid{};
+  Uuid reference_profile_uuid{};
   bool ordered = true;
   bool descriptor_authoritative = true;
   bool parser_independent = true;
@@ -19821,8 +19821,8 @@ enum class EnumSetRepresentationStatus : std::uint8_t {
   bitset_label_count_exceeds_limit = 20,
   enum_storage_kind_invalid = 21,
   set_storage_kind_invalid = 22,
-  donor_rendering_required = 23,
-  donor_profile_uuid_required = 24,
+  reference_rendering_required = 23,
+  reference_profile_uuid_required = 24,
   unknown_label_uuid_required = 25,
   unknown_label_uuid_not_found = 26,
   unordered_set_requires_list_storage = 27
@@ -19877,10 +19877,10 @@ constexpr std::string_view EnumSetRepresentationStatusName(
       return "enum_storage_kind_invalid";
     case EnumSetRepresentationStatus::set_storage_kind_invalid:
       return "set_storage_kind_invalid";
-    case EnumSetRepresentationStatus::donor_rendering_required:
-      return "donor_rendering_required";
-    case EnumSetRepresentationStatus::donor_profile_uuid_required:
-      return "donor_profile_uuid_required";
+    case EnumSetRepresentationStatus::reference_rendering_required:
+      return "reference_rendering_required";
+    case EnumSetRepresentationStatus::reference_profile_uuid_required:
+      return "reference_profile_uuid_required";
     case EnumSetRepresentationStatus::unknown_label_uuid_required:
       return "unknown_label_uuid_required";
     case EnumSetRepresentationStatus::unknown_label_uuid_not_found:
@@ -19900,11 +19900,11 @@ struct EnumSetRepresentationValidationResult {
   }
 };
 
-inline bool EnumSetRenderingPolicyRequiresDonor(
+inline bool EnumSetRenderingPolicyRequiresReference(
     const EnumSetRepresentationDescriptor& descriptor) noexcept {
-  return descriptor.storage_kind == EnumSetStorageKind::donor_native ||
+  return descriptor.storage_kind == EnumSetStorageKind::reference_native ||
          descriptor.unknown_label_policy ==
-             EnumSetUnknownLabelPolicy::donor_compatibility;
+             EnumSetUnknownLabelPolicy::reference_compatibility;
 }
 
 inline bool EnumSetHasLabelUuid(
@@ -19978,9 +19978,9 @@ ValidateEnumSetRepresentationDescriptor(
       !descriptor.ordered && descriptor.storage_kind != EnumSetStorageKind::list) {
     return {EnumSetRepresentationStatus::unordered_set_requires_list_storage};
   }
-  if (EnumSetRenderingPolicyRequiresDonor(descriptor) &&
-      ExecutionDataPacketUuidIsNil(descriptor.donor_profile_uuid)) {
-    return {EnumSetRepresentationStatus::donor_profile_uuid_required};
+  if (EnumSetRenderingPolicyRequiresReference(descriptor) &&
+      ExecutionDataPacketUuidIsNil(descriptor.reference_profile_uuid)) {
+    return {EnumSetRepresentationStatus::reference_profile_uuid_required};
   }
   if (descriptor.unknown_label_policy ==
           EnumSetUnknownLabelPolicy::map_to_unknown_label &&
@@ -20003,9 +20003,9 @@ ValidateEnumSetRepresentationDescriptor(
     if (label.canonical_rendering.empty()) {
       return {EnumSetRepresentationStatus::label_rendering_required, index};
     }
-    if (EnumSetRenderingPolicyRequiresDonor(descriptor) &&
-        label.donor_rendering_name.empty()) {
-      return {EnumSetRepresentationStatus::donor_rendering_required, index};
+    if (EnumSetRenderingPolicyRequiresReference(descriptor) &&
+        label.reference_rendering_name.empty()) {
+      return {EnumSetRepresentationStatus::reference_rendering_required, index};
     }
     if (label.ordinal != index) {
       return {EnumSetRepresentationStatus::label_ordinal_mismatch, index};
@@ -21413,7 +21413,7 @@ inline ExecutionResultEnvelopeValidationResult ValidateExecutionResultEnvelope(
               column_index};
     }
     if (column.semantic_name.empty() || column.native_rendering_name.empty() ||
-        column.donor_rendering_name.empty()) {
+        column.reference_rendering_name.empty()) {
       return {ExecutionResultEnvelopeStatus::column_rendering_metadata_required,
               ExecutionDataPacketStatus::ok, ExecutionRowBatchStatus::ok, 0, 0,
               column_index};
@@ -21508,7 +21508,7 @@ enum class ExecutionCoercionCategory : std::uint8_t {
   lossless_implicit = 1,
   lossless_explicit = 2,
   lossy_explicit = 3,
-  donor_compatibility_explicit = 4,
+  reference_compatibility_explicit = 4,
   domain_to_base = 5,
   base_to_domain = 6,
   forbidden = 7
@@ -21523,7 +21523,7 @@ enum class ExecutionCoercionFailureIdentity : std::uint8_t {
   target_nullability_violation = 5,
   explicit_cast_required = 6,
   lossy_cast_not_allowed = 7,
-  donor_profile_required = 8,
+  reference_profile_required = 8,
   domain_boundary_not_allowed = 9,
   domain_metadata_required = 10,
   descriptor_identity_mismatch = 11,
@@ -21550,8 +21550,8 @@ constexpr std::string_view ExecutionCoercionFailureIdentityName(
       return "EXPLICIT_CAST_REQUIRED";
     case ExecutionCoercionFailureIdentity::lossy_cast_not_allowed:
       return "LOSSY_CAST_NOT_ALLOWED";
-    case ExecutionCoercionFailureIdentity::donor_profile_required:
-      return "DONOR_PROFILE_REQUIRED";
+    case ExecutionCoercionFailureIdentity::reference_profile_required:
+      return "REFERENCE_PROFILE_REQUIRED";
     case ExecutionCoercionFailureIdentity::domain_boundary_not_allowed:
       return "DOMAIN_BOUNDARY_NOT_ALLOWED";
     case ExecutionCoercionFailureIdentity::domain_metadata_required:
@@ -21569,7 +21569,7 @@ constexpr std::string_view ExecutionCoercionFailureIdentityName(
 struct ExecutionCoercionContext {
   bool explicit_cast = false;
   bool allow_lossy = false;
-  bool donor_compatibility_profile = false;
+  bool reference_compatibility_profile = false;
   bool allow_domain_boundary = false;
   bool require_identity_descriptor_match = true;
   bool source_payload_text_valid = true;
@@ -21749,14 +21749,14 @@ inline ExecutionCoercionValidationResult ValidateExecutionCoercionRequest(
       return ExecutionCoercionFailure(
           ExecutionCoercionFailureIdentity::coercion_forbidden);
 
-    case ExecutionCoercionCategory::donor_compatibility_explicit:
+    case ExecutionCoercionCategory::reference_compatibility_explicit:
       if (!request.context.explicit_cast) {
         return ExecutionCoercionFailure(
             ExecutionCoercionFailureIdentity::explicit_cast_required);
       }
-      if (!request.context.donor_compatibility_profile) {
+      if (!request.context.reference_compatibility_profile) {
         return ExecutionCoercionFailure(
-            ExecutionCoercionFailureIdentity::donor_profile_required);
+            ExecutionCoercionFailureIdentity::reference_profile_required);
       }
       return ExecutionCoercionOk(request.category);
 

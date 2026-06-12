@@ -120,9 +120,9 @@ bool MetadataOnlyMGAEvidenceIsPresent(const std::string& evidence) {
          Require(evidence.find("mga_finality_authority=engine_transaction_inventory") !=
                      std::string::npos,
                  "MGA finality authority evidence missing") &&
-         Require(evidence.find("parser_or_donor_finality_authority=false") !=
+         Require(evidence.find("parser_or_reference_finality_authority=false") !=
                      std::string::npos,
-                 "parser/donor finality rejection evidence missing") &&
+                 "parser/reference finality rejection evidence missing") &&
          Require(evidence.find("pruning_metadata_not_visibility_or_finality_authority") !=
                      std::string::npos,
                  "pruning metadata advisory evidence missing");

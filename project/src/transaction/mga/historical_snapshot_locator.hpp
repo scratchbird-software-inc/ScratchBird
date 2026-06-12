@@ -60,7 +60,7 @@ struct HistoricalAuditSnapshotResult {
   bool retired_history_exact = false;
   bool no_cluster_remote_fail_closed = false;
   bool parser_finality_authority = false;
-  bool donor_finality_authority = false;
+  bool reference_finality_authority = false;
   DiagnosticRecord diagnostic;
 
   bool ok() const {

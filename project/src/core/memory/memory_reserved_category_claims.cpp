@@ -22,7 +22,7 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityBoundary =
-    "reserved_memory_claim.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority";
+    "reserved_memory_claim.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -117,10 +117,10 @@ ReservedMemoryClaimResult ValidateReservedMemoryCategoryClaim(
     return Block(request, "SB_MEMORY_RESERVED_CLAIM.MISSING_POLICY_GENERATION",
                  "policy_generation_required_for_production_claim");
   }
-  if (request.parser_or_client_authority || request.donor_authority ||
+  if (request.parser_or_client_authority || request.reference_authority ||
       request.wal_authority) {
     return Block(request, "SB_MEMORY_RESERVED_CLAIM.UNSAFE_AUTHORITY",
-                 "parser_client_donor_or_wal_authority_rejected");
+                 "parser_client_reference_or_wal_authority_rejected");
   }
   if (request.claim_kind ==
           ReservedMemoryClaimKind::sparse_physical_reservation &&

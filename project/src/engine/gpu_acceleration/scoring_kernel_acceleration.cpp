@@ -80,7 +80,7 @@ ScoringKernelResult Refuse(std::string code, std::string detail) {
   Add(&result.evidence, "scoring_kernel.fail_closed=true");
   Add(&result.evidence, "scoring_kernel.accelerator_only=true");
   Add(&result.evidence, "mga_finality_authority=engine_transaction_inventory");
-  Add(&result.evidence, "parser_or_donor_authority=false");
+  Add(&result.evidence, "parser_or_reference_authority=false");
   Add(&result.evidence, "provider_transaction_finality_authority=false");
   Add(&result.evidence, "provider_visibility_authority=false");
   Add(&result.evidence, "provider_security_policy_authority=false");
@@ -180,7 +180,7 @@ ScoringKernelResult ScalarFallback(const ScoringKernelRequest& request,
   Add(&result.evidence, "scoring_kernel.scalar_reference=exact");
   Add(&result.evidence, "scoring_kernel.accelerator_only=true");
   Add(&result.evidence, "mga_finality_authority=engine_transaction_inventory");
-  Add(&result.evidence, "parser_or_donor_authority=false");
+  Add(&result.evidence, "parser_or_reference_authority=false");
   Add(&result.evidence, "provider_transaction_finality_authority=false");
   Add(&result.evidence, "provider_visibility_authority=false");
   Add(&result.evidence, "provider_security_policy_authority=false");
@@ -212,7 +212,7 @@ ScoringKernelResult AcceleratorSuccess(
   Add(&result.evidence, "scoring_kernel.scalar_equivalence=verified");
   Add(&result.evidence, "scoring_kernel.accelerator_only=true");
   Add(&result.evidence, "mga_finality_authority=engine_transaction_inventory");
-  Add(&result.evidence, "parser_or_donor_authority=false");
+  Add(&result.evidence, "parser_or_reference_authority=false");
   Add(&result.evidence, "provider_transaction_finality_authority=false");
   Add(&result.evidence, "provider_visibility_authority=false");
   Add(&result.evidence, "provider_security_policy_authority=false");
@@ -228,7 +228,7 @@ bool UnsafeProviderAuthority(const ScoringKernelProviderManifest& manifest) {
          manifest.claims_visibility_authority ||
          manifest.claims_security_policy_authority ||
          manifest.claims_redaction_policy_authority ||
-         manifest.claims_parser_or_donor_authority ||
+         manifest.claims_parser_or_reference_authority ||
          manifest.claims_recovery_authority ||
          manifest.claims_page_or_catalog_authority;
 }

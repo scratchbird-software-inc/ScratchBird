@@ -126,7 +126,7 @@ opt::OptimizerRuntimeFeedback RuntimeFeedback() {
   feedback.max_freshness_microseconds = 60000000;
   feedback.advisory_only = true;
   feedback.mga_visibility_recheck_preserved = true;
-  feedback.parser_or_donor_authority = false;
+  feedback.parser_or_reference_authority = false;
   feedback.transaction_finality_authority = "engine_transaction_inventory";
   return feedback;
 }
@@ -159,7 +159,7 @@ opt::OptimizerStatisticsLifecycleRequest StatisticsLifecycleRequest() {
   request.security_recheck_present = true;
   request.epoch_evidence_present = true;
   request.advisory_only = true;
-  request.parser_or_donor_authority = false;
+  request.parser_or_reference_authority = false;
   request.agent_policy_safe = true;
   request.catalog_descriptor_present = true;
   request.catalog_write_admitted = true;
@@ -322,11 +322,11 @@ void HintPolicyIsFirstClassAndNonSqlAuthoritative() {
               "SB_OPT_HINT_POLICY.PARSER_SQL_REFUSED",
           "parser execution authority must be refused");
 
-  auto donor = request;
-  donor.donor_or_legacy_authority_claimed = true;
-  Require(opt::EvaluateOptimizerHintPolicyAdmission(donor).diagnostic_code ==
+  auto reference = request;
+  reference.reference_or_legacy_authority_claimed = true;
+  Require(opt::EvaluateOptimizerHintPolicyAdmission(reference).diagnostic_code ==
               "SB_OPT_HINT_POLICY.UNSAFE_AUTHORITY_REFUSED",
-          "donor or legacy authority must be refused");
+          "reference or legacy authority must be refused");
 
   auto name_authority = request;
   name_authority.name_authority_claimed = true;
@@ -446,10 +446,10 @@ void StatisticsLifecyclePlansRefreshAndCatalogPersistence() {
           "serialized lifecycle evidence should reject finality overclaim");
 
   auto unsafe = request;
-  unsafe.parser_or_donor_authority = true;
+  unsafe.parser_or_reference_authority = true;
   Require(opt::EvaluateOptimizerStatisticsLifecycle(unsafe).diagnostic_code ==
-              "SB_OPT_STATS_LIFECYCLE.UNSAFE_PARSER_DONOR_AUTHORITY",
-          "statistics lifecycle must refuse parser or donor authority");
+              "SB_OPT_STATS_LIFECYCLE.UNSAFE_PARSER_REFERENCE_AUTHORITY",
+          "statistics lifecycle must refuse parser or reference authority");
 }
 
 void FeedbackPlanChangesRequireStabilityAndExplainLineage() {
@@ -471,8 +471,8 @@ void FeedbackPlanChangesRequireStabilityAndExplainLineage() {
   Require(stability.benchmark_clean_permitted,
           "safe runtime feedback with exact fallback may be benchmark clean");
   Require(Contains(stability.evidence,
-                   "feedback_stability.parser_or_donor_authority=false"),
-          "feedback stability must reject parser or donor authority");
+                   "feedback_stability.parser_or_reference_authority=false"),
+          "feedback stability must reject parser or reference authority");
   Require(Contains(stability.evidence,
                    "feedback_stability.metric_finality_or_visibility_authority=false"),
           "feedback stability must keep metrics out of finality and visibility");
@@ -484,10 +484,10 @@ void FeedbackPlanChangesRequireStabilityAndExplainLineage() {
           "feedback plan changes must preserve result equivalence");
 
   auto parser_bad = request;
-  parser_bad.observations[0].parser_or_donor_authority = true;
+  parser_bad.observations[0].parser_or_reference_authority = true;
   Require(opt::EvaluateOptimizerFeedbackStability(parser_bad).diagnostic_code ==
               "SB_OPT_FEEDBACK_STABILITY_UNSAFE_AUTHORITY",
-          "feedback stability must refuse parser or donor authority");
+          "feedback stability must refuse parser or reference authority");
 
   const auto bound_request = BoundRequest();
   const auto validation = opt::ValidateBoundOptimizerRequest(bound_request);

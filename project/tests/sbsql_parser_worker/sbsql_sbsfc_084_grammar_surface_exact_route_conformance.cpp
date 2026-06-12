@@ -47,7 +47,7 @@ const CaseRow kCases[] = {
     {"SBSQL-CE7735D5B9EF", "limbo_stmt", "grammar_production", "LIMBO STMT inspect;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"},
     {"SBSQL-CE84AC72F5A6", "pre_split_clause", "grammar_production", "PRE SPLIT CLAUSE region;", "query_descriptor_validation", "query_plan_descriptor", "sys.query.plan_descriptor"},
     {"SBSQL-CEDFBAFE07AC", "salvage_options", "grammar_production", "SALVAGE OPTIONS repair;", "storage_descriptor_validation", "storage_management_descriptor", "sys.storage.management_profile"},
-    {"SBSQL-CFBAFFF843B6", "donor_profile_stmt", "grammar_production", "DONOR PROFILE STMT inspect;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"},
+    {"SBSQL-CFBAFFF843B6", "reference_profile_stmt", "grammar_production", "REFERENCE PROFILE STMT inspect;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"},
     {"SBSQL-CFF8590ACD1B", "returning_clause", "grammar_production", "RETURNING CLAUSE row;", "query_descriptor_validation", "query_plan_descriptor", "sys.query.plan_descriptor"},
     {"SBSQL-D055AACF2C98", "historical_read_clause", "grammar_production", "HISTORICAL READ CLAUSE as_of;", "query_descriptor_validation", "query_plan_descriptor", "sys.query.plan_descriptor"},
     {"SBSQL-D059E587EC5D", "artifact_ref", "grammar_production", "ARTIFACT REF package;", "catalog_descriptor_validation", "catalog_descriptor", "sys.catalog.object_descriptor"},
@@ -178,7 +178,10 @@ void RequireRegistryEvidence(const CaseRow& row) {
 
 void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts) {
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
-  if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
+  if (artifacts.ast.messages.has_errors()) {
+    std::cerr << "SBSFC-084 failing row SQL: " << row.sql << '\n';
+    std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
+  }
   if (!artifacts.bound.bound) std::cerr << RenderMessageVectorSet(artifacts.bound.messages);
   if (!artifacts.verifier.admitted) std::cerr << RenderMessageVectorSet(artifacts.verifier.messages);
   Require(!artifacts.cst.messages.has_errors(), "SBSFC-084 CST failed");

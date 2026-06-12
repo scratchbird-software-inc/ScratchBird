@@ -21,6 +21,6 @@ required_libraries: []
 required_parser_support_udrs: []
 supported_parser_modes:
   - native_sbsql
-supported_donor_modes: []
+supported_reference_modes: []
 supported_result_renderers:
   - native_sbsql

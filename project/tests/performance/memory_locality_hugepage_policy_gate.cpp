@@ -42,7 +42,7 @@ void RequireEvidence(const std::vector<std::string>& evidence) {
           "MMCH-062 evidence marker missing");
   Require(EvidenceHas(
               evidence,
-              "memory_locality.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority"),
+              "memory_locality.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority"),
           "MMCH-062 authority boundary evidence missing");
 }
 

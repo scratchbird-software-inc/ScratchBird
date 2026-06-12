@@ -292,8 +292,8 @@ void RequireRelationalAuthority(
           "DPC-054 relational must not own parser execution");
   Require(!authority.owns_timestamp_ordering,
           "DPC-054 relational must not own timestamp ordering");
-  Require(!authority.owns_donor_storage,
-          "DPC-054 relational must not own donor storage");
+  Require(!authority.owns_reference_storage,
+          "DPC-054 relational must not own reference storage");
   Require(!authority.owns_sql_execution,
           "DPC-054 relational must not own SQL execution");
 }
@@ -312,8 +312,8 @@ void RequireJoinDmlAuthority(
           "DPC-054 join/DML must not own parser execution");
   Require(!authority.owns_timestamp_ordering,
           "DPC-054 join/DML must not own timestamp ordering");
-  Require(!authority.owns_donor_storage,
-          "DPC-054 join/DML must not own donor storage");
+  Require(!authority.owns_reference_storage,
+          "DPC-054 join/DML must not own reference storage");
   Require(!authority.owns_sql_execution,
           "DPC-054 join/DML must not own SQL execution");
   Require(!authority.owns_durable_commit,
@@ -378,7 +378,7 @@ void PrintProofRow(const LaneProof& proof) {
             << ",recovery_authority=false"
             << ",parser_execution_authority=false"
             << ",timestamp_ordering_authority=false"
-            << ",donor_storage_authority=false"
+            << ",reference_storage_authority=false"
             << ",sql_execution_authority=false"
             << ",durable_commit_authority=false"
             << ",deterministic_equivalent=true"

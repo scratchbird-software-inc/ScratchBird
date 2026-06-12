@@ -4,4 +4,4 @@ FSPE012G-MISSING-NAME,public,app_reader,missing,SELECT * FROM missing_table,SBSQ
 FSPE012G-DIAGNOSTIC-REDACTION,public,app_reader,not_applicable,SELECT 1,SERVER.ADMISSION.REFUSED,code;message_key;severity;safe_message;reason_code,bounded_same_class,ready
 FSPE012G-CACHE-AUTHORITY,public,app_reader_to_writer,visible_after_grant,SELECT * FROM sys.version,CACHE.SECURITY_EPOCH_MISS,security_policy_epoch;grant_epoch;role_set_hash;search_path_hash;language_profile,bounded_same_class,ready
 FSPE012G-METADATA-PROJECTION,public,app_reader,visible_rowset,SELECT 1,RESULT.METADATA.PUBLIC_PROJECTION,value_column_only,bounded_same_class,ready
-FSPE012G-DONOR-RENDERING,postgres_compat,app_reader,hidden,SELECT * FROM hidden_table,SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE,code;severity;message;component,bounded_same_class,ready
+FSPE012G-REFERENCE-RENDERING,postgres_compat,app_reader,hidden,SELECT * FROM hidden_table,SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE,code;severity;message;component,bounded_same_class,ready

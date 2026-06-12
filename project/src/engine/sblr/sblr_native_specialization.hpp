@@ -15,7 +15,7 @@ namespace scratchbird::engine::sblr {
 // SEARCH_KEY: SB_SBLR_NATIVE_SPECIALIZATION_ODF_104
 // SBLR exposes optional native specialization only through stable prepared
 // template identity and exact scalar fallback. It does not transfer
-// transaction, visibility, security, redaction, parser, or donor authority to
+// transaction, visibility, security, redaction, parser, or reference authority to
 // the native provider.
 
 using SblrNativeSpecializationKind =

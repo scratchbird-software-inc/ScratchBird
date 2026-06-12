@@ -77,7 +77,7 @@ SblrResult EvaluateSblrCastForm(std::string_view operation_id,
                                 std::string_view target_descriptor_id,
                                 const SblrExecutionContext& context,
                                 bool explicit_cast = true,
-                                bool donor_compatibility_profile = false);
+                                bool reference_compatibility_profile = false);
 SblrResult EvaluateSblrExtractForm(std::string_view operation_id,
                                    std::string_view field_name,
                                    const SblrValue& value,

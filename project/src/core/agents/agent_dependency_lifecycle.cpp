@@ -286,7 +286,7 @@ AgentRuntimeStatus ValidateAgentDependencyLifecycleAuthorityBoundary(
       boundary.recovery_authority ||
       boundary.security_authority ||
       boundary.parser_authority ||
-      boundary.donor_authority ||
+      boundary.reference_authority ||
       boundary.write_ahead_log_authority ||
       boundary.benchmark_authority ||
       boundary.optimizer_plan_authority ||

@@ -275,32 +275,32 @@ resources::ResourceSeedCatalogImage ValidateSeedPack(Harness* harness) {
   return image;
 }
 
-void ValidateDonorTemporalProfiles(
+void ValidateReferenceTemporalProfiles(
     const resources::ResourceSeedCatalogImage& image,
     Harness* harness) {
   const auto seed = TimezoneSeedFromImage(image);
 
-  datatypes::DonorTemporalWireProfileRequest request;
-  request.donor_engine = "postgresql";
-  request.donor_type_or_family = "timestamptz";
+  datatypes::ReferenceTemporalWireProfileRequest request;
+  request.reference_engine = "postgresql";
+  request.reference_type_or_family = "timestamptz";
   request.wire_profile = "timestamp_with_time_zone";
   request.encoded_value = "2024-11-03T01:30:00-04:00";
   request.timezone_seed = seed;
-  const auto offset_result = datatypes::ValidateDonorTemporalWireProfile(request);
+  const auto offset_result = datatypes::ValidateReferenceTemporalWireProfile(request);
   harness->Check(offset_result.ok() &&
                      offset_result.timezone_identifier == "-04:00" &&
                      offset_result.timezone_offset_minutes == -240,
-                 "offset timestamp donor wire profile did not normalize");
+                 "offset timestamp reference wire profile did not normalize");
 
   request.encoded_value = "2024-03-10T02:30:00 America/New_York";
-  const auto named_result = datatypes::ValidateDonorTemporalWireProfile(request);
+  const auto named_result = datatypes::ValidateReferenceTemporalWireProfile(request);
   harness->Check(named_result.ok() &&
                      named_result.used_timezone_seed &&
                      named_result.timezone_identifier == "America/New_York",
-                 "named timezone donor wire profile did not use seed authority");
+                 "named timezone reference wire profile did not use seed authority");
 
   request.timezone_seed = {};
-  const auto missing_seed = datatypes::ValidateDonorTemporalWireProfile(request);
+  const auto missing_seed = datatypes::ValidateReferenceTemporalWireProfile(request);
   harness->Check(!missing_seed.ok() &&
                      missing_seed.diagnostic.diagnostic_code ==
                          "SB_DATATYPE_WIRE_CONVERSION_REJECTED",
@@ -308,9 +308,9 @@ void ValidateDonorTemporalProfiles(
 
   request.timezone_seed = seed;
   request.wire_profile = "date_wire";
-  request.donor_type_or_family = "date";
+  request.reference_type_or_family = "date";
   request.encoded_value = "2024-05-08Z";
-  const auto forbidden_zone = datatypes::ValidateDonorTemporalWireProfile(request);
+  const auto forbidden_zone = datatypes::ValidateReferenceTemporalWireProfile(request);
   harness->Check(!forbidden_zone.ok(), "DATE wire profile accepted a timezone");
 }
 
@@ -364,7 +364,7 @@ int main() {
   ValidateEngineNameProfiles(&harness);
   const auto image = ValidateSeedPack(&harness);
   if (harness.ok) {
-    ValidateDonorTemporalProfiles(image, &harness);
+    ValidateReferenceTemporalProfiles(image, &harness);
   }
   ValidateSblrI18nRuntime(&harness);
   return harness.ok ? 0 : 1;

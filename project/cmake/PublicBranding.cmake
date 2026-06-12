@@ -129,6 +129,8 @@ function(sb_public_configure_output_stage project_root python_executable)
     "}\n")
 
   add_custom_target(scratchbird_public_output_stage ALL
+    COMMAND "${CMAKE_COMMAND}" -E remove_directory
+            "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird"
     COMMAND "${CMAKE_COMMAND}" -E make_directory
             "${SB_PUBLIC_ARTIFACT_ROOT}/bin"
             "${SB_PUBLIC_ARTIFACT_ROOT}/lib"
@@ -138,9 +140,18 @@ function(sb_public_configure_output_stage project_root python_executable)
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${project_root}/resources"
             "${SB_PUBLIC_ARTIFACT_ROOT}/share/scratchbird/resources"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory
-            "${project_root}/config/templates"
-            "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${project_root}/config/templates/SBsrv.conf"
+            "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird/SBsrv.conf"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${project_root}/config/templates/SBgate.conf"
+            "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird/SBgate.conf"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${project_root}/config/templates/SBmgr.conf"
+            "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird/SBmgr.conf"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${project_root}/config/templates/SBParser.conf"
+            "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird/SBParser.conf"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory
             "${project_root}/docs/public_api"
             "${SB_PUBLIC_ARTIFACT_ROOT}/share/scratchbird/docs/public_api"
@@ -151,7 +162,7 @@ function(sb_public_configure_output_stage project_root python_executable)
             "${project_root}/examples"
             "${SB_PUBLIC_ARTIFACT_ROOT}/share/scratchbird/examples"
     COMMAND "${python_executable}"
-            "${project_root}/../tools/release/public_output_stage_gate.py"
+            "${project_root}/tools/release/public_output_stage_gate.py"
             "--artifact-root=${SB_PUBLIC_ARTIFACT_ROOT}"
             "--platform=${SB_PUBLIC_TARGET_PLATFORM}"
     COMMENT "Stage ScratchBird public standalone output tree"

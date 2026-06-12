@@ -301,8 +301,8 @@ void RequireRegistryAndDispatch(const ShardPlacementRouteRow& row) {
           Message(row, "engine_dispatch", "transaction finality authority was granted"));
   Require(HasEvidence(dispatch.api_result, "recovery_authority", "false"),
           Message(row, "engine_dispatch", "recovery authority was granted"));
-  Require(HasEvidence(dispatch.api_result, "donor_wal_recovery_authority", "false"),
-          Message(row, "engine_dispatch", "donor/WAL recovery authority was granted"));
+  Require(HasEvidence(dispatch.api_result, "reference_wal_recovery_authority", "false"),
+          Message(row, "engine_dispatch", "reference/WAL recovery authority was granted"));
   Require(HasEvidence(dispatch.api_result, "private_cluster_execution", "false"),
           Message(row, "engine_dispatch", "private cluster execution was granted"));
   Require(HasEvidence(dispatch.api_result, "cluster_provider_dispatch", "false"),

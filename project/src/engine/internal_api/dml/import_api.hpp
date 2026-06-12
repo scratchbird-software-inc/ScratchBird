@@ -13,7 +13,7 @@
 // SB_PID007_IMPORT_SURFACE
 //
 // Import planning is an engine-owned API surface. Parsers may decode client
-// syntax, client protocol packets, donor bulk APIs, and client-side file
+// syntax, client protocol packets, reference bulk APIs, and client-side file
 // handles, but the engine only accepts canonical UUID/descriptors/policy
 // envelopes and never executes SQL text.
 
@@ -60,7 +60,7 @@ struct EngineImportColumnMapping {
 
 struct EngineImportPolicyEnvelope : public EngineImportRejectPolicyEnvelope {
     bool strict_bulk_load_requested = false;
-    bool donor_relaxed_semantics_requested = false;
+    bool reference_relaxed_semantics_requested = false;
 };
 
 struct EnginePlanImportRowsRequest : public EngineApiRequest {

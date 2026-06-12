@@ -12,7 +12,7 @@ This directory holds generated implementation backlogs, matrix coverage reports,
 | `AGENT_ORCHESTRATION_PLAN.md` | `FSPE-000A` | Coordinator, worker assignment, write-scope, and five-minute validation cadence. |
 | `BASELINE_BUILD_CAPABILITY_INVENTORY.md` | `FSPE-000B` | Build targets, feature gates, LLVM/real128/library capability inventory. |
 | `REGISTRY_FAMILY_BATCHING_PLAN.csv` | `FSPE-000C` | Deterministic row batching by surface/function/statement family. |
-| `FEATURE_PROFILE_CLUSTER_GATE_POLICY.md` | `FSPE-000D` | Standalone, dev-only, donor-profile, and cluster-private gating rules. |
+| `FEATURE_PROFILE_CLUSTER_GATE_POLICY.md` | `FSPE-000D` | Standalone, dev-only, reference-profile, and cluster-private gating rules. |
 | `DEFINITION_OF_DONE_CONTRACT.md` | `FSPE-000E` | Exact implemented-in-full standard for all slices. |
 | `VALIDATION_COMMAND_MATERIALIZATION.csv` | `FSPE-000F` | Runnable pre-code validation commands and assigned future gate contracts. |
 | `p0_precode_validation.py` | `FSPE-000F` | Runnable validation script for P0 through P0L gates. |
@@ -46,7 +46,7 @@ This directory holds generated implementation backlogs, matrix coverage reports,
 | `FSPE_010B8_VALIDATION_RESULT.md` | `FSPE-010B8` | Timeout/cancel/drain/parser-kill finality validation evidence. |
 | `FSPE_010B9_VALIDATION_RESULT.md` | `FSPE-010B9` | FSPE-010B completion gate and parent closure evidence. |
 | `FSPE_011_VALIDATION_RESULT.md` | `FSPE-011` | Generated full-surface conformance command and result evidence. |
-| `PARSER_COVERAGE_REPORT.md` | `FSPE-011` | Mechanical registry, operation matrix, engine gap, donor alias, message-vector, and batch coverage evidence. |
+| `PARSER_COVERAGE_REPORT.md` | `FSPE-011` | Mechanical registry, operation matrix, engine gap, reference alias, message-vector, and batch coverage evidence. |
 | `FSPE_011A_VALIDATION_RESULT.md` | `FSPE-011A` | Reusable regression test-bed policy and manifest gate evidence. |
 | `SERVER_ENGINE_GAP_CLOSURE_REPORT.md` | `FSPE-009` / `FSPE-010` | Engine gap closure evidence and server handoff boundary report. |
 | `FULL_ROUTE_CONFORMANCE_REPORT.md` | `FSPE-010` | Listener/parser/server/engine full-route smoke and server admission conformance evidence. |
@@ -54,8 +54,8 @@ This directory holds generated implementation backlogs, matrix coverage reports,
 | `MESSAGE_VECTOR_COVERAGE_REPORT.md` | `FSPE-010A` | Message-vector backlog, runtime shape, parser rendering, and no-raw-string diagnostic gate evidence. |
 | `STREAMING_RESULT_PROTOCOL_REPORT.md` | `FSPE-010B` | Partial streaming cursor protocol report and remaining P10B gap inventory. |
 | `REGRESSION_TEST_BED_PLAN.md` | `FSPE-011A` | Shardable CTest-ready regression fixture policy. |
-| `FSPE_011B_VALIDATION_RESULT.md` | `FSPE-011B` | Donor alias mapping/rendering gate evidence. |
-| `DONOR_ALIAS_RENDERING_REPORT.md` | `FSPE-011B` | Donor profile alias rendering fixture coverage and result-shape policy. |
+| `FSPE_011B_VALIDATION_RESULT.md` | `FSPE-011B` | Reference alias mapping/rendering gate evidence. |
+| `REFERENCE_ALIAS_RENDERING_REPORT.md` | `FSPE-011B` | Reference profile alias rendering fixture coverage and result-shape policy. |
 | `SEMANTIC_ORACLE_AUTHORITY_MAP.csv` | `FSPE-011C` | Expected-result authority for generated tests. |
 | `SEMANTIC_ORACLE_AUTHORITY_REPORT.md` | `FSPE-011C` | Semantic oracle authority coverage and validation summary. |
 | `FSPE_011C_VALIDATION_RESULT.md` | `FSPE-011C` | Semantic oracle authority gate evidence. |
@@ -78,9 +78,9 @@ This directory holds generated implementation backlogs, matrix coverage reports,
 | `FSPE_012D_VALIDATION_RESULT.md` | `FSPE-012D` | Cross-platform IPC CTest, deterministic manifest repair, full parser-worker label, and P0 validation evidence. |
 | `LOCALE_CHARSET_COLLATION_TIMEZONE_REPORT.md` | `FSPE-012E` | Locale charset collation timezone parser and engine regression evidence. |
 | `FSPE_012E_VALIDATION_RESULT.md` | `FSPE-012E` | Locale charset collation timezone CTest, deterministic manifest repair, full parser-worker label, and P0 validation evidence. |
-| `METADATA_RESULT_SHAPE_REPORT.md` | `FSPE-012F` | Metadata result-shape command-tag warning cursor and donor-rendering evidence. |
+| `METADATA_RESULT_SHAPE_REPORT.md` | `FSPE-012F` | Metadata result-shape command-tag warning cursor and reference-rendering evidence. |
 | `FSPE_012F_VALIDATION_RESULT.md` | `FSPE-012F` | Metadata result-shape CTest, deterministic manifest repair, full parser-worker label, and P0 validation evidence. |
-| `SECURITY_REDACTION_SIDE_CHANNEL_REPORT.md` | `FSPE-012G` | Hidden-object, metadata, diagnostic, cache, timing, and donor-rendering leakage gate. |
+| `SECURITY_REDACTION_SIDE_CHANNEL_REPORT.md` | `FSPE-012G` | Hidden-object, metadata, diagnostic, cache, timing, and reference-rendering leakage gate. |
 | `FSPE_012G_VALIDATION_RESULT.md` | `FSPE-012G` | Security redaction side-channel CTest, deterministic manifest repair, full parser-worker label, and P0 validation evidence. |
 | `UPGRADE_MIGRATION_COMPATIBILITY_REPORT.md` | `FSPE-012H` | Registry, SBLR, catalog seed, cache, and database compatibility gate. |
 | `FSPE_012H_VALIDATION_RESULT.md` | `FSPE-012H` | Upgrade/migration compatibility CTest, deterministic manifest, full parser-worker label, and adjacent lifecycle evidence. |

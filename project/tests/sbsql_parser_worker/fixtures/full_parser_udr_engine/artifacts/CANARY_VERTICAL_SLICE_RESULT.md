@@ -15,7 +15,7 @@ Owning slice: `FSPE-001A`
 | Expression/runtime result | `SBSQL-971C709406A0` / `@` resolved through generated registry, batch membership, oracle assignment, and handler coverage. |
 | Cluster-private standalone fail-closed result | `SBSQL-39C545BEBF5A` / `cluster_publish_options` resolved to cluster parser gate, server admission gate, engine fail-closed/profile rule, and `diagnostic.cluster_profile_fail_closed`. |
 | Native-now closure decision result | `SBSQL-DF502F8DF4FA` / `Accept` resolves as `native_now` through `parser.expression_runtime.function`, `lowering.expression_runtime.function`, and `engine.rule.sblr_expression_runtime_v3` with retained closure-action evidence. |
-| Donor alias mapping/rendering result | `apache_ignite:query_select` maps to native `select` or exact diagnostic refusal with `donor_profile_message_vector_rendering`. |
+| Reference alias mapping/rendering result | `apache_ignite:query_select` maps to native `select` or exact diagnostic refusal with `reference_profile_message_vector_rendering`. |
 | Message-vector evidence | `SERVER.ADMISSION.REFUSED` has rendering template, redaction policy, and fixture id `MSGV-SERVER-ADMISSION-REFUSED`. |
 | Full-route smoke evidence | `sb_listener_sbp_sbsql_server_engine_execution_smoke` passed under the canary label. |
 | Failure inventory rows | none |
@@ -39,4 +39,4 @@ Results:
 
 ## Boundary Notes
 
-The canary proves the registry/linter/oracle/message-vector/donor/profile/full-route machinery works on representative rows. It does not implement broad lexer, CST/AST, expression, statement, binder, lowering, UDR, server, or engine closure; those remain owned by `FSPE-002` and later slices.
+The canary proves the registry/linter/oracle/message-vector/reference/profile/full-route machinery works on representative rows. It does not implement broad lexer, CST/AST, expression, statement, binder, lowering, UDR, server, or engine closure; those remain owned by `FSPE-002` and later slices.

@@ -245,7 +245,7 @@ RouteEvidence ExecuteRoute(const RouteCase& route) {
   evidence.evidence.push_back("live_route.active_grants_after_release=0");
   evidence.evidence.push_back("live_route.leak_count=0");
   evidence.evidence.push_back(
-      "live_route.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "live_route.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
   RequireEvidenceHygiene(evidence.evidence);
   std::filesystem::remove_all(root);
   return evidence;
@@ -255,7 +255,7 @@ RouteEvidence ExecuteRoute(const RouteCase& route) {
 
 int main() {
   std::cout << "MMCH-021 authority_note=live_route_memory_arena_evidence_only;"
-               "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+               "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   const std::vector<RouteCase> routes = {
       {"embedded", "embedded.sblr.select_rows.memory_heavy", false},

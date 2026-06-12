@@ -207,12 +207,12 @@ void TestRealBatchOperatorActuals() {
 
 void TestAuthorityRefusals() {
   auto sample = SampleFor("filter", "bad-node", 10, 5, 10, 5);
-  sample.authority.parser_or_donor_authority = true;
+  sample.authority.parser_or_reference_authority = true;
   auto refused = exec::PublishExecutorOperatorActuals(sample);
   Require(!refused.ok &&
               refused.diagnostic_code ==
                   "SB_EXECUTOR_OPERATOR_ACTUALS.UNSAFE_AUTHORITY",
-          "parser/donor authority was not refused");
+          "parser/reference authority was not refused");
 
   sample = SampleFor("filter", "stale-node", 10, 5, 10, 5);
   sample.freshness_microseconds = sample.max_freshness_microseconds + 1;

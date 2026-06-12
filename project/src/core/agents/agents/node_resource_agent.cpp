@@ -99,7 +99,7 @@ NodeResourceAgentResult EvaluateNodeResourceAgentSnapshot(
   if (!snapshot.os_probe_authoritative ||
       !snapshot.metric_registry_authoritative ||
       snapshot.parser_authority || snapshot.client_authority ||
-      snapshot.donor_authority) {
+      snapshot.reference_authority) {
     return Refuse("SB_AGENT_NODE_RESOURCE_AUTHORITY_UNTRUSTED",
                   "agents.node_resource.untrusted_authority",
                   "node resource facts must come from trusted platform metrics");

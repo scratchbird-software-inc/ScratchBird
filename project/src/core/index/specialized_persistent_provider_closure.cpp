@@ -431,8 +431,8 @@ void AddBaseEvidence(SpecializedPersistentProviderClosureResult* result,
                  request.generation_identity.cleanup_generation_floor);
   AddU64Evidence(result, "oldest_active_transaction_id",
                  request.generation_identity.oldest_active_transaction_id);
-  AddBoolEvidence(result, "donor_local_participation",
-                  request.donor_local_participation);
+  AddBoolEvidence(result, "reference_local_participation",
+                  request.reference_local_participation);
   AddBoolEvidence(result, "policy_local_participation",
                   request.policy_local_participation);
   AddBoolEvidence(result, "cluster_local_participation",
@@ -464,7 +464,7 @@ SpecializedPersistentProviderClosureResult BaseResult(
   result.ceic_041_crash_corruption_matrix_claimed = false;
   result.ceic_042_readiness_drift_claimed = false;
   result.all_index_readiness_claimed = false;
-  result.donor_dominance_claimed = false;
+  result.reference_dominance_claimed = false;
   result.enterprise_readiness_claimed = false;
   result.provider_class = request.declaration.provider_class;
   result.recommendation = request.mga_recovery_contract.recommendation;
@@ -497,8 +497,8 @@ SpecializedPersistentProviderClosureResult RefuseClosure(
                   result.ceic_042_readiness_drift_claimed);
   AddBoolEvidence(&result, "result_all_index_readiness_claimed",
                   result.all_index_readiness_claimed);
-  AddBoolEvidence(&result, "result_donor_dominance_claimed",
-                  result.donor_dominance_claimed);
+  AddBoolEvidence(&result, "result_reference_dominance_claimed",
+                  result.reference_dominance_claimed);
   AddBoolEvidence(&result, "result_enterprise_readiness_claimed",
                   result.enterprise_readiness_claimed);
   AddEvidence(&result, "diagnostic_code", result.diagnostic.diagnostic_code);
@@ -566,8 +566,8 @@ const char* SpecializedPersistentProviderClosureStatusName(
         already_closed_by_prior_slice:
       return "ALREADY_CLOSED_BY_PRIOR_SLICE";
     case SpecializedPersistentProviderClosureStatus::
-        donor_emulated_non_runtime:
-      return "DONOR_EMULATED_NON_RUNTIME";
+        reference_emulated_non_runtime:
+      return "REFERENCE_EMULATED_NON_RUNTIME";
     case SpecializedPersistentProviderClosureStatus::
         policy_blocked_non_runtime:
       return "POLICY_BLOCKED_NON_RUNTIME";
@@ -627,7 +627,7 @@ bool SpecializedProviderAuthorityBoundaryClear(
          !boundary.security_authority &&
          !boundary.recovery_authority &&
          !boundary.parser_authority &&
-         !boundary.donor_authority &&
+         !boundary.reference_authority &&
          !boundary.wal_authority &&
          !boundary.provider_authority &&
          !boundary.benchmark_authority &&
@@ -648,7 +648,7 @@ bool SpecializedProviderSuccessorClaimsClear(
          !claims.ceic_041_crash_corruption_matrix_claimed &&
          !claims.ceic_042_readiness_drift_claimed &&
          !claims.all_index_readiness_claimed &&
-         !claims.donor_dominance_claimed &&
+         !claims.reference_dominance_claimed &&
          !claims.enterprise_readiness_claimed;
 }
 
@@ -852,12 +852,12 @@ AdmitSpecializedPersistentProviderClosure(
         SpecializedPersistentProviderClosureStatus::unsupported_family,
         "family is not registered as a built-in index family");
   }
-  if (request.family == IndexFamily::donor_emulated ||
-      descriptor->persistence == IndexPersistenceClass::donor_emulated) {
+  if (request.family == IndexFamily::reference_emulated ||
+      descriptor->persistence == IndexPersistenceClass::reference_emulated) {
     return RefuseClosure(
         request,
-        SpecializedPersistentProviderClosureStatus::donor_emulated_non_runtime,
-        "donor-emulated index mappings are non-runtime non-authority");
+        SpecializedPersistentProviderClosureStatus::reference_emulated_non_runtime,
+        "reference-emulated index mappings are non-runtime non-authority");
   }
   if (request.family == IndexFamily::policy_blocked ||
       descriptor->persistence == IndexPersistenceClass::policy_blocked) {
@@ -895,13 +895,13 @@ AdmitSpecializedPersistentProviderClosure(
             cluster_external_provider_only,
         "cluster specialized provider closure is external-provider-only and cannot be local runtime authority");
   }
-  if (request.donor_local_participation ||
+  if (request.reference_local_participation ||
       request.policy_local_participation ||
       !SpecializedProviderAuthorityBoundaryClear(request.authority_boundary)) {
     return RefuseClosure(
         request,
         SpecializedPersistentProviderClosureStatus::forbidden_authority_claim,
-        "specialized provider closure evidence must not claim donor policy row-truth result-finality transaction finality visibility authorization security recovery parser WAL provider-finality benchmark optimizer plan index finality local-cluster cluster-action or agent-action authority");
+        "specialized provider closure evidence must not claim reference policy row-truth result-finality transaction finality visibility authorization security recovery parser WAL provider-finality benchmark optimizer plan index finality local-cluster cluster-action or agent-action authority");
   }
   if (request.successor_claims.enterprise_readiness_claimed) {
     return RefuseClosure(
@@ -914,7 +914,7 @@ AdmitSpecializedPersistentProviderClosure(
     return RefuseClosure(
         request,
         SpecializedPersistentProviderClosureStatus::successor_scope_overclaim,
-        "CEIC-040 runtime metrics CEIC-041 crash/corruption matrix CEIC-042 readiness drift all-index readiness and donor dominance remain separate successor scope");
+        "CEIC-040 runtime metrics CEIC-041 crash/corruption matrix CEIC-042 readiness drift all-index readiness and reference dominance remain separate successor scope");
   }
   if (!DeclarationValid(request.declaration, request.family)) {
     return RefuseClosure(
@@ -1024,7 +1024,7 @@ AdmitSpecializedPersistentProviderClosure(
   result.ceic_041_crash_corruption_matrix_claimed = false;
   result.ceic_042_readiness_drift_claimed = false;
   result.all_index_readiness_claimed = false;
-  result.donor_dominance_claimed = false;
+  result.reference_dominance_claimed = false;
   result.enterprise_readiness_claimed = false;
   result.closure_status =
       SpecializedPersistentProviderClosureStatus::
@@ -1033,7 +1033,7 @@ AdmitSpecializedPersistentProviderClosure(
       MakeDiagnostic(result.status,
                      result.closure_status,
                      request,
-                     "specialized persistent provider evidence admitted without runtime metrics crash matrix readiness drift all-index donor dominance or enterprise readiness");
+                     "specialized persistent provider evidence admitted without runtime metrics crash matrix readiness drift all-index reference dominance or enterprise readiness");
   AddEvidence(&result, "closure_status",
               SpecializedPersistentProviderClosureStatusName(
                   result.closure_status));
@@ -1049,8 +1049,8 @@ AdmitSpecializedPersistentProviderClosure(
                   result.ceic_042_readiness_drift_claimed);
   AddBoolEvidence(&result, "result_all_index_readiness_claimed",
                   result.all_index_readiness_claimed);
-  AddBoolEvidence(&result, "result_donor_dominance_claimed",
-                  result.donor_dominance_claimed);
+  AddBoolEvidence(&result, "result_reference_dominance_claimed",
+                  result.reference_dominance_claimed);
   AddBoolEvidence(&result, "result_enterprise_readiness_claimed",
                   result.enterprise_readiness_claimed);
   AddEvidence(&result, "provider_closure_boundary",

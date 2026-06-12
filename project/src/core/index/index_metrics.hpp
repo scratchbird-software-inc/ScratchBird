@@ -77,7 +77,7 @@ struct IndexOptimizerMetricDelta {
   double fallback_refusals = 0;
 };
 
-struct IndexDonorProfileMetricDelta {
+struct IndexReferenceProfileMetricDelta {
   double profile_hits = 0;
   double profile_refusals = 0;
   double rechecks = 0;
@@ -111,7 +111,7 @@ struct IndexMetricPublishResult {
 // CEIC_040_INDEX_OPERATION_METRICS_SUPPORT_BUNDLE
 // Index operation metrics and support-bundle rows are evidence only. They must
 // never become transaction finality, visibility, authorization/security,
-// recovery, parser, donor, WAL, benchmark-clean, optimizer-plan, index-finality,
+// recovery, parser, reference, WAL, benchmark-clean, optimizer-plan, index-finality,
 // provider-finality, cluster, or agent authority.
 enum class IndexOperationCounterKind : std::uint8_t {
   probe,
@@ -150,7 +150,7 @@ struct IndexOperationMetricAuthorityBoundary {
   bool security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool benchmark_clean_authority = false;
@@ -178,7 +178,7 @@ struct IndexOperationMetricSample {
   bool ceic_042_readiness_drift_claimed = false;
   bool ceic_090_integrated_metrics_coverage_claimed = false;
   bool ceic_091_integrated_support_bundle_claimed = false;
-  bool donor_dominance_claimed = false;
+  bool reference_dominance_claimed = false;
   bool all_index_readiness_claimed = false;
   bool enterprise_readiness_claimed = false;
 };
@@ -227,7 +227,7 @@ struct IndexOperationMetricSupportBundleRow {
   bool authorization_security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -251,7 +251,7 @@ struct IndexOperationMetricSupportBundleRequest {
   bool ceic_042_readiness_drift_claimed = false;
   bool ceic_090_integrated_metrics_coverage_claimed = false;
   bool ceic_091_integrated_support_bundle_claimed = false;
-  bool donor_dominance_claimed = false;
+  bool reference_dominance_claimed = false;
   bool all_index_readiness_claimed = false;
   bool enterprise_readiness_claimed = false;
 };
@@ -287,8 +287,8 @@ IndexMetricPublishResult PublishIndexMaintenanceMetrics(const IndexMetricIdentit
                                                         const IndexMaintenanceMetricDelta& delta);
 IndexMetricPublishResult PublishIndexOptimizerMetrics(const IndexMetricIdentity& identity,
                                                       const IndexOptimizerMetricDelta& delta);
-IndexMetricPublishResult PublishIndexDonorProfileMetrics(const IndexMetricIdentity& identity,
-                                                         const IndexDonorProfileMetricDelta& delta);
+IndexMetricPublishResult PublishIndexReferenceProfileMetrics(const IndexMetricIdentity& identity,
+                                                         const IndexReferenceProfileMetricDelta& delta);
 IndexMetricPublishResult PublishIndexResidencyMetrics(const IndexMetricIdentity& identity,
                                                       const IndexResidencyMetricDelta& delta);
 IndexMetricPublishResult PublishIndexPageFilespaceMetrics(const IndexMetricIdentity& identity,

@@ -18,7 +18,7 @@ namespace scratchbird::engine::internal_api::observability {
 
 // SEARCH_KEY: OEIC_OPTIMIZER_METRIC_RETENTION_REDACTION
 // Optimizer metric support-bundle export is redacted evidence only. It cannot
-// provide transaction finality, visibility, security, parser, donor, recovery,
+// provide transaction finality, visibility, security, parser, reference, recovery,
 // WAL, cluster, or benchmark authority.
 
 struct OptimizerMetricSupportBundleAuthority {
@@ -30,7 +30,7 @@ struct OptimizerMetricSupportBundleAuthority {
   bool metrics_trusted = false;
   bool snapshot_fresh = false;
   bool engine_scope_bound = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool metric_visibility_or_finality_authority = false;
   bool metric_recovery_authority = false;

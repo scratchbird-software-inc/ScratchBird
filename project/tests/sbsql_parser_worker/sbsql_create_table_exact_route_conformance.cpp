@@ -599,7 +599,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts,
   Require(!artifacts.envelope.parser_executes_sql,
           "CREATE TABLE lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "CREATE TABLE lowering allowed donor/file effects");
+          "CREATE TABLE lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload, "\"operation_id\":\"ddl.create_table\""),
           "CREATE TABLE payload missing exact operation id");
   Require(Contains(artifacts.envelope.payload, "\"sblr_operation\":\"SBLR_DDL_CREATE_TABLE\""),
@@ -658,8 +658,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts,
                         std::string("\"") + std::string(column_name) + "\"") &&
               !Contains(artifacts.envelope.payload, std::string(sql)),
           "CREATE TABLE payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "CREATE TABLE payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "CREATE TABLE payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),
@@ -712,7 +712,7 @@ void RequireTypeKeywordDescriptorRoute(const TypeKeywordDescriptorEvidence& row)
   Require(!artifacts.envelope.parser_executes_sql,
           "type keyword lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "type keyword lowering allowed donor/file effects");
+          "type keyword lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload, "\"operation_id\":\"ddl.create_table\""),
           "type keyword payload missing exact operation id");
   Require(Contains(artifacts.envelope.payload, "\"sblr_operation\":\"SBLR_DDL_CREATE_TABLE\""),
@@ -736,8 +736,8 @@ void RequireTypeKeywordDescriptorRoute(const TypeKeywordDescriptorEvidence& row)
                         std::string("\"") + std::string(row.column_name) + "\"") &&
               !Contains(artifacts.envelope.payload, std::string(row.sql)),
           "type keyword payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "type keyword payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "type keyword payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

@@ -12,4 +12,4 @@ PCF_DEP_010,P4,available,public_contract_snapshot,Source spec for CRDs and lifec
 PCF_DEP_011,P5,available,public_contract_snapshot,Source spec for edge cache and CDN invalidation.
 PCF_DEP_012,P6,available,project/tools/sb_public_spec_zero_grey_gate/public_spec_zero_grey_gate.py,Registry tool supports closure execution_plan overlays and stable gap IDs.
 PCF_DEP_013,P6,available,project/tools/sb_public_spec_zero_grey_gate/fixtures/public_release_foundation/public_proof,Prior closed execution_plan overlay must remain applied.
-PCF_DEP_014,P6,available,project/tests/donor_regression/fixtures/public_single_node_closure/public_proof,Prior closed execution_plan overlay must remain applied.
+PCF_DEP_014,P6,available,project/tests/reference_regression/fixtures/public_single_node_closure/public_proof,Prior closed execution_plan overlay must remain applied.

@@ -32,8 +32,8 @@ set(SB_DRIVER_STATUS_PACKAGE_GATE
 set(SB_DRIVER_P4_ROUTE_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/scripts/driver_p4_route_gate.py"
 )
-set(SB_DRIVER_P4_DOCS_DONOR_GATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/driver_p4_docs_donor_gate.py"
+set(SB_DRIVER_P4_DOCS_REFERENCE_GATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/scripts/driver_p4_docs_reference_gate.py"
 )
 set(SB_DRIVER_RELEASE_DECLARATION_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/scripts/driver_release_declaration_gate.py"
@@ -73,6 +73,7 @@ function(sb_add_driver_gate test_name mode)
   )
   set_tests_properties("${test_name}" PROPERTIES
     LABELS "driver;driver_lane_ctest_gate;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
     SKIP_RETURN_CODE 77
   )
 endfunction()
@@ -97,6 +98,7 @@ function(sb_add_driver_component_gate test_name component)
   )
   set_tests_properties("${test_name}" PROPERTIES
     LABELS "driver;driver_lane_ctest_gate;driver_tool_adaptor_gate;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
     SKIP_RETURN_CODE 77
   )
 endfunction()
@@ -117,6 +119,7 @@ function(sb_add_driver_status_package_gate test_name mode)
   endforeach()
   set_tests_properties("${test_name}" PROPERTIES
     LABELS "${label_string}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
   )
 endfunction()
 
@@ -136,14 +139,15 @@ function(sb_add_driver_p4_route_gate test_name mode)
   endforeach()
   set_tests_properties("${test_name}" PROPERTIES
     LABELS "${label_string}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
   )
 endfunction()
 
-function(sb_add_driver_p4_docs_donor_gate test_name mode)
+function(sb_add_driver_p4_docs_reference_gate test_name mode)
   add_test(
     NAME "${test_name}"
     COMMAND
-      "${Python3_EXECUTABLE}" "${SB_DRIVER_P4_DOCS_DONOR_GATE}"
+      "${Python3_EXECUTABLE}" "${SB_DRIVER_P4_DOCS_REFERENCE_GATE}"
       "--repo-root" "${PROJECT_SOURCE_DIR}/.."
       "--project-root" "${PROJECT_SOURCE_DIR}"
       "--fixture-root" "${SB_DRIVER_SERVER_RECONCILIATION_FIXTURE_DIR}"
@@ -155,6 +159,7 @@ function(sb_add_driver_p4_docs_donor_gate test_name mode)
   endforeach()
   set_tests_properties("${test_name}" PROPERTIES
     LABELS "${label_string}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
   )
 endfunction()
 
@@ -174,6 +179,7 @@ function(sb_add_driver_release_declaration_gate test_name mode)
   endforeach()
   set_tests_properties("${test_name}" PROPERTIES
     LABELS "${label_string}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
   )
 endfunction()
 
@@ -212,14 +218,14 @@ sb_add_driver_p4_route_gate(
   performance-budgets
   DSR-043
 )
-sb_add_driver_p4_docs_donor_gate(
+sb_add_driver_p4_docs_reference_gate(
   driver_documentation_sample_app_evidence_gate
   documentation-sample-evidence
   DSR-044
 )
-sb_add_driver_p4_docs_donor_gate(
-  driver_donor_compatibility_route_evidence_gate
-  donor-driver-route-evidence
+sb_add_driver_p4_docs_reference_gate(
+  driver_reference_compatibility_route_evidence_gate
+  reference-driver-route-evidence
   DSR-045
 )
 sb_add_driver_release_declaration_gate(

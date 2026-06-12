@@ -303,12 +303,12 @@ EXPECTED_GATES = [
     },
     {
         "edr": "EDR-037",
-        "target": "database_lifecycle_execution_donor_type_capability_conformance",
-        "source": "execution_donor_type_capability_conformance.cpp",
+        "target": "database_lifecycle_execution_reference_type_capability_conformance",
+        "source": "execution_reference_type_capability_conformance.cpp",
         "labels": [
             "EDR-037",
             "EDR-GATE-037",
-            "execution_donor_type_capability",
+            "execution_reference_type_capability",
         ],
     },
 ]

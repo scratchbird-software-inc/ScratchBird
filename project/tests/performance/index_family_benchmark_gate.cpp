@@ -79,7 +79,7 @@ void RequireNoAuthority(const idx::IndexFamilyBenchmarkEvidenceRow& row) {
   Require(!row.recovery_authority,
           row.family_id + " claimed recovery authority");
   Require(!row.parser_authority, row.family_id + " claimed parser authority");
-  Require(!row.donor_authority, row.family_id + " claimed donor authority");
+  Require(!row.reference_authority, row.family_id + " claimed reference authority");
   Require(!row.provider_authority, row.family_id + " claimed provider authority");
   Require(std::find(row.evidence.begin(), row.evidence.end(),
                     "catalog_authority=false") != row.evidence.end(),

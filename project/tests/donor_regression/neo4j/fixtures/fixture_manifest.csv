@@ -1,2 +1,0 @@
-donor_id,evidence_family,required_artifact,authority_rule,status
-neo4j,parser_fixtures,fixture_manifest.csv,generated manifest only; accepted proof requires regenerated project test execution,fixture_manifest_generated_pending_fixture_materialization

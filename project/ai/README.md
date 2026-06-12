@@ -61,8 +61,8 @@ Current truth note:
 - The PostgreSQL, MySQL, and Firebird emulation lanes are profile-defined on
   `127.0.0.1:15432`, `127.0.0.1:13306`, and `127.0.0.1:13050`, but they are
   stopped by default and are not published until those listeners are started.
-- Compat/public identities exist for native and donor lanes in the shared
-  profile, but donor-lane AI support remains out of scope for this repository.
+- Compat/public identities exist for native and reference lanes in the shared
+  profile, but reference-lane AI support remains out of scope for this repository.
 - Live evidence still needs to be rerun whenever the target environment is
   refreshed or when certifying a runtime mode that is not currently exposed in
   the shared harness.
@@ -89,7 +89,7 @@ Canonical connection metadata is policy supplied at runtime:
 Endpoint state is read from the configured profile:
 
 - Native ScratchBird lanes are in scope.
-- Donor emulation lanes may appear in deployment profiles, but AI support for
+- Reference emulation lanes may appear in deployment profiles, but AI support for
   non-native emulated engine modes remains out of scope for this component.
 - Secrets are supplied by the configured secret provider or test fixture, never
   committed in profile files.

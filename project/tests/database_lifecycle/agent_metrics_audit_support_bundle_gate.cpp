@@ -426,7 +426,7 @@ void TestEngineCollectorAndMetrics(const std::filesystem::path& temp_dir) {
   std::vector<std::string> errors;
   Require(api::ValidateEngineRenderedResultEnvelope(envelope, &errors),
           "parser/client rendered envelope failed validation");
-  Require(!envelope.parser_finality_authority && !envelope.donor_finality_authority,
+  Require(!envelope.parser_finality_authority && !envelope.reference_finality_authority,
           "parser/client envelope claimed finality authority");
   for (const auto& row : envelope.rows) {
     for (const auto& field : row.fields) {

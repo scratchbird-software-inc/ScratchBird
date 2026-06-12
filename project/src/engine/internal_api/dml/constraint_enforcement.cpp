@@ -177,7 +177,7 @@ std::string ConstraintDiagnosticDetail(const EngineRequestContext& context,
       {"enforcement_timing", "immediate"},
       {"support_path_used", support_path},
       {"dependency_uuid", ""},
-      {"donor_profile_uuid", context.donor_profile_uuid},
+      {"reference_profile_uuid", context.reference_profile_uuid},
       {"column", column_name},
       {"detail", detail},
   };

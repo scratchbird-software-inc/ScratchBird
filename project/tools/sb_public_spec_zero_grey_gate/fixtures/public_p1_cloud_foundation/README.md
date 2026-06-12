@@ -39,7 +39,7 @@ public-open rows to `24`, with all five target rows closed by evidence.
   paths.
 - Edge cache/CDN invalidation is advisory/export behavior. It cannot become
   transaction, visibility, durability, or recovery authority.
-- MGA remains the only single-node transaction/recovery model. No WAL, donor
+- MGA remains the only single-node transaction/recovery model. No WAL, reference
   storage, cloud provider journal, Kubernetes status, or CDN event stream can be
   treated as transaction finality.
 - All external integration surfaces need deterministic refusal when unavailable,

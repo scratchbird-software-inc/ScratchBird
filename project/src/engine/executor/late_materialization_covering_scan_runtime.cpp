@@ -48,7 +48,7 @@ void AddCommonAcceptedEvidence(const IndexedPhysicalOperatorResult& stream,
   evidence->push_back("irc061.index_payload_finality_authority=false");
   evidence->push_back("irc061.index_payload_cleanup_authority=false");
   evidence->push_back("irc061.index_payload_recovery_authority=false");
-  evidence->push_back("irc061.parser_or_donor_authority=false");
+  evidence->push_back("irc061.parser_or_reference_authority=false");
   evidence->push_back("irc061.full_table_scan_or_materialization=false");
   evidence->push_back("irc061.descriptor_or_map_scan_fallback=false");
 }
@@ -113,8 +113,8 @@ std::string CommonProofFailureDetail(
   if (proof.full_table_scan_or_materialization) {
     return "full_table_scan_materialization_forbidden";
   }
-  if (proof.parser_or_donor_authority) {
-    return "parser_or_donor_authority_forbidden";
+  if (proof.parser_or_reference_authority) {
+    return "parser_or_reference_authority_forbidden";
   }
   if (proof.index_payload_authority) {
     return "index_payload_authority_forbidden";
@@ -139,8 +139,8 @@ std::string DiagnosticForDetail(const std::string& detail) {
        "SB-IRC061-DESCRIPTOR-MAP-SCAN-FALLBACK-FORBIDDEN"},
       {"full_table_scan_materialization_forbidden",
        "SB-IRC061-FULL-SCAN-FALLBACK-FORBIDDEN"},
-      {"parser_or_donor_authority_forbidden",
-       "SB-IRC061-PARSER-DONOR-AUTHORITY-FORBIDDEN"},
+      {"parser_or_reference_authority_forbidden",
+       "SB-IRC061-PARSER-REFERENCE-AUTHORITY-FORBIDDEN"},
       {"index_payload_authority_forbidden",
        "SB-IRC061-INDEX-PAYLOAD-AUTHORITY-FORBIDDEN"},
       {"indexed_physical_stream_refused",
@@ -486,7 +486,7 @@ IndexPlanShapeRegressionGuardResult GuardFailure(
   result.evidence.push_back("irc062.diagnostic=" + result.diagnostic_code);
   result.evidence.push_back("irc062.benchmark_clean=false");
   result.evidence.push_back("irc062.finality_authority=engine_transaction_inventory");
-  result.evidence.push_back("irc062.parser_or_donor_authority=false");
+  result.evidence.push_back("irc062.parser_or_reference_authority=false");
   result.evidence.push_back("irc062.index_cache_finality_authority=false");
   result.evidence.push_back(
       "irc062.stale_route_capability=" +
@@ -745,10 +745,10 @@ IndexPlanShapeRegressionGuardResult EvaluateIndexPlanShapeRegressionGuard(
                         "SB-IRC062-BENCHMARK-CLEAN-CLAIM-FORBIDDEN",
                         "benchmark_clean_family_gate_not_proven");
   }
-  if (request.donor_dominance_claim) {
+  if (request.reference_dominance_claim) {
     return GuardFailure(request,
-                        "SB-IRC062-DONOR-DOMINANCE-CLAIM-FORBIDDEN",
-                        "donor_dominance_claim_not_a_plan_shape_authority");
+                        "SB-IRC062-REFERENCE-DOMINANCE-CLAIM-FORBIDDEN",
+                        "reference_dominance_claim_not_a_plan_shape_authority");
   }
   if (request.stale_route_capability ||
       (request.expected_route_capability_generation != 0 &&
@@ -850,12 +850,12 @@ IndexPlanShapeRegressionGuardResult EvaluateIndexPlanShapeRegressionGuard(
   result.evidence.push_back("irc062.statistics_only_optimizer_route=false");
   result.evidence.push_back("irc062.local_candidate_planning=false");
   result.evidence.push_back("irc062.contract_only_evidence=false");
-  result.evidence.push_back("irc062.donor_dominance_claim=false");
+  result.evidence.push_back("irc062.reference_dominance_claim=false");
   result.evidence.push_back("irc062.stale_route_capability=false");
   result.evidence.push_back("irc062.invalid_route_family_use=false");
   result.evidence.push_back("irc062.benchmark_clean=false");
   result.evidence.push_back("irc062.finality_authority=engine_transaction_inventory");
-  result.evidence.push_back("irc062.parser_or_donor_authority=false");
+  result.evidence.push_back("irc062.parser_or_reference_authority=false");
   result.evidence.push_back("irc062.index_cache_finality_authority=false");
   return result;
 }

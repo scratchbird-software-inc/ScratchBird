@@ -26,9 +26,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from firebird_donor_native_harness import (
+from firebird_reference_native_harness import (
     REQUIRED_FAILURE_FIELDS,
-    normalize_firebird_donor_output,
+    normalize_firebird_reference_output,
     validate_failure_inventory_record,
 )
 
@@ -100,7 +100,7 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def donor_env(firebird_home: Path) -> dict[str, str]:
+def reference_env(firebird_home: Path) -> dict[str, str]:
     env = os.environ.copy()
     lib_path = str(firebird_home / "lib")
     existing = env.get("LD_LIBRARY_PATH")
@@ -1193,7 +1193,7 @@ def extract_scripts(path: Path) -> tuple[list[ExtractedScript], str, str]:
         return (
             [ExtractedScript("qa_marked_noop", ";")],
             "script_extracted:qa_marked_noop",
-            "donor QA mark does not run this row for the Firebird 5 Linux replay profile",
+            "reference QA mark does not run this row for the Firebird 5 Linux replay profile",
         )
 
     env = collect_module_env(tree)
@@ -1290,7 +1290,7 @@ def is_expected_unsupported_denied_replay(stdout: str) -> bool:
     return (
         "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED" in stdout
         and '"real_firebird_file_effects":"false"' in stdout
-        and '"donor_engine_sql_executed":"false"' in stdout
+        and '"reference_engine_sql_executed":"false"' in stdout
         and "FIREBIRD.PARSE.INVALID_INPUT" not in stdout
         and "FIREBIRD.PARSE.EMPTY_INPUT" not in stdout
     )
@@ -1311,11 +1311,11 @@ def make_failure_record(
         "ctest_name": ctest_name,
         "label_set": (
             f"{ctest_name};firebird_original_regression_replay_gate;"
-            "firebird_donor_native;firebird_parser_worker"
+            "firebird_reference_native;firebird_parser_worker"
         ),
         "surface_row_id": "FBCTV-022",
-        "donor_tool_name": "firebird-qa/isql",
-        "donor_tool_args": row.get("relative_path", "<unknown>"),
+        "reference_tool_name": "firebird-qa/isql",
+        "reference_tool_args": row.get("relative_path", "<unknown>"),
         "scratchbird_endpoint": "firebird-parser-probe",
         "scratchbird_profile": "firebird_5_0",
         "raw_stdout_path": str(raw_stdout),
@@ -1344,19 +1344,19 @@ def write_failure_inventory(path: Path, records: list[dict[str, str]]) -> None:
             writer.writerow(record)
 
 
-def probe_donor_isql(firebird_home: Path, output_dir: Path, repo_root: Path) -> dict[str, Any]:
+def probe_reference_isql(firebird_home: Path, output_dir: Path, repo_root: Path) -> dict[str, Any]:
     isql = firebird_home / "bin" / "isql"
-    raw = output_dir / "donor_isql_version.raw.txt"
-    normalized = output_dir / "donor_isql_version.normalized.txt"
+    raw = output_dir / "reference_isql_version.raw.txt"
+    normalized = output_dir / "reference_isql_version.normalized.txt"
     if not isql.exists():
-        write_text(raw, f"donor isql binary missing: {isql}\n")
-        write_text(normalized, "donor isql binary missing\n")
+        write_text(raw, f"reference isql binary missing: {isql}\n")
+        write_text(normalized, "reference isql binary missing\n")
         return {"ok": False, "path": str(isql), "returncode": 127}
-    result = run([str(isql), "-z"], env=donor_env(firebird_home), timeout=30)
+    result = run([str(isql), "-z"], env=reference_env(firebird_home), timeout=30)
     write_text(raw, result.stdout)
     write_text(
         normalized,
-        normalize_firebird_donor_output(
+        normalize_firebird_reference_output(
             result.stdout,
             repo_root=repo_root,
             temp_root=output_dir,
@@ -1499,7 +1499,7 @@ def process_row(
         write_text(raw_stderr, "" if result.returncode == 0 else result.stdout)
         write_text(
             normalized,
-            normalize_firebird_donor_output(
+            normalize_firebird_reference_output(
                 result.stdout,
                 repo_root=repo_root,
                 temp_root=output_dir,
@@ -1541,8 +1541,8 @@ def process_row(
                 "raw_stderr_path": str(raw_stderr),
                 "normalized_output_path": str(normalized),
                 "notes": (
-                    "Firebird donor low-level utility/service surface was "
-                    "rejected by policy with no file effects or donor execution"
+                    "Firebird reference low-level utility/service surface was "
+                    "rejected by policy with no file effects or reference execution"
                 ),
             }
             return result_row, None
@@ -1622,7 +1622,7 @@ def write_report(
     total: int,
     result_rows: list[dict[str, str]],
     failure_records: list[dict[str, str]],
-    donor_probe: dict[str, Any],
+    reference_probe: dict[str, Any],
     elapsed_sec: float,
 ) -> None:
     by_status: dict[str, int] = {}
@@ -1638,7 +1638,7 @@ def write_report(
         "failure_count": len(failure_records),
         "parser_status": by_status,
         "extraction_status": by_extraction,
-        "donor_isql_probe": donor_probe,
+        "reference_isql_probe": reference_probe,
         "elapsed_sec": round(elapsed_sec, 3),
         "case_results": "fbqa_full_original_regression_case_results.csv",
         "failure_inventory": "fbqa_full_original_regression_failure_inventory.csv",
@@ -1652,7 +1652,7 @@ def write_report(
         f"Manifest rows: `{total}`",
         f"Processed rows: `{processed}`",
         f"Failure inventory rows: `{len(failure_records)}`",
-        f"Donor isql probe return code: `{donor_probe.get('returncode')}`",
+        f"Reference isql probe return code: `{reference_probe.get('returncode')}`",
         f"Elapsed seconds: `{elapsed_sec:.3f}`",
         "",
         "Parser status counts:",
@@ -1705,7 +1705,7 @@ def main() -> int:
     started = time.monotonic()
     replay_rows = read_rows(replay_manifest)
     selected_rows = replay_rows[: args.limit] if args.limit > 0 else replay_rows
-    donor_probe = probe_donor_isql(firebird_home, output_dir, repo_root)
+    reference_probe = probe_reference_isql(firebird_home, output_dir, repo_root)
 
     result_rows: list[dict[str, str]] = []
     failure_records: list[dict[str, str]] = []
@@ -1742,7 +1742,7 @@ def main() -> int:
         total=len(replay_rows),
         result_rows=result_rows,
         failure_records=failure_records,
-        donor_probe=donor_probe,
+        reference_probe=reference_probe,
         elapsed_sec=elapsed,
     )
 
@@ -1750,8 +1750,8 @@ def main() -> int:
         for error in validation_errors:
             print(error, file=sys.stderr)
         return 1
-    if not donor_probe["ok"]:
-        print("donor isql probe failed; see output report", file=sys.stderr)
+    if not reference_probe["ok"]:
+        print("reference isql probe failed; see output report", file=sys.stderr)
         return 1
     if args.mode == "final" and failure_records:
         print(

@@ -2095,7 +2095,7 @@ SBSFC077_NON_GENERAL_RESIDUAL_EXACT_ROUTE_ROW_EVIDENCE = {
         ("SBSQL-93ED47FFF17E", "statement_extension", "sblr.observability.inspect.v3", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "EngineShowStatements", "statement_extension_inspect", "STATEMENT EXTENSION pg_stat;", "observability=observability.show_statements"),
         ("SBSQL-941FB8EEC93C", "checkpoint_stmt", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "checkpoint_stmt", "CHECKPOINT;", "storage_management_operation=checkpoint_stmt"),
         ("SBSQL-98750976AE9F", "grouping_set", "sblr.query.relational.v3", "query.plan_operation", "SBLR_QUERY_PLAN_OPERATION", "EnginePlanOperation", "grouping_set_plan", "QUERY GROUPING SET basic;", "query_plan=table_scan"),
-        ("SBSQL-98D487EA96E0", "donor_log_mode", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "donor_log_mode", "STORAGE DONOR LOG logical;", "storage_management_operation=donor_log_mode"),
+        ("SBSQL-98D487EA96E0", "reference_log_mode", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "reference_log_mode", "STORAGE REFERENCE LOG logical;", "storage_management_operation=reference_log_mode"),
         ("SBSQL-9B34B7BF03F1", "cypher_where_clause", "sblr.query.relational.v3", "nosql.graph_query", "SBLR_NOSQL_GRAPH_QUERY", "EngineGraphQuery", "cypher_where_descriptor_scan", "CYPHER WHERE n.active;", "graph_query=local_descriptor_scan"),
         ("SBSQL-9F9AE11CDE1E", "cypher_call_subquery", "sblr.query.relational.v3", "nosql.graph_query", "SBLR_NOSQL_GRAPH_QUERY", "EngineGraphQuery", "cypher_call_subquery_descriptor_scan", "CYPHER CALL SUBQUERY;", "graph_query=local_descriptor_scan"),
         ("SBSQL-A17C46CF3CC9", "truncate_statement", "sblr.observability.inspect.v3", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "EngineShowStatements", "truncate_statement_inspect", "TRUNCATE STATEMENT current;", "observability=observability.show_statements"),
@@ -2148,15 +2148,15 @@ def _migration_management_row(
 
 MIGRATION_MANAGEMENT_ROW_EVIDENCE = {
     "SBSQL-1A0000000001": _migration_management_row(
-        "migrate_from_donor",
-        "op.migration.begin_from_donor",
-        "SBLR_MIGRATION_BEGIN_FROM_DONOR",
+        "migrate_from_reference",
+        "op.migration.begin_from_reference",
+        "SBLR_MIGRATION_BEGIN_FROM_REFERENCE",
         "EngineBeginMigration",
-        "migrate_from_donor",
-        "MIGRATE FROM DONOR postgres WITH PACKAGE pg_compat_pack;",
+        "migrate_from_reference",
+        "MIGRATE FROM REFERENCE postgres WITH PACKAGE pg_compat_pack;",
         "rs.migration.status.v1",
-        "migration_state=prepared;donor_profile=postgres;donor_package=pg_compat_pack;"
-        "donor_storage_authority_accepted=false;donor_finality_accepted=false;"
+        "migration_state=prepared;reference_profile=postgres;reference_package=pg_compat_pack;"
+        "reference_storage_authority_accepted=false;reference_finality_accepted=false;"
         "private_cluster_execution=false;wal_recovery_authority=false",
     ),
     "SBSQL-1A0000000002": _migration_management_row(
@@ -2178,7 +2178,7 @@ MIGRATION_MANAGEMENT_ROW_EVIDENCE = {
         "SHOW MIGRATION <migration_uuid>;",
         "rs.migration.status.v1",
         "migration_state=running;reopen_visibility=true;"
-        "donor_storage_authority_accepted=false;donor_finality_accepted=false",
+        "reference_storage_authority_accepted=false;reference_finality_accepted=false",
     ),
     "SBSQL-1A0000000004": _migration_management_row(
         "show_migrations",
@@ -2189,7 +2189,7 @@ MIGRATION_MANAGEMENT_ROW_EVIDENCE = {
         "SHOW MIGRATIONS;",
         "rs.migration.list.v1",
         "migration_list_contains_uuid=true;reopen_visibility=true;"
-        "donor_storage_authority_accepted=false;donor_finality_accepted=false",
+        "reference_storage_authority_accepted=false;reference_finality_accepted=false",
     ),
 }
 
@@ -2694,7 +2694,7 @@ SBSFC084_GRAMMAR_SURFACE_EXACT_ROUTE_ROW_EVIDENCE = {
         "SBSQL-CE7735D5B9EF": ("limbo_stmt", "grammar_production", "LIMBO STMT inspect;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"),
         "SBSQL-CE84AC72F5A6": ("pre_split_clause", "grammar_production", "PRE SPLIT CLAUSE region;", "query_descriptor_validation", "query_plan_descriptor", "sys.query.plan_descriptor"),
         "SBSQL-CEDFBAFE07AC": ("salvage_options", "grammar_production", "SALVAGE OPTIONS repair;", "storage_descriptor_validation", "storage_management_descriptor", "sys.storage.management_profile"),
-        "SBSQL-CFBAFFF843B6": ("donor_profile_stmt", "grammar_production", "DONOR PROFILE STMT inspect;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"),
+        "SBSQL-CFBAFFF843B6": ("reference_profile_stmt", "grammar_production", "REFERENCE PROFILE STMT inspect;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"),
         "SBSQL-CFF8590ACD1B": ("returning_clause", "grammar_production", "RETURNING CLAUSE row;", "query_descriptor_validation", "query_plan_descriptor", "sys.query.plan_descriptor"),
         "SBSQL-D055AACF2C98": ("historical_read_clause", "grammar_production", "HISTORICAL READ CLAUSE as_of;", "query_descriptor_validation", "query_plan_descriptor", "sys.query.plan_descriptor"),
         "SBSQL-D059E587EC5D": ("artifact_ref", "grammar_production", "ARTIFACT REF package;", "catalog_descriptor_validation", "catalog_descriptor", "sys.catalog.object_descriptor"),
@@ -2776,7 +2776,7 @@ SBSFC085_GRAMMAR_SURFACE_EXACT_ROUTE_ROW_EVIDENCE = {
         "SBSQL-F178404D32D6": ("psql_pipe_row_stmt", "grammar_production", "PSQL PIPE ROW STMT result;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
         "SBSQL-F24C10C05F96": ("call_result_clause", "grammar_production", "CALL RESULT CLAUSE row;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
         "SBSQL-F2580B10CA17": ("psql_compound_stmt", "grammar_production", "PSQL COMPOUND STMT block;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
-        "SBSQL-F29DE2ED8D20": ("donor_profile_options", "grammar_production", "DONOR PROFILE OPTIONS local;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"),
+        "SBSQL-F29DE2ED8D20": ("reference_profile_options", "grammar_production", "REFERENCE PROFILE OPTIONS local;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"),
         "SBSQL-F3006C91D952": ("call", "canonical_surface", "CALL routine;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
         "SBSQL-F375BA38C102": ("new_surface_stmt", "grammar_production", "NEW SURFACE STMT descriptor;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"),
         "SBSQL-F5E78906D903": ("psql_exit_stmt", "grammar_production", "PSQL EXIT STMT loop;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"),
@@ -2922,7 +2922,7 @@ SBSFC075_CATALOG_DESCRIPTOR_MUTATION_ROW_EVIDENCE = {
     "SBSQL-C16916312DA6": _sbsfc075_catalog_descriptor_mutation_row("create_filespace_stmt_full", "catalog.mutation.create_filespace", "SBLR_CATALOG_MUTATION_CREATE_FILESPACE", "create_filespace_stmt_full", "CREATE FILESPACE fs LOCATION 'tmp';", "filespace"),
     "SBSQL-C1D72E3D9A5B": _sbsfc075_catalog_descriptor_mutation_row("create_transform_stmt", "catalog.mutation.create_transform", "SBLR_CATALOG_MUTATION_CREATE_TRANSFORM", "create_transform_stmt", "CREATE TRANSFORM tr;", "transform"),
     "SBSQL-C22117F1754C": _sbsfc075_catalog_descriptor_mutation_row("create_secret_stmt", "catalog.mutation.create_secret", "SBLR_CATALOG_MUTATION_CREATE_SECRET", "create_secret_stmt", "CREATE SECRET sec;", "secret"),
-    "SBSQL-C75FEC2CAA69": _sbsfc075_catalog_descriptor_mutation_row("alter_donor_action", "catalog.mutation.alter_donor", "SBLR_CATALOG_MUTATION_ALTER_DONOR", "alter_donor_action", "ALTER DONOR d SET PROFILE p;", "donor"),
+    "SBSQL-C75FEC2CAA69": _sbsfc075_catalog_descriptor_mutation_row("alter_reference_action", "catalog.mutation.alter_reference", "SBLR_CATALOG_MUTATION_ALTER_REFERENCE", "alter_reference_action", "ALTER REFERENCE d SET PROFILE p;", "reference"),
     "SBSQL-CAB8A126ED9E": _sbsfc075_catalog_descriptor_mutation_row("create_pipeline_stmt", "catalog.mutation.create_pipeline", "SBLR_CATALOG_MUTATION_CREATE_PIPELINE", "create_pipeline_stmt", "CREATE PIPELINE pipe;", "pipeline"),
     "SBSQL-CDF9CAB99BFE": _sbsfc075_catalog_descriptor_mutation_row("create_collation_stmt", "catalog.mutation.create_collation", "SBLR_CATALOG_MUTATION_CREATE_COLLATION", "create_collation_stmt", "CREATE COLLATION coll;", "collation"),
     "SBSQL-D13498FA0EF4": _sbsfc075_catalog_descriptor_mutation_row("create_type_stmt", "catalog.mutation.create_type", "SBLR_CATALOG_MUTATION_CREATE_TYPE", "create_type_stmt", "CREATE TYPE typ;", "type"),
@@ -3073,7 +3073,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "or private cluster execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No cluster DDL implementation, "
             "catalog mutation execution, private cluster behavior, topology/reconciliation/decision-service behavior, "
-            "SBWP/TLS driver E2E, donor execution, parser finality, transaction finality, WAL, recovery authority, "
+            "SBWP/TLS driver E2E, reference execution, parser finality, transaction finality, WAL, recovery authority, "
             "private-profile acceptance, or positive execution is claimed."
         ),
     },
@@ -3094,7 +3094,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "or private cluster execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No cluster DDL implementation, "
             "catalog mutation execution, private cluster behavior, topology/reconciliation/decision-service behavior, "
-            "SBWP/TLS driver E2E, donor execution, parser finality, transaction finality, WAL, recovery authority, "
+            "SBWP/TLS driver E2E, reference execution, parser finality, transaction finality, WAL, recovery authority, "
             "private-profile acceptance, or positive execution is claimed."
         ),
     },
@@ -3115,7 +3115,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "or private cluster execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No cluster DDL implementation, "
             "catalog mutation execution, private cluster behavior, topology/reconciliation/decision-service behavior, "
-            "SBWP/TLS driver E2E, donor execution, parser-side finality, transaction finality, WAL, recovery authority, "
+            "SBWP/TLS driver E2E, reference execution, parser-side finality, transaction finality, WAL, recovery authority, "
             "private-profile acceptance, or positive execution is claimed."
         ),
     },
@@ -3136,7 +3136,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "or private cluster execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No cluster DDL implementation, "
             "catalog mutation execution, private cluster behavior, topology/reconciliation/decision-service behavior, "
-            "SBWP/TLS driver E2E, donor execution, parser finality, transaction finality, WAL, recovery authority, "
+            "SBWP/TLS driver E2E, reference execution, parser finality, transaction finality, WAL, recovery authority, "
             "private-profile acceptance, or positive execution is claimed."
         ),
     },
@@ -3153,7 +3153,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "not e2e_passed: public admission refuses before cluster publish, archive/replication, "
             "or private cluster execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No private cluster behavior, "
-            "routing/reconciliation/topology/decision-service behavior, donor execution, parser-side finality, "
+            "routing/reconciliation/topology/decision-service behavior, reference execution, parser-side finality, "
             "transaction/savepoint closure, WAL, recovery authority, or positive execution is claimed."
         ),
     },
@@ -3171,7 +3171,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, "
             "and preserves MGA transaction evidence. No private cluster behavior, cluster commit semantics, "
             "transaction finality, routing/reconciliation/topology/decision-service behavior, SBWP/TLS driver E2E, "
-            "donor execution, parser-side finality, WAL, recovery authority, or positive execution is claimed."
+            "reference execution, parser-side finality, WAL, recovery authority, or positive execution is claimed."
         ),
     },
     "SBSQL-3D3DCFA99D24": {
@@ -3192,7 +3192,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "leaks no row detail, and preserves MGA transaction evidence. No private cluster behavior, "
             "cluster rollback semantics, transaction finality, rollback semantics, archive/replication support, "
             "cluster execution, routing/reconciliation/topology/decision-service behavior, SBWP/TLS driver E2E, "
-            "donor execution, parser-side finality, WAL, recovery authority, or positive execution is claimed."
+            "reference execution, parser-side finality, WAL, recovery authority, or positive execution is claimed."
         ),
     },
     "SBSQL-01D7277D7AD1": {
@@ -3211,7 +3211,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "not e2e_passed: public admission refuses before evidence-item publication "
             "or private cluster/profile execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No positive evidence-item execution, "
-            "private cluster behavior, engine ABI dispatch, parser-side SQL execution, donor behavior, "
+            "private cluster behavior, engine ABI dispatch, parser-side SQL execution, reference behavior, "
             "transaction finality, WAL, recovery authority, private-profile acceptance, or positive behavior is claimed."
         ),
     },
@@ -3231,7 +3231,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "not e2e_passed: public admission refuses before evidence-list publication "
             "or private cluster/profile execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No positive evidence-list execution, "
-            "private cluster behavior, engine ABI dispatch, parser-side SQL execution, donor behavior, "
+            "private cluster behavior, engine ABI dispatch, parser-side SQL execution, reference behavior, "
             "transaction finality, WAL, recovery authority, private-profile acceptance, or positive behavior is claimed."
         ),
     },
@@ -3251,7 +3251,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "not e2e_passed: public admission refuses before reason-code publication "
             "or private cluster/profile execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No positive reason_code execution, "
-            "private cluster behavior, engine ABI dispatch, binary round-trip, SBWP/TLS driver E2E, donor behavior, "
+            "private cluster behavior, engine ABI dispatch, binary round-trip, SBWP/TLS driver E2E, reference behavior, "
             "transaction finality, WAL, recovery authority, private-profile acceptance, or positive behavior is claimed."
         ),
     },
@@ -3272,7 +3272,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "or private cluster/profile execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No positive config_key execution, "
             "config-key publication, private cluster behavior, engine ABI dispatch, binary round-trip, "
-            "SBWP/TLS driver E2E, donor behavior, parser-side finality, transaction finality, WAL, recovery authority, "
+            "SBWP/TLS driver E2E, reference behavior, parser-side finality, transaction finality, WAL, recovery authority, "
             "private-profile acceptance, or positive execution is claimed."
         ),
     },
@@ -3293,7 +3293,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "or private cluster/profile execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No positive conflict_strategy execution, "
             "conflict-strategy publication, private cluster behavior, cluster reconciliation/control implementation, "
-            "engine ABI dispatch, binary round-trip, SBWP/TLS driver E2E, donor behavior, parser-side finality, "
+            "engine ABI dispatch, binary round-trip, SBWP/TLS driver E2E, reference behavior, parser-side finality, "
             "transaction finality, WAL, recovery authority, private-profile acceptance, or positive execution is claimed."
         ),
     },
@@ -3314,7 +3314,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "or private cluster/profile execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No positive quorum_rule execution, "
             "quorum semantics, private cluster behavior, cluster lifecycle/control/reconciliation behavior, "
-            "engine ABI dispatch, binary round-trip, SBWP/TLS driver E2E, donor behavior, parser-side finality, "
+            "engine ABI dispatch, binary round-trip, SBWP/TLS driver E2E, reference behavior, parser-side finality, "
             "transaction finality, WAL, recovery authority, private-profile acceptance, or positive execution is claimed."
         ),
     },
@@ -3335,7 +3335,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "or private cluster/profile execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No positive idempotency_key execution, "
             "idempotency semantics, private-profile acceptance, private cluster behavior, engine ABI dispatch, "
-            "prepared/cursor state, row-detail leak, donor behavior, parser-side finality, SBWP/TLS driver E2E, "
+            "prepared/cursor state, row-detail leak, reference behavior, parser-side finality, SBWP/TLS driver E2E, "
             "transaction finality, WAL, recovery authority, or positive execution is claimed."
         ),
     },
@@ -3357,7 +3357,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "leaks no row detail, and preserves MGA transaction evidence. No positive partition_ref execution, "
             "partition routing semantics, private-profile acceptance, private cluster behavior, "
             "cluster topology/reconciliation/decision-service behavior, engine ABI dispatch, prepared/cursor state, "
-            "row-detail leak, donor behavior, parser-side finality, SBWP/TLS driver E2E, transaction finality, "
+            "row-detail leak, reference behavior, parser-side finality, SBWP/TLS driver E2E, transaction finality, "
             "WAL, recovery authority, or positive execution is claimed."
         ),
     },
@@ -3379,7 +3379,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "leaks no row detail, and preserves MGA transaction evidence. No positive branch_ref execution, "
             "branch routing semantics, private-profile acceptance, private cluster behavior, "
             "cluster topology/reconciliation/decision-service behavior, engine ABI dispatch, prepared/cursor state, "
-            "row-detail leak, donor behavior, parser-side finality, SBWP/TLS driver E2E, transaction finality, "
+            "row-detail leak, reference behavior, parser-side finality, SBWP/TLS driver E2E, transaction finality, "
             "WAL, recovery authority, or positive execution is claimed."
         ),
     },
@@ -3401,7 +3401,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "leaks no row detail, and preserves MGA transaction evidence. No positive decision_ref execution, "
             "decision-service implementation, private-profile acceptance, private cluster behavior, "
             "cluster topology/reconciliation/decision-service behavior, engine ABI dispatch, prepared/cursor state, "
-            "row-detail leak, donor behavior, parser-side finality, SBWP/TLS driver E2E, transaction finality, "
+            "row-detail leak, reference behavior, parser-side finality, SBWP/TLS driver E2E, transaction finality, "
             "WAL, recovery authority, or positive execution is claimed."
         ),
     },
@@ -3423,7 +3423,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "or private profile execution, does not reach the engine ABI, creates no prepared/cursor state, "
             "leaks no row detail, and preserves MGA transaction evidence. No positive decision_service_profile "
             "execution, decision-service implementation, private-profile acceptance, private cluster behavior, "
-            "cluster topology/reconciliation/decision-service semantics, engine ABI dispatch, donor execution, "
+            "cluster topology/reconciliation/decision-service semantics, engine ABI dispatch, reference execution, "
             "parser-side finality, SBWP/TLS driver E2E, transaction finality change, WAL, recovery authority, "
             "or positive execution is claimed."
         ),
@@ -3448,7 +3448,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "transaction evidence. No positive object_ref execution, object resolution "
             "semantics, private-profile acceptance, private cluster behavior, cluster "
             "topology/reconciliation/decision-service behavior, engine ABI dispatch, "
-            "donor execution, parser-side finality, SBWP/TLS driver E2E, transaction "
+            "reference execution, parser-side finality, SBWP/TLS driver E2E, transaction "
             "finality change, WAL, recovery authority, or positive execution is claimed."
         ),
     },
@@ -3472,7 +3472,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "row detail, and preserves MGA transaction evidence. No positive "
             "show_cluster_extended execution, cluster observability implementation, "
             "private-profile acceptance, private cluster behavior, cluster topology/"
-            "reconciliation/decision-service behavior, engine ABI dispatch, donor "
+            "reconciliation/decision-service behavior, engine ABI dispatch, reference "
             "execution, parser-side finality, SBWP/TLS driver E2E, transaction finality "
             "change, WAL, recovery authority, or positive execution is claimed."
         ),
@@ -3498,7 +3498,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "cluster_show_target execution, no cluster SHOW execution, no cluster observability "
             "implementation, no private-profile acceptance, no private cluster behavior, no "
             "cluster topology/reconciliation/decision-service behavior, no engine ABI dispatch, "
-            "no parser-side finality, no donor execution, no SBWP/TLS driver E2E, no transaction "
+            "no parser-side finality, no reference execution, no SBWP/TLS driver E2E, no transaction "
             "finality change, and no WAL/recovery authority is claimed."
         ),
     },
@@ -3523,7 +3523,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "show_decisions_filter execution, no cluster SHOW/decision observability implementation, "
             "no private-profile acceptance, no private cluster behavior, no cluster topology/"
             "reconciliation/decision-service behavior, no engine ABI dispatch, no parser-side "
-            "finality, no donor execution, no SBWP/TLS driver E2E, no transaction finality change, "
+            "finality, no reference execution, no SBWP/TLS driver E2E, no transaction finality change, "
             "and no WAL/recovery authority is claimed."
         ),
     },
@@ -3548,7 +3548,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "no cluster reconciliation implementation, no private-profile acceptance, no "
             "private cluster behavior, no topology/decision-service behavior, no engine ABI "
             "dispatch, no prepared/cursor state, no row-detail leak, no parser-side finality, "
-            "no donor execution, no SBWP/TLS driver E2E, no transaction finality change, "
+            "no reference execution, no SBWP/TLS driver E2E, no transaction finality change, "
             "and no WAL/recovery authority is claimed."
         ),
     },
@@ -3573,7 +3573,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "no private cluster/profile acceptance, no security policy implementation, "
             "no cluster topology/reconciliation/decision-service behavior, no engine ABI "
             "dispatch, no prepared/cursor state, no row-detail exposure, no parser-side "
-            "finality, no donor execution, no SBWP/TLS driver E2E, no transaction finality, "
+            "finality, no reference execution, no SBWP/TLS driver E2E, no transaction finality, "
             "no WAL/recovery authority, and no broad SBSFC-025/no-grey closure is claimed."
         ),
     },
@@ -3598,7 +3598,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "no private cluster/profile acceptance, no security policy implementation, "
             "no cluster topology/reconciliation/decision-service behavior, no engine ABI "
             "dispatch, no prepared/cursor state, no row-detail exposure, no parser-side "
-            "finality, no donor execution, no SBWP/TLS driver E2E, no transaction finality, "
+            "finality, no reference execution, no SBWP/TLS driver E2E, no transaction finality, "
             "no WAL/recovery authority, and no broad SBSFC-025/no-grey closure is claimed."
         ),
     },
@@ -3623,7 +3623,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "detail, and preserves MGA transaction evidence. No positive cluster_node_uuid "
             "execution, no private cluster/profile acceptance, no cluster topology/member/job/"
             "failover/system implementation, no direct open-core private-cluster executor "
-            "dispatch, no parser-side finality, no donor execution, no SBWP/TLS driver E2E, "
+            "dispatch, no parser-side finality, no reference execution, no SBWP/TLS driver E2E, "
             "no transaction finality change, no WAL/recovery authority, and no broad "
             "SBSFC-025/no-grey closure is claimed."
         ),
@@ -3649,7 +3649,7 @@ CLUSTER_PROFILE_GATE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
             "MGA transaction evidence. No positive cluster_role execution, no private cluster/"
             "profile acceptance, no cluster topology/member/job/failover/system implementation, "
             "no direct open-core private-cluster executor dispatch, no parser-side finality, no "
-            "donor execution, no SBWP/TLS driver E2E, no transaction finality change, no WAL/"
+            "reference execution, no SBWP/TLS driver E2E, no transaction finality change, no WAL/"
             "recovery authority, and no broad SBSFC-025/no-grey closure is claimed."
         ),
     },
@@ -3662,7 +3662,7 @@ SBSFC025RZ_CLUSTER_SCOPE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
         "blocked_path": "cluster_variable_execution_or_private_cluster_authority_resolution",
         "runtime_evidence_suffix": "no_cluster_variable_execution;no_cluster_authority_resolution;no_private_profile_acceptance;no_private_cluster_execution",
         "result_canonical_name": "cluster",
-        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-04AAB83BBDFB/cluster. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before cluster-variable execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, donor behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
+        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-04AAB83BBDFB/cluster. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before cluster-variable execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, reference behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
     },
     "SBSQL-2D0B6A36D19F": {
         "canonical_name": "cluster_member_id",
@@ -3670,7 +3670,7 @@ SBSFC025RZ_CLUSTER_SCOPE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
         "blocked_path": "cluster_member_identity_execution_or_private_cluster_authority_resolution",
         "runtime_evidence_suffix": "no_cluster_member_identity_execution;no_cluster_authority_resolution;no_private_profile_acceptance;no_private_cluster_execution",
         "result_canonical_name": "cluster_member_id",
-        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-2D0B6A36D19F/cluster_member_id. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before cluster-member identity execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, donor behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
+        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-2D0B6A36D19F/cluster_member_id. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before cluster-member identity execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, reference behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
     },
     "SBSQL-33CE719FCB2A": {
         "canonical_name": "clustering_order_spec",
@@ -3678,7 +3678,7 @@ SBSFC025RZ_CLUSTER_SCOPE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
         "blocked_path": "clustering_order_query_execution_or_private_cluster_ordering_semantics",
         "runtime_evidence_suffix": "no_clustering_order_query_execution;no_cluster_ordering_semantics;no_private_profile_acceptance;no_private_cluster_execution",
         "result_canonical_name": "clustering_order_spec",
-        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-33CE719FCB2A/clustering_order_spec. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before clustering-order query execution or private cluster ordering semantics, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, donor behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
+        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-33CE719FCB2A/clustering_order_spec. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before clustering-order query execution or private cluster ordering semantics, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, reference behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
     },
     "SBSQL-46E8F5296EAC": {
         "canonical_name": "sb.system.current_cluster",
@@ -3686,7 +3686,7 @@ SBSFC025RZ_CLUSTER_SCOPE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
         "blocked_path": "system_current_cluster_execution_or_private_cluster_authority_resolution",
         "runtime_evidence_suffix": "no_system_current_cluster_execution;no_cluster_authority_resolution;no_private_profile_acceptance;no_private_cluster_execution",
         "result_canonical_name": "sb.system.current_cluster",
-        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-46E8F5296EAC/sb.system.current_cluster. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before system current-cluster execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, donor behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
+        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-46E8F5296EAC/sb.system.current_cluster. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before system current-cluster execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, reference behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
     },
     "SBSQL-7B64081CB18C": {
         "canonical_name": "current_cluster",
@@ -3694,7 +3694,7 @@ SBSFC025RZ_CLUSTER_SCOPE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
         "blocked_path": "current_cluster_execution_or_private_cluster_authority_resolution",
         "runtime_evidence_suffix": "no_current_cluster_execution;no_cluster_authority_resolution;no_private_profile_acceptance;no_private_cluster_execution",
         "result_canonical_name": "current_cluster",
-        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-7B64081CB18C/current_cluster. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before current-cluster execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, donor behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
+        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-7B64081CB18C/current_cluster. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before current-cluster execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, reference behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
     },
     "SBSQL-9D9FDE1CCEB8": {
         "canonical_name": "current_cluster_uuid",
@@ -3702,7 +3702,7 @@ SBSFC025RZ_CLUSTER_SCOPE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
         "blocked_path": "current_cluster_uuid_execution_or_private_cluster_authority_resolution",
         "runtime_evidence_suffix": "no_current_cluster_uuid_execution;no_cluster_authority_resolution;no_private_profile_acceptance;no_private_cluster_execution",
         "result_canonical_name": "current_cluster_uuid",
-        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-9D9FDE1CCEB8/current_cluster_uuid. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before current-cluster UUID execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, donor behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
+        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-9D9FDE1CCEB8/current_cluster_uuid. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before current-cluster UUID execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, reference behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
     },
     "SBSQL-BB44F09607ED": {
         "canonical_name": "show_cluster",
@@ -3710,7 +3710,7 @@ SBSFC025RZ_CLUSTER_SCOPE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
         "blocked_path": "show_cluster_observability_or_private_cluster_topology_inspection",
         "runtime_evidence_suffix": "no_show_cluster_execution;no_cluster_observability_implementation;no_cluster_topology_inspection;no_private_profile_acceptance;no_private_cluster_execution",
         "result_canonical_name": "show_cluster",
-        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-BB44F09607ED/show_cluster. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before show-cluster observability or private cluster topology inspection, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, donor behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
+        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-BB44F09607ED/show_cluster. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before show-cluster observability or private cluster topology inspection, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, reference behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
     },
     "SBSQL-CEDACEC08071": {
         "canonical_name": "cluster_authority",
@@ -3718,7 +3718,7 @@ SBSFC025RZ_CLUSTER_SCOPE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
         "blocked_path": "cluster_authority_execution_or_private_cluster_authority_resolution",
         "runtime_evidence_suffix": "no_cluster_authority_execution;no_cluster_authority_resolution;no_private_profile_acceptance;no_private_cluster_execution",
         "result_canonical_name": "cluster_authority",
-        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-CEDACEC08071/cluster_authority. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before cluster-authority execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, donor behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
+        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-CEDACEC08071/cluster_authority. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before cluster-authority execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, reference behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
     },
     "SBSQL-F736AA74FE0C": {
         "canonical_name": "SBSQL.CLUSTER_AUTHORITY_REQUIRED",
@@ -3726,7 +3726,7 @@ SBSFC025RZ_CLUSTER_SCOPE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
         "blocked_path": "cluster_authority_required_diagnostic_execution_or_private_cluster_authority_resolution",
         "runtime_evidence_suffix": "no_cluster_authority_required_execution;no_cluster_authority_resolution;no_private_profile_acceptance;no_private_cluster_execution",
         "result_canonical_name": "SBSQL.CLUSTER_AUTHORITY_REQUIRED",
-        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-F736AA74FE0C/SBSQL.CLUSTER_AUTHORITY_REQUIRED. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before cluster-authority-required diagnostic execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, donor behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
+        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-F736AA74FE0C/SBSQL.CLUSTER_AUTHORITY_REQUIRED. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before cluster-authority-required diagnostic execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, reference behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
     },
     "SBSQL-FA8EA998EFC0": {
         "canonical_name": "cluster_epoch",
@@ -3734,7 +3734,7 @@ SBSFC025RZ_CLUSTER_SCOPE_PUBLIC_REFUSAL_ROW_EVIDENCE = {
         "blocked_path": "cluster_epoch_execution_or_private_cluster_authority_resolution",
         "runtime_evidence_suffix": "no_cluster_epoch_execution;no_cluster_authority_resolution;no_private_profile_acceptance;no_private_cluster_execution",
         "result_canonical_name": "cluster_epoch",
-        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-FA8EA998EFC0/cluster_epoch. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before cluster-epoch execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, donor behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
+        "notes": "Bounded SBSFC-025R-Z residual cluster-scope exact refusal evidence for SBSQL-FA8EA998EFC0/cluster_epoch. This row is exact_refusal_passed, not e2e_passed: public admission refuses native_now cluster_scope=cluster_private authority before cluster-epoch execution or private cluster authority resolution, does not reach the engine ABI, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. No positive cluster execution, private-profile acceptance, cluster topology/member/job/failover/system implementation, parser-side SQL execution/finality, reference behavior, transaction finality change, WAL/redo/recovery authority, or broad no-grey/SBSFC-025 closure is claimed.",
     },
 }
 
@@ -3821,7 +3821,7 @@ def cluster_provider_route_manifest_row(
             "Cluster-enabled stub builds route through the separate cluster provider target and return "
             "cluster.provider.stub.v1 with SBLR.CLUSTER.STUB_RESPONSE. The evidence remains structural "
             "and provider-boundary only: no private cluster implementation, parser-side SQL execution, "
-            "parser storage/finality, donor execution, transaction finality claim, or WAL/recovery "
+            "parser storage/finality, reference execution, transaction finality claim, or WAL/recovery "
             "authority is claimed."
         ),
     }
@@ -3897,7 +3897,7 @@ def bridge_command_surface_manifest_row(
             ),
             "evidence_collected_utc": "static_existing_ctest_evidence",
             "promoter_slice": "SBSQL-BRIDGE-COMMAND-SURFACE-FULL-TRACKING",
-            "notes": "Bridge cluster route command is tracked as a cluster-provider boundary proof, not public cluster execution. The route reaches SBLR bridge validation and trusted UDR dispatch, then fail-closes unsupported when cluster routing is disabled and unlicensed through the cluster stub when admitted. No private cluster implementation, distributed query, parser-side execution/finality, donor execution, WAL/recovery authority, or transaction finality change is claimed.",
+            "notes": "Bridge cluster route command is tracked as a cluster-provider boundary proof, not public cluster execution. The route reaches SBLR bridge validation and trusted UDR dispatch, then fail-closes unsupported when cluster routing is disabled and unlicensed through the cluster stub when admitted. No private cluster implementation, distributed query, parser-side execution/finality, reference execution, WAL/recovery authority, or transaction finality change is claimed.",
         }
 
     if ledger_row.get("current_state") != "e2e_passed":
@@ -7390,7 +7390,7 @@ SBSFC016_CONTEXT_CURRENT_SETTING_ROW_EVIDENCE = {
     },
 }
 
-SBSFC016_DONOR_VARIABLE_CONTEXT_ALIAS_SURFACE_IDS = frozenset(
+SBSFC016_REFERENCE_VARIABLE_CONTEXT_ALIAS_SURFACE_IDS = frozenset(
     {
         "SBSQL-DE3C8D86F7F4",
         "SBSQL-463DCD391130",
@@ -7459,7 +7459,7 @@ SBSFC016_POLICY_REFUSAL_ROW_EVIDENCE = {
     "SBSQL-18E22DA52C20": {"canonical_name": "WITH(READPAST)", "surface_kind": "function", "function_id": "sb.scalar.refusal_with_readpast", "fixture_id": "SBSFC016-policy-refusal-with-readpast"},
     "SBSQL-1CB047ADD7B5": {"canonical_name": "WITH(NOLOCK)", "surface_kind": "function", "function_id": "sb.scalar.refusal_with_nolock", "fixture_id": "SBSFC016-policy-refusal-with-nolock"},
     "SBSQL-F9144106E9F2": {"canonical_name": "EXPLAIN(WALTRUE)", "surface_kind": "function", "function_id": "sb.scalar.refusal_explain_waltrue", "fixture_id": "SBSFC016-policy-refusal-explain-waltrue"},
-    "SBSQL-E9D1FF70EC0D": {"canonical_name": "EXPLAIN(DONOR_LOG_COMPATIBILITYTRUE)", "surface_kind": "function", "function_id": "sb.scalar.refusal_explain_donor_log_compatibilitytrue", "fixture_id": "SBSFC016-policy-refusal-explain-donor-log-compatibilitytrue"},
+    "SBSQL-E9D1FF70EC0D": {"canonical_name": "EXPLAIN(REFERENCE_LOG_COMPATIBILITYTRUE)", "surface_kind": "function", "function_id": "sb.scalar.refusal_explain_reference_log_compatibilitytrue", "fixture_id": "SBSFC016-policy-refusal-explain-reference-log-compatibilitytrue"},
     "SBSQL-BEB64FF33809": {"canonical_name": "EXPLAIN(EVIDENCETRUE)", "surface_kind": "function", "function_id": "sb.scalar.refusal_explain_evidencetrue", "fixture_id": "SBSFC016-policy-refusal-explain-evidencetrue"},
     "SBSQL-5D9C952A3697": {"canonical_name": "@@TRANCOUNT", "surface_kind": "operator", "function_id": "sb.scalar.refusal_system_variable_trancount", "fixture_id": "SBSFC016-policy-refusal-system-variable-trancount"},
     "SBSQL-511BC12EEF82": {"canonical_name": "ATOMIC", "surface_kind": "function", "function_id": "sb.scalar.refusal_atomic", "fixture_id": "SBSFC016-policy-refusal-atomic"},
@@ -7479,7 +7479,7 @@ SBSFC016_POLICY_REFUSAL_ROW_EVIDENCE = {
     "SBSQL-EE837B9B5297": {"canonical_name": "DESC", "surface_kind": "function", "function_id": "sb.scalar.refusal_desc", "fixture_id": "SBSFC016-policy-refusal-desc"},
     "SBSQL-73AAF62A5CC3": {"canonical_name": "SYS_CONTEXT('USERENV',name)", "surface_kind": "function", "function_id": "sb.scalar.refusal_sys_context_userenv_name", "fixture_id": "SBSFC016-policy-refusal-sys-context-userenv-name"},
     "SBSQL-B26CC22AE57C": {"canonical_name": "RDB$GET_CONTEXT('USER_SESSION',name)", "surface_kind": "function", "function_id": "sb.scalar.refusal_rdb_get_context_user_session_name", "fixture_id": "SBSFC016-policy-refusal-rdb-get-context-user-session-name"},
-    # SBSFC-026R-A/B function-kind SQL-standard or donor-specific surfaces.
+    # SBSFC-026R-A/B function-kind SQL-standard or reference-specific surfaces.
     "SBSQL-33A632BC9375": {"canonical_name": "OVERLAPS", "surface_kind": "function", "function_id": "sb.scalar.refusal_overlaps", "fixture_id": "SBSFC016-policy-refusal-overlaps"},
     "SBSQL-F89F3F1D7CBB": {"canonical_name": "IDENTITY", "surface_kind": "function", "function_id": "sb.scalar.refusal_identity", "fixture_id": "SBSFC016-policy-refusal-identity"},
     # SBSFC-027R-A through SBSFC-027R-E remaining expression_runtime
@@ -7491,9 +7491,9 @@ SBSFC016_POLICY_REFUSAL_ROW_EVIDENCE = {
     "SBSQL-971C709406A0": {"canonical_name": "@", "surface_kind": "variable", "function_id": "sb.scalar.refusal_at", "fixture_id": "SBSFC016-policy-refusal-at"},
 }
 
-# SBSFC-028R-D/E Anti-WAL canonical_surface refusals: donor_log_mode and
-# checkpoint_donor_log are spec-level non-targets per ScratchBird's Anti-WAL
-# architecture (the engine has no WAL/donor-log subsystem to checkpoint or
+# SBSFC-028R-D/E Anti-WAL canonical_surface refusals: reference_log_mode and
+# checkpoint_reference_log are spec-level non-targets per ScratchBird's Anti-WAL
+# architecture (the engine has no WAL/reference-log subsystem to checkpoint or
 # switch modes on). These promote via parser lowering of the bare keyword
 # surface to a public_policy_refusal function id plus procedural-context
 # runtime conformance. signal/raise/resignal are NOT included here — they
@@ -7501,18 +7501,18 @@ SBSFC016_POLICY_REFUSAL_ROW_EVIDENCE = {
 # with new SBLR opcode + engine dispatcher).
 SBSFC028_CANONICAL_SURFACE_REFUSAL_EVIDENCE = {
     "SBSQL-6637546ABDF0": {
-        "canonical_name": "donor_log_mode",
-        "function_id": "sb.scalar.refusal_donor_log_mode",
+        "canonical_name": "reference_log_mode",
+        "function_id": "sb.scalar.refusal_reference_log_mode",
         "family": "storage_management",
         "sblr_operation_family": "sblr.storage.management_operation.v3",
-        "fixture_id": "SBSFC028-policy-refusal-donor-log-mode",
+        "fixture_id": "SBSFC028-policy-refusal-reference-log-mode",
     },
     "SBSQL-17068E518638": {
-        "canonical_name": "checkpoint_donor_log",
-        "function_id": "sb.scalar.refusal_checkpoint_donor_log",
+        "canonical_name": "checkpoint_reference_log",
+        "function_id": "sb.scalar.refusal_checkpoint_reference_log",
         "family": "storage_management",
         "sblr_operation_family": "sblr.storage.management_operation.v3",
-        "fixture_id": "SBSFC028-policy-refusal-checkpoint-donor-log",
+        "fixture_id": "SBSFC028-policy-refusal-checkpoint-reference-log",
     },
 }
 
@@ -8125,11 +8125,11 @@ SBSFC016_FIXED_POLICY_ROW_EVIDENCE = {
         "promoter_slice": "SBSFC-016R-H-metadata-scalar-row-evidence-publication",
     },
     "SBSQL-21B3D26B555C": {
-        "canonical_name": "donor_contextual_keyword",
-        "function_id": "sb.scalar.donor_contextual_keyword",
-        "engine_entrypoint": "donor_contextual_keyword",
-        "sblr_binding": "sblr.expr.donor_contextual_keyword.v3",
-        "expected_result": "keyword_class.donor_contextual",
+        "canonical_name": "reference_contextual_keyword",
+        "function_id": "sb.scalar.reference_contextual_keyword",
+        "engine_entrypoint": "reference_contextual_keyword",
+        "sblr_binding": "sblr.expr.reference_contextual_keyword.v3",
+        "expected_result": "keyword_class.reference_contextual",
         "result_descriptor": "character",
         "promoter_slice": "SBSFC-016R-H-metadata-scalar-row-evidence-publication",
     },
@@ -8152,11 +8152,11 @@ SBSFC016_FIXED_POLICY_ROW_EVIDENCE = {
         "promoter_slice": "SBSFC-016R-H-metadata-scalar-row-evidence-publication",
     },
     "SBSQL-813817A7EDFD": {
-        "canonical_name": "donor_reserved_keyword",
-        "function_id": "sb.scalar.donor_reserved_keyword",
-        "engine_entrypoint": "donor_reserved_keyword",
-        "sblr_binding": "sblr.expr.donor_reserved_keyword.v3",
-        "expected_result": "keyword_class.donor_reserved",
+        "canonical_name": "reference_reserved_keyword",
+        "function_id": "sb.scalar.reference_reserved_keyword",
+        "engine_entrypoint": "reference_reserved_keyword",
+        "sblr_binding": "sblr.expr.reference_reserved_keyword.v3",
+        "expected_result": "keyword_class.reference_reserved",
         "result_descriptor": "character",
         "promoter_slice": "SBSFC-016R-H-metadata-scalar-row-evidence-publication",
     },
@@ -8395,11 +8395,11 @@ SBSFC016_FIXED_POLICY_ROW_EVIDENCE = {
         "promoter_slice": "SBSFC-016R-I-surface-classification-metadata-row-evidence-publication",
     },
     "SBSQL-87F8BED4D9EE": {
-        "canonical_name": "DONOR_LOG_COMPATIBILITY",
-        "function_id": "sb.scalar.donor_log_compatibility",
-        "engine_entrypoint": "donor_log_compatibility",
-        "sblr_binding": "sblr.expr.donor_log_compatibility.v3",
-        "expected_result": "compatibility.donor_log_non_authority",
+        "canonical_name": "REFERENCE_LOG_COMPATIBILITY",
+        "function_id": "sb.scalar.reference_log_compatibility",
+        "engine_entrypoint": "reference_log_compatibility",
+        "sblr_binding": "sblr.expr.reference_log_compatibility.v3",
+        "expected_result": "compatibility.reference_log_non_authority",
         "result_descriptor": "character",
         "promoter_slice": "SBSFC-016R-I-surface-classification-metadata-row-evidence-publication",
     },
@@ -8606,7 +8606,7 @@ SBSFC016_FIXED_POLICY_ROW_EVIDENCE = {
         "function_id": "sb.scalar.innodb",
         "engine_entrypoint": "innodb",
         "sblr_binding": "sblr.expr.innodb.v3",
-        "expected_result": "donor_storage.innodb",
+        "expected_result": "reference_storage.innodb",
         "result_descriptor": "character",
         "promoter_slice": "SBSFC-016R-J-surface-classification-metadata-row-evidence-publication",
     },
@@ -8881,11 +8881,11 @@ SBSFC016_FIXED_POLICY_ROW_EVIDENCE = {
         "promoter_slice": "SBSFC-016R-K-diagnostic-fixture-metadata-row-evidence-publication",
     },
     "SBSQL-A371FE7C3BAA": {
-        "canonical_name": "donor_only(rewrite)",
-        "function_id": "sb.scalar.donor_only_rewrite",
-        "engine_entrypoint": "donor_only_rewrite",
-        "sblr_binding": "sblr.expr.donor_only_rewrite.v3",
-        "expected_result": "donor.rewrite_only",
+        "canonical_name": "reference_only(rewrite)",
+        "function_id": "sb.scalar.reference_only_rewrite",
+        "engine_entrypoint": "reference_only_rewrite",
+        "sblr_binding": "sblr.expr.reference_only_rewrite.v3",
+        "expected_result": "reference.rewrite_only",
         "result_descriptor": "character",
         "promoter_slice": "SBSFC-016R-K-diagnostic-fixture-metadata-row-evidence-publication",
     },
@@ -10943,8 +10943,8 @@ SBSFC056_NATIVE_SURFACE_ROW_EVIDENCE = {
     "SBSQL-A1B94C83C5F1": _sbsfc056_evidence("sb.aggregate.collect_expr", "collect_expr", "SBSFC056-collect-expr"),
     "SBSQL-5550BDA0A76C": _sbsfc056_evidence("sb.scalar.domain_stack", "domain_stack", "SBSFC056-domain-stack-marker"),
     "SBSQL-1906412209C9": _sbsfc056_evidence("sb.scalar.domain_stack_value", "domain_stack_value", "SBSFC056-domain-stack-value"),
-    "SBSQL-8F66D89149F5": _sbsfc056_evidence("sb.scalar.donor_only", "donor_only", "SBSFC056-donor-only"),
-    "SBSQL-F785EAF383DE": _sbsfc056_evidence("sb.scalar.donor_rewrite", "donor_rewrite", "SBSFC056-donor-rewrite"),
+    "SBSQL-8F66D89149F5": _sbsfc056_evidence("sb.scalar.reference_only", "reference_only", "SBSFC056-reference-only"),
+    "SBSQL-F785EAF383DE": _sbsfc056_evidence("sb.scalar.reference_rewrite", "reference_rewrite", "SBSFC056-reference-rewrite"),
     "SBSQL-FD0DF4067008": _sbsfc056_evidence("sb.multiset.element", "multiset_element", "SBSFC056-element", "sblr.expr.multiset_element.v3"),
     "SBSQL-1A8470FC95E7": _sbsfc056_evidence("sb.expr.match_recognize.v1", "expr_match_recognize_v1", "SBSFC056-expr-match-recognize"),
     "SBSQL-9F6F909938A0": _sbsfc056_evidence("sb.multiset.fusion", "multiset_fusion", "SBSFC056-fusion", "sblr.expr.multiset_fusion.v3"),
@@ -12876,7 +12876,7 @@ def classify(
             "Bounded public cluster-private exact refusal evidence from existing admission conformance tests. "
             "This row is exact_refusal_passed, not e2e_passed: public dispatch refuses before cluster execution, "
             "does not reach any direct open-core private-cluster executor, creates no prepared/cursor state, leaks no row detail, and preserves MGA transaction evidence. "
-            "No private cluster behavior, donor execution, parser-side finality, WAL, or positive execution is claimed."
+            "No private cluster behavior, reference execution, parser-side finality, WAL, or positive execution is claimed."
         )
         if sbsfc025ry_cluster_private_refusal_name:
             promoter_slice = "SBSFC-025R-Y-cluster-statement-public-fail-closed"
@@ -12887,7 +12887,7 @@ def classify(
                 "reach any direct open-core private-cluster executor, creates no prepared/cursor state, leaks no row detail, and preserves "
                 "MGA transaction evidence. No positive cluster execution, no private-profile acceptance, "
                 "no cluster topology/failover/job/member/system implementation, no direct open-core private-cluster executor dispatch, "
-                "no prepared/cursor state, no row-detail leak, no parser-side SQL execution, no donor "
+                "no prepared/cursor state, no row-detail leak, no parser-side SQL execution, no reference "
                 "behavior, no transaction finality change, no WAL/recovery authority, and no broader "
                 "SBSFC-025/no-grey closure is claimed."
             )
@@ -13064,7 +13064,7 @@ def classify(
                 "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
                 "SBSQL.SHOW_CREATE.UNSUPPORTED_SHAPE_for_out_of_slice_shapes;"
                 "catalog_descriptor_visibility_policy_refusal_contract;"
-                "no_donor_authority;no_WAL_recovery_authority"
+                "no_reference_authority;no_WAL_recovery_authority"
             ),
             "result_proof": (
                 f"ctest:{SHOW_CREATE_EXACT_ROUTE_CTEST};surface_id={surface_id};"
@@ -13091,7 +13091,7 @@ def classify(
                 "Evidence includes generated registry validation, parser bind/lower, right.observe read authority, "
                 "server public ABI admission, direct engine SBLR dispatch, object descriptor/name-registry authority, "
                 "no parser-side SQL execution, no parser-side CREATE rendering, no source SQL/name text in the envelope, "
-                "no descriptor-read catalog mutation, no transaction finality change, no cluster authority, no donor authority, "
+                "no descriptor-read catalog mutation, no transaction finality change, no cluster authority, no reference authority, "
                 "and no WAL/recovery authority. This row does not claim full SHOW family closure, full DDL decompiler coverage, "
                 "constraints/index/rendering coverage, authenticated driver route closure, or private cluster-provider behavior."
             ),
@@ -13143,7 +13143,7 @@ def classify(
             "diagnostic_proof": (
                 "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
                 "SB_AGENT_SECURITY.RIGHT_REQUIRED_refusal_contract_in_route_matrix;"
-                "unsupported_agent_shapes_fail_closed;no_donor_authority;no_WAL_recovery_authority"
+                "unsupported_agent_shapes_fail_closed;no_reference_authority;no_WAL_recovery_authority"
             ),
             "result_proof": (
                 f"ctest:{AGENT_MANAGEMENT_EXACT_ROUTE_CTEST};surface_id={surface_id};"
@@ -13166,7 +13166,7 @@ def classify(
                 "agents.show/agents.list/agents.start SBLR opcodes and engine APIs. Evidence includes "
                 "runtime-management parser binding, server admission public ABI dispatch, direct engine SBLR dispatch, "
                 "agent_type filter application, persisted agent evidence for the mutation path, no parser-side agent execution, "
-                "no source SQL text, no transaction context/finality, no cluster authority, no donor authority, and no WAL/recovery authority. "
+                "no source SQL text, no transaction context/finality, no cluster authority, no reference authority, and no WAL/recovery authority. "
                 "This row does not claim full agent-policy language closure, cluster agent execution, or private cluster-provider behavior."
             ),
         }
@@ -13216,7 +13216,7 @@ def classify(
             "diagnostic_proof": (
                 "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
                 "SBSQL.MANAGEMENT.OPERATION_UNSUPPORTED_refusal_contract;"
-                "unsupported_parser_listener_shapes_fail_closed;no_donor_authority;no_WAL_recovery_authority"
+                "unsupported_parser_listener_shapes_fail_closed;no_reference_authority;no_WAL_recovery_authority"
             ),
             "result_proof": (
                 f"ctest:{PARSER_LISTENER_MANAGEMENT_EXACT_ROUTE_CTEST};surface_id={surface_id};"
@@ -13237,7 +13237,7 @@ def classify(
                 "SBLR_MANAGEMENT_INSPECT_RUNTIME and EngineInspectManagementRuntime. Evidence includes runtime-management "
                 "parser binding, server admission public ABI dispatch, direct engine SBLR dispatch, component-filtered "
                 "listener/parser/parser-package result rows, no parser-side listener/parser process control, no source SQL text, "
-                "no transaction context/finality, no cluster authority, no donor authority, and no WAL/recovery authority. "
+                "no transaction context/finality, no cluster authority, no reference authority, and no WAL/recovery authority. "
                 "This row does not claim mutating parser/listener drain/reload control, UDR registration, or private cluster-provider behavior."
             ),
         }
@@ -13288,7 +13288,7 @@ def classify(
                 "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
                 "SB_ENGINE_API_UDR_PERMISSION_REQUIRED_refusal_contract;"
                 "unsupported_udr_shapes_fail_closed;non_cpp_register_refusal_shape_present;"
-                "no_donor_authority;no_WAL_recovery_authority"
+                "no_reference_authority;no_WAL_recovery_authority"
             ),
             "result_proof": (
                 f"ctest:{UDR_PACKAGE_MANAGEMENT_EXACT_ROUTE_CTEST};surface_id={surface_id};"
@@ -13312,7 +13312,7 @@ def classify(
                 "Evidence includes runtime-management parser binding, explicit UDR SBLR operation family at lowering/admission, "
                 "server admission public ABI dispatch, direct engine SBLR dispatch, package name/binary hash/capability/entrypoint "
                 "result rows, server transaction-context handoff under MGA, no parser-side UDR execution, no source SQL text, "
-                "no cluster authority, no donor authority, and no WAL/recovery authority. This row does not claim full "
+                "no cluster authority, no reference authority, and no WAL/recovery authority. This row does not claim full "
                 "CREATE/ALTER/DROP UDR package mutation grammar closure or private cluster-provider behavior."
             ),
         }
@@ -13382,7 +13382,7 @@ def classify(
                 "EVENT.CHANNEL_NOT_FOUND_refusal_contract;"
                 "EVENT.AUTHORIZATION_DENIED_refusal_contract;"
                 "unsupported_event_notification_shapes_fail_closed;"
-                "no_donor_authority;no_WAL_recovery_authority"
+                "no_reference_authority;no_WAL_recovery_authority"
             ),
             "result_proof": (
                 f"ctest:{EVENT_NOTIFICATION_EXACT_ROUTE_CTEST};surface_id={surface_id};"
@@ -13408,7 +13408,7 @@ def classify(
                 "event notification engine APIs. Evidence includes parser bind/lower, channel-name-to-UUID runtime binding, "
                 "structured user payload for CREATE/NOTIFY/POST without source SQL text, server public ABI admission, "
                 "direct engine SBLR dispatch under real MGA transaction visibility, no parser-side event delivery, "
-                "no cluster authority, no donor authority, and no WAL/recovery authority. This row does not claim "
+                "no cluster authority, no reference authority, and no WAL/recovery authority. This row does not claim "
                 "private cluster notification delivery, external event transports, or full scheduled-event execution semantics."
             ),
         }
@@ -13492,7 +13492,7 @@ def classify(
                     "observability.show_version/SBLR_OBSERVABILITY_SHOW_VERSION/EngineShowVersion and "
                     "observability.show_database/SBLR_OBSERVABILITY_SHOW_DATABASE/EngineShowDatabase. "
                     "Evidence names parser bind/lower, server admission, engine SBLR dispatch, public ABI streaming, no SQL text authority, and public cluster-scope fail-closed diagnostics. "
-                    "This row does not itself claim full SHOW family closure, management/jobs/storage/archive/replication closure, donor execution, parser-side finality, WAL/recovery, transaction finality, or cluster observability execution."
+                    "This row does not itself claim full SHOW family closure, management/jobs/storage/archive/replication closure, reference execution, parser-side finality, WAL/recovery, transaction finality, or cluster observability execution."
                 ),
             }
         if surface_id == "SBSQL-564D768C8ADF":
@@ -13520,7 +13520,7 @@ def classify(
                     "canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;"
                     "SECURITY.AUTHORIZATION.FORBIDDEN_refusal_contract_in_route_matrix;"
                     "SHOW_METRICS_CLUSTER_public_fail_closed_no_cluster_execution;"
-                    "no_donor_authority;no_WAL_recovery_authority"
+                    "no_reference_authority;no_WAL_recovery_authority"
                 ),
                 "result_proof": (
                     f"ctest:{OBSERVABILITY_EXACT_ROUTE_CTEST};surface_id={surface_id};"
@@ -13541,8 +13541,8 @@ def classify(
                 "notes": (
                     "Bounded show_stmt row evidence for exactly SBSQL-564D768C8ADF using the existing SHOW METRICS route. "
                     "Accepted fixture is SHOW METRICS only, routing to observability.show_metrics/SBLR_OBSERVABILITY_SHOW_METRICS/EngineShowMetrics with local sys.metrics result-row evidence. "
-                    "Evidence names parser bind/lower, server admission, engine SBLR dispatch, no source SQL text, parser_executes_sql=false, real_file_effects=false, requires_transaction_authority=false, no MGA transaction-control authority, engine_dispatch_requires_transaction_context=false, engine_dispatch_requires_cluster_authority=false, no donor authority, no WAL/recovery authority, no transaction finality change, and public SHOW METRICS CLUSTER fail-closed diagnostics. "
-                    "This row does not itself claim full SHOW family closure, management/jobs/storage/archive/replication closure, donor execution, parser-side finality, transaction finality, WAL/recovery authority, cluster observability execution, or source SQL engine execution."
+                    "Evidence names parser bind/lower, server admission, engine SBLR dispatch, no source SQL text, parser_executes_sql=false, real_file_effects=false, requires_transaction_authority=false, no MGA transaction-control authority, engine_dispatch_requires_transaction_context=false, engine_dispatch_requires_cluster_authority=false, no reference authority, no WAL/recovery authority, no transaction finality change, and public SHOW METRICS CLUSTER fail-closed diagnostics. "
+                    "This row does not itself claim full SHOW family closure, management/jobs/storage/archive/replication closure, reference execution, parser-side finality, transaction finality, WAL/recovery authority, cluster observability execution, or source SQL engine execution."
                 ),
             }
         return {
@@ -13593,7 +13593,7 @@ def classify(
                 "SBSQL-B3771D9D39C1 explain_option, SBSQL-627723269A64 explain_option_keyword, "
                 "and SBSQL-1BA82B56911E explain_options are promoted to e2e_passed. "
                 "Evidence names exact observability operation ids/opcodes, parser bind/lower evidence, DESCRIBE resolved-object evidence where applicable, server admission, engine SBLR dispatch, engine-owned jobs/management/diagnostics/archive-replication/agent/filespace/decision-service/acceleration API rows, target/detail row IDs in lowered observability payloads, no SQL text authority, and public cluster fail-closed diagnostics where applicable. "
-                "No broader SBSFC-024, optimizer-plan semantic correctness, full SHOW family coverage beyond listed routes, full DESCRIBE descriptor rendering, cluster observability execution, donor execution, parser-side finality, WAL/recovery, transaction finality, or storage lifecycle mutation closure is claimed."
+                "No broader SBSFC-024, optimizer-plan semantic correctness, full SHOW family coverage beyond listed routes, full DESCRIBE descriptor rendering, cluster observability execution, reference execution, parser-side finality, WAL/recovery, transaction finality, or storage lifecycle mutation closure is claimed."
             ),
         }
 
@@ -13669,7 +13669,7 @@ def classify(
                 "proof with canonical source family preserved, UUID-bound parser bind/lower evidence, server "
                 "admission, engine SBLR dispatch, no SQL text authority except the create-principal requested "
                 "name payload, parser no-authorization/no-finality authority, principal/policy lifecycle API "
-                "evidence, and unresolved-name fail-closed diagnostics. No broader audit closure, donor "
+                "evidence, and unresolved-name fail-closed diagnostics. No broader audit closure, reference "
                 "execution, parser-side finality, WAL/recovery, transaction finality, or cluster-private "
                 "behavior is claimed."
             ),
@@ -13746,7 +13746,7 @@ def classify(
                 "Bounded VALUES statement row evidence from existing VALUES rowset conformance CTest. "
                 "Exactly SBSQL-AE9DF01841E8 values_stmt is promoted to e2e_passed using corrected canonical/generated sblr.query.values.v3 authority and exact query.plan_operation/SBLR_QUERY_PLAN_OPERATION route evidence for VALUES (1, 'two'), (3, NULL). "
                 "Evidence names generated registry surface-id assertion, parser bind/lower evidence, server public ABI admission, engine SBLR dispatch to EnginePlanOperation, typed VALUES rowset result proof, no source SQL text, no parser storage/finality, and ragged VALUES fail-closed diagnostics. "
-                "VALUES set-operation coverage remains supporting only and promotes no extra rows. No table-backed joins/set/window/CTE/subquery closure, broad DML/query closure, binary typed-value COPY, PSQL/dynamic SQL/cursor lifecycle/management closure, parser-side execution/finality, donor execution, WAL/recovery, cluster-private behavior, or transaction-finality change is claimed."
+                "VALUES set-operation coverage remains supporting only and promotes no extra rows. No table-backed joins/set/window/CTE/subquery closure, broad DML/query closure, binary typed-value COPY, PSQL/dynamic SQL/cursor lifecycle/management closure, parser-side execution/finality, reference execution, WAL/recovery, cluster-private behavior, or transaction-finality change is claimed."
             ),
         }
 
@@ -13830,7 +13830,7 @@ def classify(
                 "Bounded VALUES set-operation row evidence from existing VALUES rowset conformance CTest. "
                 "Exactly SBSQL-CD51FAC537C3 set_op is promoted to e2e_passed using VALUES-only UNION, UNION ALL, INTERSECT ALL, and EXCEPT ALL evidence through query.plan_operation/SBLR_QUERY_PLAN_OPERATION. "
                 "Evidence names generated registry row assertion for the set_op grammar production, parser bind/lower evidence, server public ABI admission, engine SBLR dispatch to EnginePlanOperation, rowset result proof, no source SQL text, no parser storage/finality, and unsupported set-operation fail-closed diagnostics. "
-                "No query_term, multiset_set_op, table-backed set-query result execution, joins, CTEs, subqueries, broad query planner closure, generic DML closure, parser-side execution/finality, donor execution, WAL/recovery authority, transaction-finality change, cluster-private behavior, or broad no-grey claim is made."
+                "No query_term, multiset_set_op, table-backed set-query result execution, joins, CTEs, subqueries, broad query planner closure, generic DML closure, parser-side execution/finality, reference execution, WAL/recovery authority, transaction-finality change, cluster-private behavior, or broad no-grey claim is made."
             ),
         }
 
@@ -13918,7 +13918,7 @@ def classify(
                 "Bounded table inner-join grammar row evidence from existing DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-BDF73B0A3735 join_op and SBSQL-FE045D17DF14 join_condition are promoted to e2e_passed using the bounded inner equality join fixture. "
                 "Evidence names generated registry row assertions, UUID-bound parser bind/lower evidence, exact query.plan_operation/SBLR_QUERY_PLAN_OPERATION route, server public ABI admission, engine SBLR dispatch to EnginePlanOperation, hash inner equality join result proof through MGA row-result execution, no source SQL text, no object-name text, and fail-closed unsupported query diagnostics. "
-                "No broad join closure beyond bounded inner equality join, outer/cross/natural/lateral joins, query_term/query_expression/query_contract/CTE/subquery/table set-op/multiset_set_op promotion, parser SQL execution, donor execution, WAL/recovery authority, transaction-finality change, cluster-private execution, or broad no-grey claim is made."
+                "No broad join closure beyond bounded inner equality join, outer/cross/natural/lateral joins, query_term/query_expression/query_contract/CTE/subquery/table set-op/multiset_set_op promotion, parser SQL execution, reference execution, WAL/recovery authority, transaction-finality change, cluster-private execution, or broad no-grey claim is made."
             ),
         }
 
@@ -14010,7 +14010,7 @@ def classify(
                 "Bounded GROUP BY grammar row evidence from DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-7A9BAFF959F7 group_by_clause, SBSQL-516ED93EC9EF group_by_list, and SBSQL-E60597ED7F40 group_by_item are promoted to e2e_passed using SELECT id, SUM(amount) FROM sales GROUP BY id. "
                 "Evidence names generated registry row assertions, UUID-bound parser bind/lower evidence, exact query.plan_operation/SBLR_QUERY_PLAN_OPERATION route, query_operation=group_by, group key id, canonical aggregate sb.aggregate.sum, server public ABI admission, engine SBLR dispatch to EnginePlanOperation, and SUM-by-key MGA row-result proof. "
-                "No WHERE, HAVING, query_term, query_expression, query_contract, CTE, subquery, broad SELECT closure, generic GROUP BY semantics, grouping sets, DISTINCT aggregate execution, outer/cross/natural/lateral joins, parser-side execution/finality, donor execution, WAL/recovery authority, transaction-finality change, cluster positive execution, or no-grey/full closure claim is made."
+                "No WHERE, HAVING, query_term, query_expression, query_contract, CTE, subquery, broad SELECT closure, generic GROUP BY semantics, grouping sets, DISTINCT aggregate execution, outer/cross/natural/lateral joins, parser-side execution/finality, reference execution, WAL/recovery authority, transaction-finality change, cluster positive execution, or no-grey/full closure claim is made."
             ),
         }
 
@@ -14092,7 +14092,7 @@ def classify(
                 "Bounded HAVING positive evidence from DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-6769CF2BD71C having_clause is promoted to e2e_passed using SELECT id, SUM(total) FROM customer GROUP BY id HAVING SUM(total) > 1. "
                 "Evidence proves UUID-bound parser bind/lower to query.plan_operation/SBLR_QUERY_PLAN_OPERATION with route_operation_family=sblr.query.relational.v3, HAVING metadata having_predicate=aggregate_gt and having_threshold=1, server public ABI admission, and MGA-authorized grouped aggregate row-result filtering after grouping. "
-                "No broad HAVING closure, GROUP BY semantic expansion, aggregate FILTER semantics, QUALIFY, window-frame/named-window closure, COPY/RETURNING/INSERT SELECT/ON CONFLICT closure, donor execution/storage, parser-side SQL execution/finality, WAL/recovery authority, transaction-finality change, cluster-private behavior, or final no-grey closure is claimed."
+                "No broad HAVING closure, GROUP BY semantic expansion, aggregate FILTER semantics, QUALIFY, window-frame/named-window closure, COPY/RETURNING/INSERT SELECT/ON CONFLICT closure, reference execution/storage, parser-side SQL execution/finality, WAL/recovery authority, transaction-finality change, cluster-private behavior, or final no-grey closure is claimed."
             ),
         }
 
@@ -14194,7 +14194,7 @@ def classify(
                 "Exactly SBSQL-4B6E0DFBB334 with_clause and SBSQL-7B9D9B2C828B cte_def are promoted to e2e_passed using WITH c AS (SELECT * FROM customer) SELECT * FROM c. "
                 "Evidence preserves each row's canonical surface family, including sblr.general.operation.v3 for cte_def, while recording route_operation_family=sblr.query.relational.v3 through exact query.plan_operation/SBLR_QUERY_PLAN_OPERATION evidence. "
                 "Evidence names generated registry row assertion, UUID-bound source relation, query_envelope_kind=table_materialized_cte, cte_strategy=materialized, server public ABI admission, engine SBLR dispatch to EnginePlanOperation, and MGA row-result proof. "
-                "No recursive CTE, cte_search_clause, cte_cycle_clause, cte_function_def, query_expression, query_term, WHERE, HAVING, broad CTE/query planner closure, parser-side execution/finality, donor execution/storage, WAL/recovery authority, cluster execution, or final no-grey closure claim is made."
+                "No recursive CTE, cte_search_clause, cte_cycle_clause, cte_function_def, query_expression, query_term, WHERE, HAVING, broad CTE/query planner closure, parser-side execution/finality, reference execution/storage, WAL/recovery authority, cluster execution, or final no-grey closure claim is made."
             ),
         }
 
@@ -14288,7 +14288,7 @@ def classify(
                 "Bounded scalar subquery row evidence from DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-3ED0C0C1F6C7 subquery_expression is promoted to e2e_passed using SELECT (SELECT id FROM customer). "
                 "Evidence names generated registry row assertion, UUID-bound parser bind/lower evidence, exact query.plan_operation/SBLR_QUERY_PLAN_OPERATION route, query_envelope_kind=table_scalar_subquery, scalar_subquery route/evidence, server public ABI admission, engine SBLR dispatch to EnginePlanOperation, and MGA row-result proof. "
-                "No CTE, quantified subquery, correlated subquery, predicate-bearing subquery, multi-column subquery, WHERE, HAVING, query_expression, query_contract, broad SELECT closure, parser-side finality, source SQL engine execution, donor storage, WAL/recovery authority, cluster positive execution, or no-grey/full closure claim is made."
+                "No CTE, quantified subquery, correlated subquery, predicate-bearing subquery, multi-column subquery, WHERE, HAVING, query_expression, query_contract, broad SELECT closure, parser-side finality, source SQL engine execution, reference storage, WAL/recovery authority, cluster positive execution, or no-grey/full closure claim is made."
             ),
         }
 
@@ -14405,7 +14405,7 @@ def classify(
                 "SBSFC-063 bounded window grammar exact-route evidence. The named WINDOW rows use SELECT row_number() OVER win FROM customer WINDOW win AS (ORDER BY id) with generated registry assertions, UUID-bound table lowering, descriptor-only named-window payload markers, public server admission, and EnginePlanOperation row-number runtime evidence. "
                 "The frame and exclusion rows use SELECT row_number() OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE NO OTHERS) FROM customer and publish only the bounded row-number descriptor route, not broader frame semantics. "
                 "The time_series_window_expr row uses SELECT timeseries.aggregate('sum', '1,2,3') WITHIN INTERVAL '1' DAY AS ts_window with query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION runtime evidence plus bounded nosql.time_series_append API dispatch evidence. "
-                "No parser SQL execution, transaction finality, donor execution, broad window planner closure, generic refusal evidence, cluster provider behavior, or full no-grey closure is claimed."
+                "No parser SQL execution, transaction finality, reference execution, broad window planner closure, generic refusal evidence, cluster provider behavior, or full no-grey closure is claimed."
             ),
         }
 
@@ -14500,7 +14500,7 @@ def classify(
                 "SBSFC-064 bounded parameter/sample grammar exact-route evidence. Exactly parameter_marker uses SELECT ? AS marker_value through CST/AST/bind/lower to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with parameter descriptor metadata only and no parser-side value execution. "
                 "Exactly parameter_def and parameter_name use CREATE PROCEDURE process_order(customer_id BIGINT) through bounded routine parameter descriptor lowering to ddl.create_procedure/SBLR_DDL_CREATE_PROCEDURE and EngineCreateProcedure catalog metadata persistence, without claiming procedure body execution. "
                 "Exactly sample_clause and sample_method use SELECT * FROM customer TABLESAMPLE BERNOULLI (50) through UUID-bound table sample lowering to query.plan_operation/SBLR_QUERY_PLAN_OPERATION and EnginePlanOperation sample descriptor evidence. "
-                "No synthetic SBSQL_SURFACE_REPLAY route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, transaction finality change, donor authority, WAL/recovery authority, or full no-grey closure is claimed."
+                "No synthetic SBSQL_SURFACE_REPLAY route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, transaction finality change, reference authority, WAL/recovery authority, or full no-grey closure is claimed."
             ),
         }
 
@@ -14594,7 +14594,7 @@ def classify(
             "notes": (
                 "SBSFC-065 bounded pivot/unpivot grammar exact-route evidence. The pivot rows use SELECT * FROM sales PIVOT (SUM(amount) FOR quarter IN ('Q1' AS q1, 'Q2' AS q2)) through CST/AST/bind/lower to query.plan_operation/SBLR_QUERY_PLAN_OPERATION with UUID-bound source relation evidence, descriptor-only pivot aggregate/for/in payload markers, public server admission, and EnginePlanOperation deterministic pivot row-shape evidence. "
                 "The unpivot rows use SELECT * FROM sales UNPIVOT (amount FOR quarter IN (q1 AS 'Q1', q2 AS 'Q2')) through the same public route with descriptor-only unpivot value/pivot/in markers and deterministic columns-to-rows runtime evidence. "
-                "No synthetic replay route, diagnostic-denial route promotion, cluster provider behavior, parser SQL execution, transaction finality change, donor authority, WAL/recovery authority, full optimizer support, or full no-grey closure is claimed."
+                "No synthetic replay route, diagnostic-denial route promotion, cluster provider behavior, parser SQL execution, transaction finality change, reference authority, WAL/recovery authority, full optimizer support, or full no-grey closure is claimed."
             ),
         }
 
@@ -14688,7 +14688,7 @@ def classify(
             "promoter_slice": "SBSFC-066-case-grammar-exact-route",
             "notes": (
                 "SBSFC-066 bounded CASE grammar exact-route evidence. Simple and general CASE rows use descriptor column references with equality comparison, and searched CASE uses a descriptor column reference with greater-than comparison, through public CST/AST/bind/lower/server admission. The same CASE forms are also proven with literal parser-lowered runtime fixtures dispatched to EngineEvaluateProjection from the lowered envelope. "
-                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, transaction finality change, donor authority, WAL/recovery authority, or full no-grey closure is claimed."
+                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, transaction finality change, reference authority, WAL/recovery authority, or full no-grey closure is claimed."
             ),
         }
 
@@ -14797,7 +14797,7 @@ def classify(
             "promoter_slice": "SBSFC-067-on-conflict-exact-route",
             "notes": (
                 "SBSFC-067 bounded ON CONFLICT exact-route evidence. INSERT ON CONFLICT rows parse, bind, lower, and pass public server admission to dml.insert_rows/SBLR_DML_INSERT_ROWS with descriptor-only conflict target/action payload, unique-index and conflict-policy descriptor refs, and no target object name or source SQL text in the lowered payload. Runtime evidence dispatches EngineInsertRows through SBLR for DO NOTHING and DO UPDATE, proving MGA row skip and row update behavior. "
-                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, transaction finality change, donor authority, WAL/recovery authority, or full no-grey closure is claimed."
+                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, transaction finality change, reference authority, WAL/recovery authority, or full no-grey closure is claimed."
             ),
         }
 
@@ -14892,7 +14892,7 @@ def classify(
             "promoter_slice": "SBSFC-068-prepared-statement-control",
             "notes": (
                 "SBSFC-068 bounded prepared-statement control exact-route evidence. PREPARE, EXECUTE, EXECUTE WITH CURSOR, and DEALLOCATE parse, bind, lower, and pass server admission to session prepared-statement control operations with session-scoped statement aliases and server-assigned prepared statement UUIDs. Runtime evidence uses HandleExecuteSblr and ServerSessionRegistry to create a prepared SBLR record, execute the stored inner query.evaluate_projection envelope, open and close a cursor for the EXECUTE option, deallocate the prepared record, and reject execution after deallocation. "
-                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, donor authority, WAL/recovery authority, or full no-grey closure is claimed."
+                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, reference authority, WAL/recovery authority, or full no-grey closure is claimed."
             ),
         }
 
@@ -14983,7 +14983,7 @@ def classify(
             "promoter_slice": "SBSFC-070-psql-cursor-control",
             "notes": (
                 "SBSFC-070 bounded PSQL cursor-control exact-route evidence. OPEN cursor, FETCH NEXT, CLOSE cursor, and DECLARE cursor parse, bind, lower, and pass server admission to session cursor-control operations with session-scoped cursor aliases and server-assigned cursor UUIDs. Runtime evidence uses HandleExecuteSblr and ServerSessionRegistry to create a named cursor, fetch one bounded row through cursor state, close it, and reject fetch after close. The cursor query is descriptor-only bounded scalar projection metadata. "
-                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, donor authority, WAL/recovery authority, or full no-grey closure is claimed."
+                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, reference authority, WAL/recovery authority, or full no-grey closure is claimed."
             ),
         }
 
@@ -15081,7 +15081,7 @@ def classify(
             "promoter_slice": "SBSFC-071-jobs-scheduler",
             "notes": (
                 "SBSFC-071 bounded jobs-scheduler exact-route evidence. CREATE JOB, RUN JOB, PAUSE JOB, RESUME JOB, and CANCEL JOB parse, bind, lower, pass server admission, and execute through the core database-local background job scheduler and workload quota controller. Runtime evidence uses HandleExecuteSblr, ServerSessionRegistry, DatabaseLocalBackgroundJobScheduler, and WorkloadResourceQuotaController to register a job, run it with a quota reservation, cancel and release the reservation, pause/resume the scheduler, and reject a missing job. "
-                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, donor authority, WAL/recovery authority, or full no-grey closure is claimed."
+                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, reference authority, WAL/recovery authority, or full no-grey closure is claimed."
             ),
         }
 
@@ -15180,7 +15180,7 @@ def classify(
             "promoter_slice": "SBSFC-072-jobs-schedule",
             "notes": (
                 "SBSFC-072 bounded jobs schedule exact-route evidence. ALTER JOB ... SCHEDULE, CREATE SCHEDULE ... FOR JOB, ALTER SCHEDULE, schedule_spec, event_schedule, and event_schedule_offset_list parse, bind, lower, pass server admission, and execute through the core database-local background job scheduler and workload quota controller. Runtime evidence uses HandleExecuteSblr, ServerSessionRegistry, DatabaseLocalBackgroundJobScheduler, and WorkloadResourceQuotaController to attach, create, alter, and reject missing schedules. "
-                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, donor authority, WAL/recovery authority, or full no-grey closure is claimed."
+                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, reference authority, WAL/recovery authority, or full no-grey closure is claimed."
             ),
         }
 
@@ -15283,7 +15283,7 @@ def classify(
             "promoter_slice": "SBSFC-073-archive-replication",
             "notes": (
                 "SBSFC-073 bounded archive/backup/restore/replication/changefeed exact-route evidence. BACKUP, BACKUP options, RESTORE, RESTORE options, ARCHIVE, REPLICATE, CHANGEFEED, CHANGEFEED options, and the archive_replication_stmt root parse, bind, lower, pass server admission, and execute through HandleExecuteSblr into the engine backup/archive API. Runtime evidence creates a real minimal database, begins an engine-owned MGA transaction for restore authority, writes logical backup manifests and delta manifests, validates restore inspection, and preserves explicit authoritative_wal=false evidence. "
-                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, donor authority, WAL/recovery authority, or full no-grey closure is claimed."
+                "No synthetic replay route, generic refusal evidence, exact-refusal promotion, cluster provider behavior, parser SQL execution, parser storage/finality, transaction finality change, reference authority, WAL/recovery authority, or full no-grey closure is claimed."
             ),
         }
 
@@ -15367,7 +15367,7 @@ def classify(
             "promoter_slice": "SBSFC-069-comment-trivia-exact-route",
             "notes": (
                 "SBSFC-069 bounded comment-trivia exact-route evidence. Exactly comment, comment_line, comment_block, and comment_doc are promoted through lexer/CST preservation over a real SELECT 1 AS comment_value route. Evidence proves generated registry validation, line/block/documentation comment token families, non-nesting block comment behavior, exact source reconstruction, CST trivia nodes, parser/binder/lowerer exclusion of comment text from SBLR payload authority, server public ABI admission, and EngineEvaluateProjection runtime returning 1. "
-                "Documentation comments are recognized as lexical source artifacts only; no doc-comment-to-catalog emission, COMMENT ON semantics, catalog mutation, parser-side execution/finality, donor authority, WAL/recovery authority, cluster-positive behavior, or final no-grey closure is claimed."
+                "Documentation comments are recognized as lexical source artifacts only; no doc-comment-to-catalog emission, COMMENT ON semantics, catalog mutation, parser-side execution/finality, reference authority, WAL/recovery authority, cluster-positive behavior, or final no-grey closure is claimed."
             ),
         }
 
@@ -15462,7 +15462,7 @@ def classify(
                 "Bounded window clause grammar row evidence from existing DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-1026B4E68CA7 over_clause, SBSQL-120A1B113995 window_partition_clause, and SBSQL-479F12CDBDD7 window_spec are promoted to e2e_passed using SELECT row_number() OVER (ORDER BY id) FROM customer and SELECT count(*) OVER (PARTITION BY dept) FROM sales through query.plan_operation/SBLR_QUERY_PLAN_OPERATION. "
                 "Evidence names generated registry row assertions, UUID-bound parser bind/lower evidence, server public ABI admission, engine dispatch to EnginePlanOperation, no source SQL text, no object-name text, and MGA row-result proof for row_number and partition-count window routes. "
-                "No named WINDOW clause, window_def, existing_window_name, frame, exclusion, multi-key partition, RANGE/ROWS/GROUPS frame, aggregate-window bridge beyond the bounded count partition route, broader window grammar closure, broader query planner closure, WHERE/HAVING, joins/set/CTE/subquery expansion, parser-side execution/finality, donor execution/storage, WAL/recovery authority, positive cluster execution, or full no-grey/release closure is claimed."
+                "No named WINDOW clause, window_def, existing_window_name, frame, exclusion, multi-key partition, RANGE/ROWS/GROUPS frame, aggregate-window bridge beyond the bounded count partition route, broader window grammar closure, broader query planner closure, WHERE/HAVING, joins/set/CTE/subquery expansion, parser-side execution/finality, reference execution/storage, WAL/recovery authority, positive cluster execution, or full no-grey/release closure is claimed."
             ),
         }
 
@@ -15517,7 +15517,7 @@ def classify(
                 "Bounded ordered SELECT sort_spec row evidence from DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-7A97866422E3 sort_spec is promoted to e2e_passed using SELECT * FROM customer ORDER BY id DESC LIMIT 2 OFFSET 1. "
                 "Evidence names generated registry row assertions, UUID-bound parser bind/lower evidence, exact dml.select_rows/SBLR_DML_SELECT_ROWS route, ORDER BY id DESC sort-spec proof, descriptor-field ordering binding, UUID-only target payload, server public ABI admission, engine SBLR dispatch, no source SQL text, no object-name text, and MGA ordered sliced row-result evidence. "
-                "No broader ORDER BY semantics, NULLS FIRST/LAST, multi-key sort, collation ordering, broad pagination, HAVING, QUALIFY, window frame/name closure, broader query-planner closure, SBLR round-trip promotion, private cluster behavior, parser-side execution/finality, donor execution/storage, WAL/recovery authority, final/no-grey closure, or non-target grammar rows are claimed."
+                "No broader ORDER BY semantics, NULLS FIRST/LAST, multi-key sort, collation ordering, broad pagination, HAVING, QUALIFY, window frame/name closure, broader query-planner closure, SBLR round-trip promotion, private cluster behavior, parser-side execution/finality, reference execution/storage, WAL/recovery authority, final/no-grey closure, or non-target grammar rows are claimed."
             )
             implementation_refs = (
                 f"operation_id={operation_id};opcode={sblr_operation};"
@@ -15541,7 +15541,7 @@ def classify(
                 "Bounded ordered SELECT clause row evidence from DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-7A82912DB96E order_by_clause and SBSQL-39BB51C9872F limit_offset_clause are promoted to e2e_passed using SELECT * FROM customer ORDER BY id DESC LIMIT 2 OFFSET 1. "
                 "Evidence names generated registry row assertions, UUID-bound parser bind/lower evidence, exact dml.select_rows/SBLR_DML_SELECT_ROWS route, order_by id DESC, LIMIT 2 OFFSET 1, descriptor-field ordering binding, server public ABI admission, engine SBLR dispatch, and MGA ordered sliced row-result evidence. "
-                "No broader query planner closure, WHERE, GROUP BY, window, CTE, subquery, table set-op, join expansion, parser-side execution or finality, donor execution, SQL text or object-name authority in engine payloads, WAL/recovery authority, cluster-private behavior, broad no-grey claim, or non-target query-clause rows are claimed."
+                "No broader query planner closure, WHERE, GROUP BY, window, CTE, subquery, table set-op, join expansion, parser-side execution or finality, reference execution, SQL text or object-name authority in engine payloads, WAL/recovery authority, cluster-private behavior, broad no-grey claim, or non-target query-clause rows are claimed."
             )
             implementation_refs = (
                 f"operation_id={operation_id};opcode={sblr_operation};"
@@ -15660,7 +15660,7 @@ def classify(
                 "Bounded TOP clause row evidence from DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-BDFA93BADC7C top_clause is promoted to e2e_passed using only SELECT TOP 2 * FROM customer. "
                 "Evidence preserves the row's canonical sblr.general.operation.v3 authority while proving the bounded SELECT route lowers to dml.select_rows/SBLR_DML_SELECT_ROWS with info.has_limit/info.limit, bounded_top_clause marker, UUID-bound target payload, server public ABI admission, engine SBLR dispatch, no source SQL text, no object-name text, and MGA row-result proof. "
-                "TOP PERCENT and WITH TIES fail closed. No cursor FETCH, FETCH WITH TIES, FETCH PERCENT, broad pagination, SQL Server full TOP semantics, broader query planner, SBLR binary round-trip, authenticated-route matrix, donor execution/storage, parser-side finality, WAL/recovery authority, cluster-private behavior, or final no-grey closure is claimed."
+                "TOP PERCENT and WITH TIES fail closed. No cursor FETCH, FETCH WITH TIES, FETCH PERCENT, broad pagination, SQL Server full TOP semantics, broader query planner, SBLR binary round-trip, authenticated-route matrix, reference execution/storage, parser-side finality, WAL/recovery authority, cluster-private behavior, or final no-grey closure is claimed."
             ),
         }
 
@@ -15743,7 +15743,7 @@ def classify(
                 "Bounded FETCH clause row evidence from DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-E3899FC39487 fetch_clause is promoted to e2e_passed using SELECT * FROM customer FETCH FIRST 2 ROWS ONLY plus equivalent FETCH NEXT 2 ROW ONLY admission. "
                 "Evidence preserves the row's canonical sblr.general.operation.v3 authority while proving the bounded SELECT route lowers to dml.select_rows/SBLR_DML_SELECT_ROWS with info.has_limit/info.limit, UUID-bound target payload, server public ABI admission, engine SBLR dispatch, no source SQL text, no object-name text, and MGA row-result proof. "
-                "No top_clause, cursor FETCH, FETCH WITH TIES, FETCH PERCENT, broad pagination, broader query planner, SBLR binary round-trip, authenticated-route matrix, donor execution/storage, parser-side finality, WAL/recovery authority, cluster-private behavior, or final no-grey closure is claimed."
+                "No top_clause, cursor FETCH, FETCH WITH TIES, FETCH PERCENT, broad pagination, broader query planner, SBLR binary round-trip, authenticated-route matrix, reference execution/storage, parser-side finality, WAL/recovery authority, cluster-private behavior, or final no-grey closure is claimed."
             ),
         }
 
@@ -15828,7 +15828,7 @@ def classify(
                 "Bounded WHERE equality predicate row evidence from DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-FDDEDDE219FF where_clause, SBSQL-C599A11E2743 comparison_expr, SBSQL-BD4C48607AA5 comparison_op, and SBSQL-75C314C8812A column_ref are promoted to e2e_passed using SELECT * FROM customer WHERE id = 1. "
                 "Evidence names generated registry row assertion, UUID-bound parser bind/lower evidence, exact dml.select_rows/SBLR_DML_SELECT_ROWS route, descriptor-bound column_equals predicate payload for id = 1, server public ABI admission, engine SBLR dispatch, and MGA row-result proof through dml.select_rows predicate support. "
-                "No broad column namespace/name-resolution closure, broad predicate expression closure, HAVING/QUALIFY/PREWHERE/filter_clause/cypher_where_clause, quantified/correlated/predicate-bearing subquery closure, broad query planner closure, parser-side execution/finality, donor execution/storage, WAL/recovery authority, positive cluster execution, or no-grey/full closure claim is made."
+                "No broad column namespace/name-resolution closure, broad predicate expression closure, HAVING/QUALIFY/PREWHERE/filter_clause/cypher_where_clause, quantified/correlated/predicate-bearing subquery closure, broad query planner closure, parser-side execution/finality, reference execution/storage, WAL/recovery authority, positive cluster execution, or no-grey/full closure claim is made."
             ),
         }
 
@@ -15929,7 +15929,7 @@ def classify(
                 "and no target object UUID. SBSQL-3BDB82ED4BDB binary_literal function row is a separate SBSFC-010R-L function-catalog publication and is not a callable SQL function. "
                 "No bit-string closure, blob/varbinary semantics, binary function/operator family closure, numeric_literal, "
                 "unsigned/128-bit numeric rows, exact numeric arithmetic, UUID/temporal/JSON-inline/vector literal rows, "
-                "parser-side execution/finality, donor finality, WAL/recovery authority, cluster-private positive behavior, "
+                "parser-side execution/finality, reference finality, WAL/recovery authority, cluster-private positive behavior, "
                 "authenticated driver-route closure, or final no-grey closure is claimed."
             ),
         }
@@ -16175,7 +16175,7 @@ def classify(
                 "no target object UUID, and no parser SQL execution/finality. "
                 "SBSQL-E61ADCFD4F93 numeric_literal and SBSQL-94498009F62D json_literal_inline are separate grammar rows. No exact arbitrary precision decimal arithmetic, float arithmetic, "
                 "rounding, overflow, exact numeric semantics, unsigned arithmetic closure, 128-bit arithmetic closure, callable uint_literal int128_literal uint128_literal real128_literal interval_literal document_literal vector_literal binary_literal uuid_literal date_literal time_literal or timestamp_literal function, UUID provider/generation behavior, UUID identity/finality/ordering semantics, temporal arithmetic/calendar validation/timezone semantics, bit-string closure, blob/varbinary semantics, binary function/operator family closure, JSON path semantics, vector dimension/distance/search/index closure, document canonicalization/path semantics, "
-                "parser-side execution/finality, donor finality, WAL/recovery authority, cluster-private positive behavior, authenticated driver-route closure, or final no-grey closure is claimed."
+                "parser-side execution/finality, reference finality, WAL/recovery authority, cluster-private positive behavior, authenticated driver-route closure, or final no-grey closure is claimed."
             ),
         }
 
@@ -16246,7 +16246,7 @@ def classify(
             "notes": (
                 "Bounded contextual keyword function exact-route row evidence. "
                 "Exactly the function-catalog rows select, from, where, ORDER, LIMIT, OFFSET, GROUP, FETCH, HAVING, JOIN, INSERT, UPDATE, DELETE, and MERGE are promoted through existing UUID-bound SELECT, WHERE equality, ordered LIMIT/OFFSET SELECT, bounded FETCH, GROUP BY/HAVING aggregate, JOIN, and DML mutation routes. Evidence proves contextual keyword recognition and row-identifiable payload markers through parser/CST/AST/bound lowering, server public ABI admission, and engine DML/query-plan dispatch. "
-                "These rows are not callable SQL functions. No broad query grammar closure, null ordering semantics, name-resolution expansion, QUALIFY/PREWHERE/filter closure, joins beyond the bounded inner-join route, parser-side execution/finality, donor execution/storage, WAL/recovery authority, positive cluster execution, final no-grey closure, or non-target rows are claimed."
+                "These rows are not callable SQL functions. No broad query grammar closure, null ordering semantics, name-resolution expansion, QUALIFY/PREWHERE/filter closure, joins beyond the bounded inner-join route, parser-side execution/finality, reference execution/storage, WAL/recovery authority, positive cluster execution, final no-grey closure, or non-target rows are claimed."
             ),
         }
 
@@ -16327,7 +16327,7 @@ def classify(
                 "Bounded simple SELECT skeleton grammar route evidence from existing DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-B088E6B465FB query_dml_stmt, SBSQL-D229BF16AB18 query_expression, SBSQL-69FF4A7219CE query_contract, SBSQL-1CEA5265AEBF query_term, SBSQL-3A43CC647BE1 select_list, SBSQL-287ABE0E2158 select_item, SBSQL-F63161605D67 from_clause, SBSQL-E8662E29C028 table_primary, and SBSQL-41BE7F0451CF table_reference are promoted to e2e_passed using only SELECT * FROM customer. "
                 "Evidence names generated registry row assertions, row-identifiable payload markers, UUID-bound parser bind/lower evidence, exact dml.select_rows/SBLR_DML_SELECT_ROWS route, server public ABI admission, engine SBLR dispatch, no source SQL text, no object-name text, and MGA row-result proof from the existing simple SELECT route. "
-                "No broad table-reference grammar closure, qualified-name/name-resolution semantics, general SELECT/query-planner closure, HAVING/QUALIFY/PREWHERE/filter closure, joins/set/CTE/subquery expansion beyond already accepted rows, parser-side execution/finality, donor execution/storage, WAL/recovery authority, positive cluster execution, final no-grey closure, or non-target rows are claimed."
+                "No broad table-reference grammar closure, qualified-name/name-resolution semantics, general SELECT/query-planner closure, HAVING/QUALIFY/PREWHERE/filter closure, joins/set/CTE/subquery expansion beyond already accepted rows, parser-side execution/finality, reference execution/storage, WAL/recovery authority, positive cluster execution, final no-grey closure, or non-target rows are claimed."
             ),
         }
 
@@ -16403,7 +16403,7 @@ def classify(
                 "Bounded insert_source row evidence from existing DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-FC67CA158753 insert_source is promoted to e2e_passed using INSERT INTO customer VALUES (1). "
                 "Evidence names generated registry row assertion, exact dml.insert_rows/SBLR_DML_INSERT_ROWS lowering, UUID-bound target payload, server public ABI admission, engine SBLR dispatch, MGA row insert proof, no_source_sql_text, and no object-name text authority. "
-                "No broader DML closure, RETURNING, multi-row insert, INSERT SELECT, ON CONFLICT, COPY source/options, parser-side execution/finality, donor execution/storage, WAL/recovery authority, cluster-private behavior, or final/no-grey closure is claimed."
+                "No broader DML closure, RETURNING, multi-row insert, INSERT SELECT, ON CONFLICT, COPY source/options, parser-side execution/finality, reference execution/storage, WAL/recovery authority, cluster-private behavior, or final/no-grey closure is claimed."
             ),
         }
 
@@ -16478,7 +16478,7 @@ def classify(
                 "Bounded copy_source row evidence from existing DML exact-route CTest import-planning assertions. "
                 "Exactly SBSQL-D19FE1151601 copy_source is promoted to e2e_passed using COPY customer FROM STDIN import-planning route evidence only. "
                 "Evidence names generated registry surface-id assertions, UUID-bound parser bind/lower evidence, exact dml.plan_import_rows/SBLR_DML_PLAN_IMPORT_ROWS operation, source_kind=native_sbsql_import, format_family=csv, source_handle_included=false, parser_decodes_bytes=false, row_persistence_claimed=false, server public ABI admission, engine import-plan dispatch acceptance, no_source_sql_text, and no object-name text authority. "
-                "No parser-side COPY execution, byte decoding, row persistence, transaction finality, donor execution/storage, WAL/recovery authority, private cluster behavior, authenticated driver/SBWP route closure, copy_format/options/endpoint closure, binary typed-value COPY, reject-row streaming, RETURNING, INSERT SELECT, ON CONFLICT, broader DML closure, or final no-grey closure is claimed."
+                "No parser-side COPY execution, byte decoding, row persistence, transaction finality, reference execution/storage, WAL/recovery authority, private cluster behavior, authenticated driver/SBWP route closure, copy_format/options/endpoint closure, binary typed-value COPY, reject-row streaming, RETURNING, INSERT SELECT, ON CONFLICT, broader DML closure, or final no-grey closure is claimed."
             ),
         }
 
@@ -16555,7 +16555,7 @@ def classify(
                 "Bounded copy_options row evidence from DML exact-route CTest import-planning assertions. "
                 "Exactly SBSQL-4369855D2FC4 copy_options is promoted to e2e_passed using COPY customer FROM STDIN WITH HEADER import-planning route evidence only. "
                 "Evidence names generated registry surface-id assertions, UUID-bound parser bind/lower evidence, exact dml.plan_import_rows/SBLR_DML_PLAN_IMPORT_ROWS operation, source_kind=native_sbsql_import, format_family=csv, copy_options_present=true, copy_header_option=true, source_handle_included=false, parser_decodes_bytes=false, row_persistence_claimed=false, server public ABI admission, engine import-plan dispatch acceptance, no_source_sql_text, no_source_endpoint_text, and no object-name text authority. "
-                "No parser-side COPY execution, byte decoding, row persistence, source handle authority, SQL/object/source text authority, reject-row streaming, binary typed-value COPY, copy_format, copy_endpoint, transaction finality, donor execution/storage/finality, WAL/recovery authority, parser-side execution/finality, private cluster behavior, authenticated driver/SBWP route closure, broader DML closure, or final no-grey closure is claimed."
+                "No parser-side COPY execution, byte decoding, row persistence, source handle authority, SQL/object/source text authority, reject-row streaming, binary typed-value COPY, copy_format, copy_endpoint, transaction finality, reference execution/storage/finality, WAL/recovery authority, parser-side execution/finality, private cluster behavior, authenticated driver/SBWP route closure, broader DML closure, or final no-grey closure is claimed."
             ),
         }
 
@@ -16630,7 +16630,7 @@ def classify(
                 "Bounded copy_format row evidence from DML exact-route CTest import-planning assertions. "
                 "Exactly SBSQL-2DDA6BFD9B65 copy_format is promoted to e2e_passed using COPY customer FROM STDIN JSONL import-planning route evidence only. "
                 "Evidence names generated registry surface-id assertions, UUID-bound parser bind/lower evidence, exact dml.plan_import_rows/SBLR_DML_PLAN_IMPORT_ROWS operation, source_kind=native_sbsql_import, format_family=jsonl, source_handle_included=false, parser_decodes_bytes=false, row_persistence_claimed=false, server public ABI admission, engine import-plan dispatch acceptance, no_source_sql_text, and no object-name text authority. "
-                "No parser-side COPY execution, byte decoding, row persistence, source handle authority, reject-row streaming, binary typed-value COPY, copy_options, copy_endpoint, transaction finality, donor execution/storage/finality, WAL/recovery authority, parser-side execution/finality, private cluster behavior, broader DML closure, or final no-grey closure is claimed."
+                "No parser-side COPY execution, byte decoding, row persistence, source handle authority, reject-row streaming, binary typed-value COPY, copy_options, copy_endpoint, transaction finality, reference execution/storage/finality, WAL/recovery authority, parser-side execution/finality, private cluster behavior, broader DML closure, or final no-grey closure is claimed."
             ),
         }
 
@@ -16707,7 +16707,7 @@ def classify(
                 "Bounded copy_endpoint row evidence from DML exact-route CTest import-planning assertions. "
                 "Exactly SBSQL-BDC2B64DA2A9 copy_endpoint is promoted to e2e_passed using COPY customer FROM STDIN import-planning route evidence only. "
                 "Evidence names generated registry surface-id assertions, UUID-bound parser bind/lower evidence, exact dml.plan_import_rows/SBLR_DML_PLAN_IMPORT_ROWS operation, source_kind=native_sbsql_import, format_family=csv, source endpoint sanitization, source_handle_included=false, parser_decodes_bytes=false, row_persistence_claimed=false, server public ABI admission, engine import-plan dispatch acceptance, no_source_sql_text, no_source_endpoint_text, and no object-name text authority. "
-                "No parser-side COPY execution, byte decoding, row persistence, source handle authority, reject-row streaming, binary typed-value COPY, copy_options, additional copy_format beyond already accepted JSONL, file/URL/stdout endpoints, donor execution/finality, WAL/recovery authority, parser-side execution/finality, private cluster behavior, authenticated driver/SBWP route closure, broader DML closure, or final no-grey closure is claimed."
+                "No parser-side COPY execution, byte decoding, row persistence, source handle authority, reject-row streaming, binary typed-value COPY, copy_options, additional copy_format beyond already accepted JSONL, file/URL/stdout endpoints, reference execution/finality, WAL/recovery authority, parser-side execution/finality, private cluster behavior, authenticated driver/SBWP route closure, broader DML closure, or final no-grey closure is claimed."
             ),
         }
 
@@ -16783,7 +16783,7 @@ def classify(
                 "Bounded DML/query exact-route row evidence from existing DML exact-route and MGA row-result CTests. "
                 "Exactly the 14 SELECT/INSERT/UPDATE/DELETE/MERGE/UPSERT/COPY canonical and grammar rows in this override are promoted to e2e_passed. "
                 "Evidence names generated registry surface-id assertions, UUID-bound parser bind/lower evidence, exact SBLR operation ids/opcodes, server public ABI admission, engine SBLR dispatch, MGA row-result proof where the row operation executes, COPY planning deferral for plan_import_rows, no_source_sql_text, no object-name text, and fail-closed unresolved/unsupported query diagnostics. "
-                "No broader query planner closure, table-valued COPY binary typed-value profile, generic joins/set/window/CTE/subquery expansion beyond existing exact-route tests, donor execution, parser-side finality, WAL/recovery authority, transaction finality changes, cluster-private behavior, or non-target DML/query rows are claimed."
+                "No broader query planner closure, table-valued COPY binary typed-value profile, generic joins/set/window/CTE/subquery expansion beyond existing exact-route tests, reference execution, parser-side finality, WAL/recovery authority, transaction finality changes, cluster-private behavior, or non-target DML/query rows are claimed."
             ),
         }
 
@@ -16863,7 +16863,7 @@ def classify(
                 "Bounded numeric scalar row evidence from SBSFC-010 fixture, runtime, and projection CTests. "
                 "Exactly the 100 fixture-listed numeric scalar rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical numeric function and SBLR bindings, server admission, engine dispatch, result or exact diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No numeric casts, comparisons, 128-bit arithmetic closure, infix operator publication, broader SBSFC-010 completion, parser-side execution/finality, donor execution, WAL/recovery authority, transaction-finality change, or cluster-private behavior is claimed."
+                "No numeric casts, comparisons, 128-bit arithmetic closure, infix operator publication, broader SBSFC-010 completion, parser-side execution/finality, reference execution, WAL/recovery authority, transaction-finality change, or cluster-private behavior is claimed."
             ),
         }
 
@@ -16952,7 +16952,7 @@ def classify(
                 "Exactly the 49 fixture-listed rows in this override are promoted to e2e_passed. "
                 "Runtime labels are semantic fixture ids rather than literal SBSQL row labels. "
                 "Evidence names fixture ids, canonical function and SBLR bindings, server admission, engine dispatch, result or exact diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No timezone database integration, full timezone semantics, mutable session settings, broader temporal/session closure, parser-side execution/finality, donor execution, WAL/recovery authority, transaction-finality change, cluster-private behavior, or full SBSFC-012 completion is claimed."
+                "No timezone database integration, full timezone semantics, mutable session settings, broader temporal/session closure, parser-side execution/finality, reference execution, WAL/recovery authority, transaction-finality change, cluster-private behavior, or full SBSFC-012 completion is claimed."
             ),
         }
 
@@ -17022,7 +17022,7 @@ def classify(
                 "Bounded EXTRACT grammar-form row evidence from scalar projection CTest. "
                 "Exactly SBSQL-A9F195402FC3 extract_form is promoted to e2e_passed. "
                 "Evidence proves parser EXTRACT(part FROM temporal) grammar lowers through query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION to canonical sb.temporal.date_part with field argument binding, server admission, and engine DispatchSblrOperation result proof. "
-                "No broad temporal extraction closure, interval extraction, timezone/calendar semantics, mutable session settings, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad temporal extraction closure, interval extraction, timezone/calendar semantics, mutable session settings, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -17093,7 +17093,7 @@ def classify(
                 "Only SBSQL-12FB359A9976 btrim, SBSQL-234E59C1DF96 btrim text chars, SBSQL-521BAEB2E8A4 ltrim, "
                 "SBSQL-185F244A9CA1 ltrim text chars, SBSQL-4B68123DAFB1 rtrim, and SBSQL-74418A7B7349 rtrim text chars are promoted to e2e_passed. "
                 "Evidence names canonical trim function and SBLR binding, server admission, engine dispatch, deterministic result proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No SQL-standard TRIM keyword forms, generic trim grammar, binary/crypto/regex/collation closure, LIKE/NOT/operator rows, temporal/session, aggregate/window, DML/query expansion, security expansion, cluster-private expansion, donor execution, parser-side finality, WAL/recovery authority, or transaction authority change is claimed."
+                "No SQL-standard TRIM keyword forms, generic trim grammar, binary/crypto/regex/collation closure, LIKE/NOT/operator rows, temporal/session, aggregate/window, DML/query expansion, security expansion, cluster-private expansion, reference execution, parser-side finality, WAL/recovery authority, or transaction authority change is claimed."
             ),
         }
 
@@ -17172,7 +17172,7 @@ def classify(
                 "Bounded SQL keyword text special-form row evidence from scalar projection CTest. "
                 "Exactly SBSQL-240551B3294D sb.special.substring_keyword and SBSQL-053A6453B4A8 sb.special.trim_keyword are promoted to e2e_passed. "
                 "Evidence proves parser keyword forms lower to the sb.special.* canonical ids and SBLR special-form bindings, server admission, and engine DispatchSblrOperation result proof through existing text function semantics. "
-                "No substring_form grammar closure, POSITION/OVERLAY closure, broad SBSFC-011 text closure, bit-string substring semantics, collation/charset expansion, authenticated driver route, cluster-positive behavior, parser-side finality, donor execution/storage/finality, WAL/recovery authority, or final no-grey closure is claimed."
+                "No substring_form grammar closure, POSITION/OVERLAY closure, broad SBSFC-011 text closure, bit-string substring semantics, collation/charset expansion, authenticated driver route, cluster-positive behavior, parser-side finality, reference execution/storage/finality, WAL/recovery authority, or final no-grey closure is claimed."
             ),
         }
 
@@ -17242,7 +17242,7 @@ def classify(
                 "Bounded POSITION/OVERLAY SQL keyword grammar-form row evidence from scalar projection CTest. "
                 "Exactly SBSQL-51401468C798 position_form and SBSQL-74FCAE5A5A7D overlay_form are promoted to e2e_passed. "
                 "Evidence proves parser grammar forms lower through query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION to canonical sb.scalar.position and sb.scalar.overlay runtime ids, server admission, and engine DispatchSblrOperation result proof. "
-                "No substring_form, trim_form, broad SBSFC-011 text closure, bit-string POSITION/OVERLAY closure, collation/charset semantics, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, or final no-grey closure is claimed."
+                "No substring_form, trim_form, broad SBSFC-011 text closure, bit-string POSITION/OVERLAY closure, collation/charset semantics, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, or final no-grey closure is claimed."
             ),
         }
 
@@ -17312,7 +17312,7 @@ def classify(
                 "Bounded SUBSTRING/TRIM SQL keyword grammar-form row evidence from scalar projection CTest. "
                 "Exactly SBSQL-271EC4F56C42 substring_form and SBSQL-24DC9B10C2A7 trim_form are promoted to e2e_passed. "
                 "Evidence proves parser grammar forms lower through query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION to canonical sb.special.substring_keyword and sb.special.trim_keyword runtime ids, server admission, and engine DispatchSblrOperation result proof. "
-                "No broad SBSFC-011 text closure, POSITION/OVERLAY grammar closure beyond SBSFC-011R-J, bit-string substring closure, collation/charset semantics, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, or final no-grey closure is claimed."
+                "No broad SBSFC-011 text closure, POSITION/OVERLAY grammar closure beyond SBSFC-011R-J, bit-string substring closure, collation/charset semantics, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, or final no-grey closure is claimed."
             ),
         }
 
@@ -17382,7 +17382,7 @@ def classify(
                 "Bounded GREATEST/LEAST grammar-form row evidence from scalar projection CTest. "
                 "Exactly SBSQL-05E96B0F3F00 greatest_form and SBSQL-0DB23C2EED07 least_form are promoted to e2e_passed. "
                 "Evidence proves parser grammar forms lower through query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION to canonical sb.scalar.greatest and sb.scalar.least runtime ids, server admission, and engine DispatchSblrOperation result proof. "
-                "No broad SBSFC-011 text closure, variadic-function family closure, NULLIF/CASE/CAST/IN/BETWEEN promotion, collation/charset semantics, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad SBSFC-011 text closure, variadic-function family closure, NULLIF/CASE/CAST/IN/BETWEEN promotion, collation/charset semantics, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -17452,7 +17452,7 @@ def classify(
                 "Bounded COALESCE/NULLIF grammar-form row evidence from scalar projection CTest. "
                 "Exactly SBSQL-A398437381A5 coalesce_form and SBSQL-6F8636E3AA55 nullif_form are promoted to e2e_passed. "
                 "Evidence proves parser grammar forms lower through query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION to canonical sb.scalar.coalesce and sb.scalar.nullif runtime ids, server admission, and engine DispatchSblrOperation result proof. "
-                "No CASE expression closure, IFNULL/NVL2 grammar closure, broad conditional-expression closure, collation/charset semantics, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No CASE expression closure, IFNULL/NVL2 grammar closure, broad conditional-expression closure, collation/charset semantics, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -17528,7 +17528,7 @@ def classify(
                 "Bounded text alias and conditional row evidence from existing SBSFC-011 fixture, runtime, and projection CTests. "
                 "Exactly the 27 SBSFC-011R-C requested rows are promoted to e2e_passed. "
                 "Evidence names canonical text or conditional function and SBLR binding, server admission, engine dispatch, deterministic result proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No new parser, engine, or semantic implementation; btrim/ltrim/rtrim beyond completed SBSFC-011R-B; binary/bit-string closure; crypto-provider positive outputs; regex/collation closure; donor execution; parser-side execution/finality; WAL/recovery authority; cluster-private behavior; or broader DML/query/security/transaction closure is claimed."
+                "No new parser, engine, or semantic implementation; btrim/ltrim/rtrim beyond completed SBSFC-011R-B; binary/bit-string closure; crypto-provider positive outputs; regex/collation closure; reference execution; parser-side execution/finality; WAL/recovery authority; cluster-private behavior; or broader DML/query/security/transaction closure is claimed."
             ),
         }
 
@@ -17604,7 +17604,7 @@ def classify(
                 "Bounded sb.operator.concat row evidence from existing SBSFC-011 fixture, runtime, and projection CTests. "
                 "Exactly SBSQL-54CEE6DA3EEC is promoted to e2e_passed by routing the canonical dotted operator spelling to sb.scalar.concat SBLR/internal function evidence. "
                 "Evidence names canonical scalar concat SBLR binding, server admission, engine dispatch, deterministic result proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No bit-string semantics, array concat, generic operator aliases, parser-side execution/finality, SQL text engine authority, transaction, recovery, WAL/redo, donor, cluster-private behavior, or non-target SBSFC-011 rows are claimed."
+                "No bit-string semantics, array concat, generic operator aliases, parser-side execution/finality, SQL text engine authority, transaction, recovery, WAL/redo, reference, cluster-private behavior, or non-target SBSFC-011 rows are claimed."
             ),
         }
 
@@ -17655,7 +17655,7 @@ def classify(
             "notes": (
                 "Bounded concat_expr row evidence for literal-only scalar projection. "
                 "Exactly SBSQL-D69AF9916294 concat_expr is promoted to e2e_passed using SELECT 'alpha' || '-' || 'beta' AS joined lowered to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with sb.scalar.concat, server public ABI admission, and engine DispatchSblrOperation result alpha-beta. "
-                "No broad expression precedence, array/binary concat, collation/case-folding semantics, name resolution, table-backed query semantics, donor execution/storage/finality, authenticated-driver route, parser-side finality, transaction finality, cluster-positive behavior, or WAL/recovery authority is claimed."
+                "No broad expression precedence, array/binary concat, collation/case-folding semantics, name resolution, table-backed query semantics, reference execution/storage/finality, authenticated-driver route, parser-side finality, transaction finality, cluster-positive behavior, or WAL/recovery authority is claimed."
             ),
         }
 
@@ -17728,7 +17728,7 @@ def classify(
                 "Bounded bit-string position/substring row evidence from SBSFC-011 fixture, runtime, and projection CTests. "
                 "Exactly SBSQL-1B39A3C25D5B and SBSQL-29624CFE2736 are promoted to e2e_passed. "
                 "Evidence proves row-labeled bit-string fixtures, parser lowering to SBLR projection with bit_string descriptors, server admission, internal engine scalar_position/scalar_substring dispatch, descriptor-preserving binary payload results, no_source_sql_text, and no_generic_sql_execution. "
-                "No broader binary/bit-string family closure, donor execution, parser-side execution/finality, SQL text engine authority, transaction, recovery, WAL/redo, cluster-private behavior, or non-target SBSFC-011 rows are claimed."
+                "No broader binary/bit-string family closure, reference execution, parser-side execution/finality, SQL text engine authority, transaction, recovery, WAL/redo, cluster-private behavior, or non-target SBSFC-011 rows are claimed."
             ),
         }
 
@@ -17804,7 +17804,7 @@ def classify(
                 "Bounded text/binary/UUID/metadata row evidence from existing SBSFC-011 fixture, runtime, and projection CTests. "
                 "Exactly the 26 SBSFC-011R-D requested rows are promoted to e2e_passed. "
                 "Evidence names canonical function and SBLR binding, server admission, engine dispatch, deterministic result or exact diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No new parser, engine, function semantic, SQL execution, transaction, recovery, WAL/redo, donor, cluster-private behavior, broader regex closure, full crypto-provider positive-output closure, all remaining text surfaces, bit-string closure, full collation semantics, or full SBSFC-011 completion is claimed."
+                "No new parser, engine, function semantic, SQL execution, transaction, recovery, WAL/redo, reference, cluster-private behavior, broader regex closure, full crypto-provider positive-output closure, all remaining text surfaces, bit-string closure, full collation semantics, or full SBSFC-011 completion is claimed."
             ),
         }
 
@@ -17880,7 +17880,7 @@ def classify(
                 "Bounded remaining text/conditional scalar row evidence from existing SBSFC-011 fixture, runtime, and projection CTests. "
                 "Exactly the remaining 59 SBSFC-011R-E/SBSFC-011R-L requested rows are promoted to e2e_passed. "
                 "Evidence names canonical function and SBLR binding, server admission, engine dispatch, deterministic result or exact diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No parser-side execution, SQL execution, transaction, recovery, WAL/redo, donor, cluster-private behavior, LIKE/operator closure, broader collation semantics, full crypto-provider positive-output closure, or non-target SBSFC-011 rows are claimed."
+                "No parser-side execution, SQL execution, transaction, recovery, WAL/redo, reference, cluster-private behavior, LIKE/operator closure, broader collation semantics, full crypto-provider positive-output closure, or non-target SBSFC-011 rows are claimed."
             ),
         }
 
@@ -17942,7 +17942,7 @@ def classify(
                 "Bounded current_value_form grammar row evidence from scalar projection CTest. "
                 "Exactly SBSQL-1FF37754C949 is promoted to e2e_passed using bare current_timestamp parse/bind/lowering to sb.temporal.current_timestamp, "
                 "server admission, and engine provider-backed timestamp dispatch. "
-                "No CURRENT_TIMESTAMP precision form, broader current-value family closure, timezone database semantics, mutable session settings, donor execution, parser-side finality, WAL/recovery authority, cluster-positive behavior, authenticated driver route closure, or final no-grey closure is claimed."
+                "No CURRENT_TIMESTAMP precision form, broader current-value family closure, timezone database semantics, mutable session settings, reference execution, parser-side finality, WAL/recovery authority, cluster-positive behavior, authenticated driver route closure, or final no-grey closure is claimed."
             ),
         }
 
@@ -18014,7 +18014,7 @@ def classify(
                 "Bounded special current_timestamp keyword row evidence from scalar projection CTest. "
                 "Exactly SBSQL-EC82EF2E145E is promoted to e2e_passed using special-form registry oracle authority, "
                 "parser lowering to query.evaluate_projection, server admission, and engine provider-backed timestamp dispatch. "
-                "No CURRENT_TIMESTAMP precision form, broad special-form closure, timezone database semantics, mutable session settings, donor execution, parser-side finality, WAL/recovery authority, cluster-private positive behavior, authenticated driver route closure, or final no-grey closure is claimed."
+                "No CURRENT_TIMESTAMP precision form, broad special-form closure, timezone database semantics, mutable session settings, reference execution, parser-side finality, WAL/recovery authority, cluster-private positive behavior, authenticated driver route closure, or final no-grey closure is claimed."
             ),
         }
 
@@ -18087,24 +18087,24 @@ def classify(
                 "Bounded temporal constructor row evidence from SBSFC-012 fixture, runtime, and projection CTests. "
                 "Exactly the eight temporal constructor rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical temporal function and SBLR bindings, server admission, engine dispatch, deterministic result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No timezone database integration, broader temporal/session closure, UUID/provider expansion, parser-side execution, donor execution, WAL/recovery authority, transaction finality change, or cluster-private behavior is claimed."
+                "No timezone database integration, broader temporal/session closure, UUID/provider expansion, parser-side execution, reference execution, WAL/recovery authority, transaction finality change, or cluster-private behavior is claimed."
             ),
         }
 
-    if surface_id in SBSFC016_DONOR_VARIABLE_CONTEXT_ALIAS_SURFACE_IDS:
+    if surface_id in SBSFC016_REFERENCE_VARIABLE_CONTEXT_ALIAS_SURFACE_IDS:
         if status != "native_now":
-            fail(f"{surface_id} SBSFC-016 donor variable/context/alias manifest override requires native_now status")
+            fail(f"{surface_id} SBSFC-016 reference variable/context/alias manifest override requires native_now status")
         if cluster_scope != "noncluster_or_profile_scoped":
-            fail(f"{surface_id} SBSFC-016 donor variable/context/alias manifest override requires noncluster/profile scope")
+            fail(f"{surface_id} SBSFC-016 reference variable/context/alias manifest override requires noncluster/profile scope")
         if surface["sblr_operation_family"] not in {
             "sblr.expression.runtime.v3",
             "sblr.general.operation.v3",
         }:
-            fail(f"{surface_id} SBSFC-016 donor variable/context/alias manifest SBLR family drift")
+            fail(f"{surface_id} SBSFC-016 reference variable/context/alias manifest SBLR family drift")
         if ledger_row is None:
-            fail(f"{surface_id} SBSFC-016 donor variable/context/alias manifest override requires strict ledger row")
+            fail(f"{surface_id} SBSFC-016 reference variable/context/alias manifest override requires strict ledger row")
         if ledger_row.get("current_state") != "e2e_passed":
-            fail(f"{surface_id} SBSFC-016 donor variable/context/alias manifest override requires e2e_passed strict ledger state")
+            fail(f"{surface_id} SBSFC-016 reference variable/context/alias manifest override requires e2e_passed strict ledger state")
 
         operation_id = ledger_row.get("function_or_api_operation_id", "query.evaluate_projection")
         fixture_evidence = ledger_row.get("fixture_evidence", "")
@@ -18135,12 +18135,12 @@ def classify(
                    "parser-generated-envelope-dispatched;no_source_sql_text;no_generic_sql_execution"
             ),
             "evidence_collected_utc": "static_existing_ctest_evidence",
-            "promoter_slice": "SBSFC-016R-MZ-through-SBSFC-016R-OC-donor-variable-context-alias-batch",
+            "promoter_slice": "SBSFC-016R-MZ-through-SBSFC-016R-OC-reference-variable-context-alias-batch",
             "notes": (
-                "Bounded SBSFC-016 donor variable/context/alias row evidence from the scalar projection conformance CTest. "
+                "Bounded SBSFC-016 reference variable/context/alias row evidence from the scalar projection conformance CTest. "
                 "Exactly the 30 rows in this override are promoted to e2e_passed using generated registry validation, parser bind/lower, server public ABI admission, parser-generated payload conversion to engine dispatch operands, and deterministic context-backed results or grammar surface routing. "
                 f"Fixture/evidence anchor: {fixture_evidence}. "
-                "No @@SERVERNAME, @@TRANCOUNT, mutable autocommit, generic mutable setting catalog, cluster-positive variables, parser-side SQL execution/finality, donor worker closure, WAL/recovery authority, or broader SBSFC-016 closure is claimed."
+                "No @@SERVERNAME, @@TRANCOUNT, mutable autocommit, generic mutable setting catalog, cluster-positive variables, parser-side SQL execution/finality, reference worker closure, WAL/recovery authority, or broader SBSFC-016 closure is claimed."
             ),
         }
 
@@ -18212,10 +18212,10 @@ def classify(
             "promoter_slice": "SBSFC-016R-OD-through-SBSFC-016R-PG-public-policy-refusal-batch",
             "notes": (
                 "Bounded SBSFC-016 public policy-refusal evidence from scalar projection and runtime CTests. "
-                "Exactly these 30 native-now donor compatibility rows are promoted to e2e_passed exact runtime refusals. "
+                "Exactly these 30 native-now reference compatibility rows are promoted to e2e_passed exact runtime refusals. "
                 f"Fixture/evidence anchor: {fixture_id}. "
                 "Evidence proves canonical oracle authority, parser bind/lower, sensitive argument elision, server public ABI admission, engine-owned SB_DIAG_FUNCTION_RUNTIME_REFUSAL dispatch, no_source_sql_text, no_generic_sql_execution, and no side effects. "
-                "This is not positive execution of filesystem, process, WAL/donor-log, mutable setting, XML, model/event, or private client-context behavior."
+                "This is not positive execution of filesystem, process, WAL/reference-log, mutable setting, XML, model/event, or private client-context behavior."
             ),
         }
 
@@ -18283,7 +18283,7 @@ def classify(
                 "CARDINALITY variants reuse existing array_length engine dispatch via canonical sb.scalar.cardinality alias; STUFF is a T-SQL string surgery implementation in data_scalar_functions_04; XOR is a logical operator with SblrXor truth-table helper and sblr_dispatch.cpp branch extension; IIF uses sb.scalar.iif conditional dispatch; COALESCE_STRICT uses sb.scalar.coalesce_strict descriptor-strict conditional dispatch and proves empty-argument invalid-input diagnostics. "
                 f"Fixture/evidence anchor: {fixture_id}. "
                 "Evidence proves parser bind/lower, canonical yaml + seed/operator registry, server admission, engine entrypoint dispatch, no_source_sql_text, and no_generic_sql_execution. "
-                "No broader native-function closure, OVERLAPS temporal predicate parser work, ARRAY-from-SELECT subquery integration, IDENTITY donor metadata semantics, parser-side finality, donor execution, WAL/recovery authority, cluster-positive behavior, or final no-grey closure is claimed."
+                "No broader native-function closure, OVERLAPS temporal predicate parser work, ARRAY-from-SELECT subquery integration, IDENTITY reference metadata semantics, parser-side finality, reference execution, WAL/recovery authority, cluster-positive behavior, or final no-grey closure is claimed."
             ),
         }
 
@@ -18341,7 +18341,7 @@ def classify(
             "notes": (
                 "Bounded SBSFC-032 scalar utility/conversion row-evidence override; exactly atan2d, collation_for, descriptor_of, pg_typeof, safe_cast, try_cast, similar_to_escape, and value_state target rows are promoted to e2e_passed. "
                 "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar function dispatch, SAFE_CAST/TRY_CAST AS-type lowering, exact invalid-input diagnostics for invalid bare forms, no SQL text execution, no security or dependency gate bypass, and no mutation. "
-                "No catalog mutation, storage behavior, transaction finality, donor execution, cluster-positive behavior, or broader type-system closure is claimed."
+                "No catalog mutation, storage behavior, transaction finality, reference execution, cluster-positive behavior, or broader type-system closure is claimed."
             ),
         }
 
@@ -18398,8 +18398,8 @@ def classify(
             "promoter_slice": "SBSFC-033-catalog-descriptor-diagnostic-batch",
             "notes": (
                 "Bounded SBSFC-033 catalog/descriptor/diagnostic row-evidence override; exactly the requested catalog_object_*, descriptor_snapshot_id, ExecutionTypeDescriptor, column_descriptor, index_descriptor, diagnostic_field, diagnostic_count, gdscode, last_error_position, and error_class target rows are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar function dispatch, context/descriptor-backed deterministic values, SQL NULL for unknown catalog probes, no SQL text execution, no storage or donor lookup, no security/dependency bypass, and no mutation. "
-                "No catalog mutation, storage behavior, transaction finality, donor execution, WAL/recovery authority, cluster-positive behavior, or broader descriptor/catalog table closure is claimed."
+                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar function dispatch, context/descriptor-backed deterministic values, SQL NULL for unknown catalog probes, no SQL text execution, no storage or reference lookup, no security/dependency bypass, and no mutation. "
+                "No catalog mutation, storage behavior, transaction finality, reference execution, WAL/recovery authority, cluster-positive behavior, or broader descriptor/catalog table closure is claimed."
             ),
         }
 
@@ -18457,7 +18457,7 @@ def classify(
             "promoter_slice": "SBSFC-044-catalog-statistics-batch",
             "notes": (
                 "Bounded SBSFC-044 catalog statistics row-evidence override; exactly relation_row_estimate, relation_row_estimate(table_uuid), table_size, and table_size(table_uuid[,include_indexes]) target rows are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, current-transaction MGA relation visibility, row-version sidecar counting, stable table-size estimation from engine-owned relation metadata and row/index sidecars, SQL NULL for null or unknown relation UUID probes, no SQL text execution, no donor execution, no parser-owned statistics, no WAL or SQLite finality shortcut, and no mutation. "
+                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, current-transaction MGA relation visibility, row-version sidecar counting, stable table-size estimation from engine-owned relation metadata and row/index sidecars, SQL NULL for null or unknown relation UUID probes, no SQL text execution, no reference execution, no parser-owned statistics, no WAL or SQLite finality shortcut, and no mutation. "
                 "No cluster-positive behavior, catalog mutation, byte-accurate page accounting claim, or final no-grey closure is claimed."
             ),
         }
@@ -18518,7 +18518,7 @@ def classify(
             "promoter_slice": "SBSFC-045-privilege-predicate-batch",
             "notes": (
                 "Bounded SBSFC-045 privilege predicate row-evidence override; exactly the table, column, function, and schema privilege predicate target rows are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, optional-user resolution against the current principal, engine-owned MGA relation/column metadata for table and column checks, canonical builtin/schema context for function and schema checks, SQL NULL propagation, false for unknown users or objects, no SQL text execution, no donor execution, no WAL or SQLite finality shortcut, and no mutation. "
+                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, optional-user resolution against the current principal, engine-owned MGA relation/column metadata for table and column checks, canonical builtin/schema context for function and schema checks, SQL NULL propagation, false for unknown users or objects, no SQL text execution, no reference execution, no WAL or SQLite finality shortcut, and no mutation. "
                 "No cluster-positive behavior, privilege GRANT/REVOKE mutation, security catalog DDL, external provider lookup, or final no-grey closure is claimed."
             ),
         }
@@ -18578,7 +18578,7 @@ def classify(
             "notes": (
                 "Bounded SBSFC-046 session-admin row-evidence override; exactly set_config, set_config(name,value,is_local), pid, temp_buffers, pg_cancel_backend, pg_cancel_backend(pid), pg_terminate_backend, and pg_terminate_backend(pid) are promoted to e2e_passed. "
                 "Evidence proves parser bind/lower metadata, canonical generated registry state, server admission, engine scalar dispatch, shared SBLR session config mutation and reads, backend pid context/process fallback, local backend-control evidence vectors, unknown-pid false results, and current-backend termination block. "
-                "No parser SQL execution, donor execution, WAL or SQLite finality shortcut, cluster-provider behavior, external process signal, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, WAL or SQLite finality shortcut, cluster-provider behavior, external process signal, or transaction finality change is claimed."
             ),
         }
 
@@ -18637,7 +18637,7 @@ def classify(
             "notes": (
                 "Bounded SBSFC-047 advisory-lock row-evidence override; exactly pg_advisory_lock, pg_advisory_lock(key), pg_try_advisory_lock, and pg_try_advisory_lock(key) are promoted to e2e_passed. "
                 "Evidence proves parser bind/lower metadata, canonical generated registry state, server admission, engine scalar dispatch, SBLR local session advisory-lock state mutation, current-session reentrant ownership, evidence-vector recording, SQL NULL key propagation, deterministic zero-argument markers, and false for bounded other-owner try-lock conflicts. "
-                "No parser SQL execution, donor execution, WAL or SQLite finality shortcut, cluster-provider behavior, indefinite process blocking, external lock manager, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, WAL or SQLite finality shortcut, cluster-provider behavior, indefinite process blocking, external lock manager, or transaction finality change is claimed."
             ),
         }
 
@@ -18697,7 +18697,7 @@ def classify(
             "notes": (
                 "Bounded SBSFC-048 advisory-lock release and transaction-scope row-evidence override; exactly pg_advisory_unlock, pg_advisory_unlock(key), pg_advisory_xact_lock, and pg_advisory_xact_lock(key) are promoted to e2e_passed. "
                 "Evidence proves parser bind/lower metadata, canonical generated registry state, server admission, engine scalar dispatch, current-session unlock decrement/final release/not-found/other-owner behavior, separate transaction-token advisory-lock state, evidence-vector recording, SQL NULL key propagation, deterministic zero-argument markers, and refusal without transaction context. "
-                "No parser SQL execution, donor execution, WAL or SQLite finality shortcut, cluster-provider behavior, indefinite process blocking, external lock manager, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, WAL or SQLite finality shortcut, cluster-provider behavior, indefinite process blocking, external lock manager, or transaction finality change is claimed."
             ),
         }
 
@@ -18729,7 +18729,7 @@ def classify(
                 f"sblr_binding={sblr_binding};engine_entrypoint={engine_entrypoint};"
                 "parser_generated_projection_payload=true;server_public_abi_admission=true;"
                 "engine_native_function_dispatch=true;local_session_advisory_lock_state_route=true;"
-                "advisory_lock_evidence_vector=true;donor_integer_null_result_shape=true;"
+                "advisory_lock_evidence_vector=true;reference_integer_null_result_shape=true;"
                 "no_mga_visibility_or_finality_change=true"
             ),
             "diagnostic_proof": (
@@ -18744,9 +18744,9 @@ def classify(
             "evidence_collected_utc": "static_existing_ctest_evidence",
             "promoter_slice": "SBSQL-MISS-GATE-011-lock-compatibility",
             "notes": (
-                "SBSQL-MISS-GATE-011 donor-compatible named-lock scalar row-evidence override; exactly get_lock(name,timeout) and release_lock(name) are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower metadata, canonical generated registry state, server admission, engine scalar dispatch, shared SBLR session advisory-lock state mutation/release, donor-compatible int64/NULL result shape, SQL NULL propagation, timeout/not-owned 0 results, and evidence-vector recording. "
-                "No parser SQL execution, donor execution, WAL or SQLite finality shortcut, cluster-provider behavior, external lock manager, table/row/page lock authority, cleanup-horizon pin, MGA visibility change, or transaction finality change is claimed."
+                "SBSQL-MISS-GATE-011 reference-compatible named-lock scalar row-evidence override; exactly get_lock(name,timeout) and release_lock(name) are promoted to e2e_passed. "
+                "Evidence proves parser bind/lower metadata, canonical generated registry state, server admission, engine scalar dispatch, shared SBLR session advisory-lock state mutation/release, reference-compatible int64/NULL result shape, SQL NULL propagation, timeout/not-owned 0 results, and evidence-vector recording. "
+                "No parser SQL execution, reference execution, WAL or SQLite finality shortcut, cluster-provider behavior, external lock manager, table/row/page lock authority, cleanup-horizon pin, MGA visibility change, or transaction finality change is claimed."
             ),
         }
 
@@ -18805,7 +18805,7 @@ def classify(
             "notes": (
                 "Bounded SBSFC-049 Unicode text row-evidence override; exactly unicode_normalize, normalize, normalize(text[,NFC|NFD|NFKC|NFKD]), and is_alpha are promoted to e2e_passed. "
                 "Evidence proves parser bind/lower metadata, canonical generated registry state, server admission, engine scalar dispatch, ICU-backed NFC and NFD normalization, Unicode alphabetic codepoint classification, SQL NULL propagation, deterministic zero-argument markers, and invalid-form refusal. "
-                "No parser SQL execution, donor execution, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
             ),
         }
 
@@ -18864,7 +18864,7 @@ def classify(
             "notes": (
                 "Bounded SBSFC-052 JSON/document row-evidence override; exactly JSON_TABLE, JSON_TABLE(doc,path[PASSING...]COLUMNS(...)[ONERROR]), JSON_TABLE(document,jsonpathCOLUMNS(...)), array_to_json, array_to_json(array[,pretty]), json_object(text[][,text[]]), jsonb_agg, jsonb_agg(expr), row_to_json, and row_to_json(row[,pretty]) are promoted to e2e_passed. "
                 "Evidence proves parser bind/lower metadata, canonical generated registry state, server admission, nosql.document engine dispatch, deterministic JSON_TABLE descriptor payloads, array/row/object JSON construction, SQL NULL document propagation, JSON null aggregate element handling, and malformed text-array diagnostic refusal. "
-                "No parser SQL execution, donor execution, storage scan, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, storage scan, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
             ),
         }
 
@@ -18923,7 +18923,7 @@ def classify(
             "notes": (
                 "Bounded SBSFC-053 rowset/table-value/set-returning row-evidence override; exactly rowset, rowset_new, rowset_new(<row_shape>), rowset_append, rowset_append(rowset,expr[,expr...]), rowset_size, rowset_size(rowset), rowset_to_array, rowset_to_array(rowset), table_value, table_value_new, table_value_new(<row_shape>), table_value_append, table_value_append(tv,row), setof(T,...,ordinalitybigint), setof(keytext,valuetext), setof(keytext,valuedocument), unnest, unnest(array), generate_series, generate_series(start,stop[,step]), element(multiset<T>), fusion(multiset<T>), and intersection(multiset<T>) are promoted to e2e_passed. "
                 "Evidence proves parser bind/lower metadata, canonical generated registry state, server admission, rowset.table engine dispatch, deterministic descriptor payloads, bounded generated arrays, SQL-standard singleton behavior for element(multiset<T>), and invalid descriptor/step/non-array diagnostic refusal. "
-                "No parser SQL execution, donor execution, storage scan, cursor lifecycle authority, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, storage scan, cursor lifecycle authority, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
             ),
         }
 
@@ -18982,7 +18982,7 @@ def classify(
             "notes": (
                 "Bounded SBSFC-054 cursor/stream/handle row-evidence override; exactly cursor_open, cursor_open(<select>), cursor_close, cursor_close(cursor), cursor_state, cursor_state(cursor), cursor_position, cursor_position(cursor), cursor_lifetime_class, cursor_lifetime_class(cursor), cursor_holdability, cursor_holdability(cursor), cursor_scrollability, cursor_scrollability(cursor), cursor_active, cursor_active(name), current_row_locator(cursor), handle_kind, handle_kind(handle), rowset_to_cursor, rowset_to_cursor(rowset), table_value_to_cursor, table_value_to_cursor(tv), cursor_to_rowset, cursor_to_rowset(cursor[,max_rows]), stream_close, stream_close(stream), stream_to_rowset, and stream_to_rowset(stream[,max_rows]) are promoted to e2e_passed. "
                 "Evidence proves parser bind/lower metadata, canonical generated registry state, server admission, cursor.stream engine dispatch, deterministic cursor/stream/rowset/locator descriptor payloads, scalar handle attributes, descriptor-only close/open behavior, and invalid descriptor/kind/max_rows diagnostic refusal. "
-                "No parser SQL execution, donor execution, storage scan, backend cursor lifecycle authority, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, storage scan, backend cursor lifecycle authority, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
             ),
         }
 
@@ -19041,7 +19041,7 @@ def classify(
             "notes": (
                 "Bounded SBSFC-055 LOB/locator row-evidence override; exactly lob_create, lob_create(class,[media]), lob_open, lob_open(locator,mode), lob_close, lob_close(locator), lob_size, lob_size(locator), lob_read, lob_read(locator,offset,length), lob_write, lob_write(locator,offset,data), lob_append, lob_append(locator,data), lob_truncate, lob_truncate(locator,length), lob_locator_to_text, lob_locator_to_text(locator), lob_locator_to_binary, lob_locator_to_binary(locator), locator, locator_validity, locator_validity(locator), and current_row_locator marker behavior are promoted to e2e_passed. "
                 "Evidence proves parser bind/lower metadata, canonical generated registry state, server admission, lob.locator engine dispatch, deterministic LOB/locator descriptor payloads, text and binary locator conversion, descriptor-only open/close/write/append/truncate behavior, and invalid descriptor/offset/length/mode diagnostic refusal. "
-                "No parser SQL execution, donor execution, storage finality, backend cursor/LOB lifecycle authority, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, storage finality, backend cursor/LOB lifecycle authority, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
             ),
         }
 
@@ -19098,8 +19098,8 @@ def classify(
             "promoter_slice": "SBSFC-056-native-surface-batch",
             "notes": (
                 "Bounded SBSFC-056 native surface scalar/descriptor row-evidence override; exactly the 37 non-crypto remaining native_future expression rows are promoted to e2e_passed. "
-                "Evidence covers syntax/status/volatility markers, TREAT, accept feature probes, any_value, collect, at_time_zone, bit_string, bulk_exceptions, domain_stack, donor/private/native status markers, match_recognize descriptors, integer/void/tabular descriptors, NVL, and generic multiset element/fusion/intersection through existing rowset-table routes. "
-                "No parser SQL execution, donor execution, storage finality, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
+                "Evidence covers syntax/status/volatility markers, TREAT, accept feature probes, any_value, collect, at_time_zone, bit_string, bulk_exceptions, domain_stack, reference/private/native status markers, match_recognize descriptors, integer/void/tabular descriptors, NVL, and generic multiset element/fusion/intersection through existing rowset-table routes. "
+                "No parser SQL execution, reference execution, storage finality, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
             ),
         }
 
@@ -19163,7 +19163,7 @@ def classify(
                 "Bounded SBSFC-057 crypto/hash and pgcrypto row-evidence override; exactly the 27 remaining crypto/pgcrypto native_future expression rows are promoted to e2e_passed. "
                 "Evidence covers OpenSSL EVP SHA3 and BLAKE2b digests, OpenSSL HMAC, RAND-backed random bytes and UUIDs with deterministic fixture overrides, bounded OpenSSL EVP_PBE_scrypt, in-core xxhash64, deterministic reversible ASCII armor/dearmor, and bounded ScratchBird PGP envelope encode/decode that is explicitly not OpenPGP. "
                 "Argon2, bcrypt, blake3, and crypt rows are exact dependency-unavailable fail-closed runtime behavior because local pinned core providers/headers are unavailable. "
-                "No parser SQL execution, donor execution, storage finality, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, storage finality, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
             ),
         }
 
@@ -19223,7 +19223,7 @@ def classify(
                 "Bounded SBSFC-058 expression runtime function row-evidence override; exactly the first 50 pending function rows in this batch are promoted to e2e_passed. "
                 "Evidence covers regex helpers, temporal arithmetic/format helpers, and sequence helpers through exact row-labeled fixtures and runtime conformance. "
                 "Sequence helpers use the existing SBLR sequence runtime; regex and temporal helpers use bounded in-core scalar dispatch. "
-                "No parser SQL execution, donor execution, storage finality, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, storage finality, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
             ),
         }
 
@@ -19283,7 +19283,7 @@ def classify(
                 "Bounded SBSFC-059 expression runtime function cleanup row-evidence override; exactly the seven remaining function rows after SBSFC-058 are promoted to e2e_passed. "
                 "Evidence covers month_name(date[,locale]), date_sub(date|timestamp,interval), epoch(timestamp), gen_id, day_name, date_sub, and POSITION_REGEX through exact row-labeled fixtures and runtime conformance. "
                 "Temporal and regex helpers use bounded in-core scalar dispatch; gen_id uses the existing SBLR sequence runtime and does not own transaction finality. "
-                "No parser SQL execution, donor execution, storage finality, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
+                "No parser SQL execution, reference execution, storage finality, WAL or SQLite finality shortcut, cluster-provider behavior, external service, or transaction finality change is claimed."
             ),
         }
 
@@ -19340,7 +19340,7 @@ def classify(
             "promoter_slice": "SBSFC-034-text-trigram-bit-string-batch",
             "notes": (
                 "Bounded SBSFC-034 text/trigram/bit-string row-evidence override; exactly bit_string_position, bit_string_substring, show_trgm, show_trgm(text), and pg_trgm target rows are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, reuse of existing bit-string-aware position/substring behavior, native deterministic trigram JSON-array rendering, fixed pg_trgm capability metadata, exact invalid-input diagnostic for bare show_trgm, SQL NULL propagation for show_trgm(text), no SQL text execution, no donor/plugin execution, no storage lookup, no security/dependency bypass, and no mutation. "
+                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, reuse of existing bit-string-aware position/substring behavior, native deterministic trigram JSON-array rendering, fixed pg_trgm capability metadata, exact invalid-input diagnostic for bare show_trgm, SQL NULL propagation for show_trgm(text), no SQL text execution, no reference/plugin execution, no storage lookup, no security/dependency bypass, and no mutation. "
                 "No broader pg_trgm extension surface, catalog mutation, storage behavior, transaction finality, WAL/recovery authority, cluster-positive behavior, or final no-grey closure is claimed."
             ),
         }
@@ -19398,7 +19398,7 @@ def classify(
             "promoter_slice": "SBSFC-035-range-scalar-helper-batch",
             "notes": (
                 "Bounded SBSFC-035 range scalar helper row-evidence override; exactly range_contains, range_contains_element, range_lower, range_lower_inc, range_overlaps, range_strictly_left, range_strictly_right, range_upper, and range_upper_inc target rows are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, deterministic bracket text and flat JSON range descriptor handling, numeric-or-lexical bound comparison, SQL NULL propagation for null inputs and absent lower/upper bounds, exact invalid-input diagnostic for malformed descriptors, no SQL text execution, no donor/plugin execution, no catalog/storage lookup, no security/dependency bypass, and no mutation. "
+                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, deterministic bracket text and flat JSON range descriptor handling, numeric-or-lexical bound comparison, SQL NULL propagation for null inputs and absent lower/upper bounds, exact invalid-input diagnostic for malformed descriptors, no SQL text execution, no reference/plugin execution, no catalog/storage lookup, no security/dependency bypass, and no mutation. "
                 "No broader range type storage, sequence-generator surface, catalog mutation, transaction finality, WAL/recovery authority, cluster-positive behavior, or final no-grey closure is claimed."
             ),
         }
@@ -19457,7 +19457,7 @@ def classify(
             "promoter_slice": "SBSFC-036-spatial-geometry-scalar-helper-batch",
             "notes": (
                 "Bounded SBSFC-036 spatial geometry scalar helper row-evidence override; exactly the 50 fixture-listed st_* and geom_* target rows are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, deterministic in-core WKT/POINT/LINESTRING/POLYGON/GEOMETRYCOLLECTION handling, narrow GeoJSON handling, point WKB hex handling, exact invalid-input diagnostic for malformed geometry, invalid arity, or unsupported WKB, no SQL text execution, no donor/plugin execution, no catalog/storage lookup, no security/dependency bypass, and no mutation. "
+                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, deterministic in-core WKT/POINT/LINESTRING/POLYGON/GEOMETRYCOLLECTION handling, narrow GeoJSON handling, point WKB hex handling, exact invalid-input diagnostic for malformed geometry, invalid arity, or unsupported WKB, no SQL text execution, no reference/plugin execution, no catalog/storage lookup, no security/dependency bypass, and no mutation. "
                 "No broader GIS engine surface, catalog mutation, storage behavior, transaction finality, WAL/recovery authority, cluster-positive behavior, or final no-grey closure is claimed."
             ),
         }
@@ -19516,7 +19516,7 @@ def classify(
             "promoter_slice": "SBSFC-037-xml-multimodel-scalar-helper-batch",
             "notes": (
                 "Bounded SBSFC-037 XML/multimodel scalar helper row-evidence override; exactly the 21 XMLFOREST, XMLCAST, XMLEXISTS, XMLATTRIBUTES, XMLCONCAT, XMLCOMMENT, XMLPI, XMLROOT, XMLELEMENT(NAME...), XMLAGG, and XMLTABLE target rows are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, deterministic in-core XML text construction/inspection, XMLTABLE descriptor output, exact invalid-input diagnostic for unsafe XML name/content or invalid arity, no SQL text execution, no donor/plugin XML engine, no catalog/storage lookup, no security/dependency bypass, and no mutation. "
+                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, deterministic in-core XML text construction/inspection, XMLTABLE descriptor output, exact invalid-input diagnostic for unsafe XML name/content or invalid arity, no SQL text execution, no reference/plugin XML engine, no catalog/storage lookup, no security/dependency bypass, and no mutation. "
                 "Existing XMLELEMENT('x') policy refusal remains intact while XMLELEMENT(NAME...) is the positive route. No broader XML query/table engine, catalog mutation, storage behavior, transaction finality, WAL/recovery authority, cluster-positive behavior, or final no-grey closure is claimed."
             ),
         }
@@ -19575,7 +19575,7 @@ def classify(
             "promoter_slice": "SBSFC-038-spatial-tail-scalar-helper-batch",
             "notes": (
                 "Bounded SBSFC-038 spatial tail scalar helper row-evidence override; exactly the 43 fixture-listed st_* and geom_* target rows are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, deterministic in-core WKT/GeoJSON/bbox/Z/M/MVT helper handling, exact invalid-input diagnostic for malformed geometry, invalid arity, or invalid bounded spatial arguments, no SQL text execution, no donor/plugin execution, no catalog/storage lookup, no security/dependency bypass, and no mutation. "
+                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, deterministic in-core WKT/GeoJSON/bbox/Z/M/MVT helper handling, exact invalid-input diagnostic for malformed geometry, invalid arity, or invalid bounded spatial arguments, no SQL text execution, no reference/plugin execution, no catalog/storage lookup, no security/dependency bypass, and no mutation. "
                 "No broader GIS engine surface, catalog mutation, storage behavior, transaction finality, WAL/recovery authority, cluster-positive behavior, or final no-grey closure is claimed."
             ),
         }
@@ -19634,7 +19634,7 @@ def classify(
             "promoter_slice": "SBSFC-039-xml-document-query-scalar-helper-batch",
             "notes": (
                 "Bounded SBSFC-039 XML document/query scalar helper row-evidence override; exactly the 17 XMLDOCUMENT, XMLNAMESPACES, XMLPARSE, XMLQUERY, XMLSERIALIZE, XMLTEXT, XMLVALIDATE, xml, xml.attrs, and xml.ns rows are promoted to e2e_passed. "
-                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, deterministic in-core XML document validation, text/attribute/namespace escaping, serialization, validation, narrow path query behavior, exact invalid-input diagnostic for malformed XML, unsafe XML name/content/entity, invalid arity, or bounded XML document/query argument violation, no SQL text execution, no donor/plugin XML engine, no catalog/storage lookup, no security/dependency bypass, and no mutation. "
+                "Evidence proves parser bind/lower, canonical generated registry state, server admission, engine scalar dispatch, deterministic in-core XML document validation, text/attribute/namespace escaping, serialization, validation, narrow path query behavior, exact invalid-input diagnostic for malformed XML, unsafe XML name/content/entity, invalid arity, or bounded XML document/query argument violation, no SQL text execution, no reference/plugin XML engine, no catalog/storage lookup, no security/dependency bypass, and no mutation. "
                 "No broader XML query/schema engine, catalog mutation, storage behavior, transaction finality, WAL/recovery authority, cluster-positive behavior, or final no-grey closure is claimed."
             ),
         }
@@ -19694,7 +19694,7 @@ def classify(
                 "Bounded SBSFC-031 transaction-context scalar row-evidence override; txid_current, txid_status, txid_status(bigint), mga_snapshot_id, pg_xact_status, savepoint_active, and savepoint_active(name) are promoted to e2e_passed. "
                 "txid_current aliases the existing sb.session.transaction_id engine-owned context path. txid_status and pg_xact_status use only SBLR execution context: current local transaction id returns in_progress, null input and no-current nullary cases return SQL null, and non-current probes return unknown without claiming committed or rolledback finality. mga_snapshot_id exposes the engine-owned MGA snapshot visible-through local transaction id. savepoint_active reads active savepoint names populated by SBLR dispatch from the MGA relation store marker log after real create/release savepoint operations. "
                 "Evidence proves parser bind/lower, canonical yaml + seed registry, server admission, engine entrypoint dispatch, no_source_sql_text, no_generic_sql_execution, and mutation_attempted/mutation_committed remain false for scalar evaluation. "
-                "No transaction inventory finality, donor execution, parser-side finality, WAL/recovery authority, cluster-positive behavior, or broader transaction management closure is claimed."
+                "No transaction inventory finality, reference execution, parser-side finality, WAL/recovery authority, cluster-positive behavior, or broader transaction management closure is claimed."
             ),
         }
 
@@ -19767,7 +19767,7 @@ def classify(
             "promoter_slice": "SBSFC-028R-D-through-SBSFC-028R-E-anti-wal-canonical-surface-refusal",
             "notes": (
                 "Bounded SBSFC-028 Anti-WAL canonical_surface refusal evidence. "
-                "donor_log_mode and checkpoint_donor_log are spec-level non-targets per ScratchBird's Anti-WAL architecture — the engine has no WAL/donor-log subsystem to checkpoint or switch modes on. "
+                "reference_log_mode and checkpoint_reference_log are spec-level non-targets per ScratchBird's Anti-WAL architecture — the engine has no WAL/reference-log subsystem to checkpoint or switch modes on. "
                 f"Fixture/evidence anchor: {fixture_id}. "
                 "Evidence proves canonical oracle authority, parser bind/lower to public policy refusal, server admission, runtime refusal dispatch via the engine's policy_runtime_refusal function, no_source_sql_text, no_generic_sql_execution, and no side effects. "
                 "This is not deferred work; it is the spec position. signal/raise/resignal sibling canonical_surface rows are NOT included here — they require native diagnostic-emission implementation in a follow-up batch."
@@ -19843,7 +19843,7 @@ def classify(
                 "Bounded context/current_setting/alias/row_count/procedural condition and diagnostic scalar evidence from SBSFC-016 fixture, runtime, and projection CTests. "
                 "Only row-specific entries listed in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical function and SBLR bindings, server admission, engine dispatch, deterministic result or exact diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No broader SBSFC-016 closure, cursor lifecycle, dynamic SQL, PSQL block/autonomous/CALL/RETURNING, automatic DML/FETCH last_row_count propagation, UDR/security management, mutable autocommit, donor execution, parser-side finality, WAL/recovery authority, cluster-private behavior, or transaction-finality change is claimed."
+                "No broader SBSFC-016 closure, cursor lifecycle, dynamic SQL, PSQL block/autonomous/CALL/RETURNING, automatic DML/FETCH last_row_count propagation, UDR/security management, mutable autocommit, reference execution, parser-side finality, WAL/recovery authority, cluster-private behavior, or transaction-finality change is claimed."
             ),
         }
 
@@ -19980,7 +19980,7 @@ def classify(
                 "Bounded JSON/document collection row evidence from SBSFC-013 fixture, runtime, and projection CTests. "
                 "Exactly the fixture-listed JSON/document scalar rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical JSON function and SBLR bindings, server admission, engine dispatch, result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No XML, JSON_TABLE/table-valued JSON rowset route, broad SQL/JSON option semantics, DML/query route expansion, donor execution, parser-side finality, WAL/recovery authority, cluster-private behavior, spatial bridge, aggregate, row descriptor, or array descriptor conversion is claimed."
+                "No XML, JSON_TABLE/table-valued JSON rowset route, broad SQL/JSON option semantics, DML/query route expansion, reference execution, parser-side finality, WAL/recovery authority, cluster-private behavior, spatial bridge, aggregate, row descriptor, or array descriptor conversion is claimed."
             ),
         }
 
@@ -20058,7 +20058,7 @@ def classify(
                 "Bounded vector scalar row evidence from SBSFC-014 vector fixture, runtime, and projection CTests. "
                 "Exactly the 28 fixture-listed vector scalar rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical vector function and SBLR bindings, server admission, engine dispatch, result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No ANN/vector index/search closure, spatial closure, fuzzy/phonetic publication, operator/LIKE publication, broader SBSFC-014 completion, donor execution, parser-side execution/finality, WAL/recovery authority, or cluster-private/private-profile behavior is claimed."
+                "No ANN/vector index/search closure, spatial closure, fuzzy/phonetic publication, operator/LIKE publication, broader SBSFC-014 completion, reference execution, parser-side execution/finality, WAL/recovery authority, or cluster-private/private-profile behavior is claimed."
             ),
         }
 
@@ -20136,7 +20136,7 @@ def classify(
                 "Bounded fuzzy/phonetic scalar row evidence from SBSFC-014 fuzzy text fixture, runtime, and projection CTests. "
                 "Exactly the 23 fixture-listed fuzzy/phonetic scalar rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical fuzzy/phonetic function and SBLR bindings, server admission, engine dispatch, result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No ANN/vector-index/search publication, broad spatial publication, LIKE/NOT/operator/special-expression publication, donor execution or donor parser finality, SQL parser-side execution/finality, WAL, redo-log, donor-backed transaction authority, cluster-private expansion beyond existing public fail-closed rows, or SBSFC-051 release declaration completion claim is made."
+                "No ANN/vector-index/search publication, broad spatial publication, LIKE/NOT/operator/special-expression publication, reference execution or reference parser finality, SQL parser-side execution/finality, WAL, redo-log, reference-backed transaction authority, cluster-private expansion beyond existing public fail-closed rows, or SBSFC-051 release declaration completion claim is made."
             ),
         }
 
@@ -20214,7 +20214,7 @@ def classify(
                 "Bounded regex/text-pattern scalar row evidence from SBSFC-017 fixture, runtime, and projection CTests. "
                 "Exactly the ten fixture-listed regexp_count, regexp_match, regexp_replace, regexp_split_to_array, and regexp_substr rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical regex function and SBLR bindings, server admission, engine dispatch, result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No MATCH_RECOGNIZE, regexp_matches set-returning route, regexp_split_to_table, SQL regex special forms, similar_to_escape, donor execution, parser-side finality, WAL/recovery authority, or cluster-private/private-profile behavior is claimed."
+                "No MATCH_RECOGNIZE, regexp_matches set-returning route, regexp_split_to_table, SQL regex special forms, similar_to_escape, reference execution, parser-side finality, WAL/recovery authority, or cluster-private/private-profile behavior is claimed."
             ),
         }
 
@@ -20292,7 +20292,7 @@ def classify(
                 "Bounded text/conversion helper scalar row evidence from SBSFC-026R-K fixture, runtime, and projection CTests. "
                 "Exactly the eight fixture-listed convert, array_to_string, to_ascii, and format rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical helper function and SBLR bindings, server admission, engine dispatch, result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No broad charset transcoding, numeric format-model parsing, SQL execution, donor execution, parser-side finality, WAL/recovery authority, or cluster-private/private-profile behavior is claimed."
+                "No broad charset transcoding, numeric format-model parsing, SQL execution, reference execution, parser-side finality, WAL/recovery authority, or cluster-private/private-profile behavior is claimed."
             ),
         }
 
@@ -20370,7 +20370,7 @@ def classify(
                 "Bounded string/encoding helper scalar row evidence from SBSFC-027 fixture, runtime, and projection CTests. "
                 "Exactly the ten fixture-listed concat_ws, split_part, string_to_array, convert_to, and convert_from rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical helper function and SBLR bindings, server admission, engine dispatch, result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No broad charset transcoding, array storage materialization, SQL execution, donor execution, parser-side finality, WAL/recovery authority, or cluster-private/private-profile behavior is claimed."
+                "No broad charset transcoding, array storage materialization, SQL execution, reference execution, parser-side finality, WAL/recovery authority, or cluster-private/private-profile behavior is claimed."
             ),
         }
 
@@ -20448,7 +20448,7 @@ def classify(
                 "Bounded UUID compatibility helper scalar row evidence from SBSFC-028 fixture, runtime, and projection CTests. "
                 "Exactly the nine fixture-listed uuid_generate_v1, uuid_generate_v3, uuid_generate_v4, uuid_generate_v5, uuid_nil, and uuid_version rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled fixture/runtime/projection proof, canonical UUID helper function and SBLR bindings, server admission, engine dispatch, result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No UUID timestamp extraction, SQL execution, donor execution, parser-side finality, WAL/recovery authority, or cluster-private/private-profile behavior is claimed."
+                "No UUID timestamp extraction, SQL execution, reference execution, parser-side finality, WAL/recovery authority, or cluster-private/private-profile behavior is claimed."
             ),
         }
 
@@ -20528,7 +20528,7 @@ def classify(
                 "Bounded arithmetic/comparison/predicate operator row evidence from existing SBSFC operator runtime and scalar projection CTests. "
                 "Exactly the 16 requested operator rows in this override are promoted to e2e_passed. "
                 "Evidence names canonical operator ids, SBLR bindings, server admission, engine dispatch, runtime result or exact diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No AND/OR, ILIKE, regex operator, JSON/array operator, unary minus, IS DISTINCT FROM, broad expression precedence, generic parser-side SQL execution, donor execution, authenticated route closure, cluster-private behavior, transaction finality change, or WAL/recovery authority is claimed."
+                "No AND/OR, ILIKE, regex operator, JSON/array operator, unary minus, IS DISTINCT FROM, broad expression precedence, generic parser-side SQL execution, reference execution, authenticated route closure, cluster-private behavior, transaction finality change, or WAL/recovery authority is claimed."
             ),
         }
 
@@ -20610,7 +20610,7 @@ def classify(
                 "Bounded extended operator row evidence from SBSFC operator runtime and scalar projection CTests. "
                 "The AND/OR, regex, ILIKE, unary-minus, IS DISTINCT FROM, JSON get/get_text, and array_contains rows in this override are promoted to e2e_passed. "
                 "Evidence names canonical ids, SBLR bindings, server admission, engine dispatch, runtime result or exact diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No broad expression precedence, JSON_TABLE, SQL/JSON option matrix, donor execution, parser-side finality, authenticated client-route closure, cluster-private behavior, transaction finality change, or WAL/recovery authority is claimed."
+                "No broad expression precedence, JSON_TABLE, SQL/JSON option matrix, reference execution, parser-side finality, authenticated client-route closure, cluster-private behavior, transaction finality change, or WAL/recovery authority is claimed."
             ),
         }
 
@@ -20686,7 +20686,7 @@ def classify(
                 "Bounded LIKE grammar-options row evidence from scalar projection and operator runtime CTests. "
                 "Exactly SBSQL-263734C6F29A like_clause, SBSQL-1D6043AA4146 like_option, and SBSQL-93F23B0F097E like_options are promoted to e2e_passed. "
                 "Evidence proves parser grammar rows lower through query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION to canonical sb.operator.like or sb.operator.ilike with ESCAPE normalization into the existing SBLR pattern route, server admission, and engine DispatchSblrOperation result proof. "
-                "No SIMILAR TO, regex grammar, broad pattern family, dynamic escape expression, collation/charset expansion beyond existing operator evidence, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No SIMILAR TO, regex grammar, broad pattern family, dynamic escape expression, collation/charset expansion beyond existing operator evidence, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -20762,7 +20762,7 @@ def classify(
                 "Bounded logical expression grammar row evidence from scalar projection and operator runtime CTests. "
                 "Exactly SBSQL-AB137C592B9D and_expr, SBSQL-16A72B09C540 or_expr, and SBSQL-516CDBE6991C not_expr are promoted to e2e_passed. "
                 "Evidence proves literal-only logical grammar rows lower through query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION to canonical sb.operator.and, sb.operator.or, or sb.operator.not, server admission, and engine DispatchSblrOperation boolean result proof. "
-                "No broad expression precedence, nested/parenthesized logical expression closure beyond the named fixtures, table-backed predicates, short-circuit execution model, optimizer rewrite, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad expression precedence, nested/parenthesized logical expression closure beyond the named fixtures, table-backed predicates, short-circuit execution model, optimizer rewrite, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -20829,7 +20829,7 @@ def classify(
                 "Exactly SBSQL-C8F3E25872C3 sum, SBSQL-6C4FC1E18B25 sum([DISTINCT]expr), and SBSQL-D9B0F96DD358 sb.aggregate.sum are promoted to e2e_passed. "
                 "Evidence names canonical sb.aggregate.sum authority, SBLR binding, server admission, engine dispatch through the internal query-plan route, MGA row-result evidence, deterministic sum_by_key result proof, no_source_sql_text, and no_generic_sql_execution. "
                 "SUM(DISTINCT expr) is not claimed as positive DISTINCT aggregate execution; it is covered by exact fail-closed proof before aggregate payload authority until distinct aggregate execution is implemented. "
-                "No COUNT/AVG/MIN/MAX, broader aggregate modifiers, generic DISTINCT aggregate execution, parser-side execution/finality, donor execution, WAL/recovery authority, transaction-finality change, cluster-private behavior, or non-target aggregate rows are claimed."
+                "No COUNT/AVG/MIN/MAX, broader aggregate modifiers, generic DISTINCT aggregate execution, parser-side execution/finality, reference execution, WAL/recovery authority, transaction-finality change, cluster-private behavior, or non-target aggregate rows are claimed."
             ),
         }
 
@@ -20902,7 +20902,7 @@ def classify(
                 "Bounded COUNT(*) OVER (PARTITION BY ...) row evidence from DML exact-route and MGA row-result CTests. "
                 "Exactly SBSQL-5623B939FC0B is promoted to e2e_passed. "
                 "Evidence names canonical sb.aggregate.count authority, SBLR aggregate_count binding, server admission, public ABI dispatch, engine partition-count window execution, MGA row-result evidence, no_source_sql_text, and no_generic_sql_execution. "
-                "No broader window aggregate frames, ORDER BY inside the count window, COUNT(expr), DISTINCT, multi-key partitions, parser-side execution/finality, donor execution, WAL/recovery authority, transaction-finality change, cluster-private behavior, or non-target aggregate/window rows are claimed."
+                "No broader window aggregate frames, ORDER BY inside the count window, COUNT(expr), DISTINCT, multi-key partitions, parser-side execution/finality, reference execution, WAL/recovery authority, transaction-finality change, cluster-private behavior, or non-target aggregate/window rows are claimed."
             ),
         }
 
@@ -20985,7 +20985,7 @@ def classify(
                 "Bounded population aggregate row evidence from SBSFC-015 aggregate/window fixture, runtime, DML exact-route, and MGA row-result CTests. "
                 "Exactly the 6 stddev_pop/variance_pop population aggregate rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled aggregate fixture/runtime proof, canonical population aggregate function and SBLR bindings, server admission, DML exact-route evidence, MGA row-result evidence, engine dispatch, result proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No broader SBSFC-015 closure, XMLAGG, aggregate modifiers, generic aggregate rows, broader GROUP BY/window forms, ordered-set expansion, donor execution, parser-side execution/finality, WAL/recovery authority, vector scalar rows, ANN/vector-index behavior, cluster-private/private-profile behavior, or new implementation is claimed."
+                "No broader SBSFC-015 closure, XMLAGG, aggregate modifiers, generic aggregate rows, broader GROUP BY/window forms, ordered-set expansion, reference execution, parser-side execution/finality, WAL/recovery authority, vector scalar rows, ANN/vector-index behavior, cluster-private/private-profile behavior, or new implementation is claimed."
             ),
         }
 
@@ -21062,7 +21062,7 @@ def classify(
                 "Bounded LISTAGG WITHIN GROUP grammar-route evidence only for this row. "
                 "Exactly SBSQL-34022ADEF5CE/within_group_clause and SBSQL-E4CCB537B374/listagg_form are promoted to e2e_passed by this override. "
                 "Evidence names parser bind/lower, query.plan_operation, SBLR_QUERY_PLAN_OPERATION, sb.aggregate.listagg, sblr.expr.aggregate_listagg.v3, server admission, public ABI dispatch, aggregate_listagg engine execution, no_source_sql_text, no object-name authority, and MGA row-result proof. "
-                "No broad WITHIN GROUP, generic ordered-set aggregate, aggregate modifier, FILTER, DISTINCT, unordered STRING_AGG, XMLAGG, broader GROUP BY/HAVING/query planner, parser finality, donor execution/storage, WAL/recovery, cluster execution, authenticated full-route, or final no-grey release closure is claimed."
+                "No broad WITHIN GROUP, generic ordered-set aggregate, aggregate modifier, FILTER, DISTINCT, unordered STRING_AGG, XMLAGG, broader GROUP BY/HAVING/query planner, parser finality, reference execution/storage, WAL/recovery, cluster execution, authenticated full-route, or final no-grey release closure is claimed."
             ),
         }
 
@@ -21151,7 +21151,7 @@ def classify(
                 "Bounded LISTAGG aggregate row evidence from SBSFC-015 aggregate/window fixture, runtime, DML exact-route, and MGA row-result CTests. "
                 "Exactly the 2 LISTAGG aggregate rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled aggregate fixture/runtime proof, canonical LISTAGG aggregate function and SBLR binding, server admission, DML exact-route evidence, MGA row-result evidence, engine dispatch, result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No broader SBSFC-015 closure, XMLAGG, aggregate modifier, generic aggregate, ordered-set expansion, broader GROUP BY/window claim, donor execution, parser-side finality, SQL-text execution authority, WAL/recovery authority, transaction-finality change, cluster-private/private-profile behavior, or SBSFC-051 release declaration completion is claimed."
+                "No broader SBSFC-015 closure, XMLAGG, aggregate modifier, generic aggregate, ordered-set expansion, broader GROUP BY/window claim, reference execution, parser-side finality, SQL-text execution authority, WAL/recovery authority, transaction-finality change, cluster-private/private-profile behavior, or SBSFC-051 release declaration completion is claimed."
             ),
         }
 
@@ -21243,7 +21243,7 @@ def classify(
                 "Bounded STRING_AGG aggregate row evidence from SBSFC-015 fixture rows plus DML exact-route and MGA row-result CTests. "
                 "Exactly the 3 STRING_AGG aggregate rows in this override are promoted to e2e_passed. "
                 "Evidence names canonical sb.aggregate.string_agg authority, SBLR binding and aggregate_string_agg entrypoint authority, bounded ordered grouped-route lowering, server public ABI admission, engine dispatch through the ordered text aggregate runtime path, and query_aggregate:string_agg_by_key row result proof. "
-                "No array_agg, json_object_agg, XMLAGG, generic aggregate modifiers, DISTINCT/FILTER, broad ORDER BY/WITHIN GROUP, broader GROUP BY/window grammar, donor execution, parser finality, WAL/recovery authority, cluster-private behavior, unordered STRING_AGG grouped-route execution, or LISTAGG overflow support for STRING_AGG is claimed."
+                "No array_agg, json_object_agg, XMLAGG, generic aggregate modifiers, DISTINCT/FILTER, broad ORDER BY/WITHIN GROUP, broader GROUP BY/window grammar, reference execution, parser finality, WAL/recovery authority, cluster-private behavior, unordered STRING_AGG grouped-route execution, or LISTAGG overflow support for STRING_AGG is claimed."
             ),
         }
 
@@ -21336,7 +21336,7 @@ def classify(
                 "Bounded JSON_AGG aggregate row evidence from SBSFC-015 fixture rows plus DML exact-route and MGA row-result CTests. "
                 "Exactly the 2 JSON_AGG aggregate rows in this override are promoted to e2e_passed. "
                 "Evidence names canonical sb.aggregate.json_agg authority, SBLR binding and aggregate_json_agg entrypoint authority, bounded ordered grouped-route lowering, server public ABI admission, engine dispatch through the ordered JSON aggregate runtime path, and query_aggregate:json_agg_by_key row result proof with NULL inputs included as JSON null. "
-                "No json_object_agg, jsonb_agg, array_agg, XMLAGG, DISTINCT/FILTER, generic aggregate modifiers, broad ORDER BY/WITHIN GROUP, broader GROUP BY/window grammar, donor execution, parser finality, WAL/recovery authority, cluster-private behavior, authenticated full-route, or broad SBLR binary round-trip beyond these rows is claimed."
+                "No json_object_agg, jsonb_agg, array_agg, XMLAGG, DISTINCT/FILTER, generic aggregate modifiers, broad ORDER BY/WITHIN GROUP, broader GROUP BY/window grammar, reference execution, parser finality, WAL/recovery authority, cluster-private behavior, authenticated full-route, or broad SBLR binary round-trip beyond these rows is claimed."
             ),
         }
 
@@ -21409,7 +21409,7 @@ def classify(
                 "Bounded JSON_OBJECT_AGG aggregate row evidence from SBSFC-015 fixture rows plus DML exact-route and MGA row-result CTests. "
                 "Exactly the 2 JSON_OBJECT_AGG aggregate rows in this override are promoted to e2e_passed. "
                 "Evidence names canonical sb.aggregate.json_object_agg authority, SBLR binding and aggregate_json_object_agg entrypoint authority, bounded ordered grouped-route lowering, server public ABI admission, engine dispatch through the ordered JSON object aggregate runtime path, query_aggregate:json_object_agg_by_key row result proof, NULL-key refusal, NULL values as JSON null, and deterministic last-key-wins duplicate policy by parser-provided order. "
-                "No json_agg/jsonb_agg/array_agg substitution, DISTINCT/FILTER, generic aggregate modifiers, broad ORDER BY/WITHIN GROUP, broader GROUP BY/window grammar, donor execution, parser finality, WAL/recovery authority, cluster-private behavior, authenticated full-route, or broad SBLR binary round-trip beyond these rows is claimed."
+                "No json_agg/jsonb_agg/array_agg substitution, DISTINCT/FILTER, generic aggregate modifiers, broad ORDER BY/WITHIN GROUP, broader GROUP BY/window grammar, reference execution, parser finality, WAL/recovery authority, cluster-private behavior, authenticated full-route, or broad SBLR binary round-trip beyond these rows is claimed."
             ),
         }
 
@@ -21505,7 +21505,7 @@ def classify(
                 "Bounded ARRAY_AGG aggregate row evidence from SBSFC-015 fixture rows plus DML exact-route and MGA row-result CTests. "
                 "Exactly the 3 ARRAY_AGG aggregate rows in this override are promoted to e2e_passed. "
                 "Evidence names canonical sb.aggregate.array_agg authority, SBLR binding and aggregate_array_agg entrypoint authority, bounded ordered grouped-route lowering, server public ABI admission, engine dispatch through the list descriptor aggregate runtime path, and query_aggregate:array_agg_by_key row result proof with NULL inputs included as NULL list elements and empty groups returning NULL list values. "
-                "No JSON array substitution, DISTINCT/FILTER, window bridge, WITHIN GROUP, generic aggregate modifiers, broad ORDER BY variants, donor execution, parser finality, WAL/recovery authority, cluster-private behavior, authenticated full-route, or broad SBLR binary round-trip beyond these rows is claimed."
+                "No JSON array substitution, DISTINCT/FILTER, window bridge, WITHIN GROUP, generic aggregate modifiers, broad ORDER BY variants, reference execution, parser finality, WAL/recovery authority, cluster-private behavior, authenticated full-route, or broad SBLR binary round-trip beyond these rows is claimed."
             ),
         }
 
@@ -21580,7 +21580,7 @@ def classify(
                 "Bounded window function row evidence from SBSFC-015 aggregate/window fixture, runtime, DML exact-route, and MGA row-result CTests. "
                 "Exactly the 29 cume_dist/dense_rank/first_value/lag/last_value/lead/nth_value/ntile/percent_rank/rank/row_number window rows in this override are promoted to e2e_passed. "
                 "Evidence names row-labeled window fixture/runtime proof, canonical window function and SBLR bindings, server admission, DML exact-route evidence, MGA row-result evidence, engine dispatch, result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No aggregate modifier closure, XMLAGG, ordered-set expansion, generic aggregate family closure, broader GROUP BY/window grammar closure, donor execution/finality, parser-side execution/finality, WAL/redo/recovery authority, transaction-finality changes, cluster-private/private-profile behavior, or SBSFC-015 full completion is claimed."
+                "No aggregate modifier closure, XMLAGG, ordered-set expansion, generic aggregate family closure, broader GROUP BY/window grammar closure, reference execution/finality, parser-side execution/finality, WAL/redo/recovery authority, transaction-finality changes, cluster-private/private-profile behavior, or SBSFC-015 full completion is claimed."
             ),
         }
 
@@ -21660,7 +21660,7 @@ def classify(
                 "Bounded ordered/distribution/statistical and core COUNT/AVG/MIN/MAX/BOOL aggregate row evidence from SBSFC-015 fixture, runtime, DML exact-route, and MGA row-result CTests. "
                 "SBSFC-040 extends the same aggregate evidence lane to the remaining regr_avgx/regr_avgy/regr_intercept/regr_r2/regr_slope/regr_sxx/regr_sxy/regr_syy rows. "
                 "Evidence names row-labeled SBSFC-015 fixture/runtime proof, DML exact-route evidence, MGA row-result evidence, canonical aggregate function and SBLR bindings, server admission, engine dispatch, result or diagnostic proof, no_source_sql_text, and no_generic_sql_execution. "
-                "No XMLAGG, aggregate modifiers, broader GROUP BY/window grammar, broader query planner closure, donor execution/finality, parser-side execution/finality, SQL-text execution authority, WAL/redo/recovery authority, transaction-finality changes, cluster-private/private-profile behavior, or full SBSFC-015 completion is claimed."
+                "No XMLAGG, aggregate modifiers, broader GROUP BY/window grammar, broader query planner closure, reference execution/finality, parser-side execution/finality, SQL-text execution authority, WAL/redo/recovery authority, transaction-finality changes, cluster-private/private-profile behavior, or full SBSFC-015 completion is claimed."
             ),
         }
 
@@ -21773,7 +21773,7 @@ def classify(
                 f"ctest:{CORE_TRANSACTION_CTEST}; exactly SBSQL-2072BB4C308D set_transaction_stmt, "
                 "SBSQL-1F20B86504C3 transaction_mode, and SBSQL-564BD6C7C93C transaction_mode_list are promoted to e2e_passed using SET TRANSACTION READ WRITE. "
                 "Evidence proves parser/CST/AST/bound lowering to transaction.set_characteristics/SBLR_TRANSACTION_SET_CHARACTERISTICS, row-identifiable transaction_characteristic_surface_ids, server admission without an active transaction context, EngineSetTransactionCharacteristics dispatch, session-default evidence, parser_finality=false, and no-WAL authority. "
-                "No COMMIT options, lock modes, PSQL/autonomous/package transaction bodies, donor execution, driver transaction protocol closure, transaction finality change, cluster-private behavior, or broader SBSFC-022 closure is claimed."
+                "No COMMIT options, lock modes, PSQL/autonomous/package transaction bodies, reference execution, driver transaction protocol closure, transaction finality change, cluster-private behavior, or broader SBSFC-022 closure is claimed."
             ),
         }
 
@@ -21833,7 +21833,7 @@ def classify(
                 "SBSQL-3BF8303CFB36 rollback_to_savepoint_stmt, and SBSQL-9E33ED8C3B3D release_savepoint_stmt are promoted to e2e_passed. "
                 "Evidence names exact SBLR transaction opcodes, server admission, engine execution under MGA, savepoint-local behavior, and no-WAL authority. "
                 "SBSQL-AD76CD74FC10 savepoint_name is handled separately by SBSFC-022R-C; SBSQL-35C5F6EA0613 savepoint_stmt is handled separately by SBSFC-022R-D using positive SAVEPOINT route evidence. "
-                "No broader SBSFC-022, lock/visibility/recovery closure, SBWP/TLS driver transaction closure, parser-side finality, donor execution, WAL/recovery authority, or savepoint_active* native_future promotion is claimed."
+                "No broader SBSFC-022, lock/visibility/recovery closure, SBWP/TLS driver transaction closure, parser-side finality, reference execution, WAL/recovery authority, or savepoint_active* native_future promotion is claimed."
             ),
         }
 
@@ -21903,7 +21903,7 @@ def classify(
                 f"ctest:{CORE_TRANSACTION_CTEST}; exactly SBSQL-35C5F6EA0613 savepoint_stmt is promoted to e2e_passed using positive SAVEPOINT route evidence only. "
                 "Evidence asserts the generated registry row, valid route surface SBSQL-9EC31122A564 savepoint, the bound savepoint_name operand route_sp in the SBLR payload, exact transaction.create_savepoint/SBLR_TRANSACTION_CREATE_SAVEPOINT route evidence, server admission, engine execution under MGA, savepoint-local no-independent-transaction-authority behavior, and no-WAL authority. "
                 "Invalid EXECUTE SAVEPOINT no-name refusal evidence is not used. "
-                "No broader transaction lifecycle, lock/visibility/recovery, autocommit/isolation, driver, cluster, donor, parser-side finality, transaction finality beyond the proved savepoint operation, WAL/recovery authority, or non-target transaction rows are claimed."
+                "No broader transaction lifecycle, lock/visibility/recovery, autocommit/isolation, driver, cluster, reference, parser-side finality, transaction finality beyond the proved savepoint operation, WAL/recovery authority, or non-target transaction rows are claimed."
             ),
         }
 
@@ -21972,7 +21972,7 @@ def classify(
                 f"ctest:{CORE_TRANSACTION_CTEST}; exactly SBSQL-AD76CD74FC10 savepoint_name is promoted to e2e_passed using the existing positive SAVEPOINT route. "
                 "Evidence asserts the generated registry row, the bound savepoint_name operand route_sp in the SBLR payload, exact transaction.create_savepoint/SBLR_TRANSACTION_CREATE_SAVEPOINT route evidence, server admission, engine execution under MGA, savepoint-local no-independent-transaction-authority behavior, and no-WAL authority. "
                 "SBSQL-35C5F6EA0613 savepoint_stmt is handled separately by SBSFC-022R-D. "
-                "No broader savepoint transaction-control closure, lock/visibility/recovery closure, PSQL/dynamic SQL/cursor/autocommit/isolation/lock closure, donor execution, parser-side finality, WAL/recovery authority, cluster-private behavior, or non-target transaction rows are claimed."
+                "No broader savepoint transaction-control closure, lock/visibility/recovery closure, PSQL/dynamic SQL/cursor/autocommit/isolation/lock closure, reference execution, parser-side finality, WAL/recovery authority, cluster-private behavior, or non-target transaction rows are claimed."
             ),
         }
 
@@ -22038,7 +22038,7 @@ def classify(
             "notes": (
                 "Bounded column_constraint exact-route row evidence. "
                 "Exactly SBSQL-A57CFDE0BBA9 column_constraint is promoted to e2e_passed using CREATE TABLE customer (id int NOT NULL), generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to ddl.constraint.create/SBLR_DDL_CONSTRAINT_CREATE, server admission, and EngineCreateConstraint MGA catalog lifecycle dispatch that persists sys.constraint_descriptor and sys.constraint_subject rows. "
-                "No broad CREATE TABLE constraint closure, multi-column/table constraint closure, foreign-key enforcement, check-expression runtime evaluation, deferrable runtime, constraint drop/rename/validation lifecycle, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad CREATE TABLE constraint closure, multi-column/table constraint closure, foreign-key enforcement, check-expression runtime evaluation, deferrable runtime, constraint drop/rename/validation lifecycle, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22110,7 +22110,7 @@ def classify(
             "notes": (
                 "Bounded table-level constraint exact-route row evidence. "
                 "Exactly SBSQL-28F16A4C7DD0 table_constraint, SBSQL-B1816929AD45 constraint_name, and SBSQL-5CC9FDFFE6F7 constraint_body are promoted to e2e_passed using CREATE TABLE customer (id int, CONSTRAINT customer_pk PRIMARY KEY (id)), generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to ddl.constraint.create/SBLR_DDL_CONSTRAINT_CREATE, server admission, and EngineCreateConstraint MGA catalog lifecycle dispatch that persists sys.constraint_descriptor, sys.constraint_subject, sys.key_descriptor, and sys.constraint_support_structure rows. "
-                "No broad CREATE TABLE constraint closure, foreign-key enforcement, check-expression runtime evaluation, deferrable runtime, constraint drop/rename/validation lifecycle, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad CREATE TABLE constraint closure, foreign-key enforcement, check-expression runtime evaluation, deferrable runtime, constraint drop/rename/validation lifecycle, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22167,7 +22167,7 @@ def classify(
             "notes": (
                 "Bounded CAST exact-route row evidence. "
                 "Exactly SBSQL-6F701227513B cast_expr, SBSQL-D63D7D939A15 cast_form, SBSQL-4E6D7545B4DF sb.special.cast, SBSQL-73103A84DE7B CAST(...AS...), SBSQL-C6EDE941F4E9 CAST, and SBSQL-FBCBEC94EB19 CAST(exprAStype) are promoted to e2e_passed using SELECT CAST('42' AS int64) AS cast_value, generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.cast_value/SBLR_QUERY_CAST_VALUE, server public ABI admission, SBLR dispatch to EngineCastValue, and direct runtime typed-value checks for character-to-int64, character-to-boolean, int64-to-character, and character-to-uuid. "
-                "No TRY_CAST/XMLCAST, domain cast validation closure, every datatype conversion variation, table-backed expression execution, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No TRY_CAST/XMLCAST, domain cast validation closure, every datatype conversion variation, table-backed expression execution, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22229,7 +22229,7 @@ def classify(
             "notes": (
                 "Bounded boolean CAST exact-route row evidence. "
                 "Exactly SBSQL-03BB09995C18 boolean_cast_from_text and SBSQL-C8EF9E3713E5 boolean_cast_from_integer are promoted to e2e_passed using SELECT CAST('true' AS boolean) AS cast_value and SELECT CAST(1 AS boolean) AS cast_value, generated registry validation, row-identifiable cast_semantic_surface_ids, parser/CST/AST/bound lowering to query.cast_value/SBLR_QUERY_CAST_VALUE, server public ABI admission, SBLR dispatch to EngineCastValue, and direct runtime typed-value checks. "
-                "No TRY_CAST, every datatype conversion variation, table-backed expression execution, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No TRY_CAST, every datatype conversion variation, table-backed expression execution, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22289,7 +22289,7 @@ def classify(
             "notes": (
                 "Bounded SBSFC-026R-J native_future scalar function row evidence. "
                 "Evidence proves generated registry acceptance, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION, server public ABI admission, seeded engine-owned SBLR scalar dispatch, runtime conformance, and invalid-input diagnostic paths for the covered conversion/bit/byte helpers. "
-                "No parser-side SQL execution, donor execution/finality, WAL/recovery authority, cluster provider behavior, table-backed expression execution, or full no-grey closure is claimed. to_number(text,format) and to_ascii surfaces remain pending for canonical semantic authority."
+                "No parser-side SQL execution, reference execution/finality, WAL/recovery authority, cluster provider behavior, table-backed expression execution, or full no-grey closure is claimed. to_number(text,format) and to_ascii surfaces remain pending for canonical semantic authority."
             ),
         }
 
@@ -22353,7 +22353,7 @@ def classify(
             "notes": (
                 "Bounded function_call grammar-route row evidence. "
                 "Exactly SBSQL-17B72695FA1A function_call is promoted to e2e_passed using SELECT cot(0.7853981633974483) AS cot_value, generated registry validation, row-identifiable function_call payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION, server public ABI admission, and engine projection dispatch. "
-                "No broad function catalog closure, table-backed expression execution, aggregate/window calls, PSQL function invocation, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad function catalog closure, table-backed expression execution, aggregate/window calls, PSQL function invocation, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22421,7 +22421,7 @@ def classify(
             "notes": (
                 "Bounded constructor exact-route row evidence. "
                 "Exactly ARRAY[1, 2] and ROW(1, 'alpha') scalar projection constructors are promoted to e2e_passed using generated registry validation, row-identifiable constructor payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION, server public ABI admission, and engine projection dispatch with deterministic descriptor result checks. "
-                "No array subquery constructor, nested constructor, typed field descriptor inference beyond the bounded literal operands, table-backed expression execution, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No array subquery constructor, nested constructor, typed field descriptor inference beyond the bounded literal operands, table-backed expression execution, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22477,7 +22477,7 @@ def classify(
             "notes": (
                 "Bounded BETWEEN exact-route row evidence. "
                 "Exactly SBSQL-47FC806CA045 BETWEEN and SBSQL-CF2DB952D802 sb.special.between are promoted to e2e_passed using SELECT 5 BETWEEN 1 AND 9 AS between_value, generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with a sblr.expr.special_between.v3 special-form expression, server public ABI admission, and EngineEvaluateProjection runtime evidence through SBLR op_ge and op_le under SQL three-valued logic. "
-                "No NOT BETWEEN, IN, CASE, quantified predicates, table-backed expression execution, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No NOT BETWEEN, IN, CASE, quantified predicates, table-backed expression execution, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22533,7 +22533,7 @@ def classify(
             "notes": (
                 "Bounded IN exact-route row evidence. "
                 "Exactly SBSQL-1287554A5489 special_form, SBSQL-AF51A9A07F10 IN, and SBSQL-28270EB632EF sb.special.in are promoted to e2e_passed using SELECT 5 IN (1, 5, 9) AS in_value, generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with a sblr.expr.special_in.v3 special-form expression, server public ABI admission, and EngineEvaluateProjection runtime evidence through SBLR op_eq under SQL three-valued logic. "
-                "No broad special-form grammar closure, NOT IN, subquery IN, empty-list semantics, CASE, quantified predicates, table-backed expression execution, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad special-form grammar closure, NOT IN, subquery IN, empty-list semantics, CASE, quantified predicates, table-backed expression execution, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22589,7 +22589,7 @@ def classify(
             "notes": (
                 "Bounded searched CASE exact-route row evidence. "
                 "Exactly SBSQL-8DD78C637BA7 case_expression, SBSQL-D43C40F5F000 searched_case_expr, SBSQL-D870022CBD94 CASE, and SBSQL-AFBF1B562EEC sb.special.case are promoted to e2e_passed using SELECT CASE WHEN TRUE THEN 'matched' ELSE 'fallback' END AS case_value, generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with a sblr.expr.special_case.v3 special-form expression, server public ABI admission, and EngineEvaluateProjection runtime evidence for the first true WHEN result. "
-                "No simple CASE, PSQL CASE, multiple WHEN branches, non-literal conditions, table-backed predicates, type unification beyond same-type literal result operands, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No simple CASE, PSQL CASE, multiple WHEN branches, non-literal conditions, table-backed predicates, type unification beyond same-type literal result operands, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22645,7 +22645,7 @@ def classify(
             "notes": (
                 "Bounded simple CASE exact-route row evidence. "
                 "Exactly SBSQL-00BFC4EDD817 simple_case_expr is promoted to e2e_passed using SELECT CASE 1 WHEN 1 THEN 'one' ELSE 'other' END AS simple_case_value, generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with a sblr.expr.special_case.v3 special-form expression and op_eq condition, server public ABI admission, and EngineEvaluateProjection runtime evidence. "
-                "No searched CASE row promotion in this slice, PSQL CASE, multiple WHEN branches, non-literal operands, table-backed predicates, type unification beyond same-type literal result operands, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No searched CASE row promotion in this slice, PSQL CASE, multiple WHEN branches, non-literal operands, table-backed predicates, type unification beyond same-type literal result operands, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22704,7 +22704,7 @@ def classify(
             "notes": (
                 "Bounded multiplicative_expr exact-route row evidence. "
                 "Exactly SBSQL-129417E283C2 multiplicative_expr is promoted to e2e_passed using SELECT 6 * 7 AS product_value, generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with an op_mul operator expression, server public ABI admission, and EngineEvaluateProjection runtime evidence through the SBLR arithmetic runtime returning 42. "
-                "No additive, divide, modulo, unary, precedence, parenthesized-expression, non-literal operand, table-backed arithmetic, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No additive, divide, modulo, unary, precedence, parenthesized-expression, non-literal operand, table-backed arithmetic, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22763,7 +22763,7 @@ def classify(
             "notes": (
                 "Bounded additive_expr exact-route row evidence. "
                 "Exactly SBSQL-B1DCA7AA5204 additive_expr is promoted to e2e_passed using SELECT 10 + 5 AS sum_value, generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with an op_add operator expression, server public ABI admission, and EngineEvaluateProjection runtime evidence through the SBLR arithmetic runtime returning 15. "
-                "No subtractive, multiplicative, divide, modulo, unary, precedence, parenthesized-expression, non-literal operand, table-backed arithmetic, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No subtractive, multiplicative, divide, modulo, unary, precedence, parenthesized-expression, non-literal operand, table-backed arithmetic, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22822,7 +22822,7 @@ def classify(
             "notes": (
                 "Bounded unary_expr exact-route row evidence. "
                 "Exactly SBSQL-7872FB756AE7 unary_expr is promoted to e2e_passed using SELECT -5 AS negative_value, generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with an op_unary_minus operator expression, server public ABI admission, and EngineEvaluateProjection runtime evidence through the SBLR arithmetic runtime returning -5. "
-                "No additive, subtractive, multiplicative, divide, modulo, precedence, parenthesized-expression, non-literal operand, table-backed arithmetic, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No additive, subtractive, multiplicative, divide, modulo, precedence, parenthesized-expression, non-literal operand, table-backed arithmetic, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22878,7 +22878,7 @@ def classify(
             "notes": (
                 "Bounded primary_expr exact-route row evidence. "
                 "Exactly SBSQL-53D45E6D9459 primary_expr is promoted to e2e_passed using SELECT 1 AS primary_value, generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with a row-identifiable literal scalar projection, server public ABI admission, and EngineEvaluateProjection constant projection runtime evidence returning 1. "
-                "No broad expression closure, expression_list, optional_expression_list, postfix expression, operator expression, parenthesized expression, non-literal operand, table-backed projection, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad expression closure, expression_list, optional_expression_list, postfix expression, operator expression, parenthesized expression, non-literal operand, table-backed projection, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22934,7 +22934,7 @@ def classify(
             "notes": (
                 "Bounded expression exact-route row evidence. "
                 "Exactly SBSQL-8C63B1629F05 expression is promoted to e2e_passed using SELECT 1 AS expression_value, generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION with a row-identifiable literal scalar expression, server public ABI admission, and EngineEvaluateProjection constant projection runtime evidence returning 1. "
-                "No broad expression-language closure, expression_list, optional_expression_list, postfix expression, primary_expr promotion, operator expression, parenthesized expression, non-literal operand, table-backed projection, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad expression-language closure, expression_list, optional_expression_list, postfix expression, primary_expr promotion, operator expression, parenthesized expression, non-literal operand, table-backed projection, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -22991,7 +22991,7 @@ def classify(
             "notes": (
                 "Bounded scalar syntax exact-route row evidence. "
                 "Exactly optional_expression_list, expression_list, postfix_expr, alias, identifier, and identifier_bare rows are promoted to e2e_passed using SELECT 1 AS syntax_alias, generated registry validation, row-identifiable syntax payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION, server public ABI admission, and EngineEvaluateProjection constant projection runtime evidence returning 1. "
-                "No broad expression-list grammar closure, postfix operator family closure, identifier/name-resolution authority, delimited identifier behavior, table-backed projection, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad expression-list grammar closure, postfix operator family closure, identifier/name-resolution authority, delimited identifier behavior, table-backed projection, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -23060,7 +23060,7 @@ def classify(
                 "SBLR_QUERY_EVALUATE_PROJECTION with row-identifiable JSON syntax_surface_ids, "
                 "server public ABI admission, and EngineEvaluateProjection runtime through "
                 f"{runtime_id}. No generic replay, exact-refusal promotion, broad JSON grammar "
-                "closure, parser-side finality, donor finality, WAL/recovery authority, "
+                "closure, parser-side finality, reference finality, WAL/recovery authority, "
                 "transaction-finality change, or final no-grey closure is claimed."
             ),
         }
@@ -23127,7 +23127,7 @@ def classify(
                 "lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION, server "
                 f"public ABI admission, and EngineEvaluateProjection runtime evidence through {function_id}. "
                 "No generic replay, exact-refusal promotion, broad XML grammar closure, parser-side "
-                "finality, donor finality, WAL/recovery authority, transaction-finality change, or "
+                "finality, reference finality, WAL/recovery authority, transaction-finality change, or "
                 "final no-grey closure is claimed."
             ),
         }
@@ -23196,7 +23196,7 @@ def classify(
                 f"in {SBSFC062_VECTOR_GRAMMAR_EXACT_ROUTE_TEST_SOURCE}, CST/AST/bound lowering "
                 f"to {operation_id}/{sblr_operation}, server public ABI admission, and {api} "
                 "runtime evidence. No synthetic replay route, exact-refusal promotion, broad "
-                "vector/cluster provider claim, parser-side finality, donor finality, "
+                "vector/cluster provider claim, parser-side finality, reference finality, "
                 "WAL/recovery authority, transaction-finality change, or final no-grey closure "
                 "is claimed."
             ),
@@ -23280,7 +23280,7 @@ def classify(
                 "Locality/zone rows use structural profile metadata with cluster provider dispatch false. "
                 "Transaction/snapshot rows carry engine MGA authority evidence. No SBSQL_SURFACE_REPLAY, "
                 "exact-refusal promotion, parser-side SQL execution, parser storage/finality, private "
-                "cluster execution, donor finality, WAL/recovery authority, transaction-finality claim, "
+                "cluster execution, reference finality, WAL/recovery authority, transaction-finality claim, "
                 "or final no-grey closure is claimed."
             ),
         }
@@ -23363,7 +23363,7 @@ def classify(
                 "Transaction/procedural rows carry descriptor evidence only, with parser finality and "
                 "WAL/recovery authority false. No SBSQL_SURFACE_REPLAY, exact-refusal promotion, parser-side "
                 "SQL execution, parser storage/finality, cluster provider dispatch, private cluster execution, "
-                "donor finality, WAL/recovery authority, transaction-finality claim, or final no-grey closure "
+                "reference finality, WAL/recovery authority, transaction-finality claim, or final no-grey closure "
                 "is claimed."
             ),
         }
@@ -23445,7 +23445,7 @@ def classify(
                 "API descriptors. Structural management and profile words remain public OSS descriptor "
                 "evidence with cluster provider dispatch false. No SBSQL_SURFACE_REPLAY, exact-refusal "
                 "promotion, parser-side SQL execution, parser storage/finality, cluster provider dispatch, "
-                "private cluster execution, donor finality, WAL/recovery authority, transaction-finality "
+                "private cluster execution, reference finality, WAL/recovery authority, transaction-finality "
                 "claim, or final no-grey closure is claimed."
             ),
         }
@@ -23525,7 +23525,7 @@ def classify(
                 f"lowering to {operation_id}/{sblr_operation}, server public ABI admission, and {api} "
                 "descriptor-validation runtime evidence. Parser behavior is limited to SQL-to-SBLR/internal "
                 "API descriptors. No SBSQL_SURFACE_REPLAY, exact-refusal promotion, parser-side SQL execution, "
-                "parser storage/finality, cluster provider dispatch, private cluster execution, donor finality, "
+                "parser storage/finality, cluster provider dispatch, private cluster execution, reference finality, "
                 "WAL/recovery authority, transaction-finality claim, or final no-grey closure is claimed."
             ),
         }
@@ -23605,7 +23605,7 @@ def classify(
                 f"lowering to {operation_id}/{sblr_operation}, server public ABI admission, and {api} "
                 "descriptor-validation runtime evidence. Parser behavior is limited to SQL-to-SBLR/internal "
                 "API descriptors. No SBSQL_SURFACE_REPLAY, exact-refusal promotion, parser-side SQL execution, "
-                "parser storage/finality, cluster provider dispatch, private cluster execution, donor finality, "
+                "parser storage/finality, cluster provider dispatch, private cluster execution, reference finality, "
                 "WAL/recovery authority, transaction-finality claim, or final no-grey closure is claimed."
             ),
         }
@@ -23682,7 +23682,7 @@ def classify(
                 f"lowering to {operation_id}/{sblr_operation}, server public ABI admission, and {api} "
                 "descriptor-validation runtime evidence. Parser behavior is limited to SQL-to-SBLR/internal "
                 "API descriptors. No SBSQL_SURFACE_REPLAY, exact-refusal promotion, parser-side SQL execution, "
-                "parser storage/finality, cluster provider dispatch, private cluster execution, donor finality, "
+                "parser storage/finality, cluster provider dispatch, private cluster execution, reference finality, "
                 "WAL/recovery authority, transaction-finality claim, or final no-grey closure is claimed."
             ),
         }
@@ -23752,7 +23752,7 @@ def classify(
                 f"lowering to {operation_id}/{sblr_operation}, server public ABI admission, and {api} "
                 "runtime evidence. Parser behavior is limited to SQL-to-SBLR/internal API descriptors. "
                 "No SBSQL_SURFACE_REPLAY, exact-refusal promotion, parser-side SQL execution, parser "
-                "storage/finality, cluster provider dispatch, donor finality, WAL/recovery authority, "
+                "storage/finality, cluster provider dispatch, reference finality, WAL/recovery authority, "
                 "transaction-finality change, or final no-grey closure is claimed."
             ),
         }
@@ -23828,7 +23828,7 @@ def classify(
                 f"{api} runtime API success evidence. Procedural rows require engine transaction "
                 "context where needed; diagnostic rows use engine-owned general diagnostic APIs. "
                 "No replay-token usage, refusal promotion, parser SQL execution, parser "
-                "storage/finality, cluster provider dispatch, donor finality, WAL/recovery authority, "
+                "storage/finality, cluster provider dispatch, reference finality, WAL/recovery authority, "
                 "or final no-grey closure is claimed."
             ),
         }
@@ -23889,9 +23889,9 @@ def classify(
                 "canonical_message_vector_set;SBSQL.BINDING.*;SBLR.ENVELOPE.*;"
                 "SBLR.OPCODE.*;MIGRATION.*;SECURITY.AUTHORIZATION.FORBIDDEN;"
                 "SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED;"
-                "migrate_from_donor_requires_donor_profile_with_package_ref;"
+                "migrate_from_reference_requires_reference_profile_with_package_ref;"
                 "alter_migration_requires_ref_and_start_pause_resume_abort_or_finalize;"
-                "no_donor_authority;no_WAL_recovery_authority"
+                "no_reference_authority;no_WAL_recovery_authority"
             ),
             "result_proof": (
                 f"ctest:{MIGRATION_MANAGEMENT_CTEST};fixture={fixture};"
@@ -23904,8 +23904,8 @@ def classify(
                 "dispatched_to_internal_api=true;database_reopen_visibility_checked=true;"
                 "parser_executes_sql=false;sql_text_included=false;real_file_effects=false;"
                 "no_synthetic_replay;no_exact_refusal_promotion;no_cluster_provider_claim;"
-                "private_cluster_execution=false;donor_storage_authority_accepted=false;"
-                "donor_finality_accepted=false;no_wal_authority"
+                "private_cluster_execution=false;reference_storage_authority_accepted=false;"
+                "reference_finality_accepted=false;no_wal_authority"
             ),
             "evidence_collected_utc": "static_existing_ctest_evidence",
             "promoter_slice": "SBSQL-MISS-GATE-004-migration-management-runtime",
@@ -23914,10 +23914,10 @@ def classify(
                 f"{surface_id} {syntax_role}. The public conformance fixture validates generated "
                 "registry rows, negative syntax refusal, CST/AST/bind/lower, server admission, "
                 f"SBLR opcode dispatch to {api}, required security and transaction authority, "
-                "MIGRATE_DATABASE rights, donor package evidence, commit, database reopen, and "
+                "MIGRATE_DATABASE rights, reference package evidence, commit, database reopen, and "
                 "SHOW visibility after reopen. It explicitly proves parser SQL execution, parser "
-                "storage/finality, synthetic replay, exact-refusal promotion, donor storage "
-                "authority, donor finality, private cluster execution, and WAL recovery authority "
+                "storage/finality, synthetic replay, exact-refusal promotion, reference storage "
+                "authority, reference finality, private cluster execution, and WAL recovery authority "
                 "are not accepted."
             ),
         }
@@ -24007,7 +24007,7 @@ def classify(
                 f"{api} runtime API success evidence. Cluster-profile rows in this batch are "
                 "structural open-core profile metadata routes through cluster.profile_operation "
                 "and prove private provider dispatch remains false. No SBSQL_SURFACE_REPLAY, "
-                "exact-refusal promotion, parser SQL execution, parser storage/finality, donor "
+                "exact-refusal promotion, parser SQL execution, parser storage/finality, reference "
                 "finality, WAL/recovery authority, or final no-grey closure is claimed."
             ),
         }
@@ -24079,7 +24079,7 @@ def classify(
                 f"in {SBSFC076_DML_RESIDUAL_EXACT_ROUTE_TEST_SOURCE}, CST/AST/bound lowering "
                 f"to {operation_id}/{sblr_operation}, server public ABI admission, and {api} "
                 "runtime API success evidence. No SBSQL_SURFACE_REPLAY, exact-refusal promotion, "
-                "parser SQL execution, parser storage/finality, donor finality, WAL/recovery "
+                "parser SQL execution, parser storage/finality, reference finality, WAL/recovery "
                 "authority, or final no-grey closure is claimed."
             ),
         }
@@ -24152,7 +24152,7 @@ def classify(
                 f"lowering to {operation_id}/{sblr_operation}, server public ABI admission, "
                 f"and {api} runtime evidence. No synthetic replay route, exact-refusal "
                 "promotion, broad multimodel/cluster provider claim, parser-side finality, "
-                "donor finality, WAL/recovery authority, transaction-finality change, or final "
+                "reference finality, WAL/recovery authority, transaction-finality change, or final "
                 "no-grey closure is claimed."
             ),
         }
@@ -24217,7 +24217,7 @@ def classify(
             "notes": (
                 "SBSQL-MISS-GATE-011 transaction-lock row-evidence override; LOCK TABLE rows are promoted to e2e_passed only for the transaction-control compatibility route. "
                 "Evidence proves public SBsql CST/AST/bind/lower to transaction.lock_table/SBLR_TXN_LOCK_TABLE, server public ABI admission, EngineLockTable dispatch, read/share compatibility no-op success, write/exclusive refusal, and policy-matrix diagnostics. "
-                "No parser SQL execution, catalog descriptor mutation, donor execution, WAL or SQLite finality shortcut, cluster-provider behavior, table/row/page finality authority, cleanup-horizon pin, MGA visibility change, or transaction finality change is claimed."
+                "No parser SQL execution, catalog descriptor mutation, reference execution, WAL or SQLite finality shortcut, cluster-provider behavior, table/row/page finality authority, cleanup-horizon pin, MGA visibility change, or transaction finality change is claimed."
             ),
         }
 
@@ -24288,7 +24288,7 @@ def classify(
                 "EngineCatalogDescriptorMutation runtime evidence with catalog descriptor mutation, "
                 "name registry, and MGA catalog commit proof. This is descriptor-level catalog "
                 "authority only; no specialized physical storage implementation, synthetic replay route, "
-                "exact-refusal promotion, private cluster provider claim, parser-side finality, donor "
+                "exact-refusal promotion, private cluster provider claim, parser-side finality, reference "
                 "finality, WAL/recovery authority, transaction-finality shortcut, or final no-grey "
                 "closure is claimed."
             ),
@@ -24353,7 +24353,7 @@ def classify(
             "notes": (
                 "Bounded identifier context exact-route row evidence. "
                 "Exactly SBSQL.RESERVED_KEYWORD_AS_IDENTIFIER and both identifier_delimited rows are promoted through scalar projection alias fixtures SELECT 1 AS WHERE and SELECT 1 AS \"DelimitedAlias\" with generated registry validation, row-surface payload evidence, parser/CST/AST/bound lowering to query.evaluate_projection/SBLR_QUERY_EVALUATE_PROJECTION, server public ABI admission, and EngineEvaluateProjection constant projection runtime evidence returning 1. "
-                "No broad identifier/name-resolution authority, quoted identifier case/collation/max-length semantics, schema or object-name resolution, table-backed projection, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad identifier/name-resolution authority, quoted identifier case/collation/max-length semantics, schema or object-name resolution, table-backed projection, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -24411,7 +24411,7 @@ def classify(
             "notes": (
                 "Bounded operator_token exact-route row evidence. "
                 "Exactly SBSQL-062A23531925 operator_token is promoted to e2e_passed using the nested op_eq condition inside SELECT CASE 1 WHEN 1 THEN 'one' ELSE 'other' END AS simple_case_value. Evidence proves row-identifiable operator-token payload, server public ABI admission, and EngineEvaluateProjection runtime evidence for op_eq as part of the special_case route. "
-                "No broad operator-token grammar closure, arithmetic/comparison family closure, standalone operator expression closure, table-backed predicates, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad operator-token grammar closure, arithmetic/comparison family closure, standalone operator expression closure, table-backed predicates, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -24472,7 +24472,7 @@ def classify(
             "notes": (
                 "Bounded CREATE VIEW exact-route row evidence. "
                 "Exactly SBSQL-2785A172349A create_view_stmt and SBSQL-D95E144EB891 view_name are promoted to e2e_passed using CREATE VIEW active_customer_ids AS SELECT 1 AS id, generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_view/SBLR_DDL_CREATE_VIEW, server public ABI admission, and EngineCreateView dispatch that persists view descriptor and name-registry evidence under an active MGA transaction context. "
-                "No view dependency tracking, view query rewrite/runtime execution, column-list semantics, materialized view behavior, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No view dependency tracking, view query rewrite/runtime execution, column-list semantics, materialized view behavior, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -24545,7 +24545,7 @@ def classify(
             "notes": (
                 "Bounded DROP object-family exact-route row evidence. "
                 "Exactly SBSQL-1E702FF60BA0 drop_filespace_stmt, SBSQL-25CE560681AB drop_policy_stmt, SBSQL-EF85496DB350 drop_principal_stmt, SBSQL-66E94DC7813A drop_routine_stmt, SBSQL-B039B7B8F5C4 drop_schedule_stmt, and SBSQL-D64BD9DCA318 drop_job_stmt are promoted to e2e_passed using UUID-resolved DROP FILESPACE/POLICY/PRINCIPAL/ROUTINE/SCHEDULE/JOB fixtures. "
-                "The route proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.drop_object/SBLR_DDL_DROP_OBJECT, server public ABI admission, active MGA transaction context, EngineDropObject name-registry retirement, catalog-authority routing per object kind, no source SQL/target-name text authority, no parser-side SQL execution, no donor authority, and no WAL/recovery authority. "
+                "The route proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.drop_object/SBLR_DDL_DROP_OBJECT, server public ABI admission, active MGA transaction context, EngineDropObject name-registry retirement, catalog-authority routing per object kind, no source SQL/target-name text authority, no parser-side SQL execution, no reference authority, and no WAL/recovery authority. "
                 "No broad DROP TABLE/domain/schema/sequence/index closure, cascade/dependency semantics, storage deletion, authenticated driver route, cluster-positive behavior, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
@@ -24613,7 +24613,7 @@ def classify(
             "notes": (
                 "Bounded ALTER/RENAME row-evidence override for ddl.alter_object only. "
                 "Promotes alter_object, alter_object_stmt, alter_action, and rename_object_stmt through the ALTER TABLE ... RENAME TO and standalone RENAME TABLE ... TO fixtures. "
-                "Evidence proves row-identifiable payload, resolved target UUID authority, EngineAlterObject dispatch, name-registry mutation evidence, new-name payload transport, no parser SQL execution, no target-name text authority, no donor authority, and no WAL/recovery authority. "
+                "Evidence proves row-identifiable payload, resolved target UUID authority, EngineAlterObject dispatch, name-registry mutation evidence, new-name payload transport, no parser SQL execution, no target-name text authority, no reference authority, and no WAL/recovery authority. "
                 "No broad ALTER TABLE action family, column rename, object move, cluster-positive behavior, authenticated driver route, or final no-grey closure is claimed."
             ),
         }
@@ -24674,7 +24674,7 @@ def classify(
             "notes": (
                 "Bounded COMMENT ON exact-route row evidence. "
                 "Exactly SBSQL-B5E19A3E35A7 comment_on_stmt, SBSQL-5CCF87EB0C5C object_class, and SBSQL-ADEF20254494 qualified_name are promoted to e2e_passed using COMMENT ON TABLE replay_target IS 'primary table' and COMMENT ON TABLE replay_target IS NULL. "
-                "The route proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.comment_on_object/SBLR_DDL_COMMENT_ON_OBJECT, server public ABI admission, active MGA transaction context, EngineCommentOnObject behavior-record persistence for sys.catalog.object_comment metadata, resolved target UUID authority, user comment payload transport, no source SQL/name text authority, no parser-side SQL execution, no donor authority, and no WAL/recovery authority. "
+                "The route proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.comment_on_object/SBLR_DDL_COMMENT_ON_OBJECT, server public ABI admission, active MGA transaction context, EngineCommentOnObject behavior-record persistence for sys.catalog.object_comment metadata, resolved target UUID authority, user comment payload transport, no source SQL/name text authority, no parser-side SQL execution, no reference authority, and no WAL/recovery authority. "
                 "No broad COMMENT ON object-class semantic closure, COMMENT ON COLUMN/OPERATOR/CAST special argument parsing, authenticated driver route, cluster-positive behavior, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
@@ -24735,7 +24735,7 @@ def classify(
             "notes": (
                 "Bounded CREATE/DROP INDEX TEMPLATE exact-route row evidence. "
                 "Exactly SBSQL-07D017E18394 create_index_template_stmt is promoted to e2e_passed using CREATE OR REPLACE INDEX TEMPLATE replay_template with INDEX_PATTERNS, COMPOSED_OF, PRIORITY, VERSION, _META, and TEMPLATE document-presence evidence, plus DROP COMPONENT TEMPLATE replay_component with resolved object UUID evidence. "
-                "The route proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_index_template/SBLR_DDL_CREATE_INDEX_TEMPLATE and ddl.drop_object/SBLR_DDL_DROP_OBJECT, server public ABI admission, active MGA transaction context, EngineCreateIndexTemplate descriptor persistence, scoped name-registry evidence, EngineDropObject name-registry retirement, missing-document diagnostic evidence, no source SQL/name/template document text in the envelope, no parser-side SQL execution, no donor authority, and no WAL/recovery authority. "
+                "The route proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_index_template/SBLR_DDL_CREATE_INDEX_TEMPLATE and ddl.drop_object/SBLR_DDL_DROP_OBJECT, server public ABI admission, active MGA transaction context, EngineCreateIndexTemplate descriptor persistence, scoped name-registry evidence, EngineDropObject name-registry retirement, missing-document diagnostic evidence, no source SQL/name/template document text in the envelope, no parser-side SQL execution, no reference authority, and no WAL/recovery authority. "
                 "No OpenSearch runtime emulation, template application during later object creation, analyzer/mapping semantic validation, authenticated driver route, cluster-positive behavior, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
@@ -24792,7 +24792,7 @@ def classify(
             "notes": (
                 "Bounded CREATE INDEX exact-route row evidence. "
                 "Exactly SBSQL-D09825658F68 create_index_stmt is promoted to e2e_passed using CREATE INDEX replay_target_id_idx ON replay_target (id), generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_index/SBLR_DDL_CREATE_INDEX with UUID-resolved target table evidence, server public ABI admission, and EngineCreateIndex dispatch that validates MGA table visibility then persists index descriptor metadata. "
-                "No broad index method grammar closure, expression indexes, partial predicates, include columns, index options/classes/metrics/templates, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad index method grammar closure, expression indexes, partial predicates, include columns, index options/classes/metrics/templates, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -24856,7 +24856,7 @@ def classify(
             "notes": (
                 "Bounded database lifecycle exact-route row evidence. "
                 "Exactly SBSQL-EB95D772BD63 create_database_stmt, SBSQL-80C5BA542433 attach_database_stmt, SBSQL-A3F3AF6910F9 database_name, SBSQL-5B1C5630A433 use_database_alias, SBSQL-1F38A5CF36B0 alter_database_action, SBSQL-796DE5C0B192 alter_database_extra, SBSQL-F9BE1FC733F6 maintenance_stmt, SBSQL-0E7563017DCD verify_options, and SBSQL-F4F4216A8C8A repair_options are promoted to e2e_passed using CREATE DATABASE, ATTACH DATABASE, USE database-alias, ALTER DATABASE maintenance, MAINTENANCE DATABASE, VERIFY DATABASE, and REPAIR DATABASE fixtures. "
-                "The route proves generated registry validation, parser/CST/AST/bound acceptance, lifecycle row_surface_ids payload evidence, lowering to ScratchBird lifecycle SBLR operations, server public ABI admission, EngineCreateLifecycle database-file creation, EngineAttachLifecycle attach/open behavior, EngineEnterMaintenanceLifecycle maintenance evidence, EngineVerifyLifecycle verification evidence, EngineRepairLifecycle repair evidence, MGA lifecycle evidence, no source SQL/path/name text authority, no parser-side file effects, no donor authority, no cluster-positive behavior, and no WAL/recovery authority. "
+                "The route proves generated registry validation, parser/CST/AST/bound acceptance, lifecycle row_surface_ids payload evidence, lowering to ScratchBird lifecycle SBLR operations, server public ABI admission, EngineCreateLifecycle database-file creation, EngineAttachLifecycle attach/open behavior, EngineEnterMaintenanceLifecycle maintenance evidence, EngineVerifyLifecycle verification evidence, EngineRepairLifecycle repair evidence, MGA lifecycle evidence, no source SQL/path/name text authority, no parser-side file effects, no reference authority, no cluster-positive behavior, and no WAL/recovery authority. "
                 "The alter_database_action and alter_database_extra rows are deliberately published from the real ALTER DATABASE lifecycle route, superseding older descriptor-token evidence. No broad DROP/OPEN/SHUTDOWN lifecycle closure, multi-database alias catalog semantics, authenticated SBWP driver route, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
@@ -24933,7 +24933,7 @@ def classify(
             "notes": (
                 "Bounded CREATE executable object exact-route row evidence. "
                 "Exactly SBSQL-4A5F97F6CC4E create_function_stmt, SBSQL-52EF59CC2556 function_signature, SBSQL-13F5A8364A50 create_procedure_stmt, SBSQL-B5E9C0943E63 procedure_signature, and SBSQL-5127560F8031 create_trigger_stmt are promoted to e2e_passed using descriptor-only CREATE FUNCTION/PROCEDURE/TRIGGER fixtures. "
-                "The route proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to the matching ddl.create_function/procedure/trigger operation and SBLR_DDL_CREATE_* opcode, server public ABI admission, active MGA transaction context, EngineCreateFunction/Procedure/Trigger descriptor persistence, scoped name-registry evidence, no source SQL/name/body text authority, no parser-side SQL execution, no donor authority, and no WAL/recovery authority. "
+                "The route proves generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to the matching ddl.create_function/procedure/trigger operation and SBLR_DDL_CREATE_* opcode, server public ABI admission, active MGA transaction context, EngineCreateFunction/Procedure/Trigger descriptor persistence, scoped name-registry evidence, no source SQL/name/body text authority, no parser-side SQL execution, no reference authority, and no WAL/recovery authority. "
                 "No routine signature semantics, PSQL/body compilation, trigger firing semantics, runtime invocation, external UDR loading, authenticated driver route, cluster-positive behavior, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
@@ -24989,7 +24989,7 @@ def classify(
             "notes": (
                 "Bounded CREATE DOMAIN exact-route row evidence. "
                 "Exactly SBSQL-8E675F371A9C create_domain_stmt is promoted to e2e_passed using CREATE DOMAIN email_address AS TEXT, generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_domain/SBLR_DDL_CREATE_DOMAIN, server public ABI admission, and EngineCreateDomain dispatch that persists domain descriptor event evidence under an active MGA transaction context. "
-                "No domain default expression, domain CHECK constraint, method block, cast/mutation/masking/encryption policies, base-domain inheritance, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No domain default expression, domain CHECK constraint, method block, cast/mutation/masking/encryption policies, base-domain inheritance, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -25048,7 +25048,7 @@ def classify(
             "notes": (
                 "Bounded CREATE SEQUENCE exact-route row evidence. "
                 "Exactly SBSQL-AF9CF8BF1987 create_sequence_stmt and SBSQL-F74CA2CEFF16 sequence_name are promoted to e2e_passed using CREATE SEQUENCE customer_id_seq, generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_sequence/SBLR_DDL_CREATE_SEQUENCE, server public ABI admission, and EngineCreateSequence dispatch that persists sequence descriptor and name-registry evidence under an active MGA transaction context. "
-                "No sequence option semantics, next-value runtime, cache/cycle behavior, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No sequence option semantics, next-value runtime, cache/cycle behavior, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -25102,7 +25102,7 @@ def classify(
             "notes": (
                 "Bounded CREATE STATISTICS exact-route row evidence. "
                 "Exactly SBSQL-442E76222244 create_statistics_stmt is promoted to e2e_passed using CREATE STATISTICS stats_customer_ndistinct (NDISTINCT) ON id FROM replay_target, generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_statistics/SBLR_DDL_CREATE_STATISTICS with UUID-resolved target table evidence, server public ABI admission, and EngineCreateStatistics dispatch that validates MGA table visibility then persists statistics descriptor and name-registry evidence. "
-                "SBSQL-5D191798949E statistics_kind is carried only as supporting syntax evidence because its canonical registry family is observability and is not promoted in this slice. No broad statistics expression grammar closure, multi-table statistics, multi-expression statistics, optimizer costing behavior, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "SBSQL-5D191798949E statistics_kind is carried only as supporting syntax evidence because its canonical registry family is observability and is not promoted in this slice. No broad statistics expression grammar closure, multi-table statistics, multi-expression statistics, optimizer costing behavior, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -25152,7 +25152,7 @@ def classify(
             "notes": (
                 "Bounded CREATE SCHEMA exact-route row evidence. "
                 "Exactly SBSQL-DE4B8AAF6326 create_schema_stmt and SBSQL-7BA0B928798B schema_name are promoted to e2e_passed using CREATE SCHEMA qa_schema, generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_schema/SBLR_DDL_CREATE_SCHEMA, server public ABI admission, and EngineCreateSchema MGA catalog lifecycle dispatch that persists schema-tree and name-registry evidence. "
-                "No broad schema option closure, nested schema hierarchy semantics, catalog bootstrap/restart/upgrade, authenticated driver route, cluster-positive behavior, parser-side finality, donor finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
+                "No broad schema option closure, nested schema hierarchy semantics, catalog bootstrap/restart/upgrade, authenticated driver route, cluster-positive behavior, parser-side finality, reference finality, WAL/recovery authority, transaction-finality change, or final no-grey closure is claimed."
             ),
         }
 
@@ -25239,14 +25239,14 @@ def classify(
             "SBSQL-0C4A2F5BF13B temporal_type, SBSQL-B995C4B79F54 binary_type, "
             "SBSQL-5D39472FDC8F array_type, SBSQL-85769349E8AD row_type, and "
             "SBSQL-F8E828DFBF20 rowset_type are promoted. "
-            "No constraints, temp tables, persistence options, indexes, donor aliases, broad type-family closure, array element descriptors, row field descriptors, rowset materialization, temporal arithmetic/timezone semantics, binary storage encoding semantics, UUID literal/provider/generation/identity/finality/ordering/validation semantics, broad catalog bootstrap, restart/upgrade, cluster behavior, parser-side SQL execution/finality, donor execution/storage/finality, or WAL/recovery authority is claimed."
+            "No constraints, temp tables, persistence options, indexes, reference aliases, broad type-family closure, array element descriptors, row field descriptors, rowset materialization, temporal arithmetic/timezone semantics, binary storage encoding semantics, UUID literal/provider/generation/identity/finality/ordering/validation semantics, broad catalog bootstrap, restart/upgrade, cluster behavior, parser-side SQL execution/finality, reference execution/storage/finality, or WAL/recovery authority is claimed."
         )
         if surface_id == "SBSQL-0643E41C1575":
             promoter_slice = "SBSFC-020R-F-SBSFC-030-column-name-create-table-exact-route"
             notes = (
                 "Bounded column_name row evidence for the simple CREATE TABLE exact route only. "
                 "Exactly SBSQL-0643E41C1575 column_name is promoted to e2e_passed using CREATE TABLE customer (id int), generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_table/SBLR_DDL_CREATE_TABLE, server public ABI admission, and EngineCreateTable MGA table-create dispatch. "
-                "No broad name-resolution semantics, identifier text authority, quoted/case-folding/collation semantics, constraints, table options, indexes, DDL family closure, donor execution/storage/finality, authenticated-driver route, parser-side finality, cluster-positive behavior, or WAL/recovery authority is claimed."
+                "No broad name-resolution semantics, identifier text authority, quoted/case-folding/collation semantics, constraints, table options, indexes, DDL family closure, reference execution/storage/finality, authenticated-driver route, parser-side finality, cluster-positive behavior, or WAL/recovery authority is claimed."
             )
         elif surface_id in {"SBSQL-62BBB6075151", "SBSQL-0C4A2F5BF13B", "SBSQL-B995C4B79F54"}:
             promoter_slice = "SBSFC-020R-H-through-SBSFC-020R-J-SBSFC-030-type-descriptor-exact-route"
@@ -25332,7 +25332,7 @@ def classify(
             "notes": (
                 "Bounded CREATE TABLE type/domain/catalog descriptor row evidence. "
                 f"Exactly {surface_id} {surface['canonical_name']} is promoted to e2e_passed using {fixture}, generated registry validation, row_surface_ids payload evidence, parser/CST/AST/bound lowering to ddl.create_table/SBLR_DDL_CREATE_TABLE, server public ABI admission, and EngineCreateTable MGA table-create dispatch. "
-                "This is descriptor transport evidence only: no callable SQL function semantics, literal semantics, storage encoding, casts/comparisons, index behavior, constraints, array/document/spatial materialization, authenticated driver route, donor execution/storage/finality, parser-side finality, cluster-positive behavior, or WAL/recovery authority is claimed."
+                "This is descriptor transport evidence only: no callable SQL function semantics, literal semantics, storage encoding, casts/comparisons, index behavior, constraints, array/document/spatial materialization, authenticated driver route, reference execution/storage/finality, parser-side finality, cluster-positive behavior, or WAL/recovery authority is claimed."
             ),
         }
 
@@ -25385,7 +25385,7 @@ def classify(
             "Bounded synonym DDL row evidence from lowering and SBLR dispatch CTests. "
             "Exactly SBSQL-A8E627E27375 create_object, SBSQL-40CAFAB37942 drop_object, "
             "and SBSQL-CFFCCDEF6AC4 drop_object_stmt are promoted; all other catalog DDL rows remain pending. "
-            "No generic DROP TABLE, generic drop-object, parser-side SQL execution, donor execution, WAL, recovery, or broad catalog DDL promotion is introduced."
+            "No generic DROP TABLE, generic drop-object, parser-side SQL execution, reference execution, WAL, recovery, or broad catalog DDL promotion is introduced."
         )
         if expected_surface_kind == "grammar_production":
             implementation_refs = (
@@ -25406,7 +25406,7 @@ def classify(
                 "Bounded synonym DROP grammar-row evidence from lowering and SBLR dispatch CTests. "
                 "Exactly SBSQL-CFFCCDEF6AC4 drop_object_stmt is promoted through the synonym-specific "
                 "DROP PUBLIC SYNONYM route, whose canonical statement surface remains SBSQL-40CAFAB37942 drop_object. "
-                "No generic DROP TABLE, generic drop-object, parser-side SQL execution, donor execution, WAL, recovery, or broad catalog DDL promotion is introduced."
+                "No generic DROP TABLE, generic drop-object, parser-side SQL execution, reference execution, WAL, recovery, or broad catalog DDL promotion is introduced."
             )
         return {
             "final_state": "e2e_passed",

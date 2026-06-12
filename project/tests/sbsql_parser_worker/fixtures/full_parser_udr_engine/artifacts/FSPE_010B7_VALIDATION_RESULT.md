@@ -7,7 +7,7 @@ Search key: `FSPE_010B7_VALIDATION_RESULT`
 
 This artifact closes `FSPE-010B7`: warning chains and partial-result diagnostics on successful streaming result paths. It does not close `FSPE-010B8` or `FSPE-010B9`.
 
-The implemented path is a server-admitted SBLR warning/partial-result cursor contract. It does not allow SQL text, donor command text, parser AST, or BoundAST to become engine authority.
+The implemented path is a server-admitted SBLR warning/partial-result cursor contract. It does not allow SQL text, reference command text, parser AST, or BoundAST to become engine authority.
 
 ## Validated Coverage
 

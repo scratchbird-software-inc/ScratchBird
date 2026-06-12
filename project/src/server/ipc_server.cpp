@@ -535,6 +535,22 @@ ParserServerEventEngineContext EventEngineContextFromSession(
   context.security_epoch = session.security_epoch;
   context.resource_epoch = session.resource_epoch;
   context.name_resolution_epoch = session.name_resolution_epoch;
+  const auto language = ServerLanguageContextForSession(session);
+  context.language_context.language_profile_id = language.language_profile_id;
+  context.language_context.language_tag = language.language_tag;
+  context.language_context.default_language_tag = language.default_language_tag;
+  context.language_context.input_syntax_profile = language.input_syntax_profile;
+  context.language_context.input_language_fallback_tag =
+      language.input_language_fallback_tag;
+  context.language_context.common_resource_hash = language.common_resource_hash;
+  context.language_context.language_resource_epoch =
+      language.language_resource_epoch;
+  context.language_context.localized_name_epoch = language.localized_name_epoch;
+  context.language_context.message_resource_epoch = language.message_resource_epoch;
+  context.language_context.resource_compatibility_identity =
+      language.resource_compatibility_identity;
+  context.language_context.resource_version_identity =
+      language.resource_version_identity;
   context.trace_tags.push_back("sb_server.event_notification");
   return context;
 }
@@ -888,13 +904,16 @@ engine_api::EngineRequestContext PsNameEngineContextFromSession(
   context.current_monotonic_ns = CurrentMonotonicNsText();
   context.security_context_present = true;
   context.cluster_authority_available = false;
-  context.language_context.language_tag = language.empty() ? session.language_profile : std::string(language);
-  if (context.language_context.language_tag.empty()) context.language_context.language_tag = "en";
-  context.language_context.default_language_tag = "en";
   context.catalog_generation_id = session.catalog_generation;
   context.security_epoch = session.security_epoch;
   context.resource_epoch = session.resource_epoch;
   context.name_resolution_epoch = session.name_resolution_epoch;
+  auto language_session = session;
+  if (!language.empty()) {
+    ApplyRequestedLanguageProfile(&language_session, language);
+  }
+  PopulateEngineLanguageContextFromSession(language_session,
+                                           &context.language_context);
   context.trace_tags = session.engine_authorization_trace_tags;
   return context;
 }

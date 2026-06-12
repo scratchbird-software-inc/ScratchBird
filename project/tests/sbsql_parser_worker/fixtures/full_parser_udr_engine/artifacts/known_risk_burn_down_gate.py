@@ -28,7 +28,7 @@ REQUIRED_TOKENS = (
     "No parser authority leak is accepted as a known risk.",
     "No missing message-vector path is accepted as a known risk.",
     "No WAL recovery or SQL-in-engine authority is accepted as a known risk.",
-    "Global donor exact-extraction manifest drift",
+    "Global reference exact-extraction manifest drift",
     "Broad default `cmake --build ...`",
     "function_seed_registry.cpp",
 )

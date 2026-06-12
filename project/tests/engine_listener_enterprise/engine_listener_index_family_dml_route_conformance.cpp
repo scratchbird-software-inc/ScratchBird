@@ -61,7 +61,7 @@ std::string UuidText(platform::UuidKind kind,
 bool AcceptedRuntimeFamily(const idx::IndexFamilyDescriptor& descriptor) {
   return descriptor.completion ==
              idx::IndexCompletionStatus::accepted_requires_full_implementation &&
-         descriptor.persistence != idx::IndexPersistenceClass::donor_emulated &&
+         descriptor.persistence != idx::IndexPersistenceClass::reference_emulated &&
          descriptor.persistence != idx::IndexPersistenceClass::policy_blocked;
 }
 

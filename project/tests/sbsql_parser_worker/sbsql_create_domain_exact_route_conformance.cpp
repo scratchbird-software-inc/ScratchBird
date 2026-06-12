@@ -176,7 +176,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!artifacts.envelope.parser_executes_sql,
           "CREATE DOMAIN lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "CREATE DOMAIN lowering allowed donor/file effects");
+          "CREATE DOMAIN lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload,
                    "\"catalog_envelope_kind\":\"create_domain_ddl\""),
           "CREATE DOMAIN payload missing catalog envelope kind");
@@ -208,8 +208,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!Contains(artifacts.envelope.payload, "email_address") &&
               !Contains(artifacts.envelope.payload, std::string(kSql)),
           "CREATE DOMAIN payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "CREATE DOMAIN payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "CREATE DOMAIN payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

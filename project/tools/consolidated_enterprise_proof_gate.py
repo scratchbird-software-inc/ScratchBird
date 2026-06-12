@@ -41,7 +41,7 @@ PLANNED_GENERATED_KINDS = {
 AUTHORITY_SUBJECTS = [
     "wal",
     "parser",
-    "donor",
+    "reference",
     "benchmark",
     "support bundle",
     "support-bundle",
@@ -317,7 +317,7 @@ def validate_authority_boundaries(
     required_readme = [
         "mga transaction inventory remains transaction finality and visibility authority",
         "must not become transaction finality, visibility",
-        "donor engines may provide comparison artifacts only",
+        "reference engines may provide comparison artifacts only",
         "wal must not be introduced",
     ]
     for phrase in required_readme:
@@ -341,7 +341,7 @@ def validate_authority_boundaries(
         "agents",
         "support_bundles",
         "metrics",
-        "donor_comparisons",
+        "reference_comparisons",
     }
     claim_by_surface = {row.get("claim_surface", ""): row for row in claim_rows}
     missing = sorted(required_claim_surfaces - set(claim_by_surface))

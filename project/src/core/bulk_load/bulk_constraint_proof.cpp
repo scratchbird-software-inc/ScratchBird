@@ -143,7 +143,7 @@ void AddBaseEvidence(const BulkConstraintProofRequest& request,
   AddEvidence(result, "bulk_constraint_proof_authorization_authority", "false");
   AddEvidence(result, "bulk_constraint_proof_recovery_authority", "false");
   AddEvidence(result, "parser_finality_authority", "false");
-  AddEvidence(result, "donor_finality_authority", "false");
+  AddEvidence(result, "reference_finality_authority", "false");
   AddEvidence(result, "mga_finality_authority",
               "engine_transaction_inventory");
   AddEvidence(result, "bulk_constraint_proof_local_transaction_id",

@@ -93,7 +93,7 @@ bool OscillationAndStaleReuseAreRejected() {
 bool UnsafeAndBenchmarkOverclaimAreRejected() {
   opt::OptimizerFeedbackStabilityRequest unsafe;
   unsafe.observations = {Observation("plan:a", 1)};
-  unsafe.observations.front().parser_or_donor_authority = true;
+  unsafe.observations.front().parser_or_reference_authority = true;
   const auto unsafe_result = opt::EvaluateOptimizerFeedbackStability(unsafe);
 
   opt::OptimizerFeedbackStabilityRequest overclaim;

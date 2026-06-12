@@ -61,14 +61,14 @@ struct RouteClaimGuardResult {
   std::vector<std::string> diagnostics;
 };
 
-// SEARCH_KEY: ORH_DONOR_DOMINANCE_TARGET_CONTRACT
-struct DonorDominanceTargetEvidence {
+// SEARCH_KEY: ORH_REFERENCE_DOMINANCE_TARGET_CONTRACT
+struct ReferenceDominanceTargetEvidence {
   std::string workload;
   std::string category;
   bool comparable = false;
   std::string comparable_status;
-  std::string donor_best_engine;
-  double donor_best_duration_ms = 0.0;
+  std::string reference_best_engine;
+  double reference_best_duration_ms = 0.0;
   double scratchbird_current_duration_ms = 0.0;
   bool prior_scratchbird_duration_available = false;
   double scratchbird_prior_duration_ms = 0.0;
@@ -78,14 +78,14 @@ struct DonorDominanceTargetEvidence {
   std::string diagnostic_code;
 };
 
-struct DonorDominanceTargetValidation {
+struct ReferenceDominanceTargetValidation {
   bool ok = false;
   std::string diagnostic_code;
   std::vector<std::string> missing_fields;
   std::vector<std::string> diagnostics;
 };
 
-struct DonorDominanceTargetSetValidation {
+struct ReferenceDominanceTargetSetValidation {
   bool ok = false;
   std::string diagnostic_code;
   std::vector<std::string> diagnostics;
@@ -108,8 +108,8 @@ struct BenchmarkMethodEvidence {
   std::string skew_profile;
   std::string resource_budget_profile;
   std::string constraint_policy;
-  bool donor_reference_only = true;
-  bool uses_donor_storage_or_finality_for_scratchbird = false;
+  bool reference_reference_only = true;
+  bool uses_reference_storage_or_finality_for_scratchbird = false;
   std::string diagnostic_code;
 };
 
@@ -135,9 +135,9 @@ struct BenchmarkMethodologyRunEvidence {
   std::vector<std::string> profiler_source_labels;
   std::string latest_scratchbird_baseline_id;
   double latest_scratchbird_baseline_p50_us = 0.0;
-  std::string donor_equivalent_baseline_id;
-  std::string donor_equivalent_engine;
-  double donor_equivalent_baseline_p50_us = 0.0;
+  std::string reference_equivalent_baseline_id;
+  std::string reference_equivalent_engine;
+  double reference_equivalent_baseline_p50_us = 0.0;
   bool methodology_only = false;
   bool performance_proof = false;
   bool benchmark_clean_claim = false;
@@ -256,8 +256,8 @@ struct BenchmarkResultFastPathValidation {
 };
 
 // SEARCH_KEY: OPCH_BENCHMARK_ROUTE_EVIDENCE
-// Benchmark lanes are proof material only. Donor comparison/oracle data may be
-// recorded for comparable workloads, but donor output cannot become optimizer,
+// Benchmark lanes are proof material only. Reference comparison/oracle data may be
+// recorded for comparable workloads, but reference output cannot become optimizer,
 // transaction finality, visibility, security, authorization, or recovery
 // authority.
 struct OptimizerBenchmarkRouteLaneEvidence {
@@ -271,12 +271,12 @@ struct OptimizerBenchmarkRouteLaneEvidence {
   bool trusted = false;
   bool fresh = false;
   std::string evidence_generation;
-  bool donor_comparison_required = false;
-  std::string donor_comparison_id;
-  std::string donor_engine;
-  std::string donor_oracle_result_hash;
-  bool donor_reference_only = true;
-  bool donor_as_authority = false;
+  bool reference_comparison_required = false;
+  std::string reference_comparison_id;
+  std::string reference_engine;
+  std::string reference_oracle_result_hash;
+  bool reference_reference_only = true;
+  bool reference_as_authority = false;
   bool benchmark_evidence_authority = false;
   bool transaction_finality_authority = false;
   bool visibility_authority = false;
@@ -337,10 +337,10 @@ RouteClaimGuardResult EvaluateRouteCompletionClaim(
     const RouteCompletionClaim& claim,
     const std::vector<RuntimeOptimizedPathEvidence>& evidence);
 
-DonorDominanceTargetValidation ValidateDonorDominanceTargetEvidence(
-    const DonorDominanceTargetEvidence& evidence);
-DonorDominanceTargetSetValidation ValidateDonorDominanceTargetSet(
-    const std::vector<DonorDominanceTargetEvidence>& evidence,
+ReferenceDominanceTargetValidation ValidateReferenceDominanceTargetEvidence(
+    const ReferenceDominanceTargetEvidence& evidence);
+ReferenceDominanceTargetSetValidation ValidateReferenceDominanceTargetSet(
+    const std::vector<ReferenceDominanceTargetEvidence>& evidence,
     const std::vector<std::string>& required_workloads);
 BenchmarkEquivalenceValidation ValidateBestMethodBenchmarkEquivalence(
     const std::vector<BenchmarkMethodEvidence>& methods,
@@ -356,7 +356,7 @@ BenchmarkResultFastPathValidation ValidateBenchmarkResultFastPathEvidence(
     const BenchmarkResultFastPathEvidence& evidence);
 OptimizerBenchmarkRouteEvidenceValidation ValidateOptimizerBenchmarkRouteEvidence(
     const std::vector<OptimizerBenchmarkRouteLaneEvidence>& lanes,
-    bool donor_comparison_required);
+    bool reference_comparison_required);
 DriverVisibleExplainRouteValidation ValidateDriverVisibleExplainRouteEquivalence(
     const std::vector<DriverVisibleExplainRouteEvidence>& routes,
     const std::vector<std::string>& required_routes);

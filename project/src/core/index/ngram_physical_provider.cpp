@@ -83,7 +83,7 @@ bool RecheckProofValid(const NgramExactRecheckProof& proof) {
          proof.security_recheck_required &&
          !proof.evidence_ref.empty() &&
          !proof.parser_finality_authority_claimed &&
-         !proof.donor_finality_authority_claimed &&
+         !proof.reference_finality_authority_claimed &&
          !proof.provider_finality_authority_claimed &&
          !proof.index_finality_authority_claimed &&
          !proof.write_ahead_log_finality_authority_claimed &&
@@ -94,7 +94,7 @@ bool RecheckProofValid(const NgramExactRecheckProof& proof) {
 
 bool TokenizerAuthorityClean(const NgramTokenizerDescriptor& tokenizer) {
   return !tokenizer.parser_finality_authority_claimed &&
-         !tokenizer.donor_finality_authority_claimed &&
+         !tokenizer.reference_finality_authority_claimed &&
          !tokenizer.provider_finality_authority_claimed &&
          !tokenizer.index_finality_authority_claimed &&
          !tokenizer.write_ahead_log_finality_authority_claimed;
@@ -124,7 +124,7 @@ bool ProviderAuthorityClean(const NgramPhysicalProvider& provider) {
          !provider.security_authority_claimed &&
          !provider.transaction_finality_authority_claimed &&
          !provider.parser_finality_authority_claimed &&
-         !provider.donor_finality_authority_claimed &&
+         !provider.reference_finality_authority_claimed &&
          !provider.provider_finality_authority_claimed &&
          !provider.index_finality_authority_claimed &&
          !provider.write_ahead_log_finality_authority_claimed;

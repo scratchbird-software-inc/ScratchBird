@@ -89,16 +89,16 @@ def index_unique(rows: list[dict[str, str]], key: str, label: str) -> dict[str, 
     return out
 
 
-def read_donor_native_names(canonicalization_root: Path) -> set[str]:
-    rows = read_csv(canonicalization_root / "DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv")
+def read_reference_native_names(canonicalization_root: Path) -> set[str]:
+    rows = read_csv(canonicalization_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv")
     names: set[str] = set()
     for row in rows:
         native_name = row.get("native_sbsql_surface", "")
         if not native_name:
-            raise ValueError("DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX row missing native_sbsql_surface")
+            raise ValueError("REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX row missing native_sbsql_surface")
         names.add(native_name)
     if not names:
-        raise ValueError("DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX has no native surface aliases")
+        raise ValueError("REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX has no native surface aliases")
     return names
 
 
@@ -132,8 +132,8 @@ def input_text(surface: dict[str, str]) -> str:
         return "SAVEPOINT replay_savepoint"
     if name == "set_transaction_stmt":
         return "SET TRANSACTION READ WRITE"
-    if name == "migrate_from_donor":
-        return "MIGRATE FROM DONOR postgres WITH PACKAGE pg_compat_pack"
+    if name == "migrate_from_reference":
+        return "MIGRATE FROM REFERENCE postgres WITH PACKAGE pg_compat_pack"
     if name == "alter_migration":
         return "ALTER MIGRATION 019f0000-0000-7000-8000-00000000a001 START"
     if name == "show_migration":
@@ -151,12 +151,12 @@ def input_text(surface: dict[str, str]) -> str:
     return f"SBSQL_SURFACE_REPLAY {surface['surface_id']}"
 
 
-def route_set(surface: dict[str, str], donor_native_names: set[str]) -> list[str]:
+def route_set(surface: dict[str, str], reference_native_names: set[str]) -> list[str]:
     routes = list(BASE_ROUTES)
     if active_native(surface):
         routes.extend(EXECUTION_ROUTES)
-    if surface["canonical_name"] in donor_native_names:
-        routes.append("donor_alias")
+    if surface["canonical_name"] in reference_native_names:
+        routes.append("reference_alias")
     return routes
 
 
@@ -187,7 +187,7 @@ def payload_for(row: dict[str, str]) -> dict[str, object]:
         },
         "fixture_id": row["fixture_id"],
         "input": {
-            "kind": "client_sbsql_or_donor_profile_text",
+            "kind": "client_sbsql_or_reference_profile_text",
             "surface_authority": "SBSQL_SURFACE_REGISTRY.csv",
             "text": row["input_text"],
         },
@@ -221,7 +221,7 @@ def main() -> int:
     replay_root = root / args.replay_root
 
     surfaces = read_csv(canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv")
-    donor_native_names = read_donor_native_names(canonicalization_root)
+    reference_native_names = read_reference_native_names(canonicalization_root)
     operations = index_unique(
         read_csv(canonicalization_root / "SBSQL_TO_SBLR_OPERATION_MATRIX.csv"),
         "surface_id",
@@ -252,7 +252,7 @@ def main() -> int:
         member = membership[sid]
         oracle_row = oracle[sid]
         fid = member["validation_fixture_id"] or fixture_id(sid)
-        routes = route_set(surface, donor_native_names)
+        routes = route_set(surface, reference_native_names)
         row = {
             "fixture_id": fid,
             "surface_id": sid,

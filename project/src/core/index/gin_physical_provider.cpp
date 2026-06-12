@@ -82,7 +82,7 @@ bool RecheckProofValid(const GinExactRecheckProof& proof) {
          proof.security_recheck_required &&
          !proof.evidence_ref.empty() &&
          !proof.parser_finality_authority_claimed &&
-         !proof.donor_finality_authority_claimed &&
+         !proof.reference_finality_authority_claimed &&
          !proof.provider_finality_authority_claimed &&
          !proof.index_finality_authority_claimed &&
          !proof.write_ahead_log_finality_authority_claimed &&
@@ -93,7 +93,7 @@ bool RecheckProofValid(const GinExactRecheckProof& proof) {
 
 bool OpclassAuthorityClean(const GinOpclassDescriptor& opclass) {
   return !opclass.parser_finality_authority_claimed &&
-         !opclass.donor_finality_authority_claimed &&
+         !opclass.reference_finality_authority_claimed &&
          !opclass.provider_finality_authority_claimed &&
          !opclass.index_finality_authority_claimed &&
          !opclass.write_ahead_log_finality_authority_claimed;
@@ -127,7 +127,7 @@ bool ProviderAuthorityClean(const GinPhysicalProvider& provider) {
          !provider.security_authority_claimed &&
          !provider.transaction_finality_authority_claimed &&
          !provider.parser_finality_authority_claimed &&
-         !provider.donor_finality_authority_claimed &&
+         !provider.reference_finality_authority_claimed &&
          !provider.provider_finality_authority_claimed &&
          !provider.index_finality_authority_claimed &&
          !provider.write_ahead_log_finality_authority_claimed;

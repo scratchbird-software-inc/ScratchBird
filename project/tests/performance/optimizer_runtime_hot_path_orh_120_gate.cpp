@@ -292,7 +292,7 @@ idx::HotPointLookupCacheEntry HotPointEntry(bool authority_bearing) {
   candidate.requires_security_authorization_recheck = true;
   candidate.visibility_finality_authority = authority_bearing;
   candidate.authorization_finality_authority = false;
-  candidate.parser_or_donor_finality_authority = false;
+  candidate.parser_or_reference_finality_authority = false;
   candidate.timestamp_or_uuid_order_finality_authority = false;
   entry.candidates.push_back(candidate);
   entry.dependency_uuids.push_back(entry.key.object_uuid);
@@ -755,9 +755,9 @@ void ProveOptimizerDifferentialCorpus() {
                 "mga_finality_authority=engine_transaction_inventory"),
             result.test_case.case_id + ": optimized missing MGA authority");
     Require(Has(result.optimized.evidence,
-                "parser_or_donor_finality_authority=false"),
+                "parser_or_reference_finality_authority=false"),
             result.test_case.case_id +
-                ": optimized route drifted to parser/donor authority");
+                ": optimized route drifted to parser/reference authority");
   }
   CompareSemanticEquivalent(
       "optimizer_differential_fuzz",
@@ -965,8 +965,8 @@ void ProveCompressionAndVectorEquivalence() {
   Require(compression.accepted, "safe compression policy was refused");
   Require(Has(compression.evidence, "compression_exact_semantic_equivalence=true"),
           "compression semantic equivalence evidence missing");
-  Require(Has(compression.evidence, "parser_or_donor_authority=false"),
-          "compression policy claimed parser/donor authority");
+  Require(Has(compression.evidence, "parser_or_reference_authority=false"),
+          "compression policy claimed parser/reference authority");
   CompareSemanticEquivalent(
       "compression_policy_rows",
       AcceptedCapture("rowset:compressed-equivalent", {"row-1|payload"},

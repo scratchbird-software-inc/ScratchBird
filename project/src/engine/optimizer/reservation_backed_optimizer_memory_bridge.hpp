@@ -33,7 +33,7 @@ OptimizerReservationBackedMemoryResult BuildOptimizerTemporaryWorkFromReservedRe
     std::string planning_route_label,
     scratchbird::core::platform::u64 candidate_count,
     bool catalog_stats_authoritative,
-    bool parser_or_donor_authority,
+    bool parser_or_reference_authority,
     bool memory_benchmark_authority);
 
 }  // namespace scratchbird::engine::optimizer

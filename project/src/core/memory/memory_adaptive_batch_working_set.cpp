@@ -31,7 +31,7 @@ constexpr const char* kBatchAnchor =
 constexpr const char* kWorkingSetAnchor =
     "CEIC-029_WORKING_SET_LOCALITY_EVIDENCE";
 constexpr const char* kAuthorityBoundary =
-    "memory_adaptive_batch_working_set.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority";
+    "memory_adaptive_batch_working_set.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -163,7 +163,7 @@ void AddCommonEvidence(AdaptiveBatchSizingDecision* decision,
   decision->evidence.push_back(
       "memory_adaptive_batch_working_set.no_authority.recovery=true");
   decision->evidence.push_back(
-      "memory_adaptive_batch_working_set.no_authority.parser_donor_wal=true");
+      "memory_adaptive_batch_working_set.no_authority.parser_reference_wal=true");
   decision->evidence.push_back(
       "memory_adaptive_batch_working_set.no_authority.benchmark_optimizer_index_cluster_agent=true");
 }

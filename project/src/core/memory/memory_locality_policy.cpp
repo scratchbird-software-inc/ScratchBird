@@ -31,7 +31,7 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityBoundary =
-    "memory_locality.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority";
+    "memory_locality.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};

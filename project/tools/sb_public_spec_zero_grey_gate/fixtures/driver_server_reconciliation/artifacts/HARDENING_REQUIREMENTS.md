@@ -34,7 +34,7 @@ Search key: `DRIVER-SERVER-RECONCILIATION-HARDENING-REQUIREMENTS`.
 - A timeout is a client observation until the engine reports operation finality.
 - No hidden retry is allowed unless the engine reports idempotency/finality that
   permits retry.
-- WAL, donor engines, SQLite, parser state, or driver caches must not become
+- WAL, reference engines, SQLite, parser state, or driver caches must not become
   recovery/finality authority.
 
 ## Wire Hardening
@@ -68,7 +68,7 @@ Search key: `DRIVER-SERVER-RECONCILIATION-HARDENING-REQUIREMENTS`.
   prove build artifacts stay under the build or package output directories.
 - Documentation samples must execute against a real route before release
   evidence can cite them.
-- Donor compatibility evidence must use donor tools or compatibility drivers
+- Reference compatibility evidence must use reference tools or compatibility drivers
   through the admitted ScratchBird client-to-engine route.
 
 ## Test Hardening

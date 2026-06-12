@@ -45,8 +45,8 @@ add_library(sb_engine_functions STATIC
   families/uuid/uuid_function_landing_zone.cpp
   families/vector_functions.cpp
   generated/function_completion_manifest.cpp
-  metadata/donor_catalog_projection_policy.cpp
-  metadata/donor_function_surface_policy.cpp
+  metadata/compatibility_catalog_projection_policy.cpp
+  metadata/compatibility_function_surface_policy.cpp
   metadata/function_hardening.cpp
   metadata/function_optimizer_metadata.cpp
   metadata/function_parser_projection.cpp

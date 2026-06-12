@@ -43,7 +43,7 @@ The active runtime profile is supplied by policy and normally points at:
 Expected listener state is deployment-specific:
 
 - The configured native ScratchBird listener is published and reachable.
-- Donor emulation listeners may appear in a profile, but AI support for
+- Reference emulation listeners may appear in a profile, but AI support for
   non-native emulated engine modes remains out of scope.
 
 Quick host-side check:
@@ -83,7 +83,7 @@ Checks:
   listener address before assuming the bridge or driver is broken
 - prefer `SCRATCHBIRD_AI_BRIDGE_SERVER_SETUP=listener-only` for the current
   release-truth path
-- do not expect donor emulation ports to answer unless those listeners were
+- do not expect reference emulation ports to answer unless those listeners were
   explicitly started and AI support for that lane is in scope for the release
 
 ### `08001 connect() failed` with engine endpoint diagnostics

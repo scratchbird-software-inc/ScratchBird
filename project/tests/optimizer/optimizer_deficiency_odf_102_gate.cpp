@@ -57,7 +57,7 @@ void RequireEvidenceHygiene(const std::vector<std::string>& evidence) {
     for (const auto forbidden :
          {"docs/", "execution-plans", "findings", "contracts", "references",
           "parser_finality_authority=true",
-          "donor_finality_authority=true",
+          "reference_finality_authority=true",
           "write_ahead_log_finality_authority=true",
           "timestamp_finality_authority=true",
           "uuid_ordering_finality_authority=true",
@@ -295,7 +295,7 @@ void FallbacksHaveExactDiagnostics() {
 void UnsafeFinalityAndSyncFenceFailClosed() {
   BackendFixture fixture;
   auto request = Request();
-  request.operations.front().parser_or_donor_finality_authority = true;
+  request.operations.front().parser_or_reference_finality_authority = true;
   auto result = page::ExecuteAsyncPageIoBatch(request, Backend(&fixture));
   Require(!result.ok() && result.fail_closed,
           "ODF-102 unsafe finality claim was accepted");

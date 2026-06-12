@@ -273,8 +273,8 @@ EngineShowManagementResult EngineShowManagement(const EngineShowManagementReques
                       std::to_string(surface.odf108_exact_refusals.size())},
                      {"parser_finality_authority",
                       surface.parser_finality_authority ? "true" : "false"},
-                     {"donor_finality_authority",
-                      surface.donor_finality_authority ? "true" : "false"},
+                     {"reference_finality_authority",
+                      surface.reference_finality_authority ? "true" : "false"},
                      {"wal_recovery_authority",
                       surface.wal_recovery_authority ? "true" : "false"}});
   AddPerformanceOptimizationSurfaceRow(&result, surface);

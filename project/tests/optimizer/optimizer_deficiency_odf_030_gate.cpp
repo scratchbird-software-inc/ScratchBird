@@ -57,8 +57,8 @@ bool AcceptedPlanHasRequiredRecheckEvidence(const dml::DmlTargetAccessPlan& plan
                  "accepted plan missing security recheck evidence") &&
          Require(Has(plan.evidence, "grants_security_context=present"),
                  "accepted plan missing grants/security evidence") &&
-         Require(Has(plan.evidence, "parser_or_donor_authority=false"),
-                 "accepted plan missing parser/donor non-authority evidence") &&
+         Require(Has(plan.evidence, "parser_or_reference_authority=false"),
+                 "accepted plan missing parser/reference non-authority evidence") &&
          Require(Has(plan.evidence,
                      "mga_finality_authority=engine_transaction_inventory"),
                  "accepted plan missing engine finality authority evidence");
@@ -177,7 +177,7 @@ bool UnsafeRoutesRefuseWithExactDiagnostics() {
     request.security_recheck_planned = false;
     request.grants_proven = false;
     request.security_context_present = false;
-    request.parser_or_donor_authority = true;
+    request.parser_or_reference_authority = true;
     request.observed_catalog_epoch = 9;
     request.current_catalog_epoch = 10;
     request.observed_security_epoch = 19;
@@ -206,8 +206,8 @@ bool UnsafeRoutesRefuseWithExactDiagnostics() {
                  "stale policy epoch diagnostic absent") ||
         !Require(Has(plan.diagnostics, "stale stats epoch"),
                  "stale stats epoch diagnostic absent") ||
-        !Require(Has(plan.diagnostics, "unsafe parser/donor authority"),
-                 "unsafe parser/donor authority diagnostic absent")) {
+        !Require(Has(plan.diagnostics, "unsafe parser/reference authority"),
+                 "unsafe parser/reference authority diagnostic absent")) {
       return false;
     }
   }

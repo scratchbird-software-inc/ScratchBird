@@ -83,7 +83,7 @@ std::vector<engine::ExecutionDetailClosureSurfaceKind> RequiredSurfaces(
     case engine::ExecutionDetailClosureMatrixKind::canonical_type_family:
       return {Kind::descriptor, Kind::domain, Kind::operation,
               Kind::storage_encoding, Kind::diagnostic, Kind::documentation};
-    case engine::ExecutionDetailClosureMatrixKind::donor_type_coverage:
+    case engine::ExecutionDetailClosureMatrixKind::reference_type_coverage:
       return {Kind::descriptor, Kind::domain, Kind::literal_bind, Kind::cast,
               Kind::operation, Kind::diagnostic, Kind::conformance,
               Kind::documentation};
@@ -159,9 +159,9 @@ std::vector<MatrixDefinition> MatrixDefinitions() {
         "External locator",
         "System pseudo-type",
         "Opaque extension"}},
-      {Kind::donor_type_coverage,
-       "donor_type_coverage_matrix",
-       Scope::donor,
+      {Kind::reference_type_coverage,
+       "reference_type_coverage_matrix",
+       Scope::reference,
        {"PostgreSQL boolean",
         "PostgreSQL smallint integer bigint",
         "PostgreSQL numeric decimal",
@@ -284,7 +284,7 @@ std::vector<MatrixDefinition> MatrixDefinitions() {
         "Binary/text",
         "JSON/document/text",
         "Domain/base",
-        "Donor compatibility",
+        "Reference compatibility",
         "Opaque bridge",
         "Protected values"}},
       {Kind::aggregate_window,
@@ -372,7 +372,7 @@ std::vector<MatrixDefinition> MatrixDefinitions() {
        {"sys.catalog.type_descriptor",
         "sys.catalog.domain_descriptor",
         "sys.catalog.domain_element",
-        "sys.catalog.donor_type_mapping",
+        "sys.catalog.reference_type_mapping",
         "sys.catalog.type_capability",
         "sys.catalog.operation_family",
         "sys.catalog.operation_descriptor",

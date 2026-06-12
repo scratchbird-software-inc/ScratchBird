@@ -19,7 +19,7 @@ owned by FSPE-011A through FSPE-011F.
 FSPE-014G later adds `sbsql_exhaustive_e2e_regression_gate`, which consumes the
 FSPE-011F replay artifacts and makes registered-surface route coverage,
 executable/refusal classification, expression datatype/function/operator
-coverage, donor/engine backlog closure, and the dynamic UDR-to-SBLR procedure
+coverage, reference/engine backlog closure, and the dynamic UDR-to-SBLR procedure
 path repeatable under CTest.
 
 ## Coverage Counts
@@ -33,7 +33,7 @@ path repeatable under CTest.
 | `BATCH_ROW_MEMBERSHIP.csv` | 2,617 |
 | `SEMANTIC_ORACLE_AUTHORITY_MAP.csv` | 2,617 |
 | `SBSQL_ENGINE_GAP_MATRIX.csv` / `ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv` | 932 |
-| `DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv` / `DONOR_ALIAS_COVERAGE_BACKLOG.csv` | 312 |
+| `REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv` / `REFERENCE_ALIAS_COVERAGE_BACKLOG.csv` | 312 |
 | `MESSAGE_VECTOR_COVERAGE_BACKLOG.csv` | 41 |
 | `REGISTRY_FAMILY_BATCHING_PLAN.csv` | 77 batches |
 | SBLR operation families | 19 |
@@ -46,7 +46,7 @@ path repeatable under CTest.
 - Canonical surface, status, operation-matrix, backlog, batch-membership, and oracle rows match the generated registry by stable surface ID.
 - Every operation row has the expected SBLR execution envelope plus required context, binding steps, result shape, and diagnostics.
 - Every non-cluster engine gap is closed by an engine API/SBLR family gate and every cluster-private gap is closed by the cluster fail-closed gate.
-- Every donor alias row maps to a native SBSQL surface or exact diagnostic through the donor alias backlog.
+- Every reference alias row maps to a native SBSQL surface or exact diagnostic through the reference alias backlog.
 - Every message-vector row has concrete diagnostic code, rendering template, redaction policy, and conformance fixture metadata.
 
 ## Result
@@ -54,7 +54,7 @@ path repeatable under CTest.
 The FSPE-011 coverage gate passed with:
 
 ```text
-FSPE-011 generated full-surface conformance passed: surfaces=2617 operation_rows=2617 operation_families=19 engine_gaps=932 donor_aliases=312 message_vectors=41 batches=77
+FSPE-011 generated full-surface conformance passed: surfaces=2617 operation_rows=2617 operation_families=19 engine_gaps=932 reference_aliases=312 message_vectors=41 batches=77
 ```
 
 Next slice: `FSPE-011A` reusable generated fixture sharding and regression test-bed policy.

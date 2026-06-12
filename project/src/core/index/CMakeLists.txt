@@ -33,7 +33,6 @@ add_library(sb_core_index
   compressed_bitmap_spill.cpp
   compression_policy.cpp
   deferred_secondary_index_runtime_policy.cpp
-  donor_emulated_index_mapping.cpp
   exact_index_leaf_cleanup.cpp
   expression_index_extractor.cpp
   full_text_runtime.cpp
@@ -94,6 +93,7 @@ add_library(sb_core_index
   physical_columnar_zone.cpp
   physical_zone_summary.cpp
   policy_blocked_index_admission.cpp
+  reference_emulated_index_mapping.cpp
   row_page_compact_encoding.cpp
   secondary_index_garbage_cleanup.cpp
   shadow_index_build_lifecycle.cpp

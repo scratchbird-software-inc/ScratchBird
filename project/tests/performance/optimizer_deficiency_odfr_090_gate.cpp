@@ -340,8 +340,8 @@ void ProveSupportBundleAndAuthority(const std::vector<std::string>& evidence) {
           "closure parser authority evidence missing");
   Require(Has(evidence, "closure.client_finality_authority=false"),
           "closure client finality authority evidence missing");
-  Require(Has(evidence, "closure.donor_authority=false"),
-          "closure donor authority evidence missing");
+  Require(Has(evidence, "closure.reference_authority=false"),
+          "closure reference authority evidence missing");
   Require(Has(evidence, "closure.durability_log_authority=false"),
           "closure durability-log authority evidence missing");
   Require(Has(evidence, "closure.transaction_finality_authority=engine_mga_inventory"),
@@ -359,7 +359,7 @@ int main() {
       kClosureSearchKey,
       "closure.parser_authority=false",
       "closure.client_finality_authority=false",
-      "closure.donor_authority=false",
+      "closure.reference_authority=false",
       "closure.durability_log_authority=false",
       "closure.transaction_finality_authority=engine_mga_inventory",
       "closure.support_bundle_ready=true",

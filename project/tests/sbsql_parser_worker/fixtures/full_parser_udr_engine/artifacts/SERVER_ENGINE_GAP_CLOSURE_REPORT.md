@@ -41,4 +41,4 @@ Validation:
 
 This report does not close FSPE-010A diagnostic rendering or FSPE-010B large-result streaming. Those remain successor gates.
 
-No engine path added by FSPE-009 parses SQL text, executes donor command text, trusts parser AST/BoundAST, or accepts names as durable authority. Engine authority remains SBLR/internal operation envelopes, UUID/descriptor context, engine diagnostics, and engine-owned security/transaction checks.
+No engine path added by FSPE-009 parses SQL text, executes reference command text, trusts parser AST/BoundAST, or accepts names as durable authority. Engine authority remains SBLR/internal operation envelopes, UUID/descriptor context, engine diagnostics, and engine-owned security/transaction checks.

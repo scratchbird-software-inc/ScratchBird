@@ -412,9 +412,9 @@ void ProveCorrectedRouteCapabilityModel() {
           "HNSW route did not preserve exact rerank/recheck limits");
 }
 
-void ProveDonorAndPolicyBlockedRemainNonRuntime() {
+void ProveReferenceAndPolicyBlockedRemainNonRuntime() {
   for (const auto family :
-       {idx::IndexFamily::donor_emulated, idx::IndexFamily::policy_blocked}) {
+       {idx::IndexFamily::reference_emulated, idx::IndexFamily::policy_blocked}) {
     const auto* state = idx::FindBuiltinIndexFamilyPhysicalCapabilityState(family);
     Require(state != nullptr, "blocked family capability state missing");
     Require(!state->runtime_available && !state->benchmark_clean &&
@@ -448,15 +448,15 @@ void ProveDonorAndPolicyBlockedRemainNonRuntime() {
     }
   }
 
-  idx::IndexOptimizerRequest donor;
-  donor.index_uuid = TestObjectUuid(0x61);
-  donor.family = idx::IndexFamily::donor_emulated;
-  const auto donor_plan = idx::PlanIndexOptimizerPath(donor);
-  Require(!donor_plan.ok() && donor_plan.fallback_full_scan &&
-              donor_plan.diagnostic.diagnostic_code ==
-                  "INDEX.CAPABILITY.DONOR_EMULATED."
+  idx::IndexOptimizerRequest reference;
+  reference.index_uuid = TestObjectUuid(0x61);
+  reference.family = idx::IndexFamily::reference_emulated;
+  const auto reference_plan = idx::PlanIndexOptimizerPath(reference);
+  Require(!reference_plan.ok() && reference_plan.fallback_full_scan &&
+              reference_plan.diagnostic.diagnostic_code ==
+                  "INDEX.CAPABILITY.REFERENCE_EMULATED."
                   "CONTRACT_ONLY_NON_AUTHORITY_MAPPING",
-          "donor_emulated optimizer route did not fail closed exactly");
+          "reference_emulated optimizer route did not fail closed exactly");
 
   idx::IndexOptimizerRequest policy;
   policy.index_uuid = TestObjectUuid(0x62);
@@ -468,7 +468,7 @@ void ProveDonorAndPolicyBlockedRemainNonRuntime() {
           "policy_blocked optimizer route did not fail closed exactly");
 
   std::vector<std::string> values;
-  AppendDiagnosticValues(donor_plan.diagnostic, &values);
+  AppendDiagnosticValues(reference_plan.diagnostic, &values);
   AppendDiagnosticValues(policy_plan.diagnostic, &values);
   RequireNoBareGenericIndexRuntimeBlocker(values, "blocked family plans");
   RequireNoRuntimeDocDependency(values, "blocked family plans");
@@ -508,9 +508,9 @@ void ProveOrh071ConsumesRouteStateWithoutClaimingOrh242() {
   Require(!Has(decision.diagnostics,
                "SB_ORH_COMPRESSION_FAMILY_THRESHOLD.INDEX_RUNTIME_UNPROVEN"),
           "ORH-071 retained stale index runtime blocker after route proof");
-  Require(Has(decision.evidence, "parser_or_donor_authority=false") &&
+  Require(Has(decision.evidence, "parser_or_reference_authority=false") &&
               Has(decision.evidence, "wal_or_finality_authority=false"),
-          "ORH-071 drifted into parser/donor/finality authority");
+          "ORH-071 drifted into parser/reference/finality authority");
   RequireNoBareGenericIndexRuntimeBlocker(decision.evidence, "ORH-071");
   RequireNoRuntimeDocDependency(decision.evidence, "ORH-071");
 }
@@ -631,7 +631,7 @@ void ProveOrh124UsesCorrectedIndexRuntimeState() {
   Require(Has(governed.evidence,
               "optimized_resource.mga_authority=engine_transaction_inventory") &&
               Has(governed.evidence,
-                  "optimized_resource.parser_or_donor_authority=false"),
+                  "optimized_resource.parser_or_reference_authority=false"),
           "ORH-124 resource governance drifted from MGA authority");
   RequireNoBareGenericIndexRuntimeBlocker(governed.evidence, "ORH-124");
   RequireNoRuntimeDocDependency(governed.evidence, "ORH-124");
@@ -671,7 +671,7 @@ void ProveOrh221StaysNonIndexAndHasNoStaleBlocker() {
 
 int main() {
   ProveCorrectedRouteCapabilityModel();
-  ProveDonorAndPolicyBlockedRemainNonRuntime();
+  ProveReferenceAndPolicyBlockedRemainNonRuntime();
   ProveOrh071ConsumesRouteStateWithoutClaimingOrh242();
   ProveOrh080081ConsumeVectorRouteState();
   ProveOrh120122ConsumeCorrectedRuntimeEvidence();

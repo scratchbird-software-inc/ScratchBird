@@ -34,6 +34,7 @@ These are the public headers installed from `project/include/scratchbird/engine`
 - `project/include/scratchbird/engine/engine.h`
 - `project/include/scratchbird/engine/engine.hpp`
 - `project/include/scratchbird/engine/error.h`
+- `project/include/scratchbird/engine/execution_type_descriptor.hpp`
 - `project/include/scratchbird/engine/export.h`
 - `project/include/scratchbird/engine/result.hpp`
 - `project/include/scratchbird/engine/sblr/lowering.hpp`

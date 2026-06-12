@@ -90,7 +90,7 @@ EngineCreateDomainResult CreateDomain(const EngineRequestContext& tx_context) {
   request.localized_names.push_back({"en", "default", "positive_int32", "positive_int32", true});
   request.descriptors.push_back(ScalarDescriptor("int32"));
   request.policy_profile.encoded_profiles.push_back("nullable:false");
-  request.option_envelopes.push_back("driver_metadata:driver_display_type=positive_int32,donor_label=POSITIVE_INT");
+  request.option_envelopes.push_back("driver_metadata:driver_display_type=positive_int32,reference_label=POSITIVE_INT");
   request.option_envelopes.push_back("wire_metadata:wire_in=int32_text,wire_out=int32_text");
   return EngineCreateDomain(request);
 }
@@ -115,24 +115,24 @@ bool RoundTrip(const EngineDatatypeTransportRecord& record) {
          decoded.record.descriptor.encoded_descriptor == record.descriptor.encoded_descriptor &&
          decoded.record.value.encoded_value == record.value.encoded_value &&
          decoded.record.value.is_null == record.value.is_null &&
-         decoded.record.donor_dialect == record.donor_dialect &&
-         decoded.record.donor_label == record.donor_label &&
-         decoded.record.donor_label_alias_only == record.donor_label_alias_only &&
+         decoded.record.compatibility_dialect == record.compatibility_dialect &&
+         decoded.record.reference_label == record.reference_label &&
+         decoded.record.reference_label_alias_only == record.reference_label_alias_only &&
          decoded.record.opaque_render_only == record.opaque_render_only;
 }
 
 bool ScopeRoundTrips(const EngineDescriptor& descriptor,
                      const EngineTypedValue& value,
-                     std::string donor_dialect = {},
-                     std::string donor_label = {},
+                     std::string compatibility_dialect = {},
+                     std::string reference_label = {},
                      bool opaque = false) {
   for (const std::string& scope : {"backup", "restore", "archive", "replication"}) {
     EngineDatatypeTransportRecord record;
     record.transport_scope = scope;
     record.descriptor = descriptor;
     record.value = value;
-    record.donor_dialect = donor_dialect;
-    record.donor_label = donor_label;
+    record.compatibility_dialect = compatibility_dialect;
+    record.reference_label = reference_label;
     record.opaque_render_only = opaque;
     if (!RoundTrip(record)) { return false; }
   }
@@ -157,7 +157,7 @@ int main(int argc, char** argv) {
   const auto native_descriptor = ScalarDescriptor("int32");
   const bool native_transport = ScopeRoundTrips(native_descriptor, ValueFor(native_descriptor, "42"));
 
-  const bool donor_transport =
+  const bool reference_transport =
       ScopeRoundTrips(native_descriptor, ValueFor(native_descriptor, "42"), "postgresql", "INTEGER");
 
   const auto opaque_descriptor = ScalarDescriptor("opaque_extension");
@@ -179,13 +179,13 @@ int main(int argc, char** argv) {
   const bool bad_scope_rejected = !EncodeDatatypeTransportRecord({"unknown", native_descriptor, ValueFor(native_descriptor, "1")}).ok;
   const bool bad_envelope_rejected = !DecodeDatatypeTransportRecord("not-a-transport-envelope").ok;
 
-  const bool ok = native_transport && donor_transport && opaque_transport && domain_transport &&
+  const bool ok = native_transport && reference_transport && opaque_transport && domain_transport &&
                   bad_scope_rejected && bad_envelope_rejected && read_commit;
 
   std::cout << "{\n";
   PrintBool("ok", ok, true);
   PrintBool("native_transport", native_transport, true);
-  PrintBool("donor_transport", donor_transport, true);
+  PrintBool("reference_transport", reference_transport, true);
   PrintBool("opaque_transport", opaque_transport, true);
   PrintBool("domain_transport", domain_transport, true);
   PrintBool("bad_scope_rejected", bad_scope_rejected, true);

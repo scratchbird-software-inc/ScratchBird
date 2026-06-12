@@ -68,9 +68,9 @@ optimizer::BenchmarkMethodologyRunEvidence MakeMethodologyRun(
   run.latest_scratchbird_baseline_id =
       "scratchbird-private-latest:ORH-123-methodology";
   run.latest_scratchbird_baseline_p50_us = 210.0;
-  run.donor_equivalent_baseline_id = "firebird-equivalent:legacy-route";
-  run.donor_equivalent_engine = "firebird";
-  run.donor_equivalent_baseline_p50_us = 240.0;
+  run.reference_equivalent_baseline_id = "firebird-equivalent:legacy-route";
+  run.reference_equivalent_engine = "firebird";
+  run.reference_equivalent_baseline_p50_us = 240.0;
   run.methodology_only = true;
   run.performance_proof = false;
   run.benchmark_clean_claim = false;
@@ -211,9 +211,9 @@ void FailsClosedForMissingBaselineComparisons() {
   auto runs = MakeValidMethodologySet();
   runs.front().latest_scratchbird_baseline_id.clear();
   runs.front().latest_scratchbird_baseline_p50_us = 0.0;
-  runs.front().donor_equivalent_baseline_id.clear();
-  runs.front().donor_equivalent_engine.clear();
-  runs.front().donor_equivalent_baseline_p50_us = 0.0;
+  runs.front().reference_equivalent_baseline_id.clear();
+  runs.front().reference_equivalent_engine.clear();
+  runs.front().reference_equivalent_baseline_p50_us = 0.0;
   const auto validation =
       optimizer::ValidateBenchmarkMethodologyEvidence(runs);
   Expect(!validation.ok, "missing baseline comparisons should fail closed");
@@ -223,20 +223,20 @@ void FailsClosedForMissingBaselineComparisons() {
          "missing latest ScratchBird baseline diagnostic");
   Expect(HasDiagnostic(
              validation,
-             "SB_ORH_BENCHMARK_METHODOLOGY.DONOR_EQUIVALENT_BASELINE_MISSING"),
-         "missing donor-equivalent baseline diagnostic");
+             "SB_ORH_BENCHMARK_METHODOLOGY.REFERENCE_EQUIVALENT_BASELINE_MISSING"),
+         "missing reference-equivalent baseline diagnostic");
 }
 
-void FailsClosedForUnsupportedDonorEquivalentEngine() {
+void FailsClosedForUnsupportedReferenceEquivalentEngine() {
   auto runs = MakeValidMethodologySet();
-  runs.front().donor_equivalent_engine = "unknown_engine";
+  runs.front().reference_equivalent_engine = "unknown_engine";
   const auto validation =
       optimizer::ValidateBenchmarkMethodologyEvidence(runs);
-  Expect(!validation.ok, "unsupported donor-equivalent engine should fail closed");
+  Expect(!validation.ok, "unsupported reference-equivalent engine should fail closed");
   Expect(HasDiagnostic(
              validation,
-             "SB_ORH_BENCHMARK_METHODOLOGY.DONOR_EQUIVALENT_ENGINE_UNSUPPORTED"),
-         "missing unsupported donor engine diagnostic");
+             "SB_ORH_BENCHMARK_METHODOLOGY.REFERENCE_EQUIVALENT_ENGINE_UNSUPPORTED"),
+         "missing unsupported reference engine diagnostic");
 }
 
 void FailsClosedForBenchmarkCleanOverclaim() {
@@ -274,7 +274,7 @@ int main() {
   FailsClosedForAmbiguousZeroMetrics();
   FailsClosedForMissingRouteLabels();
   FailsClosedForMissingBaselineComparisons();
-  FailsClosedForUnsupportedDonorEquivalentEngine();
+  FailsClosedForUnsupportedReferenceEquivalentEngine();
   FailsClosedForBenchmarkCleanOverclaim();
   FailsClosedWhenColdWarmCoverageIsIncomplete();
   return 0;

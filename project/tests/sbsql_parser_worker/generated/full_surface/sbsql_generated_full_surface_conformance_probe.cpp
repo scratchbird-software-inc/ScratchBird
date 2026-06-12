@@ -577,18 +577,18 @@ void ValidateEngineGapBacklog(const CsvTable& canonical_gaps,
   }
 }
 
-void ValidateDonorAliasBacklog(const CsvTable& canonical_aliases,
+void ValidateReferenceAliasBacklog(const CsvTable& canonical_aliases,
                                const CsvTable& artifact_aliases,
                                Harness* harness) {
   bool schema_ok = true;
   schema_ok &= RequireColumns(canonical_aliases,
-                              {"donor", "alias_kind", "donor_surface",
+                              {"reference", "alias_kind", "reference_surface",
                                "native_sbsql_surface", "mapping_status",
                                "sblr_operation_family", "parser_owned_behavior",
                                "engine_owned_behavior", "notes"},
                               harness);
   schema_ok &= RequireColumns(artifact_aliases,
-                              {"donor", "alias_kind", "donor_surface",
+                              {"reference", "alias_kind", "reference_surface",
                                "native_sbsql_surface", "mapping_status",
                                "sblr_operation_family", "parser_owned_behavior",
                                "engine_owned_behavior", "owner_lane",
@@ -599,37 +599,37 @@ void ValidateDonorAliasBacklog(const CsvTable& canonical_aliases,
   if (!schema_ok) return;
 
   const auto canonical_by_surface = IndexUnique(
-      canonical_aliases, "donor_surface", "DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX", harness);
+      canonical_aliases, "reference_surface", "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX", harness);
   const auto artifact_by_surface =
-      IndexUnique(artifact_aliases, "donor_surface", "DONOR_ALIAS_COVERAGE_BACKLOG", harness);
+      IndexUnique(artifact_aliases, "reference_surface", "REFERENCE_ALIAS_COVERAGE_BACKLOG", harness);
 
   harness->Check(canonical_aliases.rows.size() == artifact_aliases.rows.size(),
-                 "donor alias canonical/artifact row count mismatch");
+                 "reference alias canonical/artifact row count mismatch");
 
-  for (const auto& [donor_surface, canonical] : canonical_by_surface) {
-    const auto artifact_it = artifact_by_surface.find(donor_surface);
+  for (const auto& [reference_surface, canonical] : canonical_by_surface) {
+    const auto artifact_it = artifact_by_surface.find(reference_surface);
     harness->Check(artifact_it != artifact_by_surface.end(),
-                   donor_surface + " missing from DONOR_ALIAS_COVERAGE_BACKLOG");
+                   reference_surface + " missing from REFERENCE_ALIAS_COVERAGE_BACKLOG");
     if (artifact_it == artifact_by_surface.end()) continue;
     const auto& artifact = *artifact_it->second;
 
     for (const auto column :
-         {"donor", "alias_kind", "native_sbsql_surface", "mapping_status",
+         {"reference", "alias_kind", "native_sbsql_surface", "mapping_status",
           "sblr_operation_family", "parser_owned_behavior", "engine_owned_behavior",
           "notes"}) {
-      CheckEqual(harness, donor_surface, column, Field(*canonical, column),
+      CheckEqual(harness, reference_surface, column, Field(*canonical, column),
                  Field(artifact, column));
     }
 
-    CheckEqual(harness, donor_surface, "mapping_status",
+    CheckEqual(harness, reference_surface, "mapping_status",
                "mapped_by_profile_or_refused_with_exact_diagnostic",
                Field(artifact, "mapping_status"));
-    harness->Check(StartsWith(Field(artifact, "validation_fixture_id"), "SBSQL-DONOR-"),
-                   donor_surface + " has malformed validation_fixture_id");
+    harness->Check(StartsWith(Field(artifact, "validation_fixture_id"), "SBSQL-REFERENCE-"),
+                   reference_surface + " has malformed validation_fixture_id");
     for (const auto column :
          {"owner_lane", "target_file_group", "diagnostic_target", "final_acceptance_rule",
           "closure_action", "status"}) {
-      CheckRequiredField(harness, donor_surface, column, Field(artifact, column));
+      CheckRequiredField(harness, reference_surface, column, Field(artifact, column));
     }
   }
 }
@@ -733,21 +733,21 @@ int main(int argc, char** argv) {
     const auto canonical_gaps =
         ReadCsv(canonicalization_root / "SBSQL_ENGINE_GAP_MATRIX.csv");
     const auto canonical_aliases =
-        ReadCsv(canonicalization_root / "DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv");
+        ReadCsv(canonicalization_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv");
 
     const auto surface_backlog = ReadCsv(artifact_root / "SURFACE_IMPLEMENTATION_BACKLOG.csv");
     const auto batch_membership = ReadCsv(artifact_root / "BATCH_ROW_MEMBERSHIP.csv");
     const auto oracle_map = ReadCsv(artifact_root / "SEMANTIC_ORACLE_AUTHORITY_MAP.csv");
     const auto batching_plan = ReadCsv(artifact_root / "REGISTRY_FAMILY_BATCHING_PLAN.csv");
     const auto artifact_gaps = ReadCsv(artifact_root / "ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv");
-    const auto artifact_aliases = ReadCsv(artifact_root / "DONOR_ALIAS_COVERAGE_BACKLOG.csv");
+    const auto artifact_aliases = ReadCsv(artifact_root / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv");
     const auto message_vectors = ReadCsv(artifact_root / "MESSAGE_VECTOR_COVERAGE_BACKLOG.csv");
 
     ValidateSurfaceMatrices(rows, canonical_surfaces, surface_status, operation_matrix,
                             surface_backlog, batch_membership, oracle_map, batching_plan,
                             &harness);
     ValidateEngineGapBacklog(canonical_gaps, artifact_gaps, &harness);
-    ValidateDonorAliasBacklog(canonical_aliases, artifact_aliases, &harness);
+    ValidateReferenceAliasBacklog(canonical_aliases, artifact_aliases, &harness);
     ValidateMessageVectorFixtures(message_vectors, &harness);
 
     if (!harness.ok) {
@@ -765,7 +765,7 @@ int main(int argc, char** argv) {
               << rows.size() << " operation_rows=" << operation_matrix.rows.size()
               << " operation_families=" << operation_families.size()
               << " engine_gaps=" << artifact_gaps.rows.size()
-              << " donor_aliases=" << artifact_aliases.rows.size()
+              << " reference_aliases=" << artifact_aliases.rows.size()
               << " message_vectors=" << message_vectors.rows.size()
               << " batches=" << batching_plan.rows.size() << '\n';
   } catch (const std::exception& ex) {

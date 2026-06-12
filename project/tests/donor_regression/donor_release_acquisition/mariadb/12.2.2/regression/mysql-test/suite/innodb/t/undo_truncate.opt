@@ -1,3 +1,0 @@
---innodb-buffer-pool-size=24M
---innodb-immediate-scrub-data-uncompressed=ON
---loose-innodb-sys-tablespaces

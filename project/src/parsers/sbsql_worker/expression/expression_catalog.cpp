@@ -9,7 +9,7 @@
 #include "expression/expression_catalog.hpp"
 
 #include "common/common.hpp"
-#include "expression/donor_variable_compatibility.hpp"
+#include "expression/reference_variable_compatibility.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 
 #include <string_view>
@@ -129,8 +129,8 @@ std::vector<ExpressionSurfaceDescriptor> BuildExpressionDescriptors() {
   std::vector<ExpressionSurfaceDescriptor> descriptors;
   for (const auto& row : GeneratedSurfaceRegistryRows()) {
     if (row.family != "expression_runtime") continue;
-    if (IsDonorVariableCompatibilitySurface(row.surface_id) ||
-        IsDonorVariableCompatibilitySpelling(row.canonical_name)) {
+    if (IsReferenceVariableCompatibilitySurface(row.surface_id) ||
+        IsReferenceVariableCompatibilitySpelling(row.canonical_name)) {
       continue;
     }
     descriptors.push_back(MakeDescriptor(row));

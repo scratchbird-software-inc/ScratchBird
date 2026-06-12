@@ -933,6 +933,24 @@ if(TARGET sb_storage_database)
       LABELS "storage_page_layout_gate;filespace_lifecycle_gate;foreign_filespace_quarantine_gate;storage_metrics_gate;database_lifecycle;database_lifecycle_storage;mga_transaction_regression"
     )
 
+    add_executable(database_lifecycle_final_deferred_storage_workflows_gate
+      final_deferred_storage_workflows_gate.cpp
+    )
+    target_compile_features(database_lifecycle_final_deferred_storage_workflows_gate PRIVATE cxx_std_20)
+    target_link_libraries(database_lifecycle_final_deferred_storage_workflows_gate
+      PRIVATE
+        sb_storage_filespace
+        sb_storage_page
+    )
+
+    add_test(
+      NAME database_lifecycle_final_deferred_storage_workflows_gate
+      COMMAND database_lifecycle_final_deferred_storage_workflows_gate
+    )
+    set_tests_properties(database_lifecycle_final_deferred_storage_workflows_gate PROPERTIES
+      LABELS "database_lifecycle_final_deferred_storage_workflows_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-001;MDF-002;MDF-003;MDF-004;MDF-005;MDF-006;MDF-007;MDF-008;MDF-009;MDF-010;FILES-COMMAND-CLOSURE-MAINTENANCE-SUPPORTED-SUBSET-IMPLEMENTED;ACTIVE-PRIMARY-REPLACEMENT-PHYSICAL-HEADER-RELOCATION-PROOF-IMPLEMENTED;ACTIVE-PRIMARY-REPLACEMENT-AUTHORITY-SWITCH-IMPLEMENTED;SNAPSHOT-SHADOW-LOCAL-LIFECYCLE-COMMAND-SUBSET-IMPLEMENTED;ENCRYPTION-KEY-LIFECYCLE-ENGINE-BOUNDARY-IMPLEMENTED;ENCRYPTION-MAINTENANCE-SBSQL-ROUTE-IMPLEMENTED;REPAIR-REBUILD-SALVAGE-DATABASE-EVIDENCE-BOUNDARY-IMPLEMENTED;FILESPACE-REPAIR-REBUILD-SALVAGE-SBSQL-ROUTE-IMPLEMENTED;FILESPACE-ORPHAN-STALE-DISCOVERY-CLASSIFIER-IMPLEMENTED;FILESPACE-DISCOVERY-PHYSICAL-CLEANUP-DELETE-IMPLEMENTED;FILESPACE-PACKAGE-STORAGE-WORKFLOW-IMPLEMENTED;FILESPACE-PACKAGE-PHYSICAL-MEMBER-TRANSFER-IMPLEMENTED;SHARD-PLACEMENT-DESCRIPTOR-PLANNER-IMPLEMENTED;SHARD-PLACEMENT-SBSQL-ROUTE-IMPLEMENTED;PAGE-REGISTRY-STATUS-MATRIX-IMPLEMENTED;STORAGE-TIER-DESCRIPTOR-PLANNER-IMPLEMENTED;STORAGE-TIER-BOUNDED-PHYSICAL-RELOCATION-IMPLEMENTED;database_lifecycle;database_lifecycle_storage;mga_transaction_regression"
+    )
+
     if(TARGET sb_engine_internal_api)
       add_executable(database_lifecycle_storage_tier_migration_conformance
         storage_tier_migration_conformance.cpp
@@ -1174,6 +1192,28 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   )
   set_tests_properties(database_lifecycle_catalog_object_conformance PROPERTIES
     LABELS "database_lifecycle_catalog_object_conformance;database_lifecycle_catalog_object;database_lifecycle;database_lifecycle_catalog;catalog_common_descriptor_gate;catalog_generation_mga_gate;catalog_name_comment_resolver_gate;catalog_dependency_api_gate;catalog_diagnostic_vector_gate;catalog_wire_metadata_gate;constraint_catalog_descriptor_gate;PRF_G06_CONSTRAINTS_READY;mga_transaction_regression"
+  )
+
+  add_executable(database_lifecycle_sbsql_multilingual_name_registry_conformance
+    sbsql_multilingual_name_registry_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_sbsql_multilingual_name_registry_conformance PRIVATE cxx_std_23)
+  target_link_libraries(database_lifecycle_sbsql_multilingual_name_registry_conformance
+    PRIVATE
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
+
+  add_test(
+    NAME database_lifecycle_sbsql_multilingual_name_registry_conformance
+    COMMAND database_lifecycle_sbsql_multilingual_name_registry_conformance
+  )
+  set_tests_properties(database_lifecycle_sbsql_multilingual_name_registry_conformance PROPERTIES
+    LABELS "database_lifecycle_sbsql_multilingual_name_registry_conformance;SML-004;SML-GATE-002;sbsql_multilingual;database_lifecycle_catalog;catalog_name_comment_resolver_gate;mga_transaction_regression"
   )
 
   add_executable(cdp_uuid_descriptor_cache_gate
@@ -1491,7 +1531,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND dpc_index_validation_repair_tooling_gate
   )
   set_tests_properties(dpc_index_validation_repair_tooling_gate PROPERTIES
-    LABELS "dpc_index_validation_repair_tooling_gate;DPC-046;DPC_TEST_INDEX_REPAIR;ELER-107;ELER-GATE-107;index_validation_repair;management_route;sblr_route;backup_restore;operational_readiness;mga_transaction_regression;database_lifecycle"
+    LABELS "dpc_index_validation_repair_tooling_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-023;MDF-025;DEFER-IMO-MAINTENANCE;DEFER-IDX-MAINTENANCE;DEFER-IDX-METRICS;DEFER-ICD-DIAGNOSTICS;DEFER-IDX-CONFORMANCE;DEFER-IPL-IFM-DIO-CONFORMANCE;DPC-046;DPC_TEST_INDEX_REPAIR;ELER-107;ELER-GATE-107;index_validation_repair;management_route;sblr_route;backup_restore;operational_readiness;mga_transaction_regression;database_lifecycle"
   )
 
   if(TARGET sb_engine_sblr AND TARGET sb_engine_internal_api AND TARGET sb_server_core)
@@ -1555,7 +1595,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND dpc_unique_index_deferral_policy_gate
   )
   set_tests_properties(dpc_unique_index_deferral_policy_gate PROPERTIES
-    LABELS "dpc_unique_index_deferral_policy_gate;DPC-019;DPC_TEST_UNIQUE_INDEX_POLICY;unique_index_policy;deferred_index;mga_transaction_regression;database_lifecycle"
+    LABELS "dpc_unique_index_deferral_policy_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-024;DEFER-IDX-MGA-EXPANSION;DEFER-IMT-INDEX-MGA;DEFER-IMT-TRANSACTION-EXPANSION;DEFER-ISC-TRANSACTION-CLOSURE;DPC-019;DPC_TEST_UNIQUE_INDEX_POLICY;unique_index_policy;deferred_index;mga_transaction_regression;database_lifecycle"
   )
 
   add_executable(dpc_deferred_index_feature_flag_fallback_gate
@@ -1671,7 +1711,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND dpc_secondary_index_delta_recovery_repair_gate
   )
   set_tests_properties(dpc_secondary_index_delta_recovery_repair_gate PROPERTIES
-    LABELS "dpc_secondary_index_delta_recovery_repair_gate;DPC-025;DPC_TEST_INDEX_DELTA_RECOVERY_REPAIR;secondary_index_delta_ledger;delta_recovery;delta_repair;backup_restore;mga_transaction_regression;database_lifecycle"
+    LABELS "dpc_secondary_index_delta_recovery_repair_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-024;DEFER-IDX-MGA-EXPANSION;DEFER-IMT-INDEX-MGA;DEFER-IMT-TRANSACTION-EXPANSION;DEFER-ISC-TRANSACTION-CLOSURE;DPC-025;DPC_TEST_INDEX_DELTA_RECOVERY_REPAIR;secondary_index_delta_ledger;delta_recovery;delta_repair;backup_restore;mga_transaction_regression;database_lifecycle"
   )
 
   add_executable(dpc_secondary_index_garbage_cleanup_agent_gate
@@ -2019,7 +2059,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND database_lifecycle_index_statistics_plan_conformance
   )
   set_tests_properties(database_lifecycle_index_statistics_plan_conformance PROPERTIES
-    LABELS "database_lifecycle_index_statistics_plan_conformance;database_lifecycle_index_statistics_plan;database_lifecycle;database_lifecycle_catalog;mga_transaction_regression"
+    LABELS "database_lifecycle_index_statistics_plan_conformance;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-023;DEFER-ISO-STATS-OPTIMIZER;DEFER-IMO-MAINTENANCE;DEFER-IDX-MAINTENANCE;DEFER-IDX-METRICS;database_lifecycle_index_statistics_plan_conformance;database_lifecycle_index_statistics_plan;database_lifecycle;database_lifecycle_catalog;mga_transaction_regression"
   )
 
   add_executable(database_lifecycle_backup_archive_restore_conformance
@@ -2596,21 +2636,21 @@ set_tests_properties(database_lifecycle_execution_descriptor_migration_conforman
   LABELS "EDR-035;EDR-GATE-035;execution_descriptor_migration;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
 )
 
-add_executable(database_lifecycle_execution_donor_type_capability_conformance
-  execution_donor_type_capability_conformance.cpp
+add_executable(database_lifecycle_execution_reference_type_capability_conformance
+  execution_reference_type_capability_conformance.cpp
 )
-target_compile_features(database_lifecycle_execution_donor_type_capability_conformance PRIVATE cxx_std_20)
-target_include_directories(database_lifecycle_execution_donor_type_capability_conformance
+target_compile_features(database_lifecycle_execution_reference_type_capability_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_reference_type_capability_conformance
   PRIVATE
     "${PROJECT_SOURCE_DIR}/include"
 )
 
 add_test(
-  NAME database_lifecycle_execution_donor_type_capability_conformance
-  COMMAND database_lifecycle_execution_donor_type_capability_conformance
+  NAME database_lifecycle_execution_reference_type_capability_conformance
+  COMMAND database_lifecycle_execution_reference_type_capability_conformance
 )
-set_tests_properties(database_lifecycle_execution_donor_type_capability_conformance PROPERTIES
-  LABELS "EDR-037;EDR-GATE-037;DTC-DONOR-TYPE-COVERAGE;DTC-DONOR-UDR-DOMAIN-INSTALL;DTC-LLVM-DOMAIN-ACCELERATION;DTC-LITERAL-BIND-TYPING;DTC-TYPE-INFERENCE-OVERLOAD;DTC-LOCATOR-PSEUDOTYPE-SAFETY;DTC-OPAQUE-TYPE-LIFECYCLE;DTC-TYPE-MIGRATION;DTC-DONOR-SUPERIORITY;DTC-GATE-001;DTC-GATE-002;DTC-GATE-003;DTC-GATE-004;DTC-GATE-005;DTC-GATE-006;DTC-GATE-007;DTC-GATE-008;DTC-GATE-009;DTC-GATE-010;DTC-GATE-011;DTC-GATE-012;execution_donor_type_capability;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+set_tests_properties(database_lifecycle_execution_reference_type_capability_conformance PROPERTIES
+  LABELS "EDR-037;EDR-GATE-037;DTC-REFERENCE-TYPE-COVERAGE;DTC-REFERENCE-UDR-DOMAIN-INSTALL;DTC-LLVM-DOMAIN-ACCELERATION;DTC-LITERAL-BIND-TYPING;DTC-TYPE-INFERENCE-OVERLOAD;DTC-LOCATOR-PSEUDOTYPE-SAFETY;DTC-OPAQUE-TYPE-LIFECYCLE;DTC-TYPE-MIGRATION;DTC-REFERENCE-SUPERIORITY;DTC-GATE-001;DTC-GATE-002;DTC-GATE-003;DTC-GATE-004;DTC-GATE-005;DTC-GATE-006;DTC-GATE-007;DTC-GATE-008;DTC-GATE-009;DTC-GATE-010;DTC-GATE-011;DTC-GATE-012;execution_reference_type_capability;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
 )
 
 add_executable(database_lifecycle_type_operation_registry_conformance
@@ -2695,7 +2735,7 @@ add_test(
   COMMAND database_lifecycle_native_vs_domain_datatype_decisions_conformance
 )
 set_tests_properties(database_lifecycle_native_vs_domain_datatype_decisions_conformance PROPERTIES
-  LABELS "NVD-NATIVE-VS-DOMAIN-DATATYPE-DECISIONS;NVD-CORE-DECISION;NVD-NATIVE-PROMOTION-CRITERIA;NVD-DOMAIN-ONLY-CRITERIA;NVD-REQUIRED-NATIVE-SUBSTRATE-FAMILIES;NVD-DOMAIN-ONLY-FAMILIES;NVD-OPAQUE-UDR-BRIDGE-FAMILIES;NVD-DONOR-FAMILY-DECISIONS;NVD-FULL-SUPPORT-RULE;NVD-GATE-001;NVD-GATE-002;NVD-GATE-003;NVD-GATE-004;NVD-CONF-001;NVD-CONF-002;NVD-CONF-003;NVD-CONF-004;NVD-CONF-005;NVD-CONF-006;NVD-CONF-007;NVD-CONF-008;NVD-CONF-009;NVD-CONF-010;NVD-CONF-011;NVD-CONF-012;NVD-CONF-013;NVD-CONF-014;NVD-CONF-015;native_vs_domain_datatype_decisions;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  LABELS "NVD-NATIVE-VS-DOMAIN-DATATYPE-DECISIONS;NVD-CORE-DECISION;NVD-NATIVE-PROMOTION-CRITERIA;NVD-DOMAIN-ONLY-CRITERIA;NVD-REQUIRED-NATIVE-SUBSTRATE-FAMILIES;NVD-DOMAIN-ONLY-FAMILIES;NVD-OPAQUE-UDR-BRIDGE-FAMILIES;NVD-REFERENCE-FAMILY-DECISIONS;NVD-FULL-SUPPORT-RULE;NVD-GATE-001;NVD-GATE-002;NVD-GATE-003;NVD-GATE-004;NVD-CONF-001;NVD-CONF-002;NVD-CONF-003;NVD-CONF-004;NVD-CONF-005;NVD-CONF-006;NVD-CONF-007;NVD-CONF-008;NVD-CONF-009;NVD-CONF-010;NVD-CONF-011;NVD-CONF-012;NVD-CONF-013;NVD-CONF-014;NVD-CONF-015;native_vs_domain_datatype_decisions;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
 )
 
 add_executable(database_lifecycle_canonical_datatype_families_conformance
@@ -2729,7 +2769,7 @@ add_test(
   COMMAND database_lifecycle_execution_detail_closure_matrix_conformance
 )
 set_tests_properties(database_lifecycle_execution_detail_closure_matrix_conformance PROPERTIES
-  LABELS "EDC-DETAIL-CLOSURE-MATRICES;EDC-CANONICAL-TYPE-FAMILY-INVENTORY;EDC-DONOR-TYPE-COVERAGE-MATRIX;EDC-OPERATION-REGISTRY-SEED-MATRIX;EDC-CAST-REGISTRY-SEED-MATRIX;EDC-AGGREGATE-WINDOW-SEED-MATRIX;EDC-INDEX-FAMILY-COMPATIBILITY-MATRIX;EDC-STATISTICS-SELECTIVITY-SEED-MATRIX;EDC-DRIVER-METADATA-SEED-MATRIX;EDC-BACKUP-REPLICATION-TRANSPORT-MATRIX;EDC-SYSTEM-CATALOG-SEED-CONTRACTS;EDC-CONFORMANCE-CORPUS-SEED-MATRIX;EDC-GATE-001;EDC-GATE-002;EDC-GATE-003;EDC-GATE-004;EDC-GATE-005;EDC-GATE-006;EDC-GATE-007;EDC-GATE-008;EDC-GATE-009;EDC-GATE-010;EDC-GATE-011;EDC-GATE-012;EDC-GATE-013;EDC-GATE-014;EDC-GATE-015;EDC-GATE-016;EDC-GATE-017;execution_detail_closure_matrix;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  LABELS "EDC-DETAIL-CLOSURE-MATRICES;EDC-CANONICAL-TYPE-FAMILY-INVENTORY;EDC-REFERENCE-TYPE-COVERAGE-MATRIX;EDC-OPERATION-REGISTRY-SEED-MATRIX;EDC-CAST-REGISTRY-SEED-MATRIX;EDC-AGGREGATE-WINDOW-SEED-MATRIX;EDC-INDEX-FAMILY-COMPATIBILITY-MATRIX;EDC-STATISTICS-SELECTIVITY-SEED-MATRIX;EDC-DRIVER-METADATA-SEED-MATRIX;EDC-BACKUP-REPLICATION-TRANSPORT-MATRIX;EDC-SYSTEM-CATALOG-SEED-CONTRACTS;EDC-CONFORMANCE-CORPUS-SEED-MATRIX;EDC-GATE-001;EDC-GATE-002;EDC-GATE-003;EDC-GATE-004;EDC-GATE-005;EDC-GATE-006;EDC-GATE-007;EDC-GATE-008;EDC-GATE-009;EDC-GATE-010;EDC-GATE-011;EDC-GATE-012;EDC-GATE-013;EDC-GATE-014;EDC-GATE-015;EDC-GATE-016;EDC-GATE-017;execution_detail_closure_matrix;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
 )
 
 add_executable(database_lifecycle_remaining_detail_closure_controls_conformance
@@ -2746,7 +2786,7 @@ add_test(
   COMMAND database_lifecycle_remaining_detail_closure_controls_conformance
 )
 set_tests_properties(database_lifecycle_remaining_detail_closure_controls_conformance PROPERTIES
-  LABELS "RDC-REMAINING-DETAIL-CLOSURE-CONTROLS;RDC-001;RDC-002;RDC-003;RDC-004;RDC-005;RDC-006;RDC-007;RDC-008;RDC-009;RDC-010;RDC-011;RDC-012;RDC-013;RDC-014;RDC-015;RDC-016;SCS-SYSTEM-CATALOG-SCHEMA;TSP-TYPE-SECURITY-PRIVILEGE-MATRIX;DER-DIAGNOSTIC-ERROR-CODE-REGISTRY;RRV-RESOURCE-REGISTRY-VERSIONING;PSG-PARSER-SBLR-GRAMMAR-EXPANSION;DSM-DONOR-SPECIFIC-TYPE-MATRICES;CEE-CANONICAL-ENCODING-EXAMPLES;CMM-COMPATIBILITY-MODE-MATRIX;CTM-CONFORMANCE-TEST-MANIFEST-FORMAT;DEP-DOCUMENTATION-EXAMPLES-POLICY;SCT-SYSTEM-CATALOG-TABLE-DEFINITIONS;PSF-PARSER-SBLR-FORMAL-GRAMMAR;NEE-NORMATIVE-ENCODING-EXAMPLES;CMI-CONFORMANCE-MANIFEST-INVENTORY;DVP-DONOR-VERSION-PROFILE-CLOSURE;CGC-COMMERCIAL-GRADE-COMPLETION-GATES;SCS-GATE-001;SCS-GATE-005;TSP-GATE-001;TSP-GATE-004;DER-GATE-001;DER-GATE-013;RRV-GATE-001;RRV-GATE-004;RRV-CONF-001;RRV-CONF-012;PSG-GATE-001;PSG-GATE-003;DSM-GATE-001;DSM-GATE-013;CEE-GATE-001;CEE-CONF-001;CEE-CONF-007;CMM-GATE-001;CMM-GATE-013;CTM-GATE-001;CTM-GATE-013;DEP-GATE-001;DEP-GATE-008;SCT-GATE-001;SCT-GATE-004;PSF-GATE-001;PSF-GATE-004;PSF-CONF-001;PSF-CONF-012;NEE-GATE-001;NEE-GATE-005;CMI-GATE-001;CMI-GATE-012;DVP-GATE-001;DVP-GATE-010;CGC-GATE-001;CGC-GATE-025;remaining_detail_closure_controls;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  LABELS "RDC-REMAINING-DETAIL-CLOSURE-CONTROLS;RDC-001;RDC-002;RDC-003;RDC-004;RDC-005;RDC-006;RDC-007;RDC-008;RDC-009;RDC-010;RDC-011;RDC-012;RDC-013;RDC-014;RDC-015;RDC-016;SCS-SYSTEM-CATALOG-SCHEMA;TSP-TYPE-SECURITY-PRIVILEGE-MATRIX;DER-DIAGNOSTIC-ERROR-CODE-REGISTRY;RRV-RESOURCE-REGISTRY-VERSIONING;PSG-PARSER-SBLR-GRAMMAR-EXPANSION;DSM-REFERENCE-SPECIFIC-TYPE-MATRICES;CEE-CANONICAL-ENCODING-EXAMPLES;CMM-COMPATIBILITY-MODE-MATRIX;CTM-CONFORMANCE-TEST-MANIFEST-FORMAT;DEP-DOCUMENTATION-EXAMPLES-POLICY;SCT-SYSTEM-CATALOG-TABLE-DEFINITIONS;PSF-PARSER-SBLR-FORMAL-GRAMMAR;NEE-NORMATIVE-ENCODING-EXAMPLES;CMI-CONFORMANCE-MANIFEST-INVENTORY;DVP-REFERENCE-VERSION-PROFILE-CLOSURE;CGC-COMMERCIAL-GRADE-COMPLETION-GATES;SCS-GATE-001;SCS-GATE-005;TSP-GATE-001;TSP-GATE-004;DER-GATE-001;DER-GATE-013;RRV-GATE-001;RRV-GATE-004;RRV-CONF-001;RRV-CONF-012;PSG-GATE-001;PSG-GATE-003;DSM-GATE-001;DSM-GATE-013;CEE-GATE-001;CEE-CONF-001;CEE-CONF-007;CMM-GATE-001;CMM-GATE-013;CTM-GATE-001;CTM-GATE-013;DEP-GATE-001;DEP-GATE-008;SCT-GATE-001;SCT-GATE-004;PSF-GATE-001;PSF-GATE-004;PSF-CONF-001;PSF-CONF-012;NEE-GATE-001;NEE-GATE-005;CMI-GATE-001;CMI-GATE-012;DVP-GATE-001;DVP-GATE-010;CGC-GATE-001;CGC-GATE-025;remaining_detail_closure_controls;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
 )
 
 add_executable(database_lifecycle_commercial_grade_completion_evidence_conformance
@@ -2807,6 +2847,133 @@ if(TARGET sb_core_datatypes)
   set_tests_properties(database_lifecycle_execution_type_descriptor_conformance PROPERTIES
     LABELS "EDR-001;EDR-GATE-001;execution_type_descriptor;database_lifecycle;datatype_commercial_closure_gate"
   )
+
+  add_executable(database_lifecycle_current_core_reference_neutral_metadata_conformance
+    current_core_reference_neutral_metadata_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_current_core_reference_neutral_metadata_conformance PRIVATE cxx_std_17)
+  target_link_libraries(database_lifecycle_current_core_reference_neutral_metadata_conformance
+    PRIVATE
+      sb_core_datatypes
+      sb_core_platform
+  )
+
+  add_test(
+    NAME database_lifecycle_current_core_reference_neutral_metadata_conformance
+    COMMAND database_lifecycle_current_core_reference_neutral_metadata_conformance
+  )
+  set_tests_properties(database_lifecycle_current_core_reference_neutral_metadata_conformance PROPERTIES
+    LABELS "database_lifecycle_current_core_reference_neutral_metadata_conformance;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-026;DEFER-DTYPE-REFERENCE-GATE-IMPLEMENTATION;DEFER-DPE-REFERENCE-MAPPING;DEFER-DTM-REFERENCE-METRICS;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  )
+
+  add_executable(database_lifecycle_current_core_datatype_catalog_manifest_gate
+    current_core_datatype_catalog_manifest_gate.cpp
+  )
+  target_compile_features(database_lifecycle_current_core_datatype_catalog_manifest_gate PRIVATE cxx_std_17)
+  target_link_libraries(database_lifecycle_current_core_datatype_catalog_manifest_gate
+    PRIVATE
+      sb_core_datatypes
+      sb_core_platform
+  )
+
+  add_test(
+    NAME database_lifecycle_current_core_datatype_catalog_manifest_gate
+    COMMAND database_lifecycle_current_core_datatype_catalog_manifest_gate
+  )
+  set_tests_properties(database_lifecycle_current_core_datatype_catalog_manifest_gate PROPERTIES
+    LABELS "database_lifecycle_current_core_datatype_catalog_manifest_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-012;MDF-012-CURRENT-CORE-DATATYPE-CATALOG-MANIFEST;DEFER-DTYPE-DESCRIPTOR-IMPLEMENTATION;DEFER-DTYPE-CATALOG-DDL;DEFER-DTYPE-CLOSURE-MATRIX-TRACE;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  )
+
+  add_executable(database_lifecycle_current_core_datatype_physical_encoding_gate
+    current_core_datatype_physical_encoding_gate.cpp
+  )
+  target_compile_features(database_lifecycle_current_core_datatype_physical_encoding_gate PRIVATE cxx_std_17)
+  target_link_libraries(database_lifecycle_current_core_datatype_physical_encoding_gate
+    PRIVATE
+      sb_core_datatypes
+      sb_core_platform
+  )
+
+  add_test(
+    NAME database_lifecycle_current_core_datatype_physical_encoding_gate
+    COMMAND database_lifecycle_current_core_datatype_physical_encoding_gate
+  )
+  set_tests_properties(database_lifecycle_current_core_datatype_physical_encoding_gate PROPERTIES
+    LABELS "database_lifecycle_current_core_datatype_physical_encoding_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-013;MDF-013-CURRENT-CORE-DATATYPE-PHYSICAL-ENCODING;DEFER-DPE-ENCODER-DECODER;DEFER-DPE-IN-PAGE-LAYOUT;DEFER-DPE-OVERFLOW-LAYOUT;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  )
+
+  add_executable(database_lifecycle_current_core_datatype_comparison_cast_gate
+    current_core_datatype_comparison_cast_gate.cpp
+  )
+  target_compile_features(database_lifecycle_current_core_datatype_comparison_cast_gate PRIVATE cxx_std_17)
+  target_link_libraries(database_lifecycle_current_core_datatype_comparison_cast_gate
+    PRIVATE
+      sb_core_datatypes
+      sb_core_platform
+  )
+
+  add_test(
+    NAME database_lifecycle_current_core_datatype_comparison_cast_gate
+    COMMAND database_lifecycle_current_core_datatype_comparison_cast_gate
+  )
+  set_tests_properties(database_lifecycle_current_core_datatype_comparison_cast_gate PROPERTIES
+    LABELS "database_lifecycle_current_core_datatype_comparison_cast_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-014;MDF-014-CURRENT-CORE-DATATYPE-COMPARISON-CASTS;DEFER-DPE-COMPARISON-KEYS;DEFER-DPE-CAST-STORAGE;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  )
+
+  add_executable(database_lifecycle_current_core_datatype_metrics_redaction_gate
+    current_core_datatype_metrics_redaction_gate.cpp
+  )
+  target_compile_features(database_lifecycle_current_core_datatype_metrics_redaction_gate PRIVATE cxx_std_17)
+  target_link_libraries(database_lifecycle_current_core_datatype_metrics_redaction_gate
+    PRIVATE
+      sb_core_datatypes
+      sb_core_metrics
+      sb_core_platform
+  )
+
+  add_test(
+    NAME database_lifecycle_current_core_datatype_metrics_redaction_gate
+    COMMAND database_lifecycle_current_core_datatype_metrics_redaction_gate
+  )
+  set_tests_properties(database_lifecycle_current_core_datatype_metrics_redaction_gate PROPERTIES
+    LABELS "database_lifecycle_current_core_datatype_metrics_redaction_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-016;MDF-016-CURRENT-CORE-DATATYPE-METRICS-REDACTION;DEFER-DTM-*;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  )
+
+  add_executable(database_lifecycle_current_core_storage_metrics_management_gate
+    current_core_storage_metrics_management_gate.cpp
+  )
+  target_compile_features(database_lifecycle_current_core_storage_metrics_management_gate PRIVATE cxx_std_17)
+  target_link_libraries(database_lifecycle_current_core_storage_metrics_management_gate
+    PRIVATE
+      sb_core_metrics
+      sb_core_platform
+  )
+
+  add_test(
+    NAME database_lifecycle_current_core_storage_metrics_management_gate
+    COMMAND database_lifecycle_current_core_storage_metrics_management_gate
+  )
+  set_tests_properties(database_lifecycle_current_core_storage_metrics_management_gate PROPERTIES
+    LABELS "database_lifecycle_current_core_storage_metrics_management_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-018;MDF-018-CURRENT-CORE-STORAGE-METRICS-MANAGEMENT;DEFER-SPM-*;database_lifecycle;mga_transaction_regression"
+  )
+
+  add_executable(database_lifecycle_current_core_datatype_conformance_manifest_gate
+    current_core_datatype_conformance_manifest_gate.cpp
+  )
+  target_compile_features(database_lifecycle_current_core_datatype_conformance_manifest_gate PRIVATE cxx_std_17)
+  target_link_libraries(database_lifecycle_current_core_datatype_conformance_manifest_gate
+    PRIVATE
+      sb_core_datatypes
+      sb_core_platform
+  )
+
+  add_test(
+    NAME database_lifecycle_current_core_datatype_conformance_manifest_gate
+    COMMAND database_lifecycle_current_core_datatype_conformance_manifest_gate
+  )
+  set_tests_properties(database_lifecycle_current_core_datatype_conformance_manifest_gate PROPERTIES
+    LABELS "database_lifecycle_current_core_datatype_conformance_manifest_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-015;MDF-015-CURRENT-CORE-DATATYPE-CONFORMANCE-MANIFEST;DEFER-DPE-EXAMPLE-CORPUS;DEFER-DTYPE-CONFORMANCE-MANIFESTS;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  )
 endif()
 
 if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core_index AND TARGET sb_core_metrics)
@@ -2848,7 +3015,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core
     COMMAND database_lifecycle_index_write_profile_p3_conformance
   )
   set_tests_properties(database_lifecycle_index_write_profile_p3_conformance PROPERTIES
-    LABELS "index_catalog_ddl_gate;index_family_matrix_gate;insert_update_write_profile_gate;index_metrics_gate;database_lifecycle;mga_transaction_regression"
+    LABELS "database_lifecycle_index_write_profile_p3_conformance;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-021;MDF-022;DEFER-IDX-CATALOGS;DEFER-IDX-BTREE;DEFER-IDX-HASH;DEFER-IDX-BITMAP-BRIN;DEFER-IDX-DOCUMENT-SEARCH;DEFER-IDX-SPATIAL;DEFER-IDX-VECTOR;DEFER-IDX-RANGE-GRAPH;DEFER-IDX-COLUMNAR-SKETCH;DEFER-IPL-PAGE-LAYOUTS;DEFER-IPL-ORDERED-KEYS;DEFER-IPL-BTREE-HASH;DEFER-IPL-DOC-SEARCH-SPATIAL-VECTOR;index_catalog_ddl_gate;index_family_matrix_gate;insert_update_write_profile_gate;index_metrics_gate;database_lifecycle;mga_transaction_regression"
   )
 
   add_executable(dml_page_allocation_runtime_gate
@@ -3317,7 +3484,7 @@ if(TARGET sb_core_memory)
       COMMAND database_lifecycle_memory_management_descriptor_conformance
     )
     set_tests_properties(database_lifecycle_memory_management_descriptor_conformance PROPERTIES
-      LABELS "database_lifecycle_memory_management_descriptor_conformance;MEMORY-MANAGEMENT-DESCRIPTOR-PLANNER-IMPLEMENTED;MEMORY-GOVERNANCE-DIRECT-EXECUTOR-IMPLEMENTED;MEMORY-AUTOMATION-REPORT-CATALOG-IMPLEMENTED;MEMORY-AUTOMATION-SAFE-EXECUTOR-IMPLEMENTED;MEMORY-OBJECT-RESIDENCY-DURABLE-CATALOG-IMPLEMENTED;MEMORY-RATE-LIMIT-DURABLE-CATALOG-IMPLEMENTED;MEMORY-RATE-LIMIT-LIVE-EXECUTOR-IMPLEMENTED;MEMORY-POLICY-MIGRATION-DURABLE-CATALOG-IMPLEMENTED;MM-MEMORY-MANAGEMENT-CORRECTIVE-CLOSURE;MM-GATE-001;MM-GATE-002;MM-GATE-003;MM-GATE-004;MM-GATE-005;MM-GATE-006;MM-GATE-007;MM-GATE-008;MM-GATE-009;MM-GATE-010;MM-GATE-011;MM-GATE-012;MM-GATE-013;MM-GATE-014;MM-GATE-015;MM-GATE-016;MM-GATE-017;MM-GATE-018;MM-GATE-019;MM-GATE-020;MM-GATE-021;MM-GATE-022;MM-GATE-023;MM-GATE-024;memory_governance;memory_automation;memory_object_residency;memory_rate_limit;memory_policy_migration;database_lifecycle;memory;mga_transaction_regression"
+      LABELS "database_lifecycle_memory_management_descriptor_conformance;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-011;MEMORY-MANAGEMENT-DESCRIPTOR-PLANNER-IMPLEMENTED;MEMORY-GOVERNANCE-DIRECT-EXECUTOR-IMPLEMENTED;MEMORY-AUTOMATION-REPORT-CATALOG-IMPLEMENTED;MEMORY-AUTOMATION-SAFE-EXECUTOR-IMPLEMENTED;MEMORY-OBJECT-RESIDENCY-DURABLE-CATALOG-IMPLEMENTED;MEMORY-RATE-LIMIT-DURABLE-CATALOG-IMPLEMENTED;MEMORY-RATE-LIMIT-LIVE-EXECUTOR-IMPLEMENTED;MEMORY-POLICY-MIGRATION-DURABLE-CATALOG-IMPLEMENTED;MM-MEMORY-MANAGEMENT-CORRECTIVE-CLOSURE;MM-GATE-001;MM-GATE-002;MM-GATE-003;MM-GATE-004;MM-GATE-005;MM-GATE-006;MM-GATE-007;MM-GATE-008;MM-GATE-009;MM-GATE-010;MM-GATE-011;MM-GATE-012;MM-GATE-013;MM-GATE-014;MM-GATE-015;MM-GATE-016;MM-GATE-017;MM-GATE-018;MM-GATE-019;MM-GATE-020;MM-GATE-021;MM-GATE-022;MM-GATE-023;MM-GATE-024;memory_governance;memory_automation;memory_object_residency;memory_rate_limit;memory_policy_migration;database_lifecycle;memory;mga_transaction_regression"
     )
   endif()
 
@@ -3356,7 +3523,7 @@ if(TARGET sb_core_catalog)
     COMMAND database_lifecycle_catalog_index_profile_conformance
   )
   set_tests_properties(database_lifecycle_catalog_index_profile_conformance PROPERTIES
-    LABELS "database_lifecycle_catalog_index_profile_conformance;database_lifecycle_catalog_index_profile;database_lifecycle;database_lifecycle_catalog;catalog_physical_index_profile_gate;catalog_common_descriptor_gate;mga_transaction_regression"
+    LABELS "database_lifecycle_catalog_index_profile_conformance;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-025;DEFER-IFM-FAMILY-ROWS;DEFER-ICD-CATALOGS;DEFER-ICD-DIAGNOSTICS;DEFER-ICD-DRIVER-METADATA;DEFER-ICD-EXPLAIN-SUPPORT;DEFER-ICI-MANIFESTS;DEFER-IDX-CONFORMANCE;DEFER-IPL-IFM-DIO-CONFORMANCE;database_lifecycle_catalog_index_profile_conformance;database_lifecycle_catalog_index_profile;database_lifecycle;database_lifecycle_catalog;catalog_physical_index_profile_gate;catalog_common_descriptor_gate;mga_transaction_regression"
   )
 endif()
 
@@ -3537,6 +3704,10 @@ set(SB_MIGRATION_DEFERRED_OPERATIONS_CLOSURE_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/migration_deferred_operations_closure_gate.py"
 )
 
+set(SB_FINAL_DEFERRED_IMPLEMENTATION_TRACKER_GATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/final_deferred_implementation_tracker_gate.py"
+)
+
 add_custom_target(migration_deferred_operations_closure_gate_check
   COMMAND "${Python3_EXECUTABLE}" "${SB_MIGRATION_DEFERRED_OPERATIONS_CLOSURE_GATE}"
           --repo-root "${SB_PRIVATE_REPO_ROOT}"
@@ -3552,6 +3723,31 @@ add_test(
 )
 set_tests_properties(migration_deferred_operations_closure_gate PROPERTIES
   LABELS "migration_deferred_operations_closure_gate;MIGRATION-DEFERRED-OPERATIONS-CLOSURE;MIGRATION-DIRECTORY-IMPLEMENTATION-CLOSURE;DEFERRED-MIGRATION-IMPLEMENTATION-CLOSURE;TEMP-TABLE-GATE-017;database_lifecycle;mga_transaction_regression"
+)
+
+add_custom_target(final_deferred_implementation_tracker_gate_check
+  COMMAND "${Python3_EXECUTABLE}" "${SB_FINAL_DEFERRED_IMPLEMENTATION_TRACKER_GATE}"
+          --repo-root "${SB_PRIVATE_REPO_ROOT}"
+          --build-root "${CMAKE_BINARY_DIR}"
+  COMMENT "Validating final deferred implementation tracker inventory"
+)
+
+add_custom_target(final_deferred_implementation_tracker_release_gate_check
+  COMMAND "${Python3_EXECUTABLE}" "${SB_FINAL_DEFERRED_IMPLEMENTATION_TRACKER_GATE}"
+          --repo-root "${SB_PRIVATE_REPO_ROOT}"
+          --build-root "${CMAKE_BINARY_DIR}"
+          --mode release
+  COMMENT "Validating final deferred implementation release closure"
+)
+
+add_test(
+  NAME final_deferred_implementation_tracker_gate
+  COMMAND "${Python3_EXECUTABLE}" "${SB_FINAL_DEFERRED_IMPLEMENTATION_TRACKER_GATE}"
+          --repo-root "${SB_PRIVATE_REPO_ROOT}"
+          --build-root "${CMAKE_BINARY_DIR}"
+)
+set_tests_properties(final_deferred_implementation_tracker_gate PROPERTIES
+  LABELS "final_deferred_implementation_tracker_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-000;DEFERRED-MIGRATION-IMPLEMENTATION-CLOSURE;migration_deferred_operations_closure;database_lifecycle;mga_transaction_regression"
 )
 
 set(SB_DPC_EVIDENCE_PROVENANCE_RETENTION_MANIFEST
@@ -3641,12 +3837,12 @@ set_tests_properties(database_lifecycle_threat_model_static PROPERTIES
 )
 
 add_test(
-  NAME database_lifecycle_donor_mapping_static
-  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/donor_mapping_static.py"
+  NAME database_lifecycle_reference_mapping_static
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reference_mapping_static.py"
           --repo-root "${SB_PRIVATE_REPO_ROOT}"
 )
-set_tests_properties(database_lifecycle_donor_mapping_static PROPERTIES
-  LABELS "database_lifecycle_donor_mapping;DBLC_STATIC_NO_DONOR_ENGINE_SQL;database_lifecycle"
+set_tests_properties(database_lifecycle_reference_mapping_static PROPERTIES
+  LABELS "database_lifecycle_reference_mapping;DBLC_STATIC_NO_REFERENCE_ENGINE_SQL;database_lifecycle"
 )
 
 if(TARGET sb_storage_page)
@@ -3710,7 +3906,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     COMMAND database_lifecycle_constraint_dml_enforcement_conformance
   )
   set_tests_properties(database_lifecycle_constraint_dml_enforcement_conformance PROPERTIES
-    LABELS "constraint_dml_enforcement_gate;constraint_transaction_visibility_gate;constraint_diagnostic_gate;constraint_index_dependency_gate;PRF_G06A_CONSTRAINT_INDEX_DEPENDENCY_READY;PRF_G06_CONSTRAINTS_READY;database_lifecycle;mga_transaction_regression"
+    LABELS "database_lifecycle_constraint_dml_enforcement_conformance;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-019;MDF-020;DEFER-CLI-CATALOGS;DEFER-CLI-ENFORCEMENT;DEFER-CLI-VALIDATION-STATES;DEFER-CLI-DEFERRAL;DEFER-CLI-MAINTENANCE;DEFER-CLI-DURABILITY-RESIDENCY;DEFER-CLI-MEMORY-OPTIMIZATION;DEFER-CLI-METRICS;DEFER-CLI-CONFORMANCE;constraint_dml_enforcement_gate;constraint_transaction_visibility_gate;constraint_diagnostic_gate;constraint_index_dependency_gate;PRF_G06A_CONSTRAINT_INDEX_DEPENDENCY_READY;PRF_G06_CONSTRAINTS_READY;database_lifecycle;mga_transaction_regression"
   )
 endif()
 
@@ -3808,7 +4004,7 @@ if(TARGET sb_server_core)
       COMMAND database_lifecycle_udr_extension_conformance
     )
     set_tests_properties(database_lifecycle_udr_extension_conformance PROPERTIES
-      LABELS "database_lifecycle_udr_extension_conformance;database_lifecycle_udr_extension;database_lifecycle;database_lifecycle_parser;database_lifecycle_security;database_lifecycle_shutdown_notification;mga_transaction_regression"
+      LABELS "database_lifecycle_udr_extension_conformance;database_lifecycle_udr_extension;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-017;DEFER-CXX-ONLY-UDR-ENFORCEMENT;DEFER-DTM-UDR-BRIDGE-METRICS;database_lifecycle;database_lifecycle_parser;database_lifecycle_security;database_lifecycle_shutdown_notification;mga_transaction_regression"
     )
   endif()
 
@@ -3907,22 +4103,22 @@ endif()
 
 if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_disk AND TARGET sb_storage_page AND TARGET sb_transaction_mga)
   if(TARGET sbl_sbsql_parser_worker_core AND TARGET sbl_firebird_parser_pipeline)
-    add_executable(database_lifecycle_donor_mapping_conformance
-      donor_mapping_conformance.cpp
+    add_executable(database_lifecycle_reference_mapping_conformance
+      reference_mapping_conformance.cpp
     )
-    target_compile_features(database_lifecycle_donor_mapping_conformance PRIVATE cxx_std_23)
-    target_link_libraries(database_lifecycle_donor_mapping_conformance
+    target_compile_features(database_lifecycle_reference_mapping_conformance PRIVATE cxx_std_23)
+    target_link_libraries(database_lifecycle_reference_mapping_conformance
       PRIVATE
         sbl_sbsql_parser_worker_core
         sbl_firebird_parser_pipeline
     )
 
     add_test(
-      NAME database_lifecycle_donor_mapping_conformance
-      COMMAND database_lifecycle_donor_mapping_conformance
+      NAME database_lifecycle_reference_mapping_conformance
+      COMMAND database_lifecycle_reference_mapping_conformance
     )
-    set_tests_properties(database_lifecycle_donor_mapping_conformance PROPERTIES
-      LABELS "database_lifecycle_donor_mapping;DBLC_P14_DONOR_MAPPING_COMPLETE;database_lifecycle"
+    set_tests_properties(database_lifecycle_reference_mapping_conformance PROPERTIES
+      LABELS "database_lifecycle_reference_mapping;DBLC_P14_REFERENCE_MAPPING_COMPLETE;database_lifecycle"
     )
   endif()
 

@@ -24,7 +24,7 @@ Date: 2026-05-08
 
 | Risk | Rationale | Follow-up trigger |
 | --- | --- | --- |
-| Global donor exact-extraction manifest drift exists outside parser-v3/SBSQL closure scope | FSPE-013 scoped manifest validation to parser-v3 and SBSQL canonicalization authority because unrelated donor exact-extraction manifest entries are a broader contract-corpus maintenance concern. | Open a donor-manifest reconciliation execution_plan before claiming global donor exact-extraction release readiness. |
+| Global reference exact-extraction manifest drift exists outside parser-v3/SBSQL closure scope | FSPE-013 scoped manifest validation to parser-v3 and SBSQL canonicalization authority because unrelated reference exact-extraction manifest entries are a broader contract-corpus maintenance concern. | Open a reference-manifest reconciliation execution_plan before claiming global reference exact-extraction release readiness. |
 | Broad default `cmake --build ...` may include unrelated non-parser linkage targets | FSPE-014C publishes targeted parser-worker regression commands; the parser-worker label passes 39/39 in the validation build. | Resolve before declaring full repository all-target release build readiness. |
 | `function_seed_registry.cpp` is a large deterministic seed-data file | FSPE-014A records it as a generated/seed-data exception with a 2.5 MiB cap; it is not handwritten algorithmic logic. | Split into generated data shards if it grows beyond the exception cap or if maintainability reviews require smaller seed files. |
 

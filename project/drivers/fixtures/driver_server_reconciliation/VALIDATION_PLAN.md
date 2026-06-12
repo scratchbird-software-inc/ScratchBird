@@ -20,7 +20,7 @@ Search key: `DRIVER-SERVER-RECONCILIATION-VALIDATION-PLAN`.
 14. Validate package metadata, install smoke tests, signing/SBOM status, and build-artifact isolation for each claimed lane.
 15. Enforce performance budgets for the real client-to-engine route.
 16. Execute documentation sample applications for every claimed driver, adapter, and tool path.
-17. Run donor compatibility tests through the admitted ScratchBird route.
+17. Run reference compatibility tests through the admitted ScratchBird route.
 18. Generate the machine-readable release declaration and compare it to tracker, inventory, and zero-grey registry state.
 
 ## Execution_Plan Creation Gate
@@ -74,5 +74,5 @@ The final closure run must include:
 - Wire/auth/driver fuzz tests and state-race fault injection.
 - Packaging and install smoke tests for every distributable lane.
 - Real-route performance budget checks with explicit thresholds.
-- Donor compatibility route tests that do not use parser-only shortcuts.
+- Reference compatibility route tests that do not use parser-only shortcuts.
 - Machine-readable release declaration generation and validation.

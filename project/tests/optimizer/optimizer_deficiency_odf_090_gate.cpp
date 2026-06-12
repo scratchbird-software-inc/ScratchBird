@@ -226,13 +226,13 @@ void UnsafeAuthorityFailsClosed() {
   Require(exact.ok(), "ODF-090 authority test setup failed");
 
   authority = Authority();
-  authority.parser_or_donor_finality_or_visibility_authority = true;
+  authority.parser_or_reference_finality_or_visibility_authority = true;
   auto refused = idx::UnionCandidateSets(exact.output, exact.output, authority);
   Require(!refused.ok() && refused.fail_closed,
-          "ODF-090 parser/donor authority did not fail closed");
+          "ODF-090 parser/reference authority did not fail closed");
   Require(refused.diagnostic.diagnostic_code ==
               "SB_CANDIDATE_SET.UNSAFE_AUTHORITY",
-          "ODF-090 parser/donor authority diagnostic changed");
+          "ODF-090 parser/reference authority diagnostic changed");
 
   authority = Authority();
   authority.client_finality_or_visibility_authority = true;

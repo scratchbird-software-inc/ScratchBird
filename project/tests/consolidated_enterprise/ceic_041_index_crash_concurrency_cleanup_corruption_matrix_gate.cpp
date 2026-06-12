@@ -49,7 +49,7 @@ bool EvidenceHas(const index::IndexFaultInjectionMatrixRow& row,
 }
 
 bool IsBlocked(const index::IndexFamilyDescriptor& descriptor) {
-  return descriptor.persistence == index::IndexPersistenceClass::donor_emulated ||
+  return descriptor.persistence == index::IndexPersistenceClass::reference_emulated ||
          descriptor.persistence == index::IndexPersistenceClass::policy_blocked;
 }
 
@@ -63,7 +63,7 @@ bool RequiresPersistentScenarioCoverage(
 void ValidateAuthorityBoundary(
     const index::IndexFaultInjectionMatrixRow& row) {
   Require(!row.parser_authority, "CEIC-041 row claimed parser authority");
-  Require(!row.donor_authority, "CEIC-041 row claimed donor authority");
+  Require(!row.reference_authority, "CEIC-041 row claimed reference authority");
   Require(!row.provider_authority, "CEIC-041 row claimed provider authority");
   Require(!row.storage_authority, "CEIC-041 row claimed storage authority");
   Require(!row.visibility_authority, "CEIC-041 row claimed visibility authority");
@@ -77,7 +77,7 @@ void ValidateAuthorityBoundary(
               row.scenario_class == "crash_cleanup_overlay" ||
               row.scenario_class == "reopen" ||
               row.scenario_class == "corruption_classification" ||
-              row.scenario_class == "donor_policy_refusal" ||
+              row.scenario_class == "reference_policy_refusal" ||
               row.scenario_class == "cluster_external_provider_only",
           "CEIC-041 scenario rows must explicitly avoid CEIC-042 drift claims");
 }
@@ -170,11 +170,11 @@ int main() {
       bool refused = false;
       for (const auto* row : rows_by_family[family]) {
         refused = refused ||
-                  (row->scenario_class == "donor_policy_refusal" &&
-                   row->donor_policy_refused && row->refused &&
+                  (row->scenario_class == "reference_policy_refusal" &&
+                   row->reference_policy_refused && row->refused &&
                    row->fail_closed && !row->planner_visible);
       }
-      Require(refused, family + " donor/policy refusal coverage missing");
+      Require(refused, family + " reference/policy refusal coverage missing");
       continue;
     }
 

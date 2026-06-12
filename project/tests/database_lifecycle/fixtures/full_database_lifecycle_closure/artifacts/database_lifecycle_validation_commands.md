@@ -79,7 +79,7 @@ ctest --test-dir build --output-on-failure -L database_lifecycle_shutdown_notifi
 ctest --test-dir build --output-on-failure -L database_lifecycle_catalog_index_profile
 ctest --test-dir build --output-on-failure -L database_lifecycle_sys_information_projection
 ctest --test-dir build --output-on-failure -L database_lifecycle_parser_route
-ctest --test-dir build --output-on-failure -L database_lifecycle_donor_mapping
+ctest --test-dir build --output-on-failure -L database_lifecycle_reference_mapping
 ctest --test-dir build --output-on-failure -L database_lifecycle_fault_injection
 ctest --test-dir build --output-on-failure -L database_lifecycle_exhaustive
 ctest --test-dir build --output-on-failure -L database_lifecycle_release
@@ -153,8 +153,8 @@ rg -q 'abuse|threat|fail closed|least privilege' public_release_evidence project
 # static:DBLC_STATIC_TRACEABILITY_COVERAGE
 test -s project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/TRACKER.csv && test -s project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/VALIDATION_PLAN.md && test -s project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_CTEST_REQUIRED_GATES.csv
 
-# static:DBLC_STATIC_NO_DONOR_ENGINE_SQL
-test -d project/src && ! rg -n 'donor.*execute.*SQL|execute.*SQL.*engine boundary|donor.*engine.*SQL' project/src/parsers project/src/udr public_contract_snapshot
+# static:DBLC_STATIC_NO_REFERENCE_ENGINE_SQL
+test -d project/src && ! rg -n 'reference.*execute.*SQL|execute.*SQL.*engine boundary|reference.*engine.*SQL' project/src/parsers project/src/udr public_contract_snapshot
 
 # static:DBLC_STATIC_DIAGNOSTIC_MESSAGE_VECTOR_AUDIT
 rg -q 'message vector|diagnostic|audit|metrics|cache invalidation' public_release_evidence project/src project/tests
@@ -235,7 +235,7 @@ test -s project/tests/database_lifecycle/fixtures/full_database_lifecycle_closur
 | DBLC-013S | `ctest:database_lifecycle_upgrade_migration`, `static:DBLC_STATIC_MIGRATION_NO_GUESSING` |
 | DBLC-013T | `ctest:database_lifecycle_threat_model`, `static:DBLC_STATIC_THREAT_MODEL_ABUSE_CASES` |
 | DBLC-013R | `ctest:database_lifecycle_traceability`, `static:DBLC_STATIC_TRACEABILITY_COVERAGE` |
-| DBLC-014 | `ctest:database_lifecycle_donor_mapping`, `ctest:database_lifecycle_parser_route`, `ctest:sbsql_parser_worker`, `static:DBLC_STATIC_NO_DONOR_ENGINE_SQL` |
+| DBLC-014 | `ctest:database_lifecycle_reference_mapping`, `ctest:database_lifecycle_parser_route`, `ctest:sbsql_parser_worker`, `static:DBLC_STATIC_NO_REFERENCE_ENGINE_SQL` |
 | DBLC-015 | `ctest:database_lifecycle_supportability_evidence`, `static:DBLC_STATIC_DIAGNOSTIC_MESSAGE_VECTOR_AUDIT` |
 | DBLC-016 | `ctest:database_lifecycle_exhaustive`, `static:DBLC_STATIC_REGRESSION_REPORT_ARTIFACT` |
 | DBLC-017 | `ctest:database_lifecycle_fault_injection`, `ctest:mga_transaction_regression`, `static:DBLC_STATIC_AUTHORITY_DRIFT_GATES`, `static:DBLC_STATIC_NO_LIFECYCLE_PLACEHOLDERS` |

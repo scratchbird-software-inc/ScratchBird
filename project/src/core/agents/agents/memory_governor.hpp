@@ -52,7 +52,7 @@ struct MemoryGovernorSnapshot {
   bool grant_is_spillable = false;
   bool protected_foreground_work = true;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
 };
 
 struct MemoryGovernorEvidenceField {

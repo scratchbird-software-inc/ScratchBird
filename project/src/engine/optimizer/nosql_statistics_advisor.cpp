@@ -36,7 +36,7 @@ NoSqlStatisticsAdvisorResult Refuse(std::string code, std::string evidence) {
   result.diagnostic_code = std::move(code);
   AddEvidence(&result, std::move(evidence));
   AddEvidence(&result, "statistics_metadata_only=true");
-  AddEvidence(&result, "parser_or_donor_authority=false");
+  AddEvidence(&result, "parser_or_reference_authority=false");
   AddEvidence(&result, "provider_transaction_finality_authority=false");
   AddEvidence(&result, "provider_visibility_authority=false");
   AddEvidence(&result, "client_visibility_or_finality_authority=false");
@@ -147,7 +147,7 @@ void AddCommonAuthorityEvidence(NoSqlStatisticsAdvisorResult* result) {
   AddEvidence(result, "mga_finality_authority=engine_transaction_inventory");
   AddEvidence(result, "security_recheck=required");
   AddEvidence(result, "security_redaction_proof=present");
-  AddEvidence(result, "parser_or_donor_authority=false");
+  AddEvidence(result, "parser_or_reference_authority=false");
   AddEvidence(result, "provider_transaction_finality_authority=false");
   AddEvidence(result, "provider_visibility_authority=false");
   AddEvidence(result, "client_visibility_or_finality_authority=false");
@@ -213,7 +213,7 @@ NoSqlStatisticsAdvisorResult EvaluateNoSqlStatisticsAdvisor(
     return Refuse("SB_NOSQL_STATS_ADVISOR.OBJECT_REQUIRED",
                   "object_required");
   }
-  if (request.parser_or_donor_authority ||
+  if (request.parser_or_reference_authority ||
       request.provider_claims_transaction_finality_authority ||
       request.provider_claims_visibility_authority ||
       request.client_claims_visibility_or_finality_authority ||

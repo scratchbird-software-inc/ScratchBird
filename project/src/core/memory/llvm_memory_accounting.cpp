@@ -26,7 +26,7 @@ using scratchbird::core::platform::Subsystem;
 constexpr const char* kEvidenceAnchor =
     "CEIC-061_LLVM_DYNAMIC_STATIC_MEMORY_ACCOUNTING";
 constexpr const char* kAuthorityScope =
-    "llvm_memory_accounting.authority_scope=memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_provider_finality_cluster_or_agent_action_authority";
+    "llvm_memory_accounting.authority_scope=memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_provider_finality_cluster_or_agent_action_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -120,7 +120,7 @@ void AddBaseEvidence(std::vector<std::string>* evidence,
   evidence->push_back("llvm_memory.no_authority.visibility=true");
   evidence->push_back("llvm_memory.no_authority.authorization_security=true");
   evidence->push_back("llvm_memory.no_authority.recovery=true");
-  evidence->push_back("llvm_memory.no_authority.parser_donor_wal=true");
+  evidence->push_back("llvm_memory.no_authority.parser_reference_wal=true");
   evidence->push_back(
       "llvm_memory.no_authority.benchmark_optimizer_plan_index_provider_cluster_agent=true");
   for (const auto& entry : request.evidence) {
@@ -177,7 +177,7 @@ bool UnsafeAuthority(const ForeignMemoryAuthority& authority,
   }
   if (authority.transaction_finality_authority || authority.visibility_authority ||
       authority.recovery_authority || authority.parser_authority ||
-      authority.donor_authority || authority.wal_authority ||
+      authority.reference_authority || authority.wal_authority ||
       authority.benchmark_authority || authority.support_bundle_authority ||
       authority.optimizer_plan_authority || authority.index_finality_authority ||
       authority.agent_action_authority || authority.authorization_authority ||
@@ -218,7 +218,7 @@ bool ValidateShape(const LlvmMemoryAccountingRequest& request,
       Blank(request.provenance.source_label) ||
       !request.provenance.engine_mga_authoritative ||
       !request.provenance.memory_evidence_only ||
-      request.provenance.parser_authority || request.provenance.donor_authority ||
+      request.provenance.parser_authority || request.provenance.reference_authority ||
       request.provenance.transaction_finality_authority ||
       request.provenance.visibility_authority ||
       request.provenance.recovery_authority ||

@@ -12,7 +12,7 @@
 // Local non-cluster operational agents use this ledger to bind workflow
 // decisions to durable agent/catalog/MGA evidence. The ledger is operational
 // evidence only; it is not transaction finality, visibility, recovery,
-// security, parser, donor, client, or cluster authority.
+// security, parser, reference, client, or cluster authority.
 
 #include "agent_runtime.hpp"
 #include "agent_durable_catalog.hpp"
@@ -61,7 +61,7 @@ struct AgentLocalWorkflowAuthority {
   bool residency_policy_valid = false;
   bool parser_authority = false;
   bool client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool recovery_authority = false;
   bool cluster_route_requested = false;
 };
@@ -92,7 +92,7 @@ struct AgentLocalWorkflowRecord {
   bool outcome_verified = false;
   bool parser_authority = false;
   bool client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool recovery_authority = false;
   bool cluster_authority = false;
 };

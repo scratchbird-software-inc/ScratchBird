@@ -17,7 +17,7 @@ endif()
 target_compile_features(sbu_firebird_parser_support PUBLIC cxx_std_23)
 target_include_directories(sbu_firebird_parser_support PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
-  ${PROJECT_SOURCE_DIR}/src/parsers/donor/firebird
+  ${PROJECT_SOURCE_DIR}/src/parsers/compatibility/firebird
 )
 target_link_libraries(sbu_firebird_parser_support PUBLIC
   sb_udr_runtime

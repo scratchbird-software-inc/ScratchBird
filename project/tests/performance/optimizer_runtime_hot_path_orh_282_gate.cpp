@@ -90,7 +90,7 @@ opt::OptimizerRuntimeFeedback RuntimeFeedback() {
   feedback.policy_allowed = true;
   feedback.advisory_only = true;
   feedback.mga_visibility_recheck_preserved = true;
-  feedback.parser_or_donor_authority = false;
+  feedback.parser_or_reference_authority = false;
   feedback.transaction_finality_authority = "engine_transaction_inventory";
   return feedback;
 }
@@ -207,14 +207,14 @@ int main() {
   RequireAccepted(accepted);
 
   auto parser_authority = Request();
-  parser_authority.authority.parser_client_or_donor_feedback_authority = true;
+  parser_authority.authority.parser_client_or_reference_feedback_authority = true;
   RequireRejected(parser_authority,
                   "ORH_ADAPTIVE_FEEDBACK_UNSAFE_AUTHORITY",
                   "refused=ORH_ADAPTIVE_FEEDBACK_UNSAFE_AUTHORITY");
 
-  auto donor_authority = Request();
-  donor_authority.feedback.parser_or_donor_authority = true;
-  RequireRejected(donor_authority,
+  auto reference_authority = Request();
+  reference_authority.feedback.parser_or_reference_authority = true;
+  RequireRejected(reference_authority,
                   "ORH_ADAPTIVE_FEEDBACK_UNSAFE_AUTHORITY",
                   "feedback_must_be_optimizer_advisory_only");
 
@@ -289,10 +289,10 @@ int main() {
                   "extended_stat_request_requires_optimizer_authority");
 
   auto dominance_overclaim = Request();
-  dominance_overclaim.plan.benchmark_or_donor_dominance_claim = true;
+  dominance_overclaim.plan.benchmark_or_reference_dominance_claim = true;
   RequireRejected(dominance_overclaim,
                   "ORH_ADAPTIVE_FEEDBACK_DOMINANCE_OVERCLAIM",
-                  "adaptive_feedback_is_not_donor_dominance");
+                  "adaptive_feedback_is_not_reference_dominance");
 
   std::cout << "ORH-282 adaptive cardinality feedback gate passed\n";
   return EXIT_SUCCESS;

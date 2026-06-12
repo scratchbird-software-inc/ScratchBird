@@ -41,7 +41,7 @@ REQUIRED_MANIFEST_ARTIFACTS = ("CEIC-ART-013", "CEIC-ART-070")
 
 AUTHORITY_BOUNDARY_TOKEN = (
     "optimizer_readiness_manifest_is_generated_evidence_only_not_transaction_"
-    "finality_visibility_authorization_security_recovery_parser_donor_wal_"
+    "finality_visibility_authorization_security_recovery_parser_reference_wal_"
     "benchmark_dominance_optimizer_plan_truth_index_finality_provider_finality_"
     "cluster_memory_or_agent_action_authority"
 )
@@ -159,9 +159,9 @@ SOURCE_ANCHORS = (
     ),
     SourceAnchor(
         "CEIC-058",
-        "project/src/engine/optimizer/optimizer_live_donor_comparison_artifacts.hpp",
-        "CEIC_058_LIVE_DONOR_COMPARISON_ARTIFACTS",
-        "live donor comparison artifacts",
+        "project/src/engine/optimizer/optimizer_live_reference_comparison_artifacts.hpp",
+        "CEIC_058_LIVE_REFERENCE_COMPARISON_ARTIFACTS",
+        "live reference comparison artifacts",
     ),
     SourceAnchor(
         "CEIC-059",
@@ -298,14 +298,14 @@ COMPONENT_SPECS = (
     ),
     ComponentSpec(
         "CEIC-058",
-        "donor_comparison_artifacts",
-        "Live donor comparison artifacts",
+        "reference_comparison_artifacts",
+        "Live reference comparison artifacts",
         "CEIC-ART-066",
-        "ceic_058_live_donor_comparison_artifacts_gate",
-        "sb.optimizer.live_donor_comparison_artifacts.v1",
-        "project/src/engine/optimizer/optimizer_live_donor_comparison_artifacts.hpp",
-        "CEIC_058_LIVE_DONOR_COMPARISON_ARTIFACTS",
-        "donor_comparison_artifact_validation",
+        "ceic_058_live_reference_comparison_artifacts_gate",
+        "sb.optimizer.live_reference_comparison_artifacts.v1",
+        "project/src/engine/optimizer/optimizer_live_reference_comparison_artifacts.hpp",
+        "CEIC_058_LIVE_REFERENCE_COMPARISON_ARTIFACTS",
+        "reference_comparison_artifact_validation",
     ),
     ComponentSpec(
         "CEIC-059",
@@ -631,7 +631,7 @@ def build_component(
         "synthetic_statistics": False,
         "local_default_statistics": False,
         "policy_default_statistics": False,
-        "donor_authority_claimed": False,
+        "reference_authority_claimed": False,
         "benchmark_dominance_claimed": False,
         "optimizer_plan_authority_claimed": False,
         "provider_finality_claimed": False,
@@ -686,11 +686,11 @@ def build_component(
         component["sql_text_leak_allowed"] = False
         component["raw_uuid_leak_allowed"] = False
         component["protected_material_leak_allowed"] = False
-    elif spec.component_id == "donor_comparison_artifacts":
-        component["minimum_donor_count"] = 24
-        component["donor_reference_only"] = True
-        component["donor_as_authority"] = False
-        component["donor_storage_finality_substitution"] = False
+    elif spec.component_id == "reference_comparison_artifacts":
+        component["minimum_reference_count"] = 24
+        component["reference_reference_only"] = True
+        component["reference_as_authority"] = False
+        component["reference_storage_finality_substitution"] = False
     elif spec.component_id == "llvm_memory_accounting":
         component["linkage_modes"] = ["dynamic_library", "static_library"]
         component["foreign_memory_handle_required"] = True
@@ -805,10 +805,10 @@ def build_manifest(
             "security_authority": False,
             "recovery_authority": False,
             "parser_authority": False,
-            "donor_authority": False,
-            "donor_result_authority": False,
-            "donor_execution_authority": False,
-            "donor_storage_authority": False,
+            "reference_authority": False,
+            "reference_result_authority": False,
+            "reference_execution_authority": False,
+            "reference_storage_authority": False,
             "wal_authority": False,
             "benchmark_authority": False,
             "benchmark_dominance_authority": False,
@@ -921,7 +921,7 @@ def validate_component_semantics(component: dict[str, Any]) -> list[str]:
         if component.get(field) is not False:
             errors.append(f"component {component_id} {field} must be false")
     for field in (
-        "donor_authority_claimed",
+        "reference_authority_claimed",
         "benchmark_dominance_claimed",
         "optimizer_plan_authority_claimed",
         "provider_finality_claimed",
@@ -976,13 +976,13 @@ def validate_component_semantics(component: dict[str, Any]) -> list[str]:
         for field in ("sql_text_leak_allowed", "raw_uuid_leak_allowed", "protected_material_leak_allowed"):
             if component.get(field) is not False:
                 errors.append(f"driver_visible_explain {field} must be false")
-    elif component_id == "donor_comparison_artifacts":
-        if int(component.get("minimum_donor_count", 0) or 0) < 24:
-            errors.append("donor_comparison_artifacts must require at least 24 donors")
-        if component.get("donor_reference_only") is not True or component.get("donor_as_authority") is not False:
-            errors.append("donor_comparison_artifacts must remain donor reference only")
-        if component.get("donor_storage_finality_substitution") is not False:
-            errors.append("donor_comparison_artifacts must forbid donor storage/finality substitution")
+    elif component_id == "reference_comparison_artifacts":
+        if int(component.get("minimum_reference_count", 0) or 0) < 24:
+            errors.append("reference_comparison_artifacts must require at least 24 references")
+        if component.get("reference_reference_only") is not True or component.get("reference_as_authority") is not False:
+            errors.append("reference_comparison_artifacts must remain reference reference only")
+        if component.get("reference_storage_finality_substitution") is not False:
+            errors.append("reference_comparison_artifacts must forbid reference storage/finality substitution")
     elif component_id == "llvm_memory_accounting":
         if tuple(component.get("linkage_modes", [])) != ("dynamic_library", "static_library"):
             errors.append("llvm_memory_accounting must cover dynamic and static linkage")
