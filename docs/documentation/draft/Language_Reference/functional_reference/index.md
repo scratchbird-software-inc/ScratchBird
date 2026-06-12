@@ -4,6 +4,8 @@ The functional reference documents SBsql built-in operations by package namespac
 
 These pages describe the SBsql language surface. They do not grant privileges and they do not bypass schema sandboxing, descriptor checks, policy admission, or MGA transaction authority.
 
+Technical identifiers such as SBLR symbols, AST class names, UUIDs, entrypoints, optimizer notes, and conformance markers are diagnostic trace fields. They connect the documented surface to implementation evidence; they are not independent user contracts or release-support claims.
+
 ## Packages
 
 | Package | File | Records | Scope |
@@ -11,11 +13,11 @@ These pages describe the SBsql language surface. They do not grant privileges an
 | `sb.core` | [sb_core.md](sb_core.md) | 605 | Core scalar, aggregate, window, session, catalog, diagnostic, and language helper surfaces used by ordinary SBsql expressions and procedural SQL. |
 | `sb.crypto` | [sb_crypto.md](sb_crypto.md) | 27 | Cryptographic, hashing, random-value, armor, and bounded encryption helper functions. |
 | `sb.cursor` | [sb_cursor.md](sb_cursor.md) | 15 | Cursor, stream, rowset-handle, and table-value conversion helpers used by procedural SQL and streaming execution. |
-| `sb.diagnostic` | [sb_diagnostic.md](sb_diagnostic.md) | 1 | Statement and procedural diagnostic helpers, including row-count context. |
+| `sb.fn.diagnostic` | [sb_diagnostic.md](sb_diagnostic.md) | 1 | Statement and procedural diagnostic helpers, including row-count context. |
 | `sb.json` | [sb_json.md](sb_json.md) | 44 | JSON and JSONB construction, extraction, path, aggregation, and table-shaping helpers. |
 | `sb.lob` | [sb_lob.md](sb_lob.md) | 13 | Large-object and locator helpers for bounded LOB access through engine-managed handles. |
-| `sb.operator` | [sb_operator.md](sb_operator.md) | 23 | Operator functions for arithmetic, comparison, boolean, pattern, JSON, array, and vector-like operator spellings. |
-| `sb.range` | [sb_range.md](sb_range.md) | 9 | Range-boundary and containment helpers for descriptor-backed range values. |
+| `sb.operator` | [sb_operator.md](sb_operator.md) | 24 | Operator functions for arithmetic, comparison, boolean, pattern, JSON, array, and vector-like operator spellings. |
+| `sb.scalar` (range) | [sb_range.md](sb_range.md) | 9 | Range-boundary and containment helpers for descriptor-backed range values; registered under `sb.scalar.range_*`. |
 | `sb.regex` | [sb_regex.md](sb_regex.md) | 12 | Regular expression matching, search, counting, replacement, and split helpers. |
 | `sb.rowset` | [sb_rowset.md](sb_rowset.md) | 16 | Rowset, set-returning, table-value, multiset, and series construction helpers. |
 | `sb.spatial` | [sb_spatial.md](sb_spatial.md) | 93 | Bounded spatial geometry helpers for WKT, narrow GeoJSON, point WKB text, predicates, measurements, and construction. |

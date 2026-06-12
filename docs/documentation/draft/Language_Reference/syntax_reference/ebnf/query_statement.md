@@ -8,7 +8,7 @@ Generation task: `ebnf_query_statement`
 ## Production
 
 ```ebnf
-query_statement         ::= select_statement | with_statement | values_statement | nosql_query_statement ;
+query_statement         ::= select_statement | with_clause | values_stmt ;
 ```
 
 ## Meaning
@@ -20,17 +20,18 @@ query_statement         ::= select_statement | with_statement | values_statement
 | Parent Production |
 | --- |
 | native_statement |
-| cte |
+| cte_def |
 | set_query |
 | values_source |
-| explain_statement |
+| explain_stmt |
 
 ## Child Productions
 
 | Child Production |
 | --- |
 | select_statement |
-| with_statement |
+| with_clause |
+| values_stmt |
 
 ## Practical Notes
 

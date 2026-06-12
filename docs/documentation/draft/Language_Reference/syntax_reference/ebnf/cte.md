@@ -8,12 +8,12 @@ Generation task: `ebnf_cte`
 ## Production
 
 ```ebnf
-cte                     ::= identifier column_alias_list? "AS" "(" query_statement ")" ;
+cte_def                 ::= identifier column_alias_list? "AS" "(" query_statement ")" ;
 ```
 
 ## Meaning
 
-`cte` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`cte_def` is an SBsql grammar production (registry canonical name `cte_def`; the short alias `cte` also appears in grammar-fragment references). It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 When used under `WITH RECURSIVE`, the CTE may lower through the bounded values-backed recursive route:
 

@@ -27,18 +27,17 @@ silent truncation.
 | `int16` | `smallint` | signed integer | 2 bytes | -32768 to 32767 |
 | `uint16` | none | unsigned integer | 2 bytes | 0 to 65535 |
 | `int32` | `int`, `integer` | signed integer | 4 bytes | -2147483648 to 2147483647 |
-| `uint32` | `uint` | unsigned integer | 4 bytes | 0 to 4294967295 |
+| `uint32` | none | unsigned integer | 4 bytes | 0 to 4294967295 |
 | `int64` | `bigint` | signed integer | 8 bytes | -9223372036854775808 to 9223372036854775807 |
 | `uint64` | none | unsigned integer | 8 bytes | 0 to 18446744073709551615 |
 | `int128` | none | signed integer | 16 bytes | -170141183460469231731687303715884105728 to 170141183460469231731687303715884105727 |
 | `uint128` | none | unsigned integer | 16 bytes | 0 to 340282366920938463463374607431768211455 |
 | `decimal(p,s)` | `numeric(p,s)` | exact decimal | descriptor-dependent | `p` total digits and `s` fractional digits. |
-| `decfloat(16)` | none | decimal floating | 8 byte logical payload | 16 decimal digits of precision; exponent and special values are descriptor-owned. |
-| `decfloat(34)` | none | decimal floating | 16 byte logical payload | 34 decimal digits of precision; exponent and special values are descriptor-owned. |
-| `real` | `float4` | approximate real | 4 bytes | Binary32-style finite range with approximately 6 to 9 significant decimal digits. |
-| `double precision` | `float8`, `double` | approximate real | 8 bytes | Binary64-style finite range with approximately 15 to 17 significant decimal digits. |
+| `decimal_float` | `decfloat` in compatibility dialects | decimal floating | descriptor-defined | Up to 34 decimal digits of precision; exponent and special values are descriptor-owned. |
+| `real` | none | approximate real | 4 bytes | Binary32-style finite range with approximately 6 to 9 significant decimal digits. |
+| `double precision` | `double` | approximate real | 8 bytes | Binary64-style finite range with approximately 15 to 17 significant decimal digits. |
 | `float(p)` | none | approximate real | 4 or 8 bytes | `p` selects an admitted real descriptor under database policy. |
-| `money` | `currency` | domain over exact decimal | descriptor-dependent | Currency, scale, rounding, and rendering are domain or descriptor policy. |
+| `money` | none | domain over exact decimal | descriptor-dependent | Currency, scale, rounding, and rendering are domain or descriptor policy. |
 
 `decimal(p,s)` admits precision and scale only when the active descriptor policy
 supports them. The portable baseline is precision `1` through `38` and scale
@@ -192,14 +191,12 @@ unsigned_integer_type   ::= "uint8" | "uint16" | "uint32"
 
 ```ebnf
 decimal_type            ::= ("decimal" | "numeric") "(" precision "," scale ")"
-                          | "decfloat" "(" ("16" | "34") ")" ;
+                          | "decimal_float" ;
 ```
 
 ```ebnf
 real_type               ::= "real"
-                          | "float4"
                           | "double" "precision"
-                          | "float8"
                           | "float" "(" precision ")" ;
 ```
 

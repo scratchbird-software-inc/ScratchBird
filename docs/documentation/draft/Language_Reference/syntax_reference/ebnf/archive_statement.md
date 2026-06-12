@@ -9,7 +9,7 @@ Parent reference: [Backup, Restore, Replication, And Migration](../backup_restor
 ## Production
 
 ```ebnf
-archive_statement ::=
+archive_stmt ::=
     ARCHIVE archive_action archive_payload? archive_option_list? ;
 
 archive_action ::=
@@ -33,7 +33,7 @@ archive_option_list ::=
 
 ## Meaning
 
-`archive_statement` recognizes operations over backup-set and manifest metadata. Archive metadata is evidence and retention state. It does not override object authorization, stream validation, manifest checks, or MGA transaction finality.
+`archive_stmt` recognizes operations over backup-set and manifest metadata. Archive metadata is evidence and retention state. It does not override object authorization, stream validation, manifest checks, or MGA transaction finality.
 
 ## Binding Requirements
 

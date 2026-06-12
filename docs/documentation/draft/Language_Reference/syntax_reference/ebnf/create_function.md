@@ -7,7 +7,7 @@ Generation task: `ebnf_create_function`
 ## Production
 
 ```ebnf
-create_function ::=
+create_function_stmt ::=
     "CREATE" "FUNCTION" function_signature
     "RETURNS" function_return_descriptor
     function_attribute_list?
@@ -60,7 +60,7 @@ function_body ::=
 
 ## Meaning
 
-`create_function` creates a durable function catalog row. The create route must store the function UUID, resolver name, overload signature, descriptors, source reference, executable representation, dependency graph, grants, and readiness metadata.
+`create_function_stmt` creates a durable function catalog row. The create route must store the function UUID, resolver name, overload signature, descriptors, source reference, executable representation, dependency graph, grants, and readiness metadata.
 
 ## Used By
 

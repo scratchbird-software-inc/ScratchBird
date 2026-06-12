@@ -220,7 +220,7 @@ A filespace agent is a policy-controlled hook that assists storage lifecycle dec
 create filespace agent primary_growth_agent
 for filespace primary_data
 with
-  type growth,
+  type filespace_capacity_manager,
   policy primary_growth_policy,
   timeout 30 seconds;
 ```

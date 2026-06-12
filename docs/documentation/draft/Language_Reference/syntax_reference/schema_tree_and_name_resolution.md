@@ -145,6 +145,11 @@ Identifier folding is profile-aware:
 
 Names can have localized labels and comments. The default language is `en`, the session language is preferred when present, and `und` can be used for language-independent names.
 
+Localized labels are resolver metadata. SBsql language profiles are parser
+resources that can affect source spelling and phrase order before UUID binding.
+Both are user-facing inputs to the resolver path; neither changes the durable
+schema UUID or grants access outside the session sandbox.
+
 ## SBsql Examples
 
 ```sql

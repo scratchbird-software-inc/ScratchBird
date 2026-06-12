@@ -45,13 +45,13 @@ Each table page follows the same public interpretation model.
 | `sys.catalog.type_descriptor` | [sys_catalog_type_descriptor.md](sys_catalog_type_descriptor.md) |
 | `sys.catalog.domain_descriptor` | [sys_catalog_domain_descriptor.md](sys_catalog_domain_descriptor.md) |
 | `sys.catalog.domain_element` | [sys_catalog_domain_element.md](sys_catalog_domain_element.md) |
-| `sys.catalog.type_alias_mapping` | [sys_catalog_type_alias_mapping.md](sys_catalog_type_alias_mapping.md) |
+| `sys.catalog.reference_type_mapping` | [sys_catalog_type_alias_mapping.md](sys_catalog_type_alias_mapping.md) |
 | `sys.catalog.type_capability` | [sys_catalog_type_capability.md](sys_catalog_type_capability.md) |
 | `sys.catalog.operation_descriptor` | [sys_catalog_operation_descriptor.md](sys_catalog_operation_descriptor.md) |
-| `sys.catalog.protected_material` | [sys_catalog_protected_material.md](sys_catalog_protected_material.md) |
-| `sys.catalog.protected_material_version` | [sys_catalog_protected_material_version.md](sys_catalog_protected_material_version.md) |
-| `sys.catalog.protected_material_policy_binding` | [sys_catalog_protected_material_policy_binding.md](sys_catalog_protected_material_policy_binding.md) |
-| `sys.security.catalog.protected_material_audit_event` | [sys_security_catalog_protected_material_audit_event.md](sys_security_catalog_protected_material_audit_event.md) |
+| `sys.security.protected_material_catalog` | [sys_catalog_protected_material.md](sys_catalog_protected_material.md) |
+| `sys.security.protected_material_version` | [sys_catalog_protected_material_version.md](sys_catalog_protected_material_version.md) |
+| `sys.security.protected_material_policy_binding` | [sys_catalog_protected_material_policy_binding.md](sys_catalog_protected_material_policy_binding.md) |
+| `sys.security.protected_material_audit` | [sys_security_catalog_protected_material_audit_event.md](sys_security_catalog_protected_material_audit_event.md) |
 
 ## Common Query Pattern
 

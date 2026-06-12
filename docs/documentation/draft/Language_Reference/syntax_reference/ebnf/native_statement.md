@@ -9,15 +9,15 @@ Generation task: `ebnf_native_statement`
 
 ```ebnf
 native_statement        ::= query_statement
-                          | dml_statement
-                          | ddl_statement
-                          | transaction_statement
-                          | security_statement
-                          | policy_statement
-                          | observability_statement
-                          | management_statement
-                          | acceleration_statement
-                          | archive_replication_migration_statement
+                          | dml
+                          | ddl_catalog
+                          | transaction
+                          | security
+                          | policy_stmt
+                          | observability
+                          | management_stmt
+                          | acceleration_stmt
+                          | archive_replication_stmt
                           | nosql_statement
                           | private_cluster_statement ;
 ```
@@ -36,18 +36,18 @@ native_statement        ::= query_statement
 
 | Child Production |
 | --- |
-| acceleration_statement |
-| archive_replication_migration_statement |
-| ddl_statement |
-| dml_statement |
-| management_statement |
+| acceleration_stmt |
+| archive_replication_stmt |
+| ddl_catalog (family) |
+| dml (family) |
+| management_stmt |
 | nosql_statement |
-| observability_statement |
-| policy_statement |
+| observability (family) |
+| policy_stmt |
 | private_cluster_statement |
 | query_statement |
-| security_statement |
-| transaction_statement |
+| security (family) |
+| transaction (family) |
 
 ## Practical Notes
 

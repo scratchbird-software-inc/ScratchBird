@@ -7,7 +7,7 @@ Generation task: `ebnf_graph_statement`
 ## Production
 
 ```ebnf
-graph_statement ::=
+graph_op_stmt ::=
     "GRAPH" graph_action graph_target graph_payload? return_clause? statement_option_list? ;
 
 graph_action ::=
@@ -55,13 +55,13 @@ graph_property_assignment ::=
 
 ## Meaning
 
-`graph_statement` recognizes graph match, traversal, path, mutation, and validation commands. Nodes, edges, paths, graph properties, direction, and traversal depth must bind to graph descriptors before execution.
+`graph_op_stmt` recognizes graph match, traversal, path, mutation, and validation commands. Nodes, edges, paths, graph properties, direction, and traversal depth must bind to graph descriptors before execution.
 
 ## Used By
 
 | Parent Production |
 | --- |
-| nosql_statement |
+| nosql_statement (multi_model family) |
 
 ## Child Productions
 

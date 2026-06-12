@@ -9,7 +9,7 @@ Parent reference: [Backup, Restore, Replication, And Migration](../backup_restor
 ## Production
 
 ```ebnf
-replication_statement ::=
+replication_stmt ::=
     REPLICATION replication_action replication_payload? replication_option_list? ;
 
 replication_action ::=
@@ -54,7 +54,7 @@ replication_option ::=
 
 ## Meaning
 
-`replication_statement` recognizes route and changefeed management. It can describe source and target endpoints, included scopes, ordering evidence, idempotency, apply mode, quarantine behavior, and lifecycle actions. It does not make external ordering tokens or endpoint state into local transaction authority.
+`replication_stmt` recognizes route and changefeed management. It can describe source and target endpoints, included scopes, ordering evidence, idempotency, apply mode, quarantine behavior, and lifecycle actions. It does not make external ordering tokens or endpoint state into local transaction authority.
 
 ## Binding Requirements
 

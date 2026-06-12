@@ -9,7 +9,7 @@ Parent reference: [Cluster-Gated Statements](../cluster_gated_statements.md)
 ## Production
 
 ```ebnf
-drop_cluster ::=
+drop_cluster_stmt ::=
     DROP CLUSTER cluster_ref drop_cluster_option_list? ;
 
 drop_cluster_option_list ::=
@@ -24,7 +24,7 @@ drop_cluster_option ::=
 
 ## Meaning
 
-`drop_cluster` recognizes cluster lifecycle removal syntax. In public builds, it is a recognized gated surface that returns stable refusal diagnostics. It must not remove local database state, filespaces, routes, or provider metadata as a substitute for production cluster removal.
+`drop_cluster_stmt` recognizes cluster lifecycle removal syntax. In public builds, it is a recognized gated surface that returns stable refusal diagnostics. It must not remove local database state, filespaces, routes, or provider metadata as a substitute for production cluster removal.
 
 ## Binding Requirements
 

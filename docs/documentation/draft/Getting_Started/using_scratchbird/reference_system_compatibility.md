@@ -1,19 +1,23 @@
-# Donor Database Compatibility
+# Reference-System Compatibility
 
 ## Purpose
 
-ScratchBird can expose compatibility surfaces through donor parser packages. A donor parser is a standalone parser and protocol adapter for one client family. It lets a client speak the language and protocol shape that parser is built to understand while ScratchBird keeps storage, transactions, identity, security, and recovery inside the ScratchBird engine.
+ScratchBird can expose compatibility surfaces through reference-system emulation
+parser packages. A compatibility parser is a standalone parser and protocol
+adapter for one client family. It lets a client speak the language and protocol
+shape that parser is built to understand while ScratchBird keeps storage,
+transactions, identity, security, and recovery inside the ScratchBird engine.
 
 Compatibility is scoped. The presence of a parser package means there is a route for that client family; it does not mean every command, tool behavior, catalog row, wire-protocol edge case, or administrative feature from that source ecosystem is complete in the current build.
 
 ## The Compatibility Model
 
-A donor parser sits between a client and SBcore.
+A compatibility parser sits between a client and SBcore.
 
 ```mermaid
 flowchart LR
     Client[Compatible client or tool]
-    Parser[Matching donor parser]
+    Parser[Matching compatibility parser]
     SBLR[Bound SBLR request]
     Engine[SBcore]
     Catalog[ScratchBird catalog]
@@ -36,7 +40,7 @@ The parser is responsible for accepting the client surface. The engine remains r
 
 ## What The Parser Owns
 
-A donor parser can own client-facing behavior such as:
+A compatibility parser can own client-facing behavior such as:
 
 - protocol negotiation for its client family;
 - syntax accepted by that parser;
@@ -60,13 +64,13 @@ The parser does not own:
 
 ## Parser Isolation
 
-Each donor parser is isolated from the others.
+Each compatibility parser is isolated from the others.
 
 | Rule | Meaning |
 | --- | --- |
 | One parser, one client family | A parser should accept only the syntax and protocol shape it is built for. |
 | No cross-dialect fallback | A parser should not silently accept unrelated language forms because another parser supports them. |
-| No implicit dependency | Installing one donor parser must not imply that any other parser is installed. |
+| No implicit dependency | Installing one compatibility parser must not imply that any other parser is installed. |
 | Parser-local defaults | Object defaults, name folding, null handling, index defaults, and diagnostics are parser-specific where implemented. |
 | Engine authority remains shared | Once accepted and lowered, engine execution still uses ScratchBird catalog, security, transaction, and storage rules. |
 
@@ -92,13 +96,14 @@ Compatibility may involve many independent surfaces. A parser can be strong in o
 
 ## Sandboxed Workareas
 
-A donor client normally connects to a compatibility workarea. That workarea is the root of the namespace the client can see.
+A compatibility client normally connects to a compatibility workarea. That
+workarea is the root of the namespace the client can see.
 
 ```mermaid
 flowchart TB
     Root[/ScratchBird database root/]
     Admin[Authorized SBsql administration]
-    Workarea[Donor workarea root]
+    Workarea[Compatibility workarea root]
     Catalog[Compatibility catalog projections]
     Objects[User objects visible to client]
     Hidden[Objects outside client sandbox]
@@ -125,9 +130,9 @@ Allowed by design when implemented and admitted by policy:
 
 Denied or restricted by design:
 
-- server-local file open or manipulation by a donor parser unless policy explicitly admits a safe surface;
+- server-local file open or manipulation by a compatibility parser unless policy explicitly admits a safe surface;
 - physical page-copy backup or restore formats;
-- low-level repair, verification, or page maintenance through donor parser routes;
+- low-level repair, verification, or page maintenance through compatibility parser routes;
 - operations targeting objects outside the connected workarea without explicit engine authority.
 
 The key distinction is logical remote stream versus server-local or physical storage access. A logical stream can be interpreted as client work. A physical page copy or repair command attempts to bypass engine authority.
@@ -159,7 +164,7 @@ When evaluating a parser, look for proof of the exact surface you need:
 3. Connection and authentication tests pass.
 4. The SQL or protocol surface you need is implemented.
 5. Type, index, transaction, and catalog behavior match the parser's documented compatibility target.
-6. The behavior is covered by donor-tool regression tests or parser proof gates.
+6. The behavior is covered by reference-system regression tests or parser proof gates.
 7. Unsupported cases return the documented message vector.
 
 Do not infer readiness from file names, directory names, or generated manifests alone.

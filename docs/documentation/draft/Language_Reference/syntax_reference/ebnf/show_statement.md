@@ -7,7 +7,7 @@ Generation task: `ebnf_show_statement`
 ## Production
 
 ```ebnf
-show_statement ::=
+show_stmt ::=
     "SHOW" show_target show_option_list? ;
 
 show_target ::=
@@ -38,7 +38,7 @@ show_option_list ::=
 
 ## Meaning
 
-`show_statement` returns compact authorized projections. It does not grant access to hidden catalog rows, runtime internals, secrets, or protected material.
+`show_stmt` returns compact authorized projections. It does not grant access to hidden catalog rows, runtime internals, secrets, or protected material.
 
 ## Used By
 

@@ -8,30 +8,29 @@ Related pages: [Filespace Lifecycle](../filespace.md), [Database Lifecycle](../d
 
 ```ebnf
 filespace_lifecycle_statement ::=
-      create_filespace_statement
-    | create_filespace_agent_statement
-    | alter_filespace_statement
-    | attach_filespace_policy_statement
-    | show_filespace_statement
-    | describe_filespace_statement
-    | rename_filespace_statement
-    | comment_filespace_statement
-    | recreate_filespace_statement
-    | drop_filespace_statement ;
+      create_filespace_stmt
+    | create_filespace_agent_stmt
+    | alter_filespace_stmt
+    | attach_filespace_stmt
+    | show_filespace_extended
+    | describe_stmt
+    | rename_object_stmt
+    | comment_on_stmt
+    | drop_filespace_stmt ;
 ```
 
 ```ebnf
-create_filespace_statement ::=
+create_filespace_stmt ::=
     CREATE FILESPACE filespace_name filespace_create_options? ;
 
-create_filespace_agent_statement ::=
+create_filespace_agent_stmt ::=
     CREATE FILESPACE AGENT filespace_agent_name
     FOR FILESPACE filespace_name?
     filespace_agent_options? ;
 ```
 
 ```ebnf
-alter_filespace_statement ::=
+alter_filespace_stmt ::=
     ALTER FILESPACE filespace_name alter_filespace_action+ ;
 
 alter_filespace_action ::=
@@ -54,11 +53,11 @@ alter_filespace_action ::=
 ```
 
 ```ebnf
-attach_filespace_policy_statement ::=
+attach_filespace_stmt ::=
     ATTACH POLICY policy_name TO FILESPACE filespace_name
     (ROLE role_name)? ;
 
-show_filespace_statement ::=
+show_filespace_extended ::=
       SHOW FILESPACES
     | SHOW FILESPACE filespace_name
     | SHOW FILESPACE EXTENDED
@@ -66,7 +65,7 @@ show_filespace_statement ::=
     | SHOW FILESPACE filespace_name CAPACITY
     | SHOW FILESPACE filespace_name SHRINK READINESS ;
 
-drop_filespace_statement ::=
+drop_filespace_stmt ::=
     DROP FILESPACE filespace_name drop_filespace_options? ;
 ```
 

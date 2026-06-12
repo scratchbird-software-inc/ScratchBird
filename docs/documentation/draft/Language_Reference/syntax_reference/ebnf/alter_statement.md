@@ -8,7 +8,7 @@ Generation task: `ebnf_alter_statement`
 ## Production
 
 ```ebnf
-alter_statement         ::= alter_schema
+alter_object_stmt       ::= alter_schema
                           | alter_database
                           | alter_filespace
                           | alter_table
@@ -17,8 +17,7 @@ alter_statement         ::= alter_schema
                           | alter_type_descriptor
                           | alter_sequence
                           | alter_view
-                          | alter_function
-                          | alter_procedure
+                          | alter_routine_stmt
                           | alter_trigger
                           | alter_policy
                           | alter_mask
@@ -27,7 +26,7 @@ alter_statement         ::= alter_schema
 
 ## Meaning
 
-`alter_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`alter_object_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

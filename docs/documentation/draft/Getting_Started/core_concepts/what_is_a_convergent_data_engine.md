@@ -136,8 +136,8 @@ In this documentation, a parser profile means a compatibility route exists as a 
 Read compatibility cautiously:
 
 - a parser should support only its intended client family;
-- a donor-style parser should not silently accept unrelated dialects;
-- donor-specific defaults must be documented and tested per parser;
+- a compatibility parser should not silently accept unrelated dialects;
+- reference-system compatibility defaults must be documented and tested per parser;
 - unsupported or denied behavior should return a diagnostic;
 - compatibility status depends on the current tests and release notes.
 

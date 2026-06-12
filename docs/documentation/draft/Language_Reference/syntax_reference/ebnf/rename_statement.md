@@ -8,12 +8,12 @@ Generation task: `ebnf_rename_statement`
 ## Production
 
 ```ebnf
-rename_statement        ::= "RENAME" object_kind object_ref "TO" name_part ;
+rename_object_stmt      ::= "RENAME" object_kind object_ref "TO" name_part ;
 ```
 
 ## Meaning
 
-`rename_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`rename_object_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

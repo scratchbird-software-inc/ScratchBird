@@ -99,7 +99,7 @@ For compatibility parser routes, the conservative rule is:
 - remote logical streams can be supported where implemented;
 - server-local file manipulation should be denied by default;
 - physical page-copy backup or restore should be denied through parser routes;
-- low-level repair and verification should not be available through donor-style parser routes.
+- low-level repair and verification should not be available through compatibility parser routes.
 
 This protects the engine authority boundary and reduces accidental file exposure.
 
@@ -129,13 +129,13 @@ These surfaces need explicit rules for:
 
 Do not describe a replication or ETL route as available until the relevant parser, tool, engine path, and tests prove it.
 
-## Donor-Compatible Data Movement
+## Reference-System Compatible Data Movement
 
 Some compatibility parser families expose logical backup, restore, CDC, replication, ETL, import, or export behavior. ScratchBird should support those surfaces only where they are implemented, safe, scoped to that parser, and admitted by policy.
 
 The parser must classify the operation:
 
-| Donor-Style Request | Expected Classification |
+| Compatibility Request | Expected Classification |
 | --- | --- |
 | Client sends logical metadata and data stream. | Logical restore candidate, if implemented and admitted. |
 | Client requests logical backup stream for the connected workarea. | Logical backup candidate, if implemented and admitted. |
@@ -226,7 +226,7 @@ This page does not claim:
 - [Configuration Basics](configuration_basics.md)
 - [Diagnostics And Support Bundles](diagnostics_and_support_bundles.md)
 - [First Database](../using_scratchbird/first_database.md)
-- [Donor Database Compatibility](../using_scratchbird/donor_database_compatibility.md)
+- [Reference-System Compatibility](../using_scratchbird/reference_system_compatibility.md)
 - [Backup, Restore, Replication, Migration](../../Language_Reference/syntax_reference/backup_restore_replication_migration.md)
 - [Copy](../../Language_Reference/syntax_reference/copy.md)
 - [Refusal Vectors](../../Language_Reference/syntax_reference/refusal_vectors.md)

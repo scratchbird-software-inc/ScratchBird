@@ -52,9 +52,9 @@ Before running commands, know:
 Begin by inspecting the session context. Exact output formatting can vary by build.
 
 ```sql
-show current schema;
+show schema path;
 show search path;
-show current user;
+select current_user;
 show transaction;
 ```
 
@@ -66,22 +66,21 @@ Create a schema for the first test rather than placing test objects at the datab
 
 ```sql
 create schema app;
-set schema app;
 
-show current schema;
+show schema path;
 ```
 
-After `set schema app`, unqualified names such as `notes` should resolve relative to `app` when visible and unambiguous.
+When the session's current schema is `app`, unqualified names such as `notes` can resolve relative to `app` when visible and unambiguous. The command for changing the current schema can vary by release, so the examples below use qualified names that do not depend on session schema state.
 
 ## Create A Table
 
 Use a small table with ordinary scalar values.
 
 ```sql
-create table notes (
-    note_id uint64 not null,
+create table app.notes (
+    note_id bigint not null,
     note_text text not null,
-    created_at timestamp with time zone not null,
+    created_at timestamptz not null,
     constraint pk_notes primary key (note_id)
 );
 ```
@@ -92,7 +91,7 @@ This tests several basic behaviors:
 - column descriptors;
 - scalar datatypes;
 - a named constraint;
-- current-schema name resolution;
+- schema-qualified name resolution;
 - catalog transaction behavior.
 
 ## Insert Rows
@@ -100,7 +99,7 @@ This tests several basic behaviors:
 Insert more than one row so ordering and row counts are easy to inspect.
 
 ```sql
-insert into notes (note_id, note_text, created_at)
+insert into app.notes (note_id, note_text, created_at)
 values
     (1, 'created from the first SBsql session', current_timestamp),
     (2, 'second row in the same statement', current_timestamp),
@@ -115,7 +114,7 @@ Query the data using an explicit projection and stable ordering.
 
 ```sql
 select note_id, note_text, created_at
-from notes
+from app.notes
 order by note_id;
 ```
 
@@ -162,17 +161,15 @@ After commit:
 1. Detach the SBsql client.
 2. Stop and restart the selected runtime if appropriate.
 3. Connect again.
-4. Set the schema or qualify names.
+4. Qualify names with the schema.
 5. Query the committed rows.
 
 ```sql
-set schema app;
-
 select count(*) as note_count
-from notes;
+from app.notes;
 
 select note_id, note_text
-from notes
+from app.notes
 order by note_id;
 ```
 

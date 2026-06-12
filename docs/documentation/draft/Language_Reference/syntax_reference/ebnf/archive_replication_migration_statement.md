@@ -9,10 +9,10 @@ Parent reference: [Backup, Restore, Replication, And Migration](../backup_restor
 ## Production
 
 ```ebnf
-archive_replication_migration_statement ::=
-      archive_statement
-    | backup_statement
-    | restore_statement
+archive_replication_stmt ::=
+      archive_stmt
+    | backup_stmt
+    | restore_stmt
     | replication_statement
     | migration_statement ;
 ```
@@ -32,9 +32,9 @@ This production groups administrative data-movement statements. It does not auth
 
 | Child production | Role |
 | --- | --- |
-| `backup_statement` | Exports logical streams or native backup sets. |
-| `restore_statement` | Validates or applies logical streams and admitted backup sets. |
-| `archive_statement` | Manages backup-set and manifest metadata. |
+| `backup_stmt` | Exports logical streams or native backup sets. |
+| `restore_stmt` | Validates or applies logical streams and admitted backup sets. |
+| `archive_stmt` | Manages backup-set and manifest metadata. |
 | `replication_statement` | Manages replication routes and changefeeds. |
 | `migration_statement` | Plans, imports, replays, compares, validates, and cuts over migration routes. |
 

@@ -56,10 +56,10 @@ The public names below are the user-facing names used in documentation and outpu
 | ScratchBird Engine, or SBcore | The embedded engine library that owns catalog identity, descriptors, transaction authority, storage, recovery decisions, materialized security checks, and engine diagnostics. |
 | ScratchBird IPC Server, or SBsrv | A local multi-user server process for clients on the same machine. It is useful when local processes need shared access without exposing a network listener. |
 | ScratchBird Listener, or SBgate | The parser and parser-pool entry point used for network-facing client traffic. It routes accepted client work to the appropriate parser path. |
-| ScratchBird Local Manager, or SBmgr | A single-node front door that can proxy authenticated connections to internal listener routes in managed deployments. |
+| ScratchBird Single Node Manager, or SBmgr | A single-node front door that can proxy authenticated connections to internal listener routes in managed deployments. |
 | ScratchBird SQL, or SBsql | The native ScratchBird command language and script runner surface. |
 | ScratchBird Core Parser, or SBParser | The parser package for native SBsql requests. |
-| Donor parser packages | Standalone parser packages for specific client families. Each parser should understand only its intended client surface and lower accepted work to ScratchBird engine requests. |
+| Compatibility parser packages | Standalone parser packages for specific client families. Each parser should understand only its intended client surface and lower accepted work to ScratchBird engine requests. |
 | Administrative tools | Utilities for backup, security, diagnostics, conformance, policy, character set, collation, and related operational work where those tools are present in the release. |
 | Resource files | Character sets, collations, time zones, policy files, configuration files, and other resources that make the built output usable as a product instead of only a binary. |
 
@@ -114,7 +114,7 @@ A parser package is responsible for:
 - rendering results and diagnostics in the expected client shape where implemented;
 - refusing unsupported, denied, unsafe, or out-of-scope behavior.
 
-A parser package should not silently accept another parser's language. A donor-style parser is scoped to its donor family. Native SBsql is the ScratchBird language surface.
+A parser package should not silently accept another parser's language. A compatibility parser is scoped to its reference-system client family. Native SBsql is the ScratchBird language surface.
 
 ## SBLR Boundary
 

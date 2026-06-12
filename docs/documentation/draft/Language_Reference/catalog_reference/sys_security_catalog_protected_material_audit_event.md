@@ -1,20 +1,20 @@
-# sys.security.catalog.protected_material_audit_event Catalog Reference
+# sys.security.protected_material_audit Catalog Reference
 
 This page documents the authorized catalog surface that records redacted audit
 events for protected-material lifecycle, access, release, denial, purge,
 policy, and inspection activity.
 
-Generation task: `catalog_sys_security_catalog_protected_material_audit_event`
+Generation task: `catalog_sys_security_protected_material_audit`
 
-Related pages: [sys.catalog.protected_material](sys_catalog_protected_material.md),
-[sys.catalog.protected_material_version](sys_catalog_protected_material_version.md),
-[sys.catalog.protected_material_policy_binding](sys_catalog_protected_material_policy_binding.md),
+Related pages: [sys.security.protected_material_catalog](sys_catalog_protected_material.md),
+[sys.security.protected_material_version](sys_catalog_protected_material_version.md),
+[sys.security.protected_material_policy_binding](sys_catalog_protected_material_policy_binding.md),
 [Security And Sandboxing](../core_paradigms/security_and_sandboxing.md), and
 [Refusal Vectors](../syntax_reference/refusal_vectors.md).
 
 ## Role
 
-`sys.security.catalog.protected_material_audit_event` is the durable, redacted
+`sys.security.protected_material_audit` is the durable, redacted
 evidence surface for protected-material decisions. It lets authorized security,
 support, and operations users answer questions such as:
 
@@ -104,7 +104,7 @@ select audit_event_uuid,
        diagnostic_code,
        event_epoch_millis,
        redaction_applied
-from sys.security.catalog.protected_material_audit_event
+from sys.security.protected_material_audit
 where protected_material_uuid = :protected_material_uuid
 order by event_epoch_millis;
 ```

@@ -7,7 +7,7 @@ Generation task: `ebnf_document_statement`
 ## Production
 
 ```ebnf
-document_statement ::=
+document_op_stmt ::=
     "DOCUMENT" document_action document_target document_payload? return_clause? statement_option_list? ;
 
 document_action ::=
@@ -50,7 +50,7 @@ document_validate_payload ::=
 
 ## Meaning
 
-`document_statement` recognizes document get, put, patch, delete, query, and validate commands. Document paths, values, keys, and validation profiles are untrusted inputs until the binder maps them to descriptors and an admitted operation.
+`document_op_stmt` recognizes document get, put, patch, delete, query, and validate commands. Document paths, values, keys, and validation profiles are untrusted inputs until the binder maps them to descriptors and an admitted operation.
 
 ## Used By
 

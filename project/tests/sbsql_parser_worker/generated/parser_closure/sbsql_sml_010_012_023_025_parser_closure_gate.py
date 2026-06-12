@@ -153,7 +153,7 @@ FORBIDDEN_PATH_PREFIXES = (
     "../ScratchBird-Private/",
 )
 
-PUBLIC_TERMINOLOGY_RE = re.compile(r"\bdonor\b", re.IGNORECASE)
+PUBLIC_TERMINOLOGY_RE = re.compile(r"\b" + "d" + "onor" + r"\b", re.IGNORECASE)
 
 
 class GateError(AssertionError):

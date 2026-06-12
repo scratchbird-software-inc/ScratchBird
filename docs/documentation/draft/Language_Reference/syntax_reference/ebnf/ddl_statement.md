@@ -8,12 +8,12 @@ Generation task: `ebnf_ddl_statement`
 ## Production
 
 ```ebnf
-ddl_statement           ::= create_statement | alter_statement | drop_statement | comment_statement | rename_statement | recreate_statement ;
+ddl_catalog             ::= create_object | alter_object_stmt | drop_object_stmt | comment_on_stmt | rename_object_stmt | recreate_object ;
 ```
 
 ## Meaning
 
-`ddl_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`ddl_catalog` is an SBsql grammar production (registry family name). It is part of contextual parsing only; it does not by itself authorize execution. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 
@@ -25,12 +25,12 @@ ddl_statement           ::= create_statement | alter_statement | drop_statement 
 
 | Child Production |
 | --- |
-| alter_statement |
-| comment_statement |
-| create_statement |
-| drop_statement |
-| recreate_statement |
-| rename_statement |
+| alter_object_stmt |
+| comment_on_stmt |
+| create_object |
+| drop_object_stmt |
+| recreate_object |
+| rename_object_stmt |
 
 ## Practical Notes
 

@@ -7,16 +7,16 @@ Generation task: `ebnf_explain_statement`
 ## Production
 
 ```ebnf
-explain_statement ::=
+explain_stmt ::=
     "EXPLAIN" explain_option_list? query_statement ;
 
 explain_option_list ::=
-    ("ANALYZE" | "PLAN" | "VERBOSE" | "COSTS" | "BUFFERS" | "TIMING" | "FORMAT" identifier)* ;
+    ("ANALYZE" | "PLAN" | "VERBOSE" | "COSTS" | "BUFFERS" | "FORMAT" identifier)* ;
 ```
 
 ## Meaning
 
-`explain_statement` returns an authorized plan report. `ANALYZE` executes the statement and adds measured execution evidence. Plan reports are diagnostic evidence and do not change query authority.
+`explain_stmt` returns an authorized plan report. `ANALYZE` executes the statement and adds measured execution evidence. Plan reports are diagnostic evidence and do not change query authority.
 
 ## Used By
 

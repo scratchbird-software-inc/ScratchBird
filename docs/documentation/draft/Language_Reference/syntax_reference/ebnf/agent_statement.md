@@ -7,7 +7,7 @@ Generation task: `ebnf_agent_statement`
 ## Production
 
 ```ebnf
-agent_statement ::=
+agent_stmt ::=
       show_agent_statement
     | alter_agent_statement
     | create_agent_override_statement
@@ -102,7 +102,7 @@ agent_option_list ::=
 
 ## Meaning
 
-`agent_statement` covers SBsql agent inspection, lifecycle control, policy attachment, policy simulation, action approval, action cancellation, and operator overrides. The grammar recognizes shape only. The engine agent management route owns authority, policy validation, evidence persistence, and fail-closed behavior.
+`agent_stmt` covers SBsql agent inspection, lifecycle control, policy attachment, policy simulation, action approval, action cancellation, and operator overrides. The grammar recognizes shape only. The engine agent management route owns authority, policy validation, evidence persistence, and fail-closed behavior.
 
 ## Used By
 

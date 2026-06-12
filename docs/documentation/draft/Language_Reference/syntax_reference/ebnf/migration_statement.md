@@ -66,7 +66,7 @@ migration_option ::=
 
 | Parent production | Purpose |
 | --- | --- |
-| `archive_replication_migration_statement` | Places `MIGRATION` in the administrative data-movement family. |
+| `archive_replication_stmt` | Places `MIGRATION` in the administrative data-movement family. |
 
 ## Admission Notes
 

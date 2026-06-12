@@ -8,7 +8,7 @@ Generation task: `ebnf_security_statement`
 ## Production
 
 ```ebnf
-security_statement      ::= create_identity | alter_identity | drop_identity | grant_statement | revoke_statement | show_security ;
+security_statement      ::= create_identity | alter_identity | drop_identity | grant_stmt | revoke_stmt | show_security ;
 ```
 
 ## Meaning
@@ -28,8 +28,8 @@ security_statement      ::= create_identity | alter_identity | drop_identity | g
 | alter_identity |
 | create_identity |
 | drop_identity |
-| grant_statement |
-| revoke_statement |
+| grant_stmt |
+| revoke_stmt |
 
 ## Practical Notes
 

@@ -22,8 +22,8 @@ recreate_function ::=
 
 | Parent Production |
 | --- |
-| function_lifecycle_statement |
-| recreate_statement |
+| function_lifecycle_statement (fragment) |
+| recreate_statement (fragment) |
 
 ## Child Productions
 
