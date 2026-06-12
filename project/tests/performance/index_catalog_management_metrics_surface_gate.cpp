@@ -183,7 +183,7 @@ void RequireSurfaceCompletenessAndTruthfulness(
                 !row.visibility_authority && !row.security_authority &&
                 !row.transaction_finality_authority &&
                 !row.recovery_authority && !row.parser_authority &&
-                !row.donor_authority && !row.provider_authority,
+                !row.reference_authority && !row.provider_authority,
             "row claimed authority " + row.family_id);
 
     if (state->blocker == idx::IndexFamilyPhysicalCapabilityBlocker::none) {
@@ -206,22 +206,22 @@ void RequireSurfaceCompletenessAndTruthfulness(
   }
 }
 
-void RequireDonorAndPolicyBlockedStayNonPhysical(
+void RequireReferenceAndPolicyBlockedStayNonPhysical(
     const idx::IndexFamilyManagementSurface& surface) {
-  const auto& donor = RowFor(surface, "donor_emulated");
-  Require(donor.persistence == "donor_emulated",
-          "donor_emulated persistence changed");
-  Require(donor.native_physical_family == "donor_emulated",
-          "donor_emulated native family changed");
-  Require(!donor.runtime_available && !donor.benchmark_clean,
-          "donor_emulated became runtime or benchmark-clean");
-  Require(donor.validation_state == "donor_mapping_only_non_physical",
-          "donor_emulated validation state is not mapping-only");
-  Require(donor.repair_state == "donor_mapping_only_non_physical",
-          "donor_emulated repair state is not mapping-only");
-  Require(!donor.donor_authority && !donor.provider_authority &&
-              !donor.transaction_finality_authority && !donor.recovery_authority,
-          "donor_emulated row claimed authority");
+  const auto& reference = RowFor(surface, "reference_emulated");
+  Require(reference.persistence == "reference_emulated",
+          "reference_emulated persistence changed");
+  Require(reference.native_physical_family == "reference_emulated",
+          "reference_emulated native family changed");
+  Require(!reference.runtime_available && !reference.benchmark_clean,
+          "reference_emulated became runtime or benchmark-clean");
+  Require(reference.validation_state == "reference_mapping_only_non_physical",
+          "reference_emulated validation state is not mapping-only");
+  Require(reference.repair_state == "reference_mapping_only_non_physical",
+          "reference_emulated repair state is not mapping-only");
+  Require(!reference.reference_authority && !reference.provider_authority &&
+              !reference.transaction_finality_authority && !reference.recovery_authority,
+          "reference_emulated row claimed authority");
 
   const auto& policy = RowFor(surface, "advanced_vector_policy_blocked");
   Require(policy.persistence == "policy_blocked",
@@ -454,7 +454,7 @@ void RequireNoRuntimeLeakMarkers(
 int main() {
   const auto surface = BuildSurfaceWithSensitiveLastError();
   RequireSurfaceCompletenessAndTruthfulness(surface);
-  RequireDonorAndPolicyBlockedStayNonPhysical(surface);
+  RequireReferenceAndPolicyBlockedStayNonPhysical(surface);
   RequireLastErrorIsRedactedAndNonAuthoritative(surface);
   RequireSupportBundleRowsKeepRequiredState(surface);
   RequireMetricsAreStableAndComplete(surface);

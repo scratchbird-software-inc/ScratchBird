@@ -1,3 +1,0 @@
-[nobinlog]
-[binlog]
---log-bin=master-bin

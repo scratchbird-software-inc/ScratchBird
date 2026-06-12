@@ -327,7 +327,7 @@ void ExpectRejected(exec::CpuCacheLayoutObservationRequest request,
 
 void NegativeCases(const Fixture& fixture) {
   auto request = Request(fixture);
-  request.authority.parser_client_or_donor_layout_authority = true;
+  request.authority.parser_client_or_reference_layout_authority = true;
   ExpectRejected(request, "ORH_CPU_CACHE_LAYOUT.UNSAFE_LAYOUT_AUTHORITY");
 
   request = Request(fixture);
@@ -364,12 +364,12 @@ void NegativeCases(const Fixture& fixture) {
   ExpectRejected(request, "ORH_CPU_CACHE_LAYOUT.BENCHMARK_OVERCLAIM");
 
   request = Request(fixture);
-  request.donor_dominance_claim = true;
+  request.reference_dominance_claim = true;
   ExpectRejected(request, "ORH_CPU_CACHE_LAYOUT.BENCHMARK_OVERCLAIM");
 
   request = Request(fixture);
-  request.expected_family = idx::IndexFamily::donor_emulated;
-  request.observed_family = idx::IndexFamily::donor_emulated;
+  request.expected_family = idx::IndexFamily::reference_emulated;
+  request.observed_family = idx::IndexFamily::reference_emulated;
   ExpectRejected(request,
                  "ORH_CPU_CACHE_LAYOUT.UNSUPPORTED_PHYSICAL_FAMILY_IDENTITY");
 

@@ -1138,7 +1138,7 @@ void AddNonAuthorityEvidence(PartialPredicateImplicationProof* proof) {
   proof->evidence.push_back("partial_index_transaction_finality_authority=false");
   proof->evidence.push_back("partial_index_cleanup_authority=false");
   proof->evidence.push_back("partial_index_recovery_authority=false");
-  proof->evidence.push_back("partial_index_parser_or_donor_finality_authority=false");
+  proof->evidence.push_back("partial_index_parser_or_reference_finality_authority=false");
   proof->evidence.push_back("base_row_mga_recheck_required=true");
   proof->evidence.push_back("base_row_security_recheck_required=true");
 }

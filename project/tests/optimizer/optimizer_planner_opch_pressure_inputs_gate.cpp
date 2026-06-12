@@ -65,7 +65,7 @@ bool MgaPressureCostsOnlyTrustedObservedMetrics() {
 
   const auto adjusted = opt::ApplyMgaPressureCost(BaseCost(), pressure);
   auto unsafe = pressure;
-  unsafe.parser_or_donor_authority = true;
+  unsafe.parser_or_reference_authority = true;
   const auto rejected = opt::ApplyMgaPressureCost(BaseCost(), unsafe);
   auto missing_recheck = pressure;
   missing_recheck.exact_recheck_required = false;

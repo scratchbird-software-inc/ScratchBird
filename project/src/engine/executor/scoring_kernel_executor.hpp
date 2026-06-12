@@ -16,7 +16,7 @@ namespace scratchbird::engine::executor {
 // Executor-owned route for optional SIMD/GPU scoring kernels. The executor
 // supplies materialized authorized batches and exact scalar references; the
 // accelerator provider is never transaction, visibility, security, parser,
-// donor, recovery, page, or catalog authority.
+// reference, recovery, page, or catalog authority.
 
 using ScoringKernelExecutionRequest =
     scratchbird::engine::gpu_acceleration::ScoringKernelRequest;

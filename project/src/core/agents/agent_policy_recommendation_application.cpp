@@ -23,7 +23,7 @@ std::string BoolText(bool value) {
 
 bool UnsafeAuthority(const AgentPolicyRecommendationApplicationRequest& request) {
   return request.parser_authority || request.client_authority ||
-         request.donor_authority || request.sidecar_authority ||
+         request.reference_authority || request.sidecar_authority ||
          request.transaction_authority || request.visibility_authority ||
          request.finality_authority || request.recovery_authority ||
          request.security_authority;
@@ -63,7 +63,7 @@ AgentPolicyRecommendationApplicationResult Finish(
   Add(&result.evidence, "policy_recommendation_application.auto_apply_blocked=true");
   Add(&result.evidence, "policy_recommendation_application.parser_authority=false");
   Add(&result.evidence, "policy_recommendation_application.client_authority=false");
-  Add(&result.evidence, "policy_recommendation_application.donor_authority=false");
+  Add(&result.evidence, "policy_recommendation_application.reference_authority=false");
   Add(&result.evidence, "policy_recommendation_application.transaction_authority=false");
   Add(&result.evidence, "policy_recommendation_application.visibility_authority=false");
   Add(&result.evidence, "policy_recommendation_application.finality_authority=false");

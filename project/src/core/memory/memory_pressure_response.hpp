@@ -209,7 +209,7 @@ struct MemoryPressureObservation {
   bool engine_mga_authoritative = true;
   bool mga_recheck_preserved = true;
   bool security_recheck_preserved = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_authority = false;
   bool provider_authority = false;
   bool wal_authority = false;

@@ -144,7 +144,7 @@ std::set<std::string> LoadExpectedPolicyKeys() {
       "capability.feature_gate",
       "upgrade.migration_refusal",
       "admin.management_command_authorization",
-      "donor.emulation_profile",
+      "reference.emulation_profile",
       "replication.cdc_changefeed_boundary",
       "cluster.boundary_fail_closed",
   }};

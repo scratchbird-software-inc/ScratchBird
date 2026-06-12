@@ -37,7 +37,7 @@ CONFORMANCE = DOCS / "conformance_manifests"
 FSPE_ARTIFACTS = REPO / "project/tests/sbsql_parser_worker/fixtures/full_parser_udr_engine/artifacts"
 SURFACE_ARTIFACTS = REPO / "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts"
 GENERATED_FULL_SURFACE = REPO / "project/tests/sbsql_parser_worker/generated/full_surface"
-SBLR_FIXTURES = REPO / "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03"
+SBLR_FIXTURES = REPO / "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03"
 ENGINE_MATRIX = REPO / "project/src/engine/internal_api/SBLR_API_OPERATION_MATRIX.yaml"
 ENGINE_OPCODE_REGISTRY = REPO / "project/src/engine/sblr/sblr_opcode_registry.cpp"
 FUNCTION_SEED_REGISTRY = REPO / "project/src/engine/functions/registry/function_seed_registry.cpp"
@@ -100,10 +100,10 @@ OPERATION_FIELDS = [
     "operation_authority",
 ]
 
-DONOR_FIELDS = [
-    "donor",
+REFERENCE_FIELDS = [
+    "reference",
     "alias_kind",
-    "donor_surface",
+    "reference_surface",
     "native_sbsql_surface",
     "mapping_status",
     "sblr_operation_family",
@@ -268,14 +268,14 @@ def generate_canonicalization() -> tuple[list[dict[str, str]], list[dict[str, st
     return surface_rows, status_rows
 
 
-def generate_donor_aliases(surface_rows: list[dict[str, str]]) -> None:
+def generate_reference_aliases(surface_rows: list[dict[str, str]]) -> None:
     rows: list[dict[str, str]] = []
-    for row in read_csv(FSPE_ARTIFACTS / "DONOR_ALIAS_COVERAGE_BACKLOG.csv"):
+    for row in read_csv(FSPE_ARTIFACTS / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv"):
         rows.append(
             {
-                "donor": row.get("donor", ""),
+                "reference": row.get("reference", ""),
                 "alias_kind": row.get("alias_kind", ""),
-                "donor_surface": row.get("donor_surface", ""),
+                "reference_surface": row.get("reference_surface", ""),
                 "native_sbsql_surface": row.get("native_sbsql_surface", ""),
                 "mapping_status": row.get("mapping_status", ""),
                 "sblr_operation_family": row.get("sblr_operation_family", ""),
@@ -284,7 +284,7 @@ def generate_donor_aliases(surface_rows: list[dict[str, str]]) -> None:
                 "notes": row.get("notes", ""),
             }
         )
-    write_csv(CANON / "DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv", rows, DONOR_FIELDS)
+    write_csv(CANON / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv", rows, REFERENCE_FIELDS)
 
 
 def generate_engine_gap_matrix() -> None:
@@ -324,7 +324,7 @@ def generate_manifest(surface_rows: list[dict[str, str]]) -> None:
         "registries/sbsql-surface-to-sblr-function-coverage.yaml",
         "registries/sbsql-missing-functionality-allocation.yaml",
         "registries/unified-surface-registry-schema.yaml",
-        "registries/donor-unified-surface-normalization-matrix.yaml",
+        "registries/reference-unified-surface-normalization-matrix.yaml",
         "registries/parser-ast-boundast-node-registry.yaml",
         "implementation_inputs/listener.md",
         "implementation_inputs/sbmn_manager.md",
@@ -338,7 +338,7 @@ def generate_manifest(surface_rows: list[dict[str, str]]) -> None:
         "implementation_inputs/sbsql-canonicalization/SBSQL_SURFACE_STATUS_MATRIX.csv",
         "implementation_inputs/sbsql-canonicalization/SBSQL_TO_SBLR_OPERATION_MATRIX.csv",
         "implementation_inputs/sbsql-canonicalization/SBSQL_ENGINE_GAP_MATRIX.csv",
-        "implementation_inputs/sbsql-canonicalization/DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv",
+        "implementation_inputs/sbsql-canonicalization/REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv",
         "chapters/parser-v3/sblr-lowering/appendix-sbsql-surface-to-sblr-function-implementation-coverage.md",
         "chapters/core/appendix-compatibility-mode-matrix.md",
         "chapters/06-sblr-engine-contract.md",
@@ -355,7 +355,7 @@ def generate_manifest(surface_rows: list[dict[str, str]]) -> None:
             "SBLR-only engine ingress",
             "UUID-bound parser authority",
             "MGA copy-on-write transaction recovery",
-            "fail-closed donor and cluster boundaries",
+            "fail-closed reference and cluster boundaries",
             "single source tree for Windows and Linux",
         ],
         "authority_files": authority_files,
@@ -464,18 +464,18 @@ def generate_sblr_opcodes() -> None:
         for row in read_csv(SBLR_FIXTURES / "SBLR_STALE_DEFERRED_ALIAS_CLEANUP_MATRIX.csv")
         if row.get("token", "") and row.get("token", "") not in retired_mappings
     ]
-    donor_tokens = [
-        row.get("token", "").replace("SBLR_TIKV_", "SBLR_DONOR_TIKV_", 1)
-        for row in read_csv(SBLR_FIXTURES / "DONOR_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv")
+    reference_tokens = [
+        row.get("token", "").replace("SBLR_TIKV_", "SBLR_REFERENCE_TIKV_", 1)
+        for row in read_csv(SBLR_FIXTURES / "REFERENCE_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv")
         if row.get("token", "")
     ]
-    extra_names = sorted((set(stale_tokens) | set(donor_tokens)) - {row["name"] for row in entries})
+    extra_names = sorted((set(stale_tokens) | set(reference_tokens)) - {row["name"] for row in entries})
     for name in extra_names:
         entries.append(
             {
                 "name": name,
                 "code": code,
-                "family": "donor-private" if "DONOR_TIKV" in name else "general",
+                "family": "reference-private" if "REFERENCE_TIKV" in name else "general",
                 "status": "required",
                 "security_class": "sysarch_authorized",
                 "transaction_effect": "read",
@@ -541,8 +541,8 @@ def generate_surface_registries(surface_rows: list[dict[str, str]]) -> None:
         {"schema": "UnifiedSurfaceRecord", "required_fields": SURFACE_FIELDS},
     )
     write_yaml(
-        REGISTRIES / "donor-unified-surface-normalization-matrix.yaml",
-        {"registry": "donor-unified-surface-normalization-matrix", "canonical_csv": "implementation_inputs/sbsql-canonicalization/DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv"},
+        REGISTRIES / "reference-unified-surface-normalization-matrix.yaml",
+        {"registry": "reference-unified-surface-normalization-matrix", "canonical_csv": "implementation_inputs/sbsql-canonicalization/REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv"},
     )
     write_yaml(
         REGISTRIES / "parser-ast-boundast-node-registry.yaml",
@@ -633,7 +633,7 @@ BUILTIN_BINDING_OVERRIDES = {
     "sb.scalar.translate_regex": ("sblr.expr.regex_replace.v3", "translate_regex"),
     "sb.xml.element": ("sblr.expr.xml_element.v3", "xml_element"),
     "sb.scalar.to_number": ("sblr.expr.scalar_to_number.v3", "to_number"),
-    "sb.scalar.donor_only": ("sblr.expr.native_surface.donor_only.v3", "donor_only"),
+    "sb.scalar.reference_only": ("sblr.expr.native_surface.reference_only.v3", "reference_only"),
 }
 
 
@@ -698,7 +698,7 @@ def builtin_record(seed: dict[str, str]) -> dict[str, Any]:
         "error_semantics": "engine runtime guard diagnostics",
         "sblr_binding": sblr_binding,
         "ast_binding": "ast.expr." + seed["short_name"].replace(".", "_"),
-        "donor_rendering": "parser renders donor spelling and diagnostics through donor alias registry where applicable",
+        "reference_rendering": "parser renders reference spelling and diagnostics through reference alias registry where applicable",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["sbsql_fixed_uuid_catalog_seed_gate"],
     }
@@ -984,7 +984,7 @@ def load_strict_row_evidence_tables(names: set[str]) -> dict[str, dict[str, dict
 def load_sbsfc016_procedural_context_authority() -> dict[str, dict[str, Any]]:
     table_names = {
         "SBSFC016_CONTEXT_CURRENT_SETTING_ROW_EVIDENCE",
-        "SBSFC016_DONOR_VARIABLE_CONTEXT_ALIAS_ROW_EVIDENCE",
+        "SBSFC016_REFERENCE_VARIABLE_CONTEXT_ALIAS_ROW_EVIDENCE",
         "SBSFC016_POLICY_REFUSAL_ROW_EVIDENCE",
         "SBSFC016_FIXED_POLICY_ROW_EVIDENCE",
     }
@@ -1617,21 +1617,21 @@ def generate_builtin_and_function_authority() -> None:
         "# Function UUID Semantics Versioning Policy\n\n"
         "Incompatible semantic changes require a new function UUID.\n\n"
         "Deprecated functions keep their UUID.\n\n"
-        "Donor aliases never receive canonical function UUID authority.\n",
+        "Reference aliases never receive canonical function UUID authority.\n",
     )
     write_text(
         DOCS / "implementation_inputs/sblr-function-executor-low-guess-hardening/STANDARD_FUNCTION_UUID_NAME_SEED_VALIDATION.md",
         "# Standard Function UUID Name Seed Validation\n\n"
         "UUID reuse for different semantics is forbidden.\n\n"
         "Rename adds or updates localized name rows.\n\n"
-        "Donor names are compatibility aliases and never authoritative identity.\n",
+        "Reference names are compatibility aliases and never authoritative identity.\n",
     )
     write_text(
         DOCS / "implementation_inputs/sblr-function-executor-low-guess-hardening/UPGRADE_MIGRATION_COMPATIBILITY_NOTE.md",
         "# Upgrade Migration Compatibility Note\n\n"
         "Renamed function keeps UUID.\n\n"
         "Replaced function uses replacement UUID.\n\n"
-        "Donor alias changes affect parser projection only.\n",
+        "Reference alias changes affect parser projection only.\n",
     )
     write_text(
         DOCS / "chapters/parser-v3/generation/appendix-registry-version-migration-policy.md",
@@ -1650,9 +1650,9 @@ def generate_builtin_and_function_authority() -> None:
         "CompatibilitySurfaceAdmissionRecord\n\n"
         "resolve_compatibility_mode\n\n"
         "If exact mode cannot be satisfied, reject with diagnostic.\n\n"
-        "Reject donor SQL text at engine ingress.\n\n"
+        "Reject reference SQL text at engine ingress.\n\n"
         "MGA mapping is the compatibility authority for transaction and recovery behavior. "
-        "Compatibility profiles may alter parser projection and donor naming, but they do not "
+        "Compatibility profiles may alter parser projection and reference naming, but they do not "
         "replace ScratchBird MGA execution, catalog authority, SBLR envelope validation, or "
         "internal procedure-only engine ingress.\n",
     )
@@ -1660,7 +1660,7 @@ def generate_builtin_and_function_authority() -> None:
         DOCS / "chapters/06-sblr-engine-contract.md",
         "# SBLR Engine Contract\n\n"
         "ScratchBird MGA execution is authoritative.\n\n"
-        "SBLR and internal procedures are the only engine ingress forms. Raw donor SQL text is "
+        "SBLR and internal procedures are the only engine ingress forms. Raw reference SQL text is "
         "forbidden at the engine boundary; parser registry rows are evidence and not execution "
         "authority. The engine validates canonical SBLR envelopes, rejects SQL text, and preserves "
         "MGA-not-WAL compatibility authority.\n",
@@ -1788,7 +1788,7 @@ def generate_coverage_and_missing_functionality(surface_rows: list[dict[str, str
                 "sblr_operation: expression.system_variable_read",
                 "SBLR_SYSTEM_VARIABLE_READ",
                 "canonical_variable_id",
-                "donor_family",
+                "reference_family",
                 "sblr.expr.temporal_last_day.v3",
                 "SBSFC012-last_day-leap",
                 "SBSFC012-last_day-null",
@@ -1796,7 +1796,7 @@ def generate_coverage_and_missing_functionality(surface_rows: list[dict[str, str
                 "sblr.acceleration.gpu.v3",
                 "rs.acceleration.control.v1",
                 "sb.scalar.upsert",
-                "donor_alias_preserved",
+                "reference_alias_preserved",
             ],
         },
     )
@@ -1834,7 +1834,7 @@ def generate_documentation_inputs() -> None:
 
 def main() -> None:
     surface_rows, _status_rows = generate_canonicalization()
-    generate_donor_aliases(surface_rows)
+    generate_reference_aliases(surface_rows)
     generate_engine_gap_matrix()
     generate_manifest(surface_rows)
     generate_sblr_matrix()

@@ -312,10 +312,10 @@ Lowerability ClassifyLowerability(const NativeCompileRequest& request) {
     lower.reason = "parser_authority_forbidden";
     return lower;
   }
-  if (Contains(module, "donor") || OptionPresent(request.option_envelopes, "donor_authority") ||
-      OptionPresent(request.option_envelopes, "donor_plan") ||
-      OptionPresent(request.option_envelopes, "donor_result")) {
-    lower.reason = "donor_authority_forbidden";
+  if (Contains(module, "reference") || OptionPresent(request.option_envelopes, "reference_authority") ||
+      OptionPresent(request.option_envelopes, "reference_plan") ||
+      OptionPresent(request.option_envelopes, "reference_result")) {
+    lower.reason = "reference_authority_forbidden";
     return lower;
   }
   if (Contains(module, "protocol_frame") || Contains(module, "wire_frame") ||

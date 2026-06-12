@@ -106,7 +106,7 @@ void RequireTransitionEvidence(const memory::MemoryPressureDecision& decision,
                    "memory_pressure.affected_scope=process:ceic-017"),
           "CEIC-017 affected scope evidence missing");
   Require(Contains(decision.evidence,
-                   "memory_pressure.authority_scope=evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"),
+                   "memory_pressure.authority_scope=evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"),
           "CEIC-017 expanded authority boundary missing");
   Require(Contains(decision.evidence,
                    "memory_pressure.mga_recheck_preserved=true"),
@@ -380,7 +380,7 @@ void RecoveryDoesNotReadmitTooFast() {
 int main() {
   std::cout << "CEIC-017 authority_note=memory_pressure_evidence_only;"
                "not_transaction_finality_visibility_security_authorization_"
-               "recovery_parser_donor_wal_benchmark_optimizer_plan_index_"
+               "recovery_parser_reference_wal_benchmark_optimizer_plan_index_"
                "finality_or_agent_action_authority"
             << '\n';
   SyntheticStateTransitions();

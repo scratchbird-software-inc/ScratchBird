@@ -39,7 +39,7 @@ REQUIRED_AUTHORITY_INVARIANTS = {
     "mga_visibility_required",
     "wal_not_authority",
     "parser_not_authority",
-    "donor_not_authority",
+    "reference_not_authority",
     "uuid_order_not_finality",
 }
 FORBIDDEN_AUTHORITY_TEXT = (
@@ -47,7 +47,7 @@ FORBIDDEN_AUTHORITY_TEXT = (
     "cache_finality=true",
     "checkpoint_finality=true",
     "parser_auth_authority=true",
-    "donor_sql_exec_inside_engine=true",
+    "reference_sql_exec_inside_engine=true",
     "uuid_order_is_finality=true",
 )
 

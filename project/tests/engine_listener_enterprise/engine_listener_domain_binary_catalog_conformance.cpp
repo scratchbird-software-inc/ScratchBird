@@ -211,7 +211,7 @@ api::DomainRecord Domain(std::uint64_t creator_tx, std::string domain_uuid) {
   record.method_binding_envelope = "method:normalize_customer_profile";
   record.localized_names_envelope = "en:Customer Profile|fr:Profil Client";
   record.comment_envelope = "domain catalog binary envelope proof";
-  record.donor_alias_envelope = "postgresql:domain:customer_profile";
+  record.reference_alias_envelope = "postgresql:domain:customer_profile";
   record.validation_hook_status = "sblr_builtin";
   return record;
 }
@@ -267,7 +267,7 @@ void RequireSameDomainMetadata(const api::DomainRecord& expected,
   Require(actual.method_binding_envelope == expected.method_binding_envelope, "method binding did not round trip");
   Require(actual.localized_names_envelope == expected.localized_names_envelope, "localized names did not round trip");
   Require(actual.comment_envelope == expected.comment_envelope, "comment metadata did not round trip");
-  Require(actual.donor_alias_envelope == expected.donor_alias_envelope, "donor aliases did not round trip");
+  Require(actual.reference_alias_envelope == expected.reference_alias_envelope, "reference aliases did not round trip");
   Require(!actual.dropped, "created domain was loaded as dropped");
 }
 

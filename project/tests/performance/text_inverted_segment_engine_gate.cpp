@@ -379,7 +379,7 @@ void VerifyFailClosed(const idx::TextInvertedSegment& segment) {
               !segment.security_authority_claimed &&
               !segment.transaction_finality_authority_claimed &&
               !segment.parser_finality_authority_claimed &&
-              !segment.donor_finality_authority_claimed &&
+              !segment.reference_finality_authority_claimed &&
               !segment.provider_finality_authority_claimed &&
               !segment.write_ahead_log_finality_authority_claimed,
           "segment carried forbidden authority claim");

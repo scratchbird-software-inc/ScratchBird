@@ -223,7 +223,7 @@ void ExecutorAndOptimizerTypedWorkAreasRemainBumpBackedEvidenceOnly() {
           "executor typed arena allocation reduction evidence missing");
   Require(EvidenceHas(
               executor.evidence,
-              "executor_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority"),
+              "executor_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority"),
           "executor typed arena authority boundary evidence missing");
   Require(manager.Snapshot().current_bytes == 0,
           "executor typed arena leaked backing memory after reset");
@@ -240,12 +240,12 @@ void ExecutorAndOptimizerTypedWorkAreasRemainBumpBackedEvidenceOnly() {
           "optimizer typed arena allocation reduction evidence missing");
   Require(EvidenceHas(
               optimizer.evidence,
-              "optimizer_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority"),
+              "optimizer_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority"),
           "optimizer typed arena authority boundary evidence missing");
   Require(manager.Snapshot().current_bytes == 0,
           "optimizer typed arena leaked backing memory after reset");
 
-  executor_request.parser_or_donor_authority = true;
+  executor_request.parser_or_reference_authority = true;
   executor = exec::BuildExecutorTypedArenaWorkArea(executor_request);
   Require(!executor.ok() && executor.fail_closed,
           "executor typed arena unsafe parser authority did not fail closed");

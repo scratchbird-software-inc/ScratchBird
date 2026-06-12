@@ -26,7 +26,7 @@ namespace scratchbird::core::platform {
 namespace {
 
 constexpr const char* kAuthorityBoundary =
-    "runtime_topology.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_authorization_optimizer_plan_index_finality_or_agent_action_authority";
+    "runtime_topology.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_authorization_optimizer_plan_index_finality_or_agent_action_authority";
 
 std::string PlatformName() {
 #if defined(_WIN32)

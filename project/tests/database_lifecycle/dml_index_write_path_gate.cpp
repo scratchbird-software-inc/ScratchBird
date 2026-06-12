@@ -439,24 +439,24 @@ void TestExpressionPartialCoveringProofsAndUnsupportedFamily() {
                   idx::SecondaryIndexDeltaKind::delete_row,
           "hash delete ledger record mismatch");
 
-  const std::string donor_uuid =
+  const std::string reference_uuid =
       UuidText(platform::UuidKind::object, 1700002304000ull, 0x8e);
-  auto donor_tree = MakeTree(donor_uuid);
-  auto unsupported = Index(donor_uuid, api::kCrudIndexFamilyDonorEmulated, "name");
-  auto donor_insert =
+  auto reference_tree = MakeTree(reference_uuid);
+  auto unsupported = Index(reference_uuid, api::kCrudIndexFamilyReferenceEmulated, "name");
+  auto reference_insert =
       BaseEvent(api::DmlIndexWriteOperation::insert, unsupported);
-  donor_insert.has_new_row = true;
-  donor_insert.new_row =
+  reference_insert.has_new_row = true;
+  reference_insert.new_row =
       Row(UuidText(platform::UuidKind::row, 1700003309000ull, 0x8f),
           UuidText(platform::UuidKind::row, 1700003310000ull, 0x90),
           "5",
-          "donor");
-  result = ApplyOne(donor_insert, &donor_tree);
-  Require(!result.ok, "donor-emulated family was admitted to DML write route");
+          "reference");
+  result = ApplyOne(reference_insert, &reference_tree);
+  Require(!result.ok, "reference-emulated family was admitted to DML write route");
   Require(HasEvidence(result.evidence,
                       "dml_index_route_capability",
                       "refused"),
-          "donor route-specific fail-closed evidence missing");
+          "reference route-specific fail-closed evidence missing");
 }
 
 void TestRollbackAndNonAuthorityEvidence() {
@@ -481,9 +481,9 @@ void TestRollbackAndNonAuthorityEvidence() {
                       "engine_transaction_inventory"),
           "MGA finality authority evidence missing");
   Require(HasEvidence(result.evidence,
-                      "parser_or_donor_authority",
+                      "parser_or_reference_authority",
                       "false"),
-          "parser/donor non-authority evidence missing");
+          "parser/reference non-authority evidence missing");
   Require(HasEvidence(result.evidence,
                       "tree_mutation_finality_authority",
                       "false"),

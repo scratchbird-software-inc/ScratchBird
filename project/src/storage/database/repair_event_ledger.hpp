@@ -54,7 +54,7 @@ struct RepairEventAuthority {
   bool repair_evidence_is_transaction_finality_authority = false;
   bool repair_evidence_is_visibility_authority = false;
   bool repair_evidence_is_recovery_authority = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool names_are_authority = false;
   bool sblr_or_internal_operation = true;
 };
@@ -111,7 +111,7 @@ struct RepairAccessRequest {
   u64 page_number = 0;
   bool durable_mga_inventory_authority = true;
   bool repair_evidence_is_transaction_authority = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool names_are_authority = false;
 };
 
@@ -139,7 +139,7 @@ struct RepairEventRetentionRequest {
   bool legal_hold_active = false;
   bool maintenance_hold_active = false;
   bool repair_evidence_is_transaction_authority = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool names_are_authority = false;
 };
 
@@ -164,7 +164,7 @@ struct RepairCrashResumeRequest {
   bool crash_recovery_open = true;
   bool durable_mga_inventory_authority = true;
   bool repair_evidence_is_recovery_authority = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool names_are_authority = false;
 };
 

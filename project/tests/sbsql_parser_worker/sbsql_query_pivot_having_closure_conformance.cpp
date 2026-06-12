@@ -534,16 +534,16 @@ void RequireDmlRowScanAndConflict(const api::EngineRequestContext& context) {
   Require(FieldValue(conflict_result, "name") == "Grace",
           "ON CONFLICT DO UPDATE returning row drifted");
 
-  api::EngineInsertRowsRequest donor;
-  donor.context = context;
-  donor.target_table.uuid.canonical = std::string(kTableUuid);
-  donor.target_table.object_kind = "table";
-  donor.input_rows = {DmlRow("019f0000-0000-7000-8000-000000090a06", 4, "delta", "Donor")};
-  donor.require_generated_row_uuid = false;
-  donor.donor_unique_checks_relaxed = true;
-  const auto donor_result = api::EngineInsertRows(donor);
-  Require(!donor_result.ok && FirstDetail(donor_result) == "dml.insert_rows:donor_relaxer_requires_engine_policy",
-          "donor relaxer refusal diagnostic drifted");
+  api::EngineInsertRowsRequest reference;
+  reference.context = context;
+  reference.target_table.uuid.canonical = std::string(kTableUuid);
+  reference.target_table.object_kind = "table";
+  reference.input_rows = {DmlRow("019f0000-0000-7000-8000-000000090a06", 4, "delta", "Reference")};
+  reference.require_generated_row_uuid = false;
+  reference.reference_unique_checks_relaxed = true;
+  const auto reference_result = api::EngineInsertRows(reference);
+  Require(!reference_result.ok && FirstDetail(reference_result) == "dml.insert_rows:reference_relaxer_requires_engine_policy",
+          "reference relaxer refusal diagnostic drifted");
 }
 
 exec::ExecutorColumnDescriptor ExecColumn(std::string name, std::string type) {

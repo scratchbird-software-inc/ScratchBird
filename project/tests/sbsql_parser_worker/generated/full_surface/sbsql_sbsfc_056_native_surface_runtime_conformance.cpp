@@ -294,12 +294,12 @@ int main() {
                   Run(registry, "sb.scalar.domain_stack_value",
                       {Arg("value", TextValue("character", "alpha"))}),
                   "json_document", "[{\"value\":\"alpha\",\"domain\":\"character\"}]") && ok;
-  ok = ExpectText("SBSQL-8F66D89149F5 SBSFC056-donor-only",
-                  Run(registry, "sb.scalar.donor_only"),
-                  "character", "surface.donor_only") && ok;
-  ok = ExpectText("SBSQL-F785EAF383DE SBSFC056-donor-rewrite",
-                  Run(registry, "sb.scalar.donor_rewrite"),
-                  "character", "surface.donor_rewrite") && ok;
+  ok = ExpectText("SBSQL-8F66D89149F5 SBSFC056-reference-only",
+                  Run(registry, "sb.scalar.reference_only"),
+                  "character", "surface.reference_only") && ok;
+  ok = ExpectText("SBSQL-F785EAF383DE SBSFC056-reference-rewrite",
+                  Run(registry, "sb.scalar.reference_rewrite"),
+                  "character", "surface.reference_rewrite") && ok;
   ok = ExpectText("SBSQL-FD0DF4067008 SBSFC056-element",
                   Run(registry, "sb.multiset.element",
                       {Arg("multiset", TextValue("json_document", "[\"solo\"]"))}),

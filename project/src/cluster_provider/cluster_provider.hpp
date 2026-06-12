@@ -194,7 +194,7 @@ RequiredClusterProviderCommandBoundarySet() {
       {"cluster.job.throttle_workload", "cluster.throttle_workload", true},
       {"cluster.admin.inspect_status", "cluster.inspect_state", true},
       {"cluster.admin.run_maintenance", "cluster.run_maintenance", true},
-      {"cluster.admin.refuse_donor_shell_control",
+      {"cluster.admin.refuse_reference_shell_control",
        "exact_refusal_no_provider_call",
        false},
       {"cluster.metrics.snapshot", "cluster.inspect_state", true},
@@ -240,7 +240,7 @@ inline const std::vector<std::string_view>&
 RequiredClusterProviderPreAdmissionRefusalSet() {
   static const std::vector<std::string_view> refusals = {
       "cluster.security.refuse_local_cluster_mutation",
-      "cluster.admin.refuse_donor_shell_control",
+      "cluster.admin.refuse_reference_shell_control",
       "cluster.query.refuse_local_query_as_cluster_authority"};
   return refusals;
 }

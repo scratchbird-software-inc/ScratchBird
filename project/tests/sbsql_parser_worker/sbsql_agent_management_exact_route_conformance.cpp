@@ -264,7 +264,7 @@ void RequireExactLowering(const AgentRowEvidence& row) {
           EvidenceMessage(row, "no_sql_engine_execution",
                           "agent lowering allowed parser SQL execution"));
   Require(!artifacts.envelope.real_file_effects,
-          EvidenceMessage(row, "no_donor_execution",
+          EvidenceMessage(row, "no_reference_execution",
                           "agent lowering allowed parser file effects"));
   Require(!Contains(artifacts.envelope.payload, row.sql),
           EvidenceMessage(row, "no_sql_text_authority", "agent envelope embedded source SQL"));

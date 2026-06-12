@@ -85,8 +85,8 @@ std::string ValidationStateFor(const IndexFamilyDescriptor& descriptor,
   if (descriptor.persistence == IndexPersistenceClass::policy_blocked) {
     return "policy_blocked_non_physical";
   }
-  if (descriptor.persistence == IndexPersistenceClass::donor_emulated) {
-    return "donor_mapping_only_non_physical";
+  if (descriptor.persistence == IndexPersistenceClass::reference_emulated) {
+    return "reference_mapping_only_non_physical";
   }
   if (state.validate && state.runtime_available) {
     return "validation_available";
@@ -100,8 +100,8 @@ std::string RepairStateFor(const IndexFamilyDescriptor& descriptor,
   if (descriptor.persistence == IndexPersistenceClass::policy_blocked) {
     return "policy_blocked_non_physical";
   }
-  if (descriptor.persistence == IndexPersistenceClass::donor_emulated) {
-    return "donor_mapping_only_non_physical";
+  if (descriptor.persistence == IndexPersistenceClass::reference_emulated) {
+    return "reference_mapping_only_non_physical";
   }
   if (state.repair && state.runtime_available) {
     return "repair_available";
@@ -255,7 +255,7 @@ IndexFamilySupportBundleRow SupportBundleRow(
            BoolText(row.transaction_finality_authority));
   AddField(&out, "recovery_authority", BoolText(row.recovery_authority));
   AddField(&out, "parser_authority", BoolText(row.parser_authority));
-  AddField(&out, "donor_authority", BoolText(row.donor_authority));
+  AddField(&out, "reference_authority", BoolText(row.reference_authority));
   AddField(&out, "provider_authority", BoolText(row.provider_authority));
   return out;
 }

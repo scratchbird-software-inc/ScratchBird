@@ -56,7 +56,7 @@ bool ExternalAuthorityRequested(
          request.timestamp_ordering_authority ||
          request.uuid_ordering_authority ||
          request.event_stream_authority ||
-         request.donor_authority ||
+         request.reference_authority ||
          request.write_ahead_authority;
 }
 
@@ -311,7 +311,7 @@ HeavyImmutableGenerationResult ValidateHeavyImmutableGeneration(
         generation,
         "INDEX.HEAVY_IMMUTABLE_GENERATION.EXTERNAL_AUTHORITY_REJECTED",
         "index.heavy_immutable_generation.external_authority_rejected",
-        "parser client timestamp UUID ordering event stream donor and write-ahead authority claims are forbidden");
+        "parser client timestamp UUID ordering event stream reference and write-ahead authority claims are forbidden");
   }
   if (request.cluster_provider_routed) {
     return RefuseLifecycle(

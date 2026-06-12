@@ -805,21 +805,21 @@ set_tests_properties(in_memory_index_runtime_gate PROPERTIES
 )
 
 add_executable(
-  donor_emulated_index_mapping_gate
-  donor_emulated_index_mapping_gate.cpp
+  reference_emulated_index_mapping_gate
+  reference_emulated_index_mapping_gate.cpp
 )
-target_compile_features(donor_emulated_index_mapping_gate PRIVATE cxx_std_20)
+target_compile_features(reference_emulated_index_mapping_gate PRIVATE cxx_std_20)
 target_link_libraries(
-  donor_emulated_index_mapping_gate
+  reference_emulated_index_mapping_gate
   PRIVATE
     sb_core_index
 )
 add_test(
-  NAME donor_emulated_index_mapping_gate
-  COMMAND donor_emulated_index_mapping_gate
+  NAME reference_emulated_index_mapping_gate
+  COMMAND reference_emulated_index_mapping_gate
 )
-set_tests_properties(donor_emulated_index_mapping_gate PROPERTIES
-  LABELS "donor_emulated_index_mapping_gate;IRC-152;index_runtime_correctness;donor_emulated_index_mapping;no_execution_plan_runtime;mga_transaction_regression"
+set_tests_properties(reference_emulated_index_mapping_gate PROPERTIES
+  LABELS "reference_emulated_index_mapping_gate;IRC-152;index_runtime_correctness;reference_emulated_index_mapping;no_execution_plan_runtime;mga_transaction_regression"
 )
 
 add_executable(
@@ -1708,10 +1708,10 @@ add_test(
   NAME optimizer_runtime_hot_path_orh_270_gate
   COMMAND "${Python3_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/optimizer_runtime_hot_path_orh_270_gate.py"
-          --artifact "${PROJECT_SOURCE_DIR}/../project/tests/public_migrated_proof/completed/optimizer-runtime-hot-path-operationalization-closure/artifacts/ORH_270_DONOR_DOMINANCE_CLOSURE_BLOCKERS.json"
+          --artifact "${PROJECT_SOURCE_DIR}/../project/tests/public_migrated_proof/completed/optimizer-runtime-hot-path-operationalization-closure/artifacts/ORH_270_REFERENCE_DOMINANCE_CLOSURE_BLOCKERS.json"
 )
 set_tests_properties(optimizer_runtime_hot_path_orh_270_gate PROPERTIES
-  LABELS "optimizer_runtime_hot_path_orh_270_gate;ORH-270;ORH-GATE-270;donor_dominance_closure;deprecated;optimizer_runtime_hot_path;performance;mga_transaction_regression"
+  LABELS "optimizer_runtime_hot_path_orh_270_gate;ORH-270;ORH-GATE-270;reference_dominance_closure;deprecated;optimizer_runtime_hot_path;performance;mga_transaction_regression"
 )
 
 add_executable(

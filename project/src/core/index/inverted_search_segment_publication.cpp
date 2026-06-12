@@ -60,7 +60,7 @@ bool ExternalAuthorityRequested(const InvertedSearchSegmentBuildRequest& request
          request.timestamp_ordering_authority ||
          request.uuid_ordering_authority ||
          request.event_stream_authority ||
-         request.donor_authority ||
+         request.reference_authority ||
          request.write_ahead_authority;
 }
 
@@ -160,7 +160,7 @@ InvertedSearchSegmentEvidenceRow BuildEvidence(
   evidence.timestamp_ordering_authority = false;
   evidence.uuid_ordering_authority = false;
   evidence.event_stream_authority = false;
-  evidence.donor_authority = false;
+  evidence.reference_authority = false;
   evidence.write_ahead_authority = false;
   evidence.diagnostic_code = std::move(diagnostic_code);
   evidence.diagnostic_detail = std::move(detail);
@@ -344,7 +344,7 @@ bool InvertedSearchSegmentDescriptorAuthorityClean(
          !segment.timestamp_finality_authority_claimed &&
          !segment.uuid_ordering_finality_authority_claimed &&
          !segment.event_stream_finality_authority_claimed &&
-         !segment.donor_finality_authority_claimed &&
+         !segment.reference_finality_authority_claimed &&
          !segment.write_ahead_log_finality_authority_claimed;
 }
 
@@ -412,7 +412,7 @@ InvertedSearchSegmentLifecycleResult StartInvertedSearchSegmentBuild(
         segment,
         "INDEX.SEARCH_SEGMENT.EXTERNAL_AUTHORITY_REJECTED",
         "index.search_segment.external_authority_rejected",
-        "parser client timestamp UUID ordering event stream donor and write-ahead authority claims are forbidden");
+        "parser client timestamp UUID ordering event stream reference and write-ahead authority claims are forbidden");
   }
 
   return FinishLifecycle(ledger,

@@ -3,7 +3,7 @@
     "category": "direct_new",
     "path": "project/src/core/memory/memory.cpp",
     "pattern": "::operator new(bytes, std::align_val_t(alignment))",
-    "reason": "Approved MemoryManager allocation backend after explicit manager accounting; CEIC-021 evidence only and not transaction, visibility, security, recovery, parser, donor, WAL, benchmark, optimizer-plan, index-finality, or agent-action authority."
+    "reason": "Approved MemoryManager allocation backend after explicit manager accounting; CEIC-021 evidence only and not transaction, visibility, security, recovery, parser, reference, WAL, benchmark, optimizer-plan, index-finality, or agent-action authority."
   },
   {
     "category": "direct_delete",

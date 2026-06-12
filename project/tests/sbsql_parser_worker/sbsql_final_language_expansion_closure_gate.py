@@ -123,7 +123,7 @@ REQUIRED_COLUMNS = {
     },
     "SBSQL_STYLE_REVIEW_MATRIX.csv": {
         "feature",
-        "donor_syntax_risk",
+        "reference_syntax_risk",
         "style_result",
         "reviewer",
         "evidence",
@@ -317,7 +317,7 @@ def validate_cross_matrix_coverage(root: Path, matrices: dict[str, list[dict[str
 
 
 def validate_auxiliary_policy_matrices(root: Path) -> None:
-    style_rows = read_csv(root, LANG_ROOT / "SBSQL_STYLE_AND_DONOR_NEUTRALITY_MATRIX.csv")
+    style_rows = read_csv(root, LANG_ROOT / "SBSQL_STYLE_AND_REFERENCE_NEUTRALITY_MATRIX.csv")
     require(len(style_rows) == 7, "style neutrality matrix must include context-sensitive keyword rule")
     require(
         any(row["review_id"] == "FSL-STYLE-007" for row in style_rows),

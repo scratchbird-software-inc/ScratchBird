@@ -41,7 +41,7 @@ Status MemoryDeniedStatus() {
 
 bool AuthorityClaimed(const InMemoryIndexAuthorityProof& proof) {
   return proof.parser_finality_authority_claimed ||
-         proof.donor_finality_authority_claimed ||
+         proof.reference_finality_authority_claimed ||
          proof.provider_finality_authority_claimed ||
          proof.index_finality_authority_claimed ||
          proof.transaction_finality_authority_claimed ||
@@ -61,7 +61,7 @@ bool UnsafeFallbackClaimed(const InMemoryIndexAuthorityProof& proof) {
 bool DescriptorAuthorityClaimed(
     const InMemoryIndexColdSourceDescriptor& descriptor) {
   return descriptor.parser_finality_authority_claimed ||
-         descriptor.donor_finality_authority_claimed ||
+         descriptor.reference_finality_authority_claimed ||
          descriptor.provider_finality_authority_claimed ||
          descriptor.index_finality_authority_claimed ||
          descriptor.transaction_finality_authority_claimed ||
@@ -126,7 +126,7 @@ std::vector<std::string> BaseEvidence() {
           "in_memory.security_authority=false",
           "in_memory.transaction_finality_authority=false",
           "in_memory.recovery_finality_authority=false",
-          "in_memory.parser_or_donor_authority=false",
+          "in_memory.parser_or_reference_authority=false",
           "in_memory.provider_authority=false",
           "in_memory.index_authority=false",
           "in_memory.exact_recheck.required=true",

@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "metadata/donor_function_surface_policy.hpp"
+#include "metadata/compatibility_function_surface_policy.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -114,7 +114,7 @@ const std::string& Field(const std::map<std::string, std::string>& row,
   return it->second;
 }
 
-bool HasEvidence(const functions::DonorFunctionSurfaceResult& result,
+bool HasEvidence(const functions::CompatibilityFunctionSurfaceResult& result,
                  std::string_view key,
                  std::string_view value) {
   return std::any_of(result.evidence.begin(),
@@ -128,7 +128,7 @@ void VerifyFunctionRow(const std::map<std::string, std::string>& row,
                        bool explicit_unsupported_matrix) {
   const auto& row_id = Field(row, "inventory_id");
   const auto& decision_name = Field(row, "implementation_decision");
-  const auto policy = functions::ResolveDonorFunctionSurfacePolicy(decision_name);
+  const auto policy = functions::ResolveCompatibilityFunctionSurfacePolicy(decision_name);
   Require(policy.has_value(), row_id + " did not resolve function surface policy");
   Require(policy->implementation_decision == decision_name,
           row_id + " implementation decision mismatch");
@@ -136,15 +136,15 @@ void VerifyFunctionRow(const std::map<std::string, std::string>& row,
           row_id + " execution_plan lane mismatch");
   Require(!policy->parser_shortcut_allowed,
           row_id + " allowed parser shortcut authority");
-  Require(!policy->donor_execution_authority_accepted,
-          row_id + " accepted donor execution authority");
+  Require(!policy->external_execution_authority_accepted,
+          row_id + " accepted external execution authority");
   Require(!policy->sblr_execution_authority,
           row_id + " granted SBLR execution authority");
 
   const bool connector_authorized = decision_name == "connector_operation";
   const bool trusted_udr = decision_name == "trusted_udr_registration";
-  const auto result = functions::EvaluateDonorFunctionSurface(
-      functions::DonorFunctionSurfaceRequest{
+  const auto result = functions::EvaluateCompatibilityFunctionSurface(
+      functions::CompatibilityFunctionSurfaceRequest{
           Field(row, "engine_id"),
           row_id,
           Field(row, "item_name"),
@@ -163,14 +163,14 @@ void VerifyFunctionRow(const std::map<std::string, std::string>& row,
           row_id + " result shape mismatch");
   Require(!result.parser_shortcut_used,
           row_id + " used parser shortcut authority");
-  Require(!result.donor_execution_authority_accepted,
-          row_id + " accepted donor authority");
+  Require(!result.external_execution_authority_accepted,
+          row_id + " accepted external authority");
   Require(!result.sblr_execution_authority,
           row_id + " granted SBLR authority");
   Require(HasEvidence(result, "parser_shortcut_used", "false"),
           row_id + " missing parser shortcut refusal evidence");
-  Require(HasEvidence(result, "donor_execution_authority_accepted", "false"),
-          row_id + " missing donor authority refusal evidence");
+  Require(HasEvidence(result, "external_execution_authority_accepted", "false"),
+          row_id + " missing external authority refusal evidence");
   Require(HasEvidence(result, "sblr_execution_authority", "false"),
           row_id + " missing SBLR authority refusal evidence");
 
@@ -180,8 +180,8 @@ void VerifyFunctionRow(const std::map<std::string, std::string>& row,
   } else if (decision_name == "connector_operation") {
     Require(result.accepted && result.connector_route,
             row_id + " did not route authorized connector operation");
-    const auto denied = functions::EvaluateDonorFunctionSurface(
-        functions::DonorFunctionSurfaceRequest{
+    const auto denied = functions::EvaluateCompatibilityFunctionSurface(
+        functions::CompatibilityFunctionSurfaceRequest{
             Field(row, "engine_id"),
             row_id,
             Field(row, "item_name"),
@@ -196,8 +196,8 @@ void VerifyFunctionRow(const std::map<std::string, std::string>& row,
   } else if (decision_name == "trusted_udr_registration") {
     Require(result.accepted && result.trusted_udr_registration_route,
             row_id + " did not route trusted UDR registration");
-    const auto denied = functions::EvaluateDonorFunctionSurface(
-        functions::DonorFunctionSurfaceRequest{
+    const auto denied = functions::EvaluateCompatibilityFunctionSurface(
+        functions::CompatibilityFunctionSurfaceRequest{
             Field(row, "engine_id"),
             row_id,
             Field(row, "item_name"),
@@ -215,7 +215,7 @@ void VerifyFunctionRow(const std::map<std::string, std::string>& row,
   } else if (decision_name == "unsupported") {
     Require(result.denied && !result.accepted && result.unsupported_refusal,
             row_id + " unsupported route did not return exact refusal");
-    Require(result.diagnostic_code == "SB.DONOR_FUNCTION.UNSUPPORTED",
+    Require(result.diagnostic_code == "SB.COMPATIBILITY_FUNCTION.UNSUPPORTED",
             row_id + " unsupported diagnostic mismatch");
     if (explicit_unsupported_matrix) {
       Require(Field(row, "required_execution_plan_lane") == "exact_unsupported_refusal",
@@ -257,8 +257,8 @@ int main(int argc, char** argv) {
     VerifyFunctionRow(row, true);
   }
 
-  const auto unknown = functions::EvaluateDonorFunctionSurface(
-      functions::DonorFunctionSurfaceRequest{
+  const auto unknown = functions::EvaluateCompatibilityFunctionSurface(
+      functions::CompatibilityFunctionSurfaceRequest{
           "unknown",
           "unknown",
           "unknown",
@@ -270,10 +270,10 @@ int main(int argc, char** argv) {
       });
   Require(!unknown.recognized && !unknown.accepted && unknown.denied,
           "unknown function surface did not fail closed");
-  Require(unknown.diagnostic_code == "SB.DONOR_FUNCTION.UNKNOWN_SURFACE",
+  Require(unknown.diagnostic_code == "SB.COMPATIBILITY_FUNCTION.UNKNOWN_SURFACE",
           "unknown function surface diagnostic mismatch");
   Require(!unknown.parser_shortcut_used &&
-              !unknown.donor_execution_authority_accepted &&
+              !unknown.external_execution_authority_accepted &&
               !unknown.sblr_execution_authority,
           "unknown function surface gained authority");
 

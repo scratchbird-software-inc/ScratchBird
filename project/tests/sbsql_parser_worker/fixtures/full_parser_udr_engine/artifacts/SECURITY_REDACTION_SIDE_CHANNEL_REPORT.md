@@ -14,11 +14,11 @@ Owning slice: `FSPE-012G`
 | Timing | Not-found and not-authorized paths use the same externally observable result class where policy requires non-disclosure. |
 | Metadata | Result metadata omits hidden columns, policies, indexes, filespaces, security labels, and internal agent state. |
 | Diagnostics | Debug-only detail is available only under explicit dev policy and never in normal client profiles. |
-| Donor rendering | Donor-profile errors do not leak ScratchBird internal authority unless the profile explicitly permits it. |
+| Reference rendering | Reference-profile errors do not leak ScratchBird internal authority unless the profile explicitly permits it. |
 
 ## Evidence
 
-- `project/tests/sbsql_parser_worker/generated/security/SECURITY_REDACTION_SIDE_CHANNEL_FIXTURES.csv` records the public, donor, hidden, missing, cache-authority, metadata-projection, expected-message-vector, returned-field, elapsed-time-class, and closure-status rows.
+- `project/tests/sbsql_parser_worker/generated/security/SECURITY_REDACTION_SIDE_CHANNEL_FIXTURES.csv` records the public, reference, hidden, missing, cache-authority, metadata-projection, expected-message-vector, returned-field, elapsed-time-class, and closure-status rows.
 - `project/tests/sbsql_parser_worker/generated/security/sbsql_security_redaction_side_channel_gate.cpp` validates parser diagnostic redaction, server diagnostic redaction, SBPS message-vector redaction, public result metadata projection, cache authority key dimensions, prepared-statement staleness, and hidden-as-missing source behavior.
 - `project/src/wire/parser_server_ipc/parser_ipc_common.cpp` and `project/src/server/diagnostics.cpp` enforce public diagnostic field filtering for canonical UUIDs, hidden names, paths, policy IDs, provider details, credentials, and internal fields while preserving safe sentinel fields.
 - `project/src/parsers/sbsql_worker/rendering/rendering.cpp` projects public result payloads without hidden/system result metadata.

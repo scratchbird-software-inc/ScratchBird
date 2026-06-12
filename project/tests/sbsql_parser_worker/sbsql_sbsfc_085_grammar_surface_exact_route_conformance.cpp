@@ -46,7 +46,7 @@ const CaseRow kCases[] = {
     {"SBSQL-F178404D32D6", "psql_pipe_row_stmt", "grammar_production", "PSQL PIPE ROW STMT result;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"},
     {"SBSQL-F24C10C05F96", "call_result_clause", "grammar_production", "CALL RESULT CLAUSE row;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"},
     {"SBSQL-F2580B10CA17", "psql_compound_stmt", "grammar_production", "PSQL COMPOUND STMT block;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"},
-    {"SBSQL-F29DE2ED8D20", "donor_profile_options", "grammar_production", "DONOR PROFILE OPTIONS local;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"},
+    {"SBSQL-F29DE2ED8D20", "reference_profile_options", "grammar_production", "REFERENCE PROFILE OPTIONS local;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"},
     {"SBSQL-F3006C91D952", "call", "canonical_surface", "CALL routine;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"},
     {"SBSQL-F375BA38C102", "new_surface_stmt", "grammar_production", "NEW SURFACE STMT descriptor;", "management_descriptor_validation", "management_descriptor", "sys.management.runtime"},
     {"SBSQL-F5E78906D903", "psql_exit_stmt", "grammar_production", "PSQL EXIT STMT loop;", "procedural_descriptor_validation", "procedural_descriptor", "sys.procedure.control_flow"},

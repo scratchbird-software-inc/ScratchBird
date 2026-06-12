@@ -25,7 +25,7 @@ Current verified baseline:
   `streaming_async_v0`, and `retrieval_ingest_v0`
 - live-native artifacts are valid only when regenerated from the current
   checkout against the policy-configured runtime profile
-- donor emulation endpoints may be profile-defined, but non-native AI support
+- reference emulation endpoints may be profile-defined, but non-native AI support
   remains out of scope for this component
 - Ubuntu and Windows Beta 1 install guides now exist for reviewer setup
 - compile-repair is implemented for bounded recoverable wrapper failures

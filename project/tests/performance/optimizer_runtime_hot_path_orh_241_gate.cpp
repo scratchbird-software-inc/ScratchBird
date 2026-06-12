@@ -203,12 +203,12 @@ void TestNegativeRoutes() {
 
   auto external_authority =
       Request(page::BufferPrefetchRouteKind::kBulkIngest,
-              "orh241.negative.parser_client_donor_authority",
+              "orh241.negative.parser_client_reference_authority",
               page::PlanAwarePrefetchFamily::kExtentMetadata);
-  external_authority.authority.parser_client_or_donor_authority = true;
+  external_authority.authority.parser_client_or_reference_authority = true;
   RequireRejected(exec::ConsumeBufferPrefetchReadaheadRoute(external_authority),
                   "ORH_BUFFER_PREFETCH_READAHEAD_UNSAFE_AUTHORITY",
-                  "parser/client/donor authority");
+                  "parser/client/reference authority");
 
   auto finality_authority =
       Request(page::BufferPrefetchRouteKind::kAggregate,

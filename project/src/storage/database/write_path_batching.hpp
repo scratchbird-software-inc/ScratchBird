@@ -27,7 +27,7 @@ using scratchbird::core::platform::TypedUuid;
 struct WritePathBatchingAuthorityContext {
   bool engine_mga_tip_authoritative = false;
   bool durable_transaction_inventory_proven = false;
-  bool parser_client_or_donor_write_batch_authority = false;
+  bool parser_client_or_reference_write_batch_authority = false;
   bool batch_metadata_finality_or_visibility_authority = false;
   bool batch_metadata_recovery_authority = false;
   bool recovery_from_batch_metadata_alone = false;

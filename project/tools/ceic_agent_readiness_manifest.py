@@ -44,7 +44,7 @@ COUPLED_READINESS_ARTIFACTS = ("CEIC-ART-011", "CEIC-ART-012", "CEIC-ART-013")
 
 AUTHORITY_BOUNDARY_TOKEN = (
     "agent_readiness_manifest_is_generated_evidence_only_not_runtime_authority_"
-    "transaction_finality_visibility_authorization_security_recovery_parser_donor_"
+    "transaction_finality_visibility_authorization_security_recovery_parser_reference_"
     "wal_benchmark_optimizer_plan_index_finality_provider_finality_cluster_memory_"
     "or_agent_action_authority"
 )
@@ -824,7 +824,7 @@ def build_component(
         "authorization_security_authority_claimed": False,
         "recovery_authority_claimed": False,
         "parser_authority_claimed": False,
-        "donor_authority_claimed": False,
+        "reference_authority_claimed": False,
         "wal_authority_claimed": False,
         "benchmark_authority_claimed": False,
         "optimizer_plan_authority_claimed": False,
@@ -1040,7 +1040,7 @@ def build_manifest(
             "security_authority": False,
             "recovery_authority": False,
             "parser_authority": False,
-            "donor_authority": False,
+            "reference_authority": False,
             "wal_authority": False,
             "benchmark_authority": False,
             "optimizer_plan_authority": False,
@@ -1222,7 +1222,7 @@ def validate_component_semantics(component: dict[str, Any]) -> list[str]:
         "authorization_security_authority_claimed",
         "recovery_authority_claimed",
         "parser_authority_claimed",
-        "donor_authority_claimed",
+        "reference_authority_claimed",
         "wal_authority_claimed",
         "benchmark_authority_claimed",
         "optimizer_plan_authority_claimed",

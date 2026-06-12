@@ -24,7 +24,7 @@ FSPE-011F materialized the differential replay harness as durable repository ass
 - `project/tests/sbsql_parser_worker/generated/replay/DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl`
 - `project/tests/sbsql_parser_worker/generated/replay/sbsql_differential_replay_harness_gate.cpp`
 
-The gate validates 2,617 replay-ready fixtures against semantic oracle authority, batch membership, surface backlog, canonical surface registry, SBLR operation matrix, donor alias matrix, donor alias fixture policy, and validation-command materialization.
+The gate validates 2,617 replay-ready fixtures against semantic oracle authority, batch membership, surface backlog, canonical surface registry, SBLR operation matrix, reference alias matrix, reference alias fixture policy, and validation-command materialization.
 
 ## Result
 

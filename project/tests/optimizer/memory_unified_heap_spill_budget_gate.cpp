@@ -47,7 +47,7 @@ void RequireUnifiedAuthorityEvidence(const std::vector<std::string>& evidence) {
           "MMCH-031 unified budget evidence marker missing");
   Require(EvidenceHas(
               evidence,
-              "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"),
+              "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"),
           "MMCH-031 unified budget authority boundary evidence missing");
 }
 
@@ -257,7 +257,7 @@ void QueryArenaUnifiedBudget() {
 
 int main() {
   std::cout << "MMCH-031 authority_note=unified_heap_spill_budget_evidence_only;"
-               "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+               "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   DirectUnifiedLedger();
   QueryArenaUnifiedBudget();

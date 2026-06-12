@@ -33,7 +33,7 @@ SblrParserHandoffBufferResult BuildSblrParserHandoffBuffer(
     std::string operation_id,
     std::string_view payload,
     bool engine_mga_authoritative,
-    bool parser_or_donor_finality_authority,
+    bool parser_or_reference_finality_authority,
     bool debug_or_relaxed_path);
 
 }  // namespace scratchbird::engine::sblr

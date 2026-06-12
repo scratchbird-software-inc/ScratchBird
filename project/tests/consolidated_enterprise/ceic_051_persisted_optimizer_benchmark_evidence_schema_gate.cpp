@@ -73,21 +73,21 @@ opt::OptimizerBenchmarkSampleGroupEvidence Sample(std::string phase) {
   return sample;
 }
 
-opt::OptimizerBenchmarkDonorMethodologyEvidence Donor(std::string engine) {
-  opt::OptimizerBenchmarkDonorMethodologyEvidence donor;
-  donor.donor_engine = engine;
-  donor.donor_version = "ceic051-donor-version";
-  donor.donor_native_method = "donor_native_best_route";
-  donor.comparable_status = "comparable";
-  donor.dataset_schema_mapping_digest = "sha256:donor-dataset-map-" + engine;
-  donor.workload_mapping_digest = "sha256:donor-workload-map-" + engine;
-  donor.route_equivalence_contract_hash = "sha256:donor-route-contract-" + engine;
-  donor.donor_result_hash = "sha256:donor-result-" + engine;
-  donor.donor_transaction_policy =
-      "donor_native_reference_only_scratchbird_mga_not_substituted";
-  donor.donor_timing_policy = "prepared_warm_output_suppressed_best_normal_method";
-  donor.donor_reference_only = true;
-  return donor;
+opt::OptimizerBenchmarkReferenceMethodologyEvidence Reference(std::string engine) {
+  opt::OptimizerBenchmarkReferenceMethodologyEvidence reference;
+  reference.reference_engine = engine;
+  reference.reference_version = "ceic051-reference-version";
+  reference.reference_native_method = "reference_native_best_route";
+  reference.comparable_status = "comparable";
+  reference.dataset_schema_mapping_digest = "sha256:reference-dataset-map-" + engine;
+  reference.workload_mapping_digest = "sha256:reference-workload-map-" + engine;
+  reference.route_equivalence_contract_hash = "sha256:reference-route-contract-" + engine;
+  reference.reference_result_hash = "sha256:reference-result-" + engine;
+  reference.reference_transaction_policy =
+      "reference_native_reference_only_scratchbird_mga_not_substituted";
+  reference.reference_timing_policy = "prepared_warm_output_suppressed_best_normal_method";
+  reference.reference_reference_only = true;
+  return reference;
 }
 
 opt::PersistedOptimizerBenchmarkEvidenceRecord Record(std::string route) {
@@ -131,7 +131,7 @@ opt::PersistedOptimizerBenchmarkEvidenceRecord Record(std::string route) {
   record.redaction_applied = true;
   record.production_benchmark_clean_claim = true;
   record.sample_groups = {Sample("cold"), Sample("warm")};
-  record.donor_methodology = {Donor("postgresql"), Donor("firebird")};
+  record.reference_methodology = {Reference("postgresql"), Reference("firebird")};
   return record;
 }
 
@@ -165,20 +165,20 @@ void PlaceholderAndSyntheticEvidenceFailsClosed() {
           "CEIC-051 synthetic/placeholder diagnostic missing");
 }
 
-void DonorAndAuthorityDriftFailsClosed() {
+void ReferenceAndAuthorityDriftFailsClosed() {
   auto record = Record("embedded");
-  record.donor_methodology.front().donor_reference_only = false;
-  record.donor_methodology.front().donor_as_authority = true;
-  record.donor_methodology.front()
-      .uses_donor_storage_or_finality_for_scratchbird = true;
+  record.reference_methodology.front().reference_reference_only = false;
+  record.reference_methodology.front().reference_as_authority = true;
+  record.reference_methodology.front()
+      .uses_reference_storage_or_finality_for_scratchbird = true;
   record.authority.transaction_finality_authority = true;
   record.authority.visibility_authority = true;
   record.authority.parser_authority = true;
   const auto validation =
       opt::ValidatePersistedOptimizerBenchmarkEvidenceRecord(record);
-  Require(!validation.ok, "CEIC-051 donor/authority drift was accepted");
-  Require(HasDiagnostic(validation.diagnostics, "DONOR_AUTHORITY_DRIFT"),
-          "CEIC-051 donor authority drift diagnostic missing");
+  Require(!validation.ok, "CEIC-051 reference/authority drift was accepted");
+  Require(HasDiagnostic(validation.diagnostics, "REFERENCE_AUTHORITY_DRIFT"),
+          "CEIC-051 reference authority drift diagnostic missing");
   Require(HasDiagnostic(validation.diagnostics, "FORBIDDEN_AUTHORITY"),
           "CEIC-051 forbidden authority diagnostic missing");
 }
@@ -260,7 +260,7 @@ void RequiredRoutesRemainExplicit() {
 int main() {
   PositiveRouteSetIsAdmissible();
   PlaceholderAndSyntheticEvidenceFailsClosed();
-  DonorAndAuthorityDriftFailsClosed();
+  ReferenceAndAuthorityDriftFailsClosed();
   LocalClusterAndExternalClusterClaimsFailClosed();
   MissingSamplesAndCountersFailClosed();
   RequiredRoutesRemainExplicit();

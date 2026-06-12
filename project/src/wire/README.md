@@ -1,3 +1,3 @@
 # Wire
 
-SBsql, IPC, listener, manager, and donor wire frame codecs.
+SBsql, IPC, listener, manager, and reference wire frame codecs.

@@ -169,7 +169,7 @@ bool CachedPlanSafeForReuse(const CachedOptimizerPlan& plan) {
   return plan.metadata_only &&
          plan.mga_visibility_recheck_required &&
          plan.security_recheck_required &&
-         !plan.parser_or_donor_finality_authority;
+         !plan.parser_or_reference_finality_authority;
 }
 
 void AddValidationFailure(OptimizerPlanCacheEnterpriseValidation* result,
@@ -630,13 +630,13 @@ OptimizerProductionPlanCacheKeyResult BuildProductionOptimizerPlanCacheKeyInput(
   OptimizerProductionPlanCacheKeyResult result;
   const auto request_validation =
       ValidateBoundOptimizerRequest(request.bound_request);
-  if (!request_validation.ok || request.parser_or_donor_authority_claimed) {
+  if (!request_validation.ok || request.parser_or_reference_authority_claimed) {
     result.diagnostic_code =
         "SB_OPTIMIZER_PLAN_CACHE_PRODUCTION_REQUEST_REFUSED";
     result.evidence = request_validation.diagnostics;
-    if (request.parser_or_donor_authority_claimed) {
+    if (request.parser_or_reference_authority_claimed) {
       result.evidence.push_back(
-          "production_plan_cache_parser_or_donor_authority_refused");
+          "production_plan_cache_parser_or_reference_authority_refused");
     }
     return result;
   }
@@ -711,7 +711,7 @@ OptimizerProductionPlanCacheKeyResult BuildProductionOptimizerPlanCacheKeyInput(
   result.evidence.push_back("production_plan_cache_redaction_route_digest_bound=true");
   result.evidence.push_back("production_plan_cache_memory_grant_digest_bound=true");
   result.evidence.push_back(
-      "production_plan_cache_parser_or_donor_authority=false");
+      "production_plan_cache_parser_or_reference_authority=false");
   result.evidence.push_back(
       "production_plan_cache_mga_finality_authority=engine_transaction_inventory");
   return result;
@@ -906,8 +906,8 @@ OptimizerPlanCacheLookupResult OptimizerPlanCache::Lookup(const OptimizerPlanCac
     result.evidence.push_back(exact->second.security_recheck_required
                                   ? "security_authorization_recheck=preserved"
                                   : "security_authorization_recheck=missing");
-    result.evidence.push_back(exact->second.parser_or_donor_finality_authority
-                                  ? "parser_or_donor_finality_authority=true"
+    result.evidence.push_back(exact->second.parser_or_reference_finality_authority
+                                  ? "parser_or_reference_finality_authority=true"
                                   : "mga_finality_authority=engine_transaction_inventory");
     return result;
   }

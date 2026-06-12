@@ -121,7 +121,7 @@ double MinDistanceToPoint(const SpatialRTreeMbr& mbr,
 
 bool RecheckAuthorityClean(const GistExactRecheckProof& proof) {
   return !proof.parser_finality_authority_claimed &&
-         !proof.donor_finality_authority_claimed &&
+         !proof.reference_finality_authority_claimed &&
          !proof.provider_finality_authority_claimed &&
          !proof.index_finality_authority_claimed &&
          !proof.write_ahead_log_finality_authority_claimed &&
@@ -142,7 +142,7 @@ bool RecheckProofValid(const GistExactRecheckProof& proof) {
 
 bool OpclassAuthorityClean(const GistOpclassDescriptor& opclass) {
   return !opclass.parser_finality_authority_claimed &&
-         !opclass.donor_finality_authority_claimed &&
+         !opclass.reference_finality_authority_claimed &&
          !opclass.provider_finality_authority_claimed &&
          !opclass.index_finality_authority_claimed &&
          !opclass.write_ahead_log_finality_authority_claimed;
@@ -210,7 +210,7 @@ bool ProviderAuthorityClean(const GistPhysicalProvider& provider) {
          !provider.security_authority_claimed &&
          !provider.transaction_finality_authority_claimed &&
          !provider.parser_finality_authority_claimed &&
-         !provider.donor_finality_authority_claimed &&
+         !provider.reference_finality_authority_claimed &&
          !provider.provider_finality_authority_claimed &&
          !provider.index_finality_authority_claimed &&
          !provider.write_ahead_log_finality_authority_claimed;
@@ -257,8 +257,8 @@ SpatialRTreeRecheckProof ToSpatialProof(const GistExactRecheckProof& proof) {
   out.evidence_ref = proof.evidence_ref;
   out.parser_finality_authority_claimed =
       proof.parser_finality_authority_claimed;
-  out.donor_finality_authority_claimed =
-      proof.donor_finality_authority_claimed;
+  out.reference_finality_authority_claimed =
+      proof.reference_finality_authority_claimed;
   out.provider_finality_authority_claimed =
       proof.provider_finality_authority_claimed;
   out.index_finality_authority_claimed =

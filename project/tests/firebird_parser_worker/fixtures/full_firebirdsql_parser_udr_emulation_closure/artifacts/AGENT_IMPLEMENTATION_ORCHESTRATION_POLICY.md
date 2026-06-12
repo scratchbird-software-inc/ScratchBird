@@ -5,7 +5,7 @@ Search key: `FIREBIRD_AGENT_IMPLEMENTATION_ORCHESTRATION_POLICY`
 
 ## Purpose
 
-Define how the FirebirdSQL parser, parser-support UDR, emulation, donor-native regression, and hardening work is executed by agents under a single agent manager.
+Define how the FirebirdSQL parser, parser-support UDR, emulation, reference-native regression, and hardening work is executed by agents under a single agent manager.
 
 The policy is an execution-control requirement. It does not change Firebird product behavior, ScratchBird core authority, parser/UDR trust boundaries, or CTest acceptance criteria.
 
@@ -59,7 +59,7 @@ Minimum cadence:
 - Binder/descriptor changes run binder and relevant datatype or DML gates.
 - UDR ABI changes run dynamic SQL or environment installer gates.
 - Bridge/wire changes run bridge and wire API gates.
-- Donor-native harness changes run donor tool build, sandbox, normalization, or replay gates.
+- Reference-native harness changes run reference tool build, sandbox, normalization, or replay gates.
 - Diagnostics changes run status-vector diagnostic gates.
 - Hardening changes run package boundary, runtime absence, malicious input fuzz, or tool isolation gates.
 - Registry or matrix changes run surface registry lint and final affected matrix lint.
@@ -76,7 +76,7 @@ Once implementation starts, the manager continues assigning, integrating, refres
 Human decision cases are limited to:
 
 - Authority conflict between canonical contracts.
-- Missing donor regression source that cannot be acquired from local evidence.
+- Missing reference regression source that cannot be acquired from local evidence.
 - Destructive operation outside approved boundaries.
 - Security or trust-boundary contradiction.
 - Contract requirement that cannot be implemented without changing ScratchBird architecture.

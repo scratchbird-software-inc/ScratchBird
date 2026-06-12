@@ -304,8 +304,8 @@ void RequireDescriptorSuccess(const engine::EngineMemoryManagementResult& result
           "memory descriptor plan claimed transaction finality authority");
   Require(!result.recovery_authority,
           "memory descriptor plan claimed recovery authority");
-  Require(!result.donor_or_wal_recovery_authority,
-          "memory descriptor plan claimed donor/WAL recovery authority");
+  Require(!result.reference_or_wal_recovery_authority,
+          "memory descriptor plan claimed reference/WAL recovery authority");
   Require(!result.private_provider_dispatch,
           "memory descriptor plan dispatched private provider");
   Require(!result.physical_action_dispatched,

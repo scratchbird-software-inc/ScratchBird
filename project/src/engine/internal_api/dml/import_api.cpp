@@ -54,8 +54,8 @@ bool SupportedSourceKind(const std::string& value) {
         "jsonl_stream",
         "document_stream",
         "binary_typed_rows",
-        "donor_dump_replay",
-        "donor_bulk_api",
+        "reference_dump_replay",
+        "reference_bulk_api",
         "live_ingest_stream",
     });
 }
@@ -68,8 +68,8 @@ bool SupportedFormatFamily(const std::string& value) {
         "jsonl",
         "document",
         "binary_typed_rows",
-        "donor_dump",
-        "donor_bulk",
+        "reference_dump",
+        "reference_bulk",
         "live_ingest",
     });
 }
@@ -96,11 +96,11 @@ bool SourceFormatPairAllowed(const std::string& source_kind, const std::string& 
     if (source_kind == "binary_typed_rows") {
         return format_family == "binary_typed_rows";
     }
-    if (source_kind == "donor_dump_replay") {
-        return format_family == "donor_dump";
+    if (source_kind == "reference_dump_replay") {
+        return format_family == "reference_dump";
     }
-    if (source_kind == "donor_bulk_api") {
-        return format_family == "donor_bulk";
+    if (source_kind == "reference_bulk_api") {
+        return format_family == "reference_bulk";
     }
     if (source_kind == "live_ingest_stream") {
         return format_family == "live_ingest";
@@ -109,8 +109,8 @@ bool SourceFormatPairAllowed(const std::string& source_kind, const std::string& 
 }
 
 std::string InsertModeForSource(const std::string& source_kind) {
-    if (source_kind == "donor_bulk_api") {
-        return "donor_bulk";
+    if (source_kind == "reference_bulk_api") {
+        return "reference_bulk";
     }
     if (source_kind == "binary_typed_rows") {
         return "native_bulk";
@@ -173,12 +173,12 @@ EnginePlanImportRowsResult EnginePlanImportRows(const EnginePlanImportRowsReques
             "Client dialect input must be lowered by the parser before the engine boundary.");
     }
 
-    if (request.import_policy.donor_relaxed_semantics_requested &&
+    if (request.import_policy.reference_relaxed_semantics_requested &&
         !request.import_policy.strict_bulk_load_requested) {
         return ImportFailure(
-            "import_donor_relaxed_semantics_requires_policy",
-            "Donor-relaxed import semantics require an explicit strict or policy-authorized profile.",
-            "The default engine import surface fails closed rather than inheriting donor shortcuts.");
+            "import_reference_relaxed_semantics_requires_policy",
+            "Reference-relaxed import semantics require an explicit strict or policy-authorized profile.",
+            "The default engine import surface fails closed rather than inheriting reference shortcuts.");
     }
 
     if (request.import_policy.reject_limit_percent < 0.0 ||

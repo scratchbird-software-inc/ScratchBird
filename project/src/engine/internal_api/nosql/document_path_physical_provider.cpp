@@ -213,7 +213,7 @@ DocumentPathProviderResult Failure(const char* detail) {
   result.evidence.push_back("document_path_provider_finality_authority=false");
   result.evidence.push_back("document_path_provider_visibility_authority=false");
   result.evidence.push_back("parser_finality_authority=false");
-  result.evidence.push_back("donor_finality_authority=false");
+  result.evidence.push_back("reference_finality_authority=false");
   result.evidence.push_back("write_ahead_log_finality_authority=false");  // wal-not-authority
   return result;
 }
@@ -433,7 +433,7 @@ bool PostingLess(const DocumentPathProviderPosting& lhs,
 bool RowHasAuthorityClaim(const DocumentPathRowEvidence& row) {
   return row.summary_visibility_or_finality_claim ||
          row.parser_finality_authority_claim ||
-         row.donor_finality_authority_claim ||
+         row.reference_finality_authority_claim ||
          row.provider_finality_authority_claim ||
          row.write_ahead_log_finality_authority_claim;  // wal-not-authority
 }
@@ -608,7 +608,7 @@ std::string BodyForArtifact(const DocumentPathProviderArtifact& artifact) {
                            {"mga_security_redaction_exact_recheck_required",
                             "true"},
                            {"parser_finality_authority", "false"},
-                           {"donor_finality_authority", "false"},
+                           {"reference_finality_authority", "false"},
                            {"provider_finality_authority", "false"},
                            {"write_ahead_log_finality_authority", "false"}})  // wal-not-authority
        << '\n';
@@ -839,7 +839,7 @@ DocumentPathProviderResult ParseArtifactText(
   result.evidence.push_back("document_path_provider_candidate_evidence_only=true");
   result.evidence.push_back("mga_security_redaction_exact_recheck_required=true");
   result.evidence.push_back("parser_finality_authority=false");
-  result.evidence.push_back("donor_finality_authority=false");
+  result.evidence.push_back("reference_finality_authority=false");
   result.evidence.push_back("provider_finality_authority=false");
   result.evidence.push_back("write_ahead_log_finality_authority=false");  // wal-not-authority
   return result;
@@ -1016,7 +1016,7 @@ void AddSuccessEvidence(DocumentPathProviderResult* result) {
   result->evidence.push_back("document_path_provider_candidate_evidence_only=true");
   result->evidence.push_back("mga_security_redaction_exact_recheck_required=true");
   result->evidence.push_back("parser_finality_authority=false");
-  result->evidence.push_back("donor_finality_authority=false");
+  result->evidence.push_back("reference_finality_authority=false");
   result->evidence.push_back("provider_finality_authority=false");
   result->evidence.push_back("write_ahead_log_finality_authority=false");  // wal-not-authority
 }

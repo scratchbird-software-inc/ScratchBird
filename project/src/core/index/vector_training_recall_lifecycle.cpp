@@ -209,8 +209,8 @@ VectorTrainingRecallLifecycleDecision BaseDecision(
           "vector_metadata_finality_authority",
           profile.vector_metadata_finality_authority);
   AddBool(&decision.evidence,
-          "parser_or_donor_authority",
-          profile.parser_or_donor_authority);
+          "parser_or_reference_authority",
+          profile.parser_or_reference_authority);
   AddBool(&decision.evidence,
           "write_ahead_or_finality_authority",
           profile.write_ahead_or_finality_authority);
@@ -346,10 +346,10 @@ VectorTrainingRecallLifecycleProfile DefaultVectorTrainingRecallLifecycleProfile
 VectorTrainingRecallLifecycleDecision EvaluateVectorTrainingRecallLifecycle(
     const VectorTrainingRecallLifecycleProfile& profile) {
   auto decision = BaseDecision(profile);
-  if (profile.parser_or_donor_authority) {
+  if (profile.parser_or_reference_authority) {
     return Refuse(std::move(decision),
-                  "INDEX.VECTOR_RECALL_LIFECYCLE.UNSAFE_PARSER_OR_DONOR_AUTHORITY",
-                  "parser_or_donor_authority_forbidden");
+                  "INDEX.VECTOR_RECALL_LIFECYCLE.UNSAFE_PARSER_OR_REFERENCE_AUTHORITY",
+                  "parser_or_reference_authority_forbidden");
   }
   if (profile.write_ahead_or_finality_authority) {
     return Refuse(std::move(decision),

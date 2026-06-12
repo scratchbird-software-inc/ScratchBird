@@ -364,20 +364,20 @@ void RefusalAndUnsafeLegacyGuards() {
                   "SB-INDEX-KEY-COMPARE-UNSAFE-LEGACY-ENVELOPE",
           "legacy SBK1 compare was not refused exactly");
 
-  auto donor_raw = Component(Text("raw"), 0);
-  donor_raw.kind = idx::IndexKeyComponentKind::donor_raw;
-  const auto donor_raw_result = idx::EncodeIndexKey({donor_raw}, StableProfile());
-  Require(!donor_raw_result.ok() &&
-              donor_raw_result.diagnostic.diagnostic_code ==
-                  "SB-INDEX-KEY-ENCODING-DONOR-RAW-REFUSED",
-          "donor raw key was not refused exactly");
+  auto reference_raw = Component(Text("raw"), 0);
+  reference_raw.kind = idx::IndexKeyComponentKind::reference_raw;
+  const auto reference_raw_result = idx::EncodeIndexKey({reference_raw}, StableProfile());
+  Require(!reference_raw_result.ok() &&
+              reference_raw_result.diagnostic.diagnostic_code ==
+                  "SB-INDEX-KEY-ENCODING-REFERENCE-RAW-REFUSED",
+          "reference raw key was not refused exactly");
 
-  auto donor_nulls = Component(Null(idx::IndexKeyNullPlacement::donor_profile_default), 0);
-  const auto donor_nulls_result = idx::EncodeIndexKey({donor_nulls}, StableProfile());
-  Require(!donor_nulls_result.ok() &&
-              donor_nulls_result.diagnostic.diagnostic_code ==
-                  "SB-INDEX-KEY-ENCODING-DONOR-NULLS-REFUSED",
-          "donor profile default null placement was not refused exactly");
+  auto reference_nulls = Component(Null(idx::IndexKeyNullPlacement::reference_profile_default), 0);
+  const auto reference_nulls_result = idx::EncodeIndexKey({reference_nulls}, StableProfile());
+  Require(!reference_nulls_result.ok() &&
+              reference_nulls_result.diagnostic.diagnostic_code ==
+                  "SB-INDEX-KEY-ENCODING-REFERENCE-NULLS-REFUSED",
+          "reference profile default null placement was not refused exactly");
 
   auto unstable = StableProfile();
   unstable.bytewise_stable = false;

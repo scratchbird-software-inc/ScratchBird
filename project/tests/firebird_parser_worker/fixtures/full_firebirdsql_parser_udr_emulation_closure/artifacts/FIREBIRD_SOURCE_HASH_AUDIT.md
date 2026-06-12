@@ -9,16 +9,16 @@ The local Firebird 5.0.4 reference packet is the initial behavior-evidence basel
 
 | Evidence | Path | SHA-256 | Status |
 | --- | --- | --- | --- |
-| Release evidence manifest | `project/tests/donor_regression/donor_release_acquisition/firebird/5.0.4/RELEASE_EVIDENCE_MANIFEST.yaml` | `a68d035a37348e7a9c4c14f3d368bb8302c218fe8a661b8952066014929e4fc6` | present |
-| Source tree manifest | `project/tests/donor_regression/donor_release_acquisition/firebird/5.0.4/TREE_MANIFEST.sha256` | `cf2a57a3e2921d0d6d9156c25a3d7a7da3bc52c53734e52ce2c0c1f42309d447` | present |
-| Source archive hash pointer | `project/tests/donor_regression/donor_release_acquisition/firebird/5.0.4/source-archive/firebird-5.0.4.tar.gz.sha256` | `046be0738dc9505a58930487cd040e58cdd2ed12e67cbb6b01a06d14205e18e6` | present |
-| Regression source pointers | `project/tests/donor_regression/donor_release_acquisition/firebird/5.0.4/regression/SOURCE_POINTERS.md` | `d8f966c616151270f851e9bdb3004811320f5060baf62ce747450b950e619c44` | present |
-| Firebird QA donor replay manifest | `project/tests/donor_regression/donor_release_acquisition/firebird/5.0.4/regression/FIREBIRD_QA_DONOR_REPLAY_MANIFEST.csv` | `a0eae076cf547aff9ee9401067a143bb6afcfd5fa73d0a49c68a75ec805c34c1` | present |
-| Firebird QA donor replay family manifest | `project/tests/donor_regression/donor_release_acquisition/firebird/5.0.4/regression/FIREBIRD_QA_DONOR_REPLAY_FAMILY_MANIFEST.csv` | `e86fb3be6ed47865e78fae4ef4c45d065a9c35b8b3da4699529c1783cdf1ab80` | present |
-| Firebird QA candidate asset hash manifest | `project/tests/donor_regression/donor_release_acquisition/firebird/5.0.4/regression/FIREBIRD_QA_CANDIDATE_ASSET_HASH_MANIFEST.csv` | `e6791254c8bff660f0759b1ae6ee46f95fe3063f55f4f44227a852652da2f632` | present |
-| Reference packet source authority matrix | `docs/reference/donor_reference_packets/emulation_1_to_1_engine_reference_packets_2026-04-02/firebird/source_authority_matrix.csv` | `86c6c6c959f07ceaba843101855f81aac2cdf9d6609b0a7ca9d4444f71cc71fa` | present |
-| Builtin inventory seed | `project/tests/donor_regression/donor_catalog_seeds/firebird/firebird_5_builtin_inventory.csv` | `d6cfb675a6e6fa356de40c4d155232686068e7c73b9d349513c2dfce009d8503` | present |
-| Catalog inventory seed | `project/tests/donor_regression/donor_catalog_seeds/firebird/firebird_5_catalog_inventory.csv` | `77603b1394691f9c5a8b35acf9ea779687c105350f0653143f0198f229d0b780` | present |
+| Release evidence manifest | `project/tests/reference_regression/reference_release_acquisition/firebird/5.0.4/RELEASE_EVIDENCE_MANIFEST.yaml` | `a68d035a37348e7a9c4c14f3d368bb8302c218fe8a661b8952066014929e4fc6` | present |
+| Source tree manifest | `project/tests/reference_regression/reference_release_acquisition/firebird/5.0.4/TREE_MANIFEST.sha256` | `cf2a57a3e2921d0d6d9156c25a3d7a7da3bc52c53734e52ce2c0c1f42309d447` | present |
+| Source archive hash pointer | `project/tests/reference_regression/reference_release_acquisition/firebird/5.0.4/source-archive/firebird-5.0.4.tar.gz.sha256` | `046be0738dc9505a58930487cd040e58cdd2ed12e67cbb6b01a06d14205e18e6` | present |
+| Regression source pointers | `project/tests/reference_regression/reference_release_acquisition/firebird/5.0.4/regression/SOURCE_POINTERS.md` | `d8f966c616151270f851e9bdb3004811320f5060baf62ce747450b950e619c44` | present |
+| Firebird QA reference replay manifest | `project/tests/reference_regression/reference_release_acquisition/firebird/5.0.4/regression/FIREBIRD_QA_REFERENCE_REPLAY_MANIFEST.csv` | `a0eae076cf547aff9ee9401067a143bb6afcfd5fa73d0a49c68a75ec805c34c1` | present |
+| Firebird QA reference replay family manifest | `project/tests/reference_regression/reference_release_acquisition/firebird/5.0.4/regression/FIREBIRD_QA_REFERENCE_REPLAY_FAMILY_MANIFEST.csv` | `e86fb3be6ed47865e78fae4ef4c45d065a9c35b8b3da4699529c1783cdf1ab80` | present |
+| Firebird QA candidate asset hash manifest | `project/tests/reference_regression/reference_release_acquisition/firebird/5.0.4/regression/FIREBIRD_QA_CANDIDATE_ASSET_HASH_MANIFEST.csv` | `e6791254c8bff660f0759b1ae6ee46f95fe3063f55f4f44227a852652da2f632` | present |
+| Reference packet source authority matrix | `docs/reference/reference_reference_packets/emulation_1_to_1_engine_reference_packets_2026-04-02/firebird/source_authority_matrix.csv` | `86c6c6c959f07ceaba843101855f81aac2cdf9d6609b0a7ca9d4444f71cc71fa` | present |
+| Builtin inventory seed | `project/tests/reference_regression/reference_catalog_seeds/firebird/firebird_5_builtin_inventory.csv` | `d6cfb675a6e6fa356de40c4d155232686068e7c73b9d349513c2dfce009d8503` | present |
+| Catalog inventory seed | `project/tests/reference_regression/reference_catalog_seeds/firebird/firebird_5_catalog_inventory.csv` | `77603b1394691f9c5a8b35acf9ea779687c105350f0653143f0198f229d0b780` | present |
 
 ## Release Evidence Manifest Values
 
@@ -41,6 +41,6 @@ The local Firebird 5.0.4 reference packet is the initial behavior-evidence basel
 ## Required Follow-Up Checks
 
 - Recompute `TREE_MANIFEST.sha256` before any generated Firebird registry is promoted.
-- Keep donor-original regression replay rows aligned with `regression/FIREBIRD_QA_DONOR_REPLAY_MANIFEST.csv`.
+- Keep reference-original regression replay rows aligned with `regression/FIREBIRD_QA_REFERENCE_REPLAY_MANIFEST.csv`.
 - Record exact rowset hashes for catalog seed extraction before catalog overlay implementation is marked complete.
 - Keep every hash audit update tied to a local path and search key; do not use line-number anchors as implementation authority.

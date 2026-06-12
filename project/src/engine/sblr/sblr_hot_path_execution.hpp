@@ -21,7 +21,7 @@ namespace scratchbird::engine::sblr {
 
 struct SblrHotPathAuthorityContext {
   bool parser_sql_execution_authority = false;
-  bool donor_execution_authority = false;
+  bool reference_execution_authority = false;
   bool client_execution_authority = false;
   bool engine_mga_snapshot_bound = false;
   bool transaction_inventory_authoritative = false;

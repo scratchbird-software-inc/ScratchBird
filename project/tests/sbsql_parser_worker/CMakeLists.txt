@@ -11,10 +11,105 @@ target_compile_features(sbp_sbsql_pipeline_probe PRIVATE cxx_std_23)
 target_link_libraries(sbp_sbsql_pipeline_probe PRIVATE sbl_sbsql_parser_pipeline)
 add_test(NAME sbp_sbsql_pipeline_probe COMMAND sbp_sbsql_pipeline_probe)
 
+add_executable(sbsql_canonical_element_stream_runtime_conformance
+  sbsql_canonical_element_stream_runtime_conformance.cpp
+)
+target_compile_features(sbsql_canonical_element_stream_runtime_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_canonical_element_stream_runtime_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_canonical_element_stream_runtime_conformance
+  COMMAND sbsql_canonical_element_stream_runtime_conformance
+)
+set_tests_properties(sbsql_canonical_element_stream_runtime_conformance PROPERTIES
+  LABELS "sbsql_canonical_element_stream;sbsql_parser_worker;SML-005;SML-006;SML-082;SML-083"
+)
+
 add_executable(sbp_sbsql_ipc_schema_probe parser_ipc_schema_probe.cpp)
 target_compile_features(sbp_sbsql_ipc_schema_probe PRIVATE cxx_std_23)
 target_link_libraries(sbp_sbsql_ipc_schema_probe PRIVATE sbl_sbsql_parser_pipeline)
 add_test(NAME sbp_sbsql_ipc_schema_probe COMMAND sbp_sbsql_ipc_schema_probe)
+
+add_executable(sbsql_language_resource_contract_conformance
+  sbsql_language_resource_contract_conformance.cpp
+)
+target_compile_features(sbsql_language_resource_contract_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_language_resource_contract_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_language_resource_contract_conformance
+  COMMAND sbsql_language_resource_contract_conformance
+)
+set_tests_properties(sbsql_language_resource_contract_conformance PROPERTIES
+  LABELS "sbsql_language_resource_contract;sbsql_parser_worker;SML-005;SML-010;SML-082;SML-083;SML-084;SML-086;SML-089;SML-091;SML-092;SML-093;SML-094;SML-095;SML-096;SML-097;SML-098;SML-099;SML-100;SML-101"
+)
+
+add_executable(sbsql_language_resource_governance_lifecycle_conformance
+  sbsql_language_resource_governance_lifecycle_conformance.cpp
+)
+target_compile_features(sbsql_language_resource_governance_lifecycle_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_language_resource_governance_lifecycle_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_language_resource_governance_lifecycle_conformance
+  COMMAND sbsql_language_resource_governance_lifecycle_conformance
+)
+set_tests_properties(sbsql_language_resource_governance_lifecycle_conformance PROPERTIES
+  LABELS "sbsql_language_resource_contract;sbsql_language_resource_governance_lifecycle;sbsql_parser_worker;SML-085;SML-088"
+)
+
+add_executable(sbsql_language_locale_profile_matrix_conformance
+  sbsql_language_locale_profile_matrix_conformance.cpp
+)
+target_compile_features(sbsql_language_locale_profile_matrix_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_language_locale_profile_matrix_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_language_locale_profile_matrix_conformance
+  COMMAND sbsql_language_locale_profile_matrix_conformance
+)
+set_tests_properties(sbsql_language_locale_profile_matrix_conformance PROPERTIES
+  LABELS "sbsql_language_locale_profile_matrix;sbsql_language_resource_contract;sbsql_parser_worker;SML-013;SML-014;SML-GATE-013;SML-GATE-014"
+)
+
+add_executable(sbsql_sml087_unicode_predictive_resource_conformance
+  sbsql_sml087_unicode_predictive_resource_conformance.cpp
+)
+target_compile_features(sbsql_sml087_unicode_predictive_resource_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sml087_unicode_predictive_resource_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_sml087_unicode_predictive_resource_conformance
+  COMMAND sbsql_sml087_unicode_predictive_resource_conformance
+)
+set_tests_properties(sbsql_sml087_unicode_predictive_resource_conformance PROPERTIES
+  LABELS "sbsql_sml087_unicode_predictive_resource;sbsql_language_resource_contract;sbsql_parser_worker;SML-087"
+)
+
+add_executable(sbsql_language_control_surface_conformance
+  sbsql_language_control_surface_conformance.cpp
+)
+target_compile_features(sbsql_language_control_surface_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_language_control_surface_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_language_control_surface_conformance
+  COMMAND sbsql_language_control_surface_conformance
+)
+set_tests_properties(sbsql_language_control_surface_conformance PROPERTIES
+  LABELS "sbsql_language_control;sbsql_parser_worker;SML-003;SML-008;SML-009"
+)
+
+add_executable(sbsql_multilingual_passthrough_runtime_conformance
+  sbsql_multilingual_passthrough_runtime_conformance.cpp
+)
+target_compile_features(sbsql_multilingual_passthrough_runtime_conformance PRIVATE cxx_std_23)
+target_link_libraries(
+  sbsql_multilingual_passthrough_runtime_conformance
+  PRIVATE
+    sbl_sbsql_parser_worker_core
+)
+add_test(
+  NAME sbsql_multilingual_passthrough_runtime_conformance
+  COMMAND sbsql_multilingual_passthrough_runtime_conformance
+)
+set_tests_properties(sbsql_multilingual_passthrough_runtime_conformance PROPERTIES
+  LABELS "sbsql_multilingual_passthrough_runtime;sbsql_parser_worker;SML-018;SML-020;SML-090;frontdoor_lowering_cache;no_execution_plan_runtime"
+)
 
 add_executable(sbp_sbsql_registry_generation_probe sbsql_registry_generation_probe.cpp)
 target_compile_features(sbp_sbsql_registry_generation_probe PRIVATE cxx_std_23)
@@ -61,6 +156,65 @@ set_tests_properties(sbp_sbsql_generated_full_surface_conformance_probe PROPERTI
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(SBSQL_PYTHON3 "${Python3_EXECUTABLE}")
+
+add_test(
+  NAME sbsql_multilingual_resource_edge_safety_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_multilingual_resource_edge_safety_harness.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_multilingual_resource_edge_safety_gate PROPERTIES
+  LABELS "sbsql_multilingual_resource_edge_safety;sbsql_parser_worker;SML-094;SML-095;SML-096;SML-097;SML-098;SML-099;SML-100;SML-101"
+)
+
+add_test(
+  NAME sbsql_driver_language_surface_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tools/release/sbsql_driver_language_surface_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_driver_language_surface_gate PROPERTIES
+  LABELS "sbsql_driver_language_surface;sbsql_parser_worker;SML-018;SML-020;SML-083;SML-086;SML-090;SML-091;SML-093;SML-101"
+)
+
+add_test(
+  NAME sbsql_language_golden_trace_oracle_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_language_golden_trace_oracle_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_language_golden_trace_oracle_gate PROPERTIES
+  LABELS "sbsql_language_golden_trace_oracle;sbsql_parser_worker;SML-089;SML-GATE-089"
+)
+
+add_test(
+  NAME sbsql_sml_026_027_028_route_script_replay_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/route_script_replay/sbsql_sml_026_027_028_route_script_replay_gate.py"
+)
+set_tests_properties(sbsql_sml_026_027_028_route_script_replay_gate PROPERTIES
+  LABELS "sbsql_route_script_replay;sbsql_parser_worker;SML-026;SML-027;SML-028;SML-GATE-026;SML-GATE-027;SML-GATE-028;mga_transaction_regression"
+)
+
+add_test(
+  NAME sbsql_sml_029_032_feature_closure_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_sml_029_032_feature_closure_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_sml_029_032_feature_closure_gate PROPERTIES
+  LABELS "sbsql_sql_feature_closure;sbsql_parser_worker;SML-029;SML-030;SML-031;SML-032;SML-GATE-029;SML-GATE-030;SML-GATE-031;SML-GATE-032;mga_transaction_regression"
+)
+
+add_test(
+  NAME sbsql_security_regression_matrix_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/security/sbsql_security_regression_matrix_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_security_regression_matrix_gate PROPERTIES
+  LABELS "sbsql_security_regression_matrix;sbsql_parser_worker;SML-033;SML-034;SML-035;SML-036;SML-037;SML-038;SML-039;SML-040;SML-GATE-033;SML-GATE-034;SML-GATE-035;SML-GATE-036;SML-GATE-037;SML-GATE-038;SML-GATE-039;SML-GATE-040;mga_transaction_regression"
+)
 
 if(NOT TARGET sb_isql AND EXISTS "${PROJECT_SOURCE_DIR}/drivers/tool/cli/CMakeLists.txt")
   add_subdirectory("${PROJECT_SOURCE_DIR}/drivers/tool/cli" "${CMAKE_BINARY_DIR}/drivers/tool/cli")
@@ -148,7 +302,7 @@ add_test(
           --build-root "${CMAKE_BINARY_DIR}"
 )
 set_tests_properties(final_sblr_sbsql_enterprise_proof_closure_gate PROPERTIES
-  LABELS "FEP-P7;final_sblr_sbsql_enterprise_proof_closure;release_gate;sbsql_parser_worker;sblr_surface;donor_parser_release_evidence;mga_transaction_regression"
+  LABELS "FEP-P7;final_sblr_sbsql_enterprise_proof_closure;release_gate;sbsql_parser_worker;sblr_surface;reference_parser_release_evidence;mga_transaction_regression"
   DEPENDS "sbsql_final_language_expansion_closure_gate;ctest_no_execution_plan_runtime_dependency_gate;parser_dialect_isolation_audit_gate;sblr_surface_fse_p7_execution_proof_gate"
 )
 
@@ -159,7 +313,7 @@ add_test(
           --repo-root "${PROJECT_SOURCE_DIR}/.."
 )
 set_tests_properties(final_sblr_sbsql_master_closure_gate PROPERTIES
-  LABELS "FSM-P7;final_sblr_sbsql_master_closure;release_gate;sbsql_parser_worker;sblr_surface;donor_parser_release_evidence;mga_transaction_regression"
+  LABELS "FSM-P7;final_sblr_sbsql_master_closure;release_gate;sbsql_parser_worker;sblr_surface;reference_parser_release_evidence;mga_transaction_regression"
   DEPENDS "final_sblr_sbsql_enterprise_proof_closure_gate;sbsql_final_language_expansion_closure_gate;parser_dialect_isolation_audit_gate"
 )
 
@@ -315,6 +469,17 @@ add_test(
 )
 set_tests_properties(sbsql_deterministic_generation_no_network_gate PROPERTIES
   LABELS "sbsql_deterministic_generation_no_network_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
+)
+
+add_test(
+  NAME sbsql_language_element_manifest_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_language_element_manifest_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+          --artifact-root "${SBSQL_SURFACE_TO_SBLR_ARTIFACT_ROOT}"
+)
+set_tests_properties(sbsql_language_element_manifest_gate PROPERTIES
+  LABELS "sbsql_language_element_manifest_gate;sbsql_language_resource_contract;sbsql_parser_worker;SML-010;SML-092"
 )
 
 add_test(
@@ -1243,22 +1408,22 @@ set_tests_properties(sbp_sbsql_regression_test_bed_generation_gate PROPERTIES
 )
 
 add_executable(
-  sbp_sbsql_donor_alias_rendering_conformance
-  generated/donor_alias/sbsql_donor_alias_rendering_conformance.cpp
+  sbp_sbsql_reference_alias_rendering_conformance
+  generated/reference_alias/sbsql_reference_alias_rendering_conformance.cpp
 )
-target_compile_features(sbp_sbsql_donor_alias_rendering_conformance PRIVATE cxx_std_23)
-set(SBSQL_DONOR_ALIAS_RENDERING_FIXTURES
-  "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/donor_alias/DONOR_ALIAS_RENDERING_FIXTURES.csv"
+target_compile_features(sbp_sbsql_reference_alias_rendering_conformance PRIVATE cxx_std_23)
+set(SBSQL_REFERENCE_ALIAS_RENDERING_FIXTURES
+  "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/reference_alias/REFERENCE_ALIAS_RENDERING_FIXTURES.csv"
 )
 add_test(
-  NAME sbp_sbsql_donor_alias_rendering_conformance
-  COMMAND sbp_sbsql_donor_alias_rendering_conformance
+  NAME sbp_sbsql_reference_alias_rendering_conformance
+  COMMAND sbp_sbsql_reference_alias_rendering_conformance
           "${SBSQL_REGRESSION_ARTIFACT_ROOT}"
           "${SBSQL_CANONICALIZATION_ROOT}"
-          "${SBSQL_DONOR_ALIAS_RENDERING_FIXTURES}"
+          "${SBSQL_REFERENCE_ALIAS_RENDERING_FIXTURES}"
 )
-set_tests_properties(sbp_sbsql_donor_alias_rendering_conformance PROPERTIES
-  LABELS "sbsql_donor_alias_mapping_conformance;sbsql_donor_alias_rendering_conformance;sbsql_parser_worker"
+set_tests_properties(sbp_sbsql_reference_alias_rendering_conformance PROPERTIES
+  LABELS "sbsql_reference_alias_mapping_conformance;sbsql_reference_alias_rendering_conformance;sbsql_parser_worker"
 )
 
 add_executable(
@@ -1291,10 +1456,10 @@ add_test(
           "${SBSQL_REGRESSION_ARTIFACT_ROOT}"
           "${SBSQL_CANONICALIZATION_ROOT}"
           "${SBSQL_DIFFERENTIAL_REPLAY_ROOT}"
-          "${SBSQL_DONOR_ALIAS_RENDERING_FIXTURES}"
+          "${SBSQL_REFERENCE_ALIAS_RENDERING_FIXTURES}"
 )
 set_tests_properties(sbp_sbsql_differential_replay_harness_gate PROPERTIES
-  LABELS "sbsql_differential_replay_harness_gate;sbsql_replay_parser_only;sbsql_replay_parser_bind_lower;sbsql_replay_udr;sbsql_replay_server_admission;sbsql_replay_engine_behavior;sbsql_replay_full_route;sbsql_replay_donor_alias;sbsql_replay_diagnostic;parser_v3_closure_gate;parser_conformance_oracle_gate;sbsql_parser_worker"
+  LABELS "sbsql_differential_replay_harness_gate;sbsql_replay_parser_only;sbsql_replay_parser_bind_lower;sbsql_replay_udr;sbsql_replay_server_admission;sbsql_replay_engine_behavior;sbsql_replay_full_route;sbsql_replay_reference_alias;sbsql_replay_diagnostic;parser_v3_closure_gate;parser_conformance_oracle_gate;sbsql_parser_worker"
 )
 
 if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARGET sb_server_core AND TARGET sb_engine_sblr)
@@ -1339,7 +1504,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARG
             "${SBSQL_REGRESSION_ARTIFACT_ROOT}"
             "${SBSQL_CANONICALIZATION_ROOT}"
             "${SBSQL_DIFFERENTIAL_REPLAY_ROOT}"
-            "${SBSQL_DONOR_ALIAS_RENDERING_FIXTURES}"
+            "${SBSQL_REFERENCE_ALIAS_RENDERING_FIXTURES}"
             "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/exhaustive_e2e/EXHAUSTIVE_E2E_VARIATION_MATRIX.csv"
   )
   set_tests_properties(sbsql_exhaustive_e2e_regression_gate PROPERTIES
@@ -3844,7 +4009,7 @@ add_test(
   COMMAND sbsql_cache_epoch_correctness_conformance
 )
 set_tests_properties(sbsql_cache_epoch_correctness_conformance PROPERTIES
-  LABELS "sbsql_cache_epoch_correctness_conformance;parser_cache_invalidation_gate;parser_v3_closure_gate;sbsql_parser_worker"
+  LABELS "sbsql_cache_epoch_correctness_conformance;parser_cache_invalidation_gate;parser_v3_closure_gate;sbsql_parser_worker;SML-007"
 )
 
 add_executable(
@@ -3876,7 +4041,7 @@ add_test(
   COMMAND sbsql_frontdoor_lowering_cache_odfr_011_conformance
 )
 set_tests_properties(sbsql_frontdoor_lowering_cache_odfr_011_conformance PROPERTIES
-  LABELS "sbsql_frontdoor_lowering_cache_odfr_011_conformance;ODFR-011;sbsql_parser_worker;frontdoor_lowering_cache;benchmark_clean;mga_transaction_regression;no_execution_plan_runtime"
+  LABELS "sbsql_frontdoor_lowering_cache_odfr_011_conformance;ODFR-011;sbsql_parser_worker;frontdoor_lowering_cache;benchmark_clean;mga_transaction_regression;no_execution_plan_runtime;SML-007;SML-090"
 )
 
 add_executable(sbsql_parser_v3_profile_meta_conformance sbsql_parser_v3_profile_meta_conformance.cpp)
@@ -4548,6 +4713,63 @@ if(TARGET sb_server_core)
   set_tests_properties(sb_server_sbsql_admission_conformance PROPERTIES
     LABELS "sb_server_sbsql_admission_conformance;SBSFC-025;sbsql_parser_worker"
   )
+
+  add_executable(
+    sbsql_server_language_session_control_conformance
+    sbsql_server_language_session_control_conformance.cpp
+  )
+  target_compile_features(sbsql_server_language_session_control_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_server_language_session_control_conformance
+    PRIVATE
+      sb_server_core
+      sbl_sbsql_parser_pipeline
+  )
+  add_test(
+    NAME sbsql_server_language_session_control_conformance
+    COMMAND sbsql_server_language_session_control_conformance
+  )
+  set_tests_properties(sbsql_server_language_session_control_conformance PROPERTIES
+    LABELS "sbsql_server_language_session_control;SML-008;SML-009;SML-018;SML-020;sbsql_parser_worker;server_session_language_context"
+  )
+
+  add_executable(
+    sbsql_server_language_resource_directory_conformance
+    sbsql_server_language_resource_directory_conformance.cpp
+  )
+  target_compile_features(sbsql_server_language_resource_directory_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_server_language_resource_directory_conformance
+    PRIVATE
+      sb_server_core
+  )
+  add_test(
+    NAME sbsql_server_language_resource_directory_conformance
+    COMMAND sbsql_server_language_resource_directory_conformance
+  )
+  set_tests_properties(sbsql_server_language_resource_directory_conformance PROPERTIES
+    LABELS "sbsql_server_language_resource_directory;SML-015;SML-083;SML-085;SML-093;sbsql_parser_worker;server_session_language_context"
+  )
+
+  add_executable(
+    sbsql_sml022_shared_parser_runtime_authority_conformance
+    sbsql_sml022_shared_parser_runtime_authority_conformance.cpp
+  )
+  target_compile_features(sbsql_sml022_shared_parser_runtime_authority_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_sml022_shared_parser_runtime_authority_conformance
+    PRIVATE
+      sb_server_core
+      sbl_sbsql_parser_pipeline
+  )
+  add_test(
+    NAME sbsql_sml022_shared_parser_runtime_authority_conformance
+    COMMAND sbsql_sml022_shared_parser_runtime_authority_conformance
+  )
+  set_tests_properties(sbsql_sml022_shared_parser_runtime_authority_conformance PROPERTIES
+    LABELS "sbsql_shared_parser_runtime_authority;sbsql_parser_worker;SML-022;SML-GATE-022;mga_transaction_regression"
+  )
+
   add_test(
     NAME sbsql_cluster_private_fail_closed_conformance
     COMMAND sb_server_sbsql_admission_conformance

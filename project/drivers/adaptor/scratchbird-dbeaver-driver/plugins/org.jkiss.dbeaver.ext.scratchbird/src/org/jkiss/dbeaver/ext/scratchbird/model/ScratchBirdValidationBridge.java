@@ -2541,15 +2541,15 @@ public final class ScratchBirdValidationBridge {
             .toList();
         return switch (family) {
             case "table" -> firstMatchingDescriptor(expectedChildren,
-                "table", "workspace object", "published object", "managed object", "donor-native object");
+                "table", "workspace object", "published object", "managed object", "reference-native object");
             case "view" -> firstMatchingDescriptor(expectedChildren,
-                "view", "workspace object", "published object", "managed object", "donor-native object");
+                "view", "workspace object", "published object", "managed object", "reference-native object");
             case "sequence" -> firstMatchingDescriptor(expectedChildren,
-                "sequence", "workspace object", "published object", "managed object", "donor-native object");
+                "sequence", "workspace object", "published object", "managed object", "reference-native object");
             case "routine" -> firstMatchingDescriptor(expectedChildren,
-                "routine", "workspace object", "published object", "managed object", "donor-native object");
+                "routine", "workspace object", "published object", "managed object", "reference-native object");
             case "table-affiliated object" -> firstMatchingDescriptor(expectedChildren,
-                "table", "workspace object", "published object", "managed object", "donor-native object");
+                "table", "workspace object", "published object", "managed object", "reference-native object");
             default -> null;
         };
     }

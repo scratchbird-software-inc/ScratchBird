@@ -118,7 +118,7 @@ Enterprise SLA boundaries are scoped to supported release lines, supported
 platform lanes, public or contracted package artifacts, and defects that can be
 reproduced or diagnosed from approved evidence. SLA commitments do not cover
 unsupported platforms, unsupported feature families, private cluster
-implementation claims, untrusted donor behavior, or parser-side finality.
+implementation claims, untrusted reference behavior, or parser-side finality.
 
 Evidence anchors: `PUBLIC_SUPPORT_RELEASE_LIFECYCLE`,
 `public_platform_matrix_gate`, `public_unsupported_feature_gate`.

@@ -122,7 +122,7 @@ void ProtectedAllocationZeroizeAndRelease() {
   Require(!protected_buffer.evidence.platform_name.empty(),
           "MMCH-015 protected allocation omitted platform name");
   Require(protected_buffer.evidence.authority_scope ==
-              "protected_memory_evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority",
+              "protected_memory_evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority",
           "MMCH-015 protected allocation authority scope changed");
   Require(AllBytesEqual(protected_buffer.buffer.data(), protected_buffer.buffer.size(), 0),
           "MMCH-015 protected allocation was not zeroed");
@@ -165,7 +165,7 @@ void ProtectedDiagnosticRedactsMaterialClass() {
           "MMCH-015 protected material class was not redacted");
   Require(DiagnosticArgEquals(rejected.diagnostic,
                               "protected_memory_authority_scope",
-                              "protected_memory_evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"),
+                              "protected_memory_evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"),
           "MMCH-015 protected diagnostic authority scope changed");
   Require(!DiagnosticContainsValue(rejected.diagnostic, "actual-secret-value"),
           "MMCH-015 protected diagnostic leaked raw password material");
@@ -223,7 +223,7 @@ void ManagerWrapperUsesProtectedAllocator() {
 
 int main() {
   std::cout << "MMCH-015 authority_note=protected_memory_evidence_only;"
-               "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+               "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   SecureZeroPrimitiveZerosMemory();
   ProtectedAllocationZeroizeAndRelease();

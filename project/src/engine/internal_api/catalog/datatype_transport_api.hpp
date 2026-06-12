@@ -23,9 +23,9 @@ struct EngineDatatypeTransportRecord {
   std::string transport_scope;
   EngineDescriptor descriptor;
   EngineTypedValue value;
-  std::string donor_dialect;
-  std::string donor_label;
-  bool donor_label_alias_only = true;
+  std::string compatibility_dialect;
+  std::string reference_label;
+  bool reference_label_alias_only = true;
   bool opaque_render_only = false;
 };
 

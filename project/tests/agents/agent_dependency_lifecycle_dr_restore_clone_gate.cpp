@@ -161,7 +161,7 @@ agents::AgentDependencyLifecycleDecision RequireOk(
               !decision.evidence_authority_boundary.recovery_authority &&
               !decision.evidence_authority_boundary.security_authority &&
               !decision.evidence_authority_boundary.parser_authority &&
-              !decision.evidence_authority_boundary.donor_authority &&
+              !decision.evidence_authority_boundary.reference_authority &&
               !decision.evidence_authority_boundary.write_ahead_log_authority &&
               !decision.evidence_authority_boundary.benchmark_authority &&
               !decision.evidence_authority_boundary.optimizer_plan_authority &&
@@ -311,7 +311,7 @@ void TestAuthorityRefusals() {
   request.authority_boundary.recovery_authority = true;
   request.authority_boundary.security_authority = true;
   request.authority_boundary.parser_authority = true;
-  request.authority_boundary.donor_authority = true;
+  request.authority_boundary.reference_authority = true;
   request.authority_boundary.write_ahead_log_authority = true;
   request.authority_boundary.benchmark_authority = true;
   request.authority_boundary.optimizer_plan_authority = true;

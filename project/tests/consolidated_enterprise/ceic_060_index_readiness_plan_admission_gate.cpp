@@ -241,12 +241,12 @@ void MissingAndStaleManifestRefusals() {
 
 void NonRuntimeMismatchAndRouteSemanticsRefusals() {
   auto evidence = Evidence(index::IndexFamily::btree);
-  evidence.donor_emulated = true;
+  evidence.reference_emulated = true;
   ExpectRejected(Request(index::IndexFamily::btree,
                          index::IndexPlanCategory::point_lookup,
                          &evidence),
                  "INDEX.OPTIMIZER_READINESS_EVIDENCE.NON_RUNTIME_FAMILY",
-                 "CEIC-060 admitted donor-emulated readiness evidence");
+                 "CEIC-060 admitted reference-emulated readiness evidence");
 
   evidence = Evidence(index::IndexFamily::btree);
   evidence.route = index::IndexRouteKind::nosql_vector;

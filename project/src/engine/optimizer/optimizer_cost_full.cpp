@@ -104,8 +104,8 @@ void ApplyRuntimeFeedbackMetric(const OptimizerMetricCostInput& metric,
   feedback->advisory_only = feedback->advisory_only && metric.advisory_only;
   feedback->mga_visibility_recheck_preserved = feedback->mga_visibility_recheck_preserved &&
                                                metric.mga_visibility_recheck_preserved;
-  feedback->parser_or_donor_authority = feedback->parser_or_donor_authority ||
-                                         metric.parser_or_donor_authority;
+  feedback->parser_or_reference_authority = feedback->parser_or_reference_authority ||
+                                         metric.parser_or_reference_authority;
   if (!metric.transaction_finality_authority.empty()) {
     feedback->transaction_finality_authority = metric.transaction_finality_authority;
   }
@@ -365,7 +365,7 @@ CostVector ApplyAgentRecommendationCost(CostVector cost, const std::vector<Agent
 CostVector ApplyMgaPressureCost(CostVector cost,
                                 const OptimizerMgaPressureEvidence& pressure) {
   if (!pressure.observed_runtime_metric || !pressure.trusted_metric_digest ||
-      !pressure.fresh || pressure.parser_or_donor_authority ||
+      !pressure.fresh || pressure.parser_or_reference_authority ||
       pressure.transaction_finality_authority || pressure.visibility_authority ||
       pressure.recovery_authority) {
     cost.selectable = false;

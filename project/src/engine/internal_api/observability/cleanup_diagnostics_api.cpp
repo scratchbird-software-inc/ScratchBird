@@ -580,7 +580,7 @@ EngineCleanupDiagnosticsResult EngineInspectCleanupDiagnostics(
                      {"timestamp_finality_authority", "false"},
                      {"uuid_ordering_finality_authority", "false"},
                      {"event_stream_finality_authority", "false"},
-                     {"donor_finality_authority", "false"},
+                     {"reference_finality_authority", "false"},
                      {"wal_recovery_authority", "false"}});
   AddStandardEvidence(&result);
   AddApiBehaviorEvidence(&result, "engine_authorization_authority",

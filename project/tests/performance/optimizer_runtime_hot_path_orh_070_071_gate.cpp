@@ -96,8 +96,8 @@ void RequireMeasuredEvidence(const CompressionPolicyDecision& decision) {
           "missing dictionary miss evidence");
   Require(HasEvidencePrefix(decision, "compression_measured_fallback_rate="),
           "missing fallback-rate evidence");
-  Require(HasEvidence(decision, "parser_or_donor_authority=false"),
-          "compression policy drifted to parser/donor authority");
+  Require(HasEvidence(decision, "parser_or_reference_authority=false"),
+          "compression policy drifted to parser/reference authority");
   Require(HasEvidence(decision, "wal_or_finality_authority=false"),
           "compression policy drifted to finality authority");
   Require(HasEvidence(decision, "compression_exact_semantic_equivalence=true"),

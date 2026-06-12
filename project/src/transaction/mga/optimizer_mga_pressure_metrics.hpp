@@ -19,14 +19,14 @@ namespace scratchbird::transaction::mga {
 // SEARCH_KEY: OEIC_MGA_PRESSURE_OPTIMIZER_METRICS
 // MGA pressure metrics are optimizer-advisory only. They adjust cost/risk and
 // never become transaction finality, visibility, security, recovery, parser,
-// donor, external log replay, or benchmark authority.
+// reference, external log replay, or benchmark authority.
 
 struct OptimizerMgaPressureAuthority {
   bool transaction_inventory_authoritative = false;
   bool cleanup_horizon_authoritative = false;
   bool row_version_runtime_authoritative = false;
   bool engine_scope_bound = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool metric_visibility_or_finality_authority = false;
   bool metric_recovery_authority = false;

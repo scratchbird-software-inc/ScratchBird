@@ -74,7 +74,7 @@ idx::HotPointLookupCacheEntry Entry(bool include_row_uuid) {
   candidate.requires_security_authorization_recheck = true;
   candidate.visibility_finality_authority = false;
   candidate.authorization_finality_authority = false;
-  candidate.parser_or_donor_finality_authority = false;
+  candidate.parser_or_reference_finality_authority = false;
   candidate.timestamp_or_uuid_order_finality_authority = false;
   entry.candidates.push_back(candidate);
   entry.dependency_uuids.push_back(entry.key.object_uuid);

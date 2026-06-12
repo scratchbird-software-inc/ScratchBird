@@ -9,6 +9,7 @@
 #include "rendering/rendering.hpp"
 
 #include <sstream>
+#include <utility>
 
 namespace scratchbird::parser::sbsql {
 namespace {
@@ -41,6 +42,27 @@ bool HasServerExecutionDiagnostic(const MessageVectorSet& messages) {
   return false;
 }
 
+Diagnostic MakeRenderSelectionDiagnostic(const SblrRenderSelection& selection,
+                                         std::string severity) {
+  return MakeDiagnostic(
+      selection.diagnostic_code,
+      std::move(severity),
+      selection.diagnostic_message,
+      "sbp_sbsql.renderer",
+      {{"render_decision", std::string(SblrRenderDecisionName(selection.decision))},
+       {"renderer_lossiness", std::string(SblrRenderLossinessName(selection.lossiness))},
+       {"selected_profile", selection.selected_language_profile.empty()
+                                ? "not_available"
+                                : selection.selected_language_profile},
+       {"fallback_profile", selection.fallback_language_profile.empty()
+                                ? "not_available"
+                                : selection.fallback_language_profile},
+       {"canonical_english_fallback",
+        selection.used_canonical_english_fallback ? "true" : "false"},
+       {"server_revalidation_required",
+        selection.server_revalidation_required ? "true" : "false"}});
+}
+
 } // namespace
 
 std::string RenderMessageVectorSet(const MessageVectorSet& messages) {
@@ -69,6 +91,35 @@ std::string RenderSblrEnvelope(const SblrEnvelope& envelope) {
   std::ostringstream out;
   out << "SBLR " << envelope.operation_family << ' ' << envelope.statement_hash << ' ' << envelope.payload << "\n";
   return out.str();
+}
+
+SblrEnvelopeRenderResult RenderSblrEnvelopeWithProfileSelection(
+    const SblrEnvelope& envelope,
+    const SblrRenderRequest& request) {
+  SblrEnvelopeRenderResult result;
+  result.selection = ClassifySblrRenderSelection(request);
+  const bool renderable =
+      result.selection.decision == SblrRenderDecision::kPreferredLanguage ||
+      result.selection.decision == SblrRenderDecision::kCanonicalEnglishFallback;
+
+  if (!renderable) {
+    result.messages.diagnostics.push_back(
+        MakeRenderSelectionDiagnostic(result.selection, "ERROR"));
+    result.text = RenderMessageVectorSet(result.messages);
+    return result;
+  }
+
+  if (envelope.messages.has_errors()) {
+    result.messages = envelope.messages;
+    result.text = RenderMessageVectorSet(result.messages);
+    return result;
+  }
+
+  result.ok = true;
+  result.messages.diagnostics.push_back(
+      MakeRenderSelectionDiagnostic(result.selection, "INFO"));
+  result.text = RenderSblrEnvelope(envelope);
+  return result;
 }
 
 std::string RenderPipelineResult(const PipelineResult& result) {

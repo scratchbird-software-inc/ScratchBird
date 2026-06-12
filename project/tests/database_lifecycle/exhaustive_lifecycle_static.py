@@ -43,12 +43,12 @@ REQUIRED_COVERAGE_TOKENS = [
     "resource_seed_epoch_coverage",
     "diagnostic_message_vector_coverage",
     "observability_metrics_audit_coverage",
-    "donor_mapping_firebird_sbsql",
+    "reference_mapping_firebird_sbsql",
     "sbsql_full_route_coverage",
     "mga_transaction_regression",
     "no_authoritative_wal_recovery",
     "no_parser_finality_authority",
-    "no_donor_sql_execution",
+    "no_reference_sql_execution",
     "evidence_report_present",
 ]
 
@@ -60,9 +60,9 @@ REQUIRED_LABEL_TOKENS = [
     "DBLC_STATIC_REGRESSION_REPORT_ARTIFACT",
     "database_lifecycle",
     "database_lifecycle_parser_route",
-    "database_lifecycle_donor_mapping",
+    "database_lifecycle_reference_mapping",
     "sbsql_parser_worker",
-    "DBLC_P14_DONOR_MAPPING_COMPLETE",
+    "DBLC_P14_REFERENCE_MAPPING_COMPLETE",
     "DBLC_P15_OBSERVABILITY_COMPLETE",
 ]
 

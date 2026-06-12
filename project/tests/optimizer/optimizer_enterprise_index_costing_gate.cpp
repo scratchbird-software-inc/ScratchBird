@@ -163,11 +163,11 @@ bool EnterpriseIndexCostingBlocksUnsafeFamilyClaims() {
   vector_req.authority.exact_rerank_proven = true;
   auto vector_ok = opt::EstimateEnterpriseIndexAccessCost(vector_req);
 
-  auto donor = Index("donor_emulated", "idx.cost.donor");
-  donor.candidate_set_producer = true;
-  auto donor_result =
+  auto reference = Index("reference_emulated", "idx.cost.reference");
+  reference.candidate_set_producer = true;
+  auto reference_result =
       opt::EstimateEnterpriseIndexAccessCost(
-          Request(donor, opt::EnterpriseIndexAccessIntent::kCandidateSet));
+          Request(reference, opt::EnterpriseIndexAccessIntent::kCandidateSet));
 
   return Require(!bloom_eq.accepted &&
                      bloom_eq.diagnostic_code ==
@@ -181,17 +181,17 @@ bool EnterpriseIndexCostingBlocksUnsafeFamilyClaims() {
                  "approximate vector route accepted without rerank") &&
          Require(vector_ok.accepted && vector_ok.selectable,
                  "approximate vector route rejected with rerank") &&
-         Require(!donor_result.accepted &&
-                     donor_result.diagnostic_code ==
-                         "INDEX.CAPABILITY.DONOR_EMULATED.CONTRACT_ONLY_NON_AUTHORITY_MAPPING",
-                 "donor-emulated index claim was accepted");
+         Require(!reference_result.accepted &&
+                     reference_result.diagnostic_code ==
+                         "INDEX.CAPABILITY.REFERENCE_EMULATED.CONTRACT_ONLY_NON_AUTHORITY_MAPPING",
+                 "reference-emulated index claim was accepted");
 }
 
 bool EnterpriseIndexCostingRejectsAuthorityDriftAndMissingBenchmarkProof() {
   auto btree = Index("btree", "idx.cost.authority");
   btree.equality_lookup_supported = true;
   auto unsafe = Request(btree, opt::EnterpriseIndexAccessIntent::kEqualityLookup);
-  unsafe.authority.parser_or_donor_authority = true;
+  unsafe.authority.parser_or_reference_authority = true;
   const auto unsafe_result = opt::EstimateEnterpriseIndexAccessCost(unsafe);
 
   auto unclean = Request(btree, opt::EnterpriseIndexAccessIntent::kEqualityLookup);
@@ -213,8 +213,8 @@ bool EnterpriseIndexFamilyMatrixIsComplete() {
   return Require(HasStatus(statuses, "SB_OPT_INDEX_COST_FAMILY_MATRIX_OK"),
                  "noncluster index family costing matrix is incomplete") &&
          Require(HasStatus(statuses,
-                           "SB_OPT_INDEX_COST_DONOR_EMULATED_CLAIM_REMOVED"),
-                 "donor-emulated claim removal missing") &&
+                           "SB_OPT_INDEX_COST_REFERENCE_EMULATED_CLAIM_REMOVED"),
+                 "reference-emulated claim removal missing") &&
          Require(HasStatus(statuses,
                            "SB_OPT_INDEX_COST_POLICY_BLOCKED_CLAIM_REMOVED"),
                  "policy-blocked claim removal missing");

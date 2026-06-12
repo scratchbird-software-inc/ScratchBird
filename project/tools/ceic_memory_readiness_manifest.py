@@ -31,7 +31,7 @@ DEFAULT_MANIFEST = EXECUTION_PLAN / "artifacts/CEIC-024_MEMORY_READINESS_MANIFES
 
 AUTHORITY_BOUNDARY_TOKEN = (
     "memory_evidence_only_not_transaction_finality_visibility_authorization_security_"
-    "recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"
+    "recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"
 )
 
 COMPLETE_STATUS = {"complete", "completed", "done", "closed", "complete_move_ready"}
@@ -690,7 +690,7 @@ def build_manifest(
             "authorization_security_authority": False,
             "recovery_authority": False,
             "parser_authority": False,
-            "donor_authority": False,
+            "reference_authority": False,
             "wal_recovery_authority": False,
             "support_bundle_authority": False,
             "benchmark_authority": False,

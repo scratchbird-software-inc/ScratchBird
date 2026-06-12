@@ -273,7 +273,7 @@ void RequireNoForbiddenPayload(std::string_view payload) {
                            "public_release_evidence",
                            "docs/references",
                            "parser_finality_authority\":true",
-                           "donor_finality_authority\":true",
+                           "reference_finality_authority\":true",
                            "wal_recovery_authority\":true"}) {
     Require(!Contains(payload, token),
             "ODF-120 payload contains forbidden runtime token");

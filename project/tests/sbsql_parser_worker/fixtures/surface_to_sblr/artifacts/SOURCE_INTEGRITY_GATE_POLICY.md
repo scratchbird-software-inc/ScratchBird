@@ -14,7 +14,7 @@ The gate must fail if implementation or regression files contain any of these pa
 - A parser branch accepting syntax without a row-identifiable surface id.
 - A lowering path that emits only an operation family when an exact function or API operation id is required.
 - A server admission path that bypasses authentication, authorization, transaction, resource, or SBLR verifier checks.
-- An engine path that dispatches by SQL text, parser branch name, donor command name, or user-facing object name.
+- An engine path that dispatches by SQL text, parser branch name, reference command name, or user-facing object name.
 - A fixture that is registered but not executed by CTest.
 - A test assertion that is disabled, skipped, or converted to unconditional success without a recorded exact refusal policy.
 - Any TODO-style work marker in files owned by an active slice.

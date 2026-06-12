@@ -42,7 +42,7 @@ constexpr const char* kAnchor = "CEIC-014_THREAD_LOCAL_PER_CORE_NUMA_CACHE";
 constexpr const char* kRemoteAnchor =
     "CEIC-015_REMOTE_FREE_QUEUES_OWNERSHIP_RECONCILIATION";
 constexpr const char* kAuthorityScope =
-    "thread_local_memory_cache.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_authorization_optimizer_plan_index_finality_or_agent_action_authority";
+    "thread_local_memory_cache.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_authorization_optimizer_plan_index_finality_or_agent_action_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -110,7 +110,7 @@ bool UnsafeAuthority(const ThreadLocalCacheRequest& request, std::string* reason
     *reason = "security_or_policy_check_required";
     return true;
   }
-  if (authority.parser_or_donor_finality_authority ||
+  if (authority.parser_or_reference_finality_authority ||
       authority.memory_visibility_or_finality_authority ||
       authority.memory_recovery_authority ||
       authority.memory_authorization_authority ||
@@ -156,7 +156,7 @@ DiagnosticRecord MakeCacheDiagnostic(
                         "core.memory.thread_local_per_core_cache",
                         status.ok()
                             ? std::string{}
-                            : "Use CEIC-011 reservations and CEIC-013 typed slabs; memory cache evidence must not become transaction, parser, donor, optimizer, index, or agent authority.");
+                            : "Use CEIC-011 reservations and CEIC-013 typed slabs; memory cache evidence must not become transaction, parser, reference, optimizer, index, or agent authority.");
 }
 
 ThreadLocalCacheAcquireResult RefuseAcquire(
@@ -1841,8 +1841,8 @@ ThreadLocalCacheAcquireResult CreateThreadLocalPerCoreMemoryCache(
       request.authority.transaction_inventory_authoritative;
   pool_request.authority.security_or_policy_checked =
       request.authority.security_or_policy_checked;
-  pool_request.authority.parser_or_donor_finality_authority =
-      request.authority.parser_or_donor_finality_authority;
+  pool_request.authority.parser_or_reference_finality_authority =
+      request.authority.parser_or_reference_finality_authority;
   pool_request.authority.memory_visibility_or_finality_authority =
       request.authority.memory_visibility_or_finality_authority;
   pool_request.authority.memory_recovery_authority =

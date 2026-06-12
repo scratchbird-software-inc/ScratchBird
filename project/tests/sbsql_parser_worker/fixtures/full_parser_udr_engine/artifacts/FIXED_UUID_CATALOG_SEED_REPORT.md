@@ -12,8 +12,8 @@ The gate verifies:
 
 - `FIXED_FUNCTION_UUID_REGISTRY.csv` contains 114 unique canonical `sb.fn.*` function IDs with UUIDv7-compatible fixed function UUIDs.
 - The engine `BuildStandardFunctionSeedPackage()` registry exactly matches the canonical fixed UUID registry.
-- `FUNCTION_NAME_LOOKUP_SEED_MATRIX.csv` contains 6,257 canonical/default/donor/plugin name rows and every engine name seed row matches it.
-- Donor and plugin aliases are labels only under compatibility namespaces and are explicitly not durable authority.
+- `FUNCTION_NAME_LOOKUP_SEED_MATRIX.csv` contains 6,257 canonical/default/reference/plugin name rows and every engine name seed row matches it.
+- Reference and plugin aliases are labels only under compatibility namespaces and are explicitly not durable authority.
 - `CATALOG_OBJECT_REQUIREMENTS.csv` has 114 rows matching the fixed registry and requires function, signature, name, alias, UUID, namespace, and descriptor coverage.
 - Parser generated registry evidence remains non-authoritative and does not reuse canonical function fixed UUIDs or `sb.fn.*` durable function authority.
 

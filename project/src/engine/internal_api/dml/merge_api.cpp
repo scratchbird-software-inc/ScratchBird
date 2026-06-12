@@ -98,7 +98,7 @@ bool MergeIndexUsableForPredicate(const CrudIndexRecord& index,
          (family == kCrudIndexFamilyBtree || family == kCrudIndexFamilyHash ||
           family.empty()) &&
          !index.approximate &&
-         family != kCrudIndexFamilyDonorEmulated;
+         family != kCrudIndexFamilyReferenceEmulated;
 }
 
 std::optional<CrudIndexRecord> SelectMergeMatchIndex(
@@ -161,7 +161,7 @@ DmlTargetAccessPlanRequest BuildMergeTargetAccessPlanRequest(
   plan_request.security_recheck_planned = true;
   plan_request.grants_proven = request.context.security_context_present;
   plan_request.security_context_present = request.context.security_context_present;
-  plan_request.parser_or_donor_authority = false;
+  plan_request.parser_or_reference_authority = false;
   const std::uint64_t observed_catalog_epoch =
       request.bound_object_identity.catalog_generation_id != 0
           ? request.bound_object_identity.catalog_generation_id
@@ -296,7 +296,7 @@ DmlRowLocatorStreamResult BuildMergeLocatorStream(
   request.durable_mga_inventory_proof = true;
   request.mga_visibility_recheck_planned = true;
   request.security_recheck_planned = true;
-  request.parser_or_donor_authority = false;
+  request.parser_or_reference_authority = false;
   request.index_or_cache_finality_authority = false;
   return BuildDmlRowLocatorStream(request);
 }
@@ -716,7 +716,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   result.evidence.push_back({"mga_visibility_recheck", "required"});
   result.evidence.push_back({"security_recheck", "required"});
   result.evidence.push_back({"mga_finality_authority", "engine_transaction_inventory"});
-  result.evidence.push_back({"parser_or_donor_authority", "false"});
+  result.evidence.push_back({"parser_or_reference_authority", "false"});
 
   std::vector<EngineRowValue> insert_rows;
   std::vector<std::size_t> insert_ordinals;
@@ -806,7 +806,7 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
         {"merge_fault_injection_mga_authority",
          "engine_transaction_inventory"});
     interrupted.evidence.push_back(
-        {"merge_fault_injection_parser_or_donor_authority", "false"});
+        {"merge_fault_injection_parser_or_reference_authority", "false"});
     return interrupted;
   }
 

@@ -602,7 +602,7 @@ const std::array<LifecycleMappingDescriptor, 20>& LifecycleMappingStorage() {
        false},
       {"sbsql.emulated.shadow_non_file",
        "sbsql",
-       "donor_file_emulation",
+       "reference_file_emulation",
        LifecycleMappingDisposition::kEmulatedNonFileDiagnostic,
        "",
        "",
@@ -615,7 +615,7 @@ const std::array<LifecycleMappingDescriptor, 20>& LifecycleMappingStorage() {
        "",
        "SBSQL.EMULATION.NON_FILE_OPERATION",
        "ERROR",
-       "Donor shadow/file-management syntax is diagnostic-only in SBSQL and has no filesystem side effect.",
+       "Reference shadow/file-management syntax is diagnostic-only in SBSQL and has no filesystem side effect.",
        "parser_emulation_boundary",
        "engine_lifecycle",
        "right.lifecycle_admin",
@@ -628,7 +628,7 @@ const std::array<LifecycleMappingDescriptor, 20>& LifecycleMappingStorage() {
        true},
       {"sbsql.emulated.backup_restore_non_file",
        "sbsql",
-       "donor_file_emulation",
+       "reference_file_emulation",
        LifecycleMappingDisposition::kEmulatedNonFileDiagnostic,
        "",
        "",
@@ -641,7 +641,7 @@ const std::array<LifecycleMappingDescriptor, 20>& LifecycleMappingStorage() {
        "",
        "SBSQL.EMULATION.NON_FILE_OPERATION",
        "ERROR",
-       "Donor backup/restore file syntax is diagnostic-only in SBSQL and must route through ScratchBird lifecycle authority.",
+       "Reference backup/restore file syntax is diagnostic-only in SBSQL and must route through ScratchBird lifecycle authority.",
        "parser_emulation_boundary",
        "engine_lifecycle",
        "right.lifecycle_admin",
@@ -654,7 +654,7 @@ const std::array<LifecycleMappingDescriptor, 20>& LifecycleMappingStorage() {
        true},
       {"sbsql.emulated.database_file_management",
        "sbsql",
-       "donor_file_emulation",
+       "reference_file_emulation",
        LifecycleMappingDisposition::kEmulatedNonFileDiagnostic,
        "",
        "",
@@ -678,9 +678,9 @@ const std::array<LifecycleMappingDescriptor, 20>& LifecycleMappingStorage() {
        false,
        false,
        true},
-      {"sbsql.emulated.donor_tool_non_file",
+      {"sbsql.emulated.reference_tool_non_file",
        "sbsql",
-       "donor_tool_emulation",
+       "reference_tool_emulation",
        LifecycleMappingDisposition::kEmulatedNonFileDiagnostic,
        "",
        "",
@@ -691,9 +691,9 @@ const std::array<LifecycleMappingDescriptor, 20>& LifecycleMappingStorage() {
        "",
        "diagnostic.lifecycle.message_vector",
        "",
-       "SBSQL.EMULATION.DONOR_TOOL_NOT_EXECUTED",
+       "SBSQL.EMULATION.REFERENCE_TOOL_NOT_EXECUTED",
        "ERROR",
-       "Donor native tools are not invoked by the SBSQL parser; use ScratchBird management routes.",
+       "Reference native tools are not invoked by the SBSQL parser; use ScratchBird management routes.",
        "parser_emulation_boundary",
        "engine_lifecycle",
        "right.lifecycle_admin",
@@ -885,7 +885,7 @@ const LifecycleMappingDescriptor* MapSbsqlLifecycleCommand(std::string_view sql_
       StartsWithCommand(command, "GSEC") ||
       StartsWithCommand(command, "FBSVCMGR") ||
       StartsWithCommand(command, "FBTRACEMGR")) {
-    return MappingByKey("sbsql.emulated.donor_tool_non_file");
+    return MappingByKey("sbsql.emulated.reference_tool_non_file");
   }
   return nullptr;
 }

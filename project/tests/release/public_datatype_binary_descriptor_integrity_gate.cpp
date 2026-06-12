@@ -206,8 +206,8 @@ int main() {
                                     descriptor_payload);
   transport.value.descriptor = transport.descriptor;
   transport.value.encoded_value = value_payload;
-  transport.donor_dialect = "postgresql";
-  transport.donor_label = "jsonb";
+  transport.compatibility_dialect = "postgresql";
+  transport.reference_label = "jsonb";
   const auto encoded_transport = api::EncodeDatatypeTransportRecord(transport);
   ok = Expect(encoded_transport.ok, "datatype transport did not encode") && ok;
   ok = Expect(encoded_transport.encoded_envelope.rfind("SBDTTRAN1", 0) != 0,
@@ -221,8 +221,8 @@ int main() {
   ok = Expect(decoded_transport.record.value.encoded_value == value_payload,
               "datatype transport lost binary value payload") &&
        ok;
-  ok = Expect(decoded_transport.record.donor_label_alias_only,
-              "datatype transport did not preserve alias-only donor label policy") &&
+  ok = Expect(decoded_transport.record.reference_label_alias_only,
+              "datatype transport did not preserve alias-only reference label policy") &&
        ok;
 
   auto corrupted_transport = encoded_transport.encoded_envelope;

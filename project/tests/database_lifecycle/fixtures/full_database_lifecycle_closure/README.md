@@ -128,10 +128,10 @@ The current implementation has partial lifecycle support, not full closure.
 | Security principal role privilege policy lifecycle | `project/src/engine/internal_api/security/`, security specs, policy catalogs | Users, roles, groups, grants, revokes, row security, definer rights, policy rows, cache invalidation, audit, authorization, and MGA visibility need first-class closure. |
 | Storage allocation free-space page-map lifecycle | `project/src/storage/page/`, page allocation agent/specs | Page allocation, free-space maps, extent reservations, page ownership, reusable space, compaction, crash recovery, and filespace coupling need first-class closure. |
 | Executable database object lifecycle | `project/src/engine/sblr/sblr_routine_runtime.*`, `project/src/engine/internal_api/ddl/`, trigger/procedure specs | Routines, procedures, functions, triggers, event triggers, packages, stored SBLR, dependencies, permissions, invalidation, side effects, and unload/quiesce need first-class closure. |
-| Sequence generator identity state lifecycle | `project/src/engine/sblr/sblr_sequence_runtime.*`, DDL sequence create paths | Sequences, generators, identity columns, cache windows, persistence, transaction interaction, crash recovery, donor mapping, and diagnostics need first-class closure. |
+| Sequence generator identity state lifecycle | `project/src/engine/sblr/sblr_sequence_runtime.*`, DDL sequence create paths | Sequences, generators, identity columns, cache windows, persistence, transaction interaction, crash recovery, reference mapping, and diagnostics need first-class closure. |
 | Operational log audit support-bundle lifecycle | `project/src/server/server_observability.*`, metrics and support-bundle specs | Operational logs, audit evidence, retention, rotation, redaction, export, support bundles, shutdown flush, diagnostic access, and protected-material filtering need first-class closure. |
 | Capability profile edition feature-gate lifecycle | `project/src/core/agents/agent_feature_gates.*`, capability specs | Installed capabilities, parser profiles, edition gates, feature flags, package availability, policy epochs, downgrade refusal, and diagnostics need first-class closure. |
-| Replication CDC changefeed boundary lifecycle | `project/src/engine/internal_api/cluster/replication_api.*`, donor replication/CDC specs | Replication, CDC, changefeed, live ingest, publication, subscription, slot, route, retention, security, donor mapping, and standalone fail-closed behavior need first-class closure. |
+| Replication CDC changefeed boundary lifecycle | `project/src/engine/internal_api/cluster/replication_api.*`, reference replication/CDC specs | Replication, CDC, changefeed, live ingest, publication, subscription, slot, route, retention, security, reference mapping, and standalone fail-closed behavior need first-class closure. |
 | Existing lifecycle implementation reconciliation | Current `project/src/manager/`, `listener/`, `parsers/`, `server/`, `storage/`, `udr/`, `core/agents/`, configuration, security, backup, and resource code | Existing code must be audited and modified to match the updated lifecycle contract rather than being left on old assumptions. |
 | Protocol and persisted-format versioning | SBWP/TLS, parser IPC, management IPC, lifecycle state files, filespace headers, manifests, catalog rows, and configuration epochs | Every lifecycle protocol and durable format needs explicit version, upgrade, downgrade, compatibility, and fail-closed refusal behavior. |
 | CLI and admin lifecycle commands | `project/src/server/cli.*`, manager control paths, admin/client command routes | All lifecycle operations need intended command surfaces, authorization, diagnostics, audit, and CTest coverage. |
@@ -141,7 +141,7 @@ The current implementation has partial lifecycle support, not full closure.
 | Security threat-model and abuse-case gate | security specs, IPC paths, supervision paths, UDR loading, backup/restore, force shutdown, quota paths | Lifecycle operations need least-privilege, abuse-case, and fail-closed tests. |
 | Manager-family lifecycle | `project/src/manager/node/manager_lifecycle.*`, `manager_runtime.*`, `manager_listener_control.*` plus future/private `sbmc_manager` implementation targets | `manager` means `sbmn_manager` and `sbmc_manager`; node-manager startup, ready, proxy, supervision, listener control, drain, shutdown, restart, quarantine, and cluster-manager fail-closed/private lifecycle boundaries must be closed as part of database lifecycle. |
 | Listener lifecycle | `project/src/listener/listener_runtime.*`, `parser_pool.*`, `control_plane.*` | Listener launch, bind, ready, parser-pool control, accept/handoff, drain, reload, shutdown, and forced stop must be closed. |
-| Parser-family lifecycle | `project/src/parsers/sbsql_worker/`, `project/src/parsers/native/`, `project/src/parsers/donor/`, parser-support UDR packages where applicable, and future parser package roots | `parser` means any ScratchBird parser package or parser worker, not only currently implemented parsers; package admission, spawn, handshake, pre-auth, attach, active work, drain, disconnect, recycle, quarantine, and shutdown must be closed for the parser family. |
+| Parser-family lifecycle | `project/src/parsers/sbsql_worker/`, `project/src/parsers/native/`, `project/src/parsers/compatibility/`, parser-support UDR packages where applicable, and future parser package roots | `parser` means any ScratchBird parser package or parser worker, not only currently implemented parsers; package admission, spawn, handshake, pre-auth, attach, active work, drain, disconnect, recycle, quarantine, and shutdown must be closed for the parser family. |
 | Tests | `project/tests/sbsql_parser_worker/sbsql_database_create_schema_bootstrap_gate.cpp` and MGA regression tests | Some tx1/tx2 and clean-shutdown evidence exists, but no exhaustive database lifecycle suite exists. |
 | Registries | `sblr.database.management.v3` and lifecycle API rows exist partially | Missing lifecycle operations must be registered, mapped, dispatched, and tested. |
 
@@ -150,8 +150,8 @@ The current implementation has partial lifecycle support, not full closure.
 - No lifecycle operation may remain parser-only, API-only, spec-only, stubbed, TODO, placeholder, future, or deferred at closure.
 - Execution_Plan text cannot be treated as product behavior. Missing behavior must be added to canonical specs or implementation packets, then implemented.
 - ScratchBird MGA remains the transaction, visibility, rollback, recovery, cleanup, and finality authority.
-- No WAL, redo log, undo log, donor transaction log, parser state, file timestamp, wall-clock order, or UUID order may be used as transaction finality authority.
-- Rollback behavior must use engine MGA methods. Parser, donor, driver, adapter, tool, listener, or server glue must not emulate rollback outside MGA.
+- No WAL, redo log, undo log, reference transaction log, parser state, file timestamp, wall-clock order, or UUID order may be used as transaction finality authority.
+- Rollback behavior must use engine MGA methods. Parser, reference, driver, adapter, tool, listener, or server glue must not emulate rollback outside MGA.
 - Cluster lifecycle paths must fail closed until cluster mapping and cluster transaction authority are implemented by canonical cluster contracts and code.
 - Local schema roots are `sys`, `users`, `remote`, and `emulated`. Cluster schema roots must not appear unless a cluster exists.
 - Database create must assign a generated UUIDv7 to the database and fresh UUIDv7 values to every bootstrap object and row that requires identity.
@@ -190,13 +190,13 @@ The current implementation has partial lifecycle support, not full closure.
 - Event notification and subscription lifecycle must enforce authorization and redaction, clean up on disconnect/shutdown, define delivery ordering and durability class, and never become transaction finality or security authority.
 - Encryption keys and protected material must have explicit admission, cache lifetime, rotation, shutdown purge, missing-key refusal, and redaction behavior. A database or filespace must not store its own decryption key.
 - Timezone, charset, collation, locale, and other resource seed lifecycles must have versioned upgrade/refusal, cache invalidation, index dependency, runtime epoch, and diagnostic behavior after tx1 bootstrap.
-- MGA garbage collection, sweep, old-version cleanup, retention, backup/archive holds, limbo handling, and unknown-outcome protection must remain MGA-owned and bounded-memory. No WAL, cache, parser, donor, or job state may decide visibility or cleanup finality.
+- MGA garbage collection, sweep, old-version cleanup, retention, backup/archive holds, limbo handling, and unknown-outcome protection must remain MGA-owned and bounded-memory. No WAL, cache, parser, reference, or job state may decide visibility or cleanup finality.
 - Background jobs and database-local scheduler tasks must start only after admitted database activation, pause during maintenance where required, drain on shutdown, respect policy and resource authority, and quarantine on unsafe failure.
 - Cluster-boundary fail-closed behavior must be a first-class lifecycle surface: standalone execution must not enter cluster transaction, route, metric, agent, schema, or lifecycle paths until cluster mapping and authority exist.
 - Security principal, role, group, grant, revoke, row-security, definer-rights, and policy lifecycles must remain engine-authorized, audited, catalog UUID-based, cache-invalidated, and MGA-visible before success.
 - Storage allocation, free-space maps, page ownership, extent reservations, reusable space, and compaction must remain tied to filespace identity, page-map evidence, and recovery classification.
 - Executable database objects, including routines, procedures, functions, triggers, event triggers, packages, and stored SBLR, must carry dependency, permission, invalidation, side-effect, unload/quiesce, and UDR-boundary behavior.
-- Sequences, generators, and identity columns must define cache-window, persistence, transaction interaction, crash recovery, donor mapping, and diagnostic behavior without becoming transaction finality or donor-owned state.
+- Sequences, generators, and identity columns must define cache-window, persistence, transaction interaction, crash recovery, reference mapping, and diagnostic behavior without becoming transaction finality or reference-owned state.
 - Operational logs, audit evidence, and support bundles must define retention, rotation, redaction, export, shutdown flush, diagnostic access, and protected-material filtering.
 - Installed capabilities, parser profiles, edition gates, feature flags, package availability, and policy epochs must gate lifecycle behavior explicitly and fail closed on downgrade or unsupported profiles.
 - Replication, CDC, changefeed, live ingest, publication, subscription, and slot routes must either be admitted by exact engine authority or fail closed in standalone/non-implemented modes.
@@ -215,10 +215,10 @@ The current implementation has partial lifecycle support, not full closure.
 - Create, attach, detach, drop, inspect, verify, repair, maintenance, restricted-open, shutdown, and recovery outcomes must use canonical message vectors.
 - Engine is the only authentication and authorization authority. A parser may relay credentials and render results, but it must not accept or deny as authority.
 - `manager` is the short-form family term for `sbmn_manager` and `sbmc_manager`; requirements that apply to only one product must name that product explicitly.
-- `parser` is the short-form family term for any parser package or parser worker, including native SBSQL parsers, donor/emulation parsers, parser-support UDR packages where applicable, and future parser packages; product-specific requirements must name the exact parser product or package.
+- `parser` is the short-form family term for any parser package or parser worker, including native SBSQL parsers, reference/emulation parsers, parser-support UDR packages where applicable, and future parser packages; product-specific requirements must name the exact parser product or package.
 - Managers, listeners, and parsers must never become transaction, storage, catalog, security, authentication-finality, authorization-finality, or SBLR-execution authority through lifecycle control.
 - The engine may use an authentication plugin or an engine-owned password-hash comparison when it is its own provider. Unencrypted passwords must not be stored or compared inside the engine.
-- Donor/emulation parser surfaces must lower lifecycle commands into ScratchBird lifecycle SBLR/API operations or exact emulated/non-file diagnostics without bypassing engine authority.
+- Reference/emulation parser surfaces must lower lifecycle commands into ScratchBird lifecycle SBLR/API operations or exact emulated/non-file diagnostics without bypassing engine authority.
 - Every implementation slice must include CTest coverage or an explicit blocking gate. No documentation-only waiver can close a slice.
 
 ## Required Final Outcomes
@@ -227,7 +227,7 @@ At closure, all of these must be true:
 
 - Canonical contracts define the entire database lifecycle: create, open, first-open activation, attach, authenticate, session creation, transaction admission, normal operation, diagnostic, verify, repair, maintenance, restricted-open, detach, shutdown, recovery, quarantine, and drop.
 - `public_input_snapshot` or a successor packet is implementation-ready for every lifecycle operation.
-- SBLR opcode and operation registries contain every lifecycle operation needed by native SBSQL and donor parser profiles.
+- SBLR opcode and operation registries contain every lifecycle operation needed by native SBSQL and reference parser profiles.
 - `project/src/engine/internal_api/ENGINE_API_SURFACE_REGISTRY.yaml` includes complete lifecycle API rows with no missing dispatch.
 - Engine internal API, public ABI, server hosting, parser-server IPC, listener route, SBWP/TLS route, and parser mapping all support the same lifecycle contract.
 - Database create bootstraps all required system structures, resources, security, metrics, default policy, agents, and user schema roots through durable MGA evidence.
@@ -267,10 +267,10 @@ At closure, all of these must be true:
 - Security principal/role/privilege/policy lifecycle is specified and implemented for users, roles, groups, grants, revokes, row security, definer rights, policy rows, cache invalidation, audit, authorization, and MGA visibility.
 - Storage allocation/free-space/page-map lifecycle is specified and implemented for page allocation, free-space maps, page ownership, extent reservations, reusable space, compaction, crash recovery, and filespace coupling.
 - Executable database object lifecycle is specified and implemented for routines, procedures, functions, triggers, event triggers, packages, stored SBLR, dependencies, permissions, invalidation, side effects, and unload/quiesce behavior.
-- Sequence/generator/identity lifecycle is specified and implemented for sequence identity, generator state, identity columns, cache windows, persistence, transaction interaction, crash recovery, donor mapping, and diagnostics.
+- Sequence/generator/identity lifecycle is specified and implemented for sequence identity, generator state, identity columns, cache windows, persistence, transaction interaction, crash recovery, reference mapping, and diagnostics.
 - Operational log/audit/support-bundle lifecycle is specified and implemented for logs, audit evidence, retention, rotation, redaction, export, support bundles, shutdown flush, diagnostic access, and protected-material filtering.
 - Capability/profile/edition/feature-gate lifecycle is specified and implemented for installed capabilities, parser profiles, edition gates, feature flags, package availability, policy epochs, downgrade refusal, and diagnostics.
-- Replication/CDC/changefeed/live-ingest boundary lifecycle is specified and implemented for replication, CDC, changefeed, live ingest, publication, subscription, slot, route, retention, security, donor mapping, and standalone fail-closed behavior.
+- Replication/CDC/changefeed/live-ingest boundary lifecycle is specified and implemented for replication, CDC, changefeed, live ingest, publication, subscription, slot, route, retention, security, reference mapping, and standalone fail-closed behavior.
 - Existing lifecycle implementations are reconciled to the updated contracts with an audit report, required patches, regression tests, and zero remaining legacy-contract drift.
 - Protocol and persisted-format versioning is implemented for SBWP/TLS, parser IPC, management IPC, lifecycle state files, filespace headers, manifests, catalog rows, and configuration epochs.
 - CLI/admin lifecycle command coverage is implemented for every lifecycle operation including forced shutdown, inspect, verify, repair, health, status, and drop routes.
@@ -350,7 +350,7 @@ P0 authority and baseline freeze
   -> P13S upgrade migration and refusal lifecycle
   -> P13T security threat-model and abuse-case gate
   -> P13R spec-to-test traceability generator
-  -> P14 donor/emulation parser lifecycle mapping
+  -> P14 reference/emulation parser lifecycle mapping
   -> P15 observability diagnostics audit metrics cache invalidation
   -> P16 exhaustive lifecycle regression suite
   -> P17 hardening fault injection and no-authority-drift gates
@@ -444,10 +444,10 @@ This inventory is the required implementation target list. Canonical specs and r
 | `security.principal_privilege_policy.lifecycle` | Users, roles, groups, grants, revokes, row security, definer rights, policy rows, cache invalidation, audit, authorization, and MGA visibility. |
 | `storage.allocation_freespace_pagemap.lifecycle` | Page allocation, free-space maps, page ownership, extent reservations, reusable space, compaction, crash recovery, filespace coupling, metrics, and diagnostics. |
 | `runtime.executable_database_object.lifecycle` | Routines, procedures, functions, triggers, event triggers, packages, stored SBLR, dependencies, permissions, invalidation, side effects, unload/quiesce, and UDR-boundary behavior. |
-| `runtime.sequence_generator.lifecycle` | Sequence identity, generator state, identity columns, cache windows, persistence, transaction interaction, crash recovery, donor mapping, and diagnostics. |
+| `runtime.sequence_generator.lifecycle` | Sequence identity, generator state, identity columns, cache windows, persistence, transaction interaction, crash recovery, reference mapping, and diagnostics. |
 | `observability.operational_evidence_supportability.lifecycle` | Operational logs, audit evidence, retention, rotation, redaction, export, support bundles, shutdown flush, diagnostic access, and protected-material filtering. |
 | `runtime.capability_profile_feature_gate.lifecycle` | Installed capabilities, parser profiles, edition gates, feature flags, package availability, policy epochs, downgrade refusal, unsupported-profile refusal, and diagnostics. |
-| `replication.changefeed_boundary.lifecycle` | Replication, CDC, changefeed, live ingest, publication, subscription, slot, route, retention, security, donor mapping, and standalone fail-closed behavior. |
+| `replication.changefeed_boundary.lifecycle` | Replication, CDC, changefeed, live ingest, publication, subscription, slot, route, retention, security, reference mapping, and standalone fail-closed behavior. |
 | `lifecycle.existing_implementation_reconciliation` | Audit and modify existing manager, listener, parser, server, IPC, session, filespace, catalog, index, concurrency, temporary workspace, event, encryption, resource seed, MGA GC, jobs, cluster-boundary, security principal, storage allocation, executable object, sequence generator, supportability, capability, replication, UDR, agent, cache, configuration, security, backup, resource, and workload code to match the updated lifecycle contracts. |
 | `lifecycle.protocol_persisted_format_versioning` | Version, compatibility, migration, downgrade, refusal, and diagnostics for SBWP/TLS, parser IPC, management IPC, lifecycle state files, filespace headers, manifests, catalog rows, and configuration epochs. |
 | `lifecycle.admin_cli_command_surface` | Intended CLI/admin/client command path, authorization, diagnostics, audit, and CTest coverage for every lifecycle operation. |
@@ -493,10 +493,10 @@ The lifecycle regression suite must be repeatable from CTest and must include:
 - Security principal/role/privilege/policy lifecycle tests for users, roles, groups, grants, revokes, row security, definer rights, policy rows, cache invalidation, audit, authorization, and MGA visibility.
 - Storage allocation/free-space/page-map lifecycle tests for page allocation, free-space maps, page ownership, extent reservations, reusable space, compaction, crash recovery, filespace coupling, metrics, and diagnostics.
 - Executable database object lifecycle tests for routines, procedures, functions, triggers, event triggers, packages, stored SBLR, dependencies, permissions, invalidation, side effects, unload/quiesce, and UDR-boundary behavior.
-- Sequence/generator/identity lifecycle tests for sequence identity, generator state, identity columns, cache windows, persistence, transaction interaction, crash recovery, donor mapping, and diagnostics.
+- Sequence/generator/identity lifecycle tests for sequence identity, generator state, identity columns, cache windows, persistence, transaction interaction, crash recovery, reference mapping, and diagnostics.
 - Operational log/audit/support-bundle lifecycle tests for logs, audit evidence, retention, rotation, redaction, export, support bundles, shutdown flush, diagnostic access, and protected-material filtering.
 - Capability/profile/edition/feature-gate lifecycle tests for installed capabilities, parser profiles, edition gates, feature flags, package availability, policy epochs, downgrade refusal, unsupported-profile refusal, and diagnostics.
-- Replication/CDC/changefeed/live-ingest boundary lifecycle tests for replication, CDC, changefeed, live ingest, publication, subscription, slot, route, retention, security, donor mapping, and standalone fail-closed behavior.
+- Replication/CDC/changefeed/live-ingest boundary lifecycle tests for replication, CDC, changefeed, live ingest, publication, subscription, slot, route, retention, security, reference mapping, and standalone fail-closed behavior.
 - Existing implementation reconciliation tests and audit report proving current manager, listener, parser, server, IPC, session, filespace, catalog, index, concurrency, temporary workspace, event, encryption, resource seed, MGA GC, jobs, cluster-boundary, security principal, storage allocation, executable object, sequence generator, supportability, capability, replication, UDR, agent, cache, configuration, security, backup, resource, and workload code matches the updated lifecycle specs.
 - Protocol and persisted-format versioning tests for accepted current versions, supported migration versions, downgrade refusal, unknown version refusal, malformed descriptor refusal, and exact diagnostics.
 - CLI/admin command tests for every lifecycle operation, including authorization denial, diagnostics, audit, command idempotency, force shutdown, inspect, verify, repair, health, status, and drop.
@@ -506,10 +506,10 @@ The lifecycle regression suite must be repeatable from CTest and must include:
 - Security threat-model tests for force shutdown abuse, IPC auth bypass, manager/listener/parser supervision abuse, UDR load abuse, health information disclosure, backup/restore abuse, service-file abuse, and resource-quota abuse.
 - SBSQL full-route tests for create, attach, authenticate, session, transaction, maintenance, restricted-open, verify, repair, shutdown, reopen, detach, and drop.
 - Shutdown tests for database-scoped client notification, manager/listener/parser acknowledgement, listener-failure parser fallback, stale or missing parser association refusal, shared-server isolation, dedicated-server isolation, graceful drain timeout, commit-then-close, rollback-then-close, and explicit force termination.
-- Donor parser mapping tests proving FirebirdSQL and other donor lifecycle commands either map to ScratchBird lifecycle behavior or return exact emulated/non-file diagnostics.
+- Reference parser mapping tests proving FirebirdSQL and other reference lifecycle commands either map to ScratchBird lifecycle behavior or return exact emulated/non-file diagnostics.
 - Fault injection tests for partial create, interrupted tx1, interrupted tx2, stale owner token, corrupted startup page, incompatible format, resource seed mismatch, auth denial, transaction admission denial, open while dropping, shutdown while active, and crash before clean-shutdown evidence.
 - Fault injection tests for missing first-filespace registration, duplicate filespace UUID, database/filespace UUID mismatch, stale filespace manifest, missing secondary filespace, inconsistent filespace header, failed move, failed promote, and drop with active pins.
-- No-WAL/no-parser-finality/no-donor-authority static gates.
+- No-WAL/no-parser-finality/no-reference-authority static gates.
 - Bounded-memory tests for bootstrap and repair on large catalog/resource seeds.
 
 ## Completion Rule

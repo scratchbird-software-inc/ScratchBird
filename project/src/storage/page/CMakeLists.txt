@@ -63,6 +63,7 @@ add_library(sb_storage_page
   page_selection.cpp
   page_skeleton.cpp
   page_registry.cpp
+  reserved_page_family_body.cpp
   row_data_page.cpp
   row_data_physical_sweep.cpp
   row_version_cleanup_batch.cpp

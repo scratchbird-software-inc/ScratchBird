@@ -16,7 +16,7 @@ This artifact defines the runtime policy gates that every P1+ implementation sli
 | `cluster_private` | Gate by cluster profile. Non-cluster builds fail closed. | Return cluster-unavailable or policy-blocked message vector; no cluster authority inference. | Parse/lower only when profile permits; standalone path must render exact fail-closed diagnostic. | Return message vector under engine context; no direct mutation or SQL execution. | Cluster-profile fixture and standalone refusal fixture. |
 | `policy_blocked` | Refuse by explicit policy rule. | Return policy-blocked message vector with redaction-safe fields. | Render policy refusal without hidden object leakage. | Preserve policy refusal under engine context. | Negative conformance fixture and diagnostic row. |
 | `refused` | Refuse by canonical product behavior. | Return exact refusal diagnostic. | Render canonical refusal. | Return refusal message vector if UDR-visible. | Negative conformance fixture and diagnostic row. |
-| donor/profile alias | Map to native SBSQL behavior or exact donor/profile refusal. | Enforce native server/engine authority, not donor authority. | Accept only inside the relevant donor/profile parser mode and render donor-compatible output where required. | No donor alias may bypass engine context. | Donor alias fixture from `DONOR_ALIAS_COVERAGE_BACKLOG.csv`. |
+| reference/profile alias | Map to native SBSQL behavior or exact reference/profile refusal. | Enforce native server/engine authority, not reference authority. | Accept only inside the relevant reference/profile parser mode and render reference-compatible output where required. | No reference alias may bypass engine context. | Reference alias fixture from `REFERENCE_ALIAS_COVERAGE_BACKLOG.csv`. |
 
 ## Non-Cluster Fail-Closed Rules
 
@@ -38,7 +38,7 @@ Every batch in `REGISTRY_FAMILY_BATCHING_PLAN.csv` must produce:
 - a positive parse fixture for implemented rows;
 - a negative or refusal fixture for policy-blocked/refused/standalone cluster-private rows;
 - a full-route fixture for every executable non-cluster behavior;
-- a donor/profile rendering fixture when the row is reachable through a donor alias;
+- a reference/profile rendering fixture when the row is reachable through a reference alias;
 - a diagnostic/message-vector fixture for every refusal or failure path.
 
 ## Acceptance

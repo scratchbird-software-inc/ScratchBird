@@ -97,7 +97,7 @@ struct NativeSblrProviderManifest {
   bool claims_visibility_authority = false;
   bool claims_security_policy_authority = false;
   bool claims_redaction_policy_authority = false;
-  bool claims_parser_or_donor_authority = false;
+  bool claims_parser_or_reference_authority = false;
 };
 
 struct NativeSblrCompileOutcome {

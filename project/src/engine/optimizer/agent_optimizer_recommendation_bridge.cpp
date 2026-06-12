@@ -39,7 +39,7 @@ OptimizerAgentRecommendationResult Refuse(
   Add(&result, "optimizer_agent_recommendation.benchmark_clean=false");
   Add(&result, "optimizer_agent_recommendation.advisory_only=true");
   Add(&result, "optimizer_agent_recommendation.parser_authority=false");
-  Add(&result, "optimizer_agent_recommendation.donor_authority=false");
+  Add(&result, "optimizer_agent_recommendation.reference_authority=false");
   Add(&result, "optimizer_agent_recommendation.client_authority=false");
   Add(&result, "optimizer_agent_recommendation.finality_authority=false");
   Add(&result, "optimizer_agent_recommendation.visibility_authority=false");
@@ -86,7 +86,7 @@ OptimizerAgentRecommendationResult EvaluateOptimizerAgentRecommendation(
       request.transaction_finality_authority;
   boundary_request.recovery_authority = request.recovery_authority;
   boundary_request.parser_authority = request.parser_authority;
-  boundary_request.donor_authority = request.donor_authority;
+  boundary_request.reference_authority = request.reference_authority;
   boundary_request.wal_authority = request.wal_authority;
   boundary_request.benchmark_authority = request.benchmark_authority;
   boundary_request.provider_finality_authority =
@@ -134,7 +134,7 @@ OptimizerAgentRecommendationResult EvaluateOptimizerAgentRecommendation(
   Add(&result, "optimizer_agent_recommendation.benchmark_clean=true");
   Add(&result, "optimizer_agent_recommendation.advisory_only=true");
   Add(&result, "optimizer_agent_recommendation.parser_authority=false");
-  Add(&result, "optimizer_agent_recommendation.donor_authority=false");
+  Add(&result, "optimizer_agent_recommendation.reference_authority=false");
   Add(&result, "optimizer_agent_recommendation.client_authority=false");
   Add(&result, "optimizer_agent_recommendation.finality_authority=false");
   Add(&result, "optimizer_agent_recommendation.visibility_authority=false");

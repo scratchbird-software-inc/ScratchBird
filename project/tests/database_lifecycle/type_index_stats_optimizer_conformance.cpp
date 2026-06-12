@@ -125,7 +125,7 @@ std::vector<std::string> RequiredMetricNames() {
       "sys.metrics.optimizer.type_index_stats.unknown_selectivity_count",
       "sys.metrics.optimizer.type_index_stats.plan_cache_invalidations",
       "sys.metrics.optimizer.type_index_stats.udr_metadata_refusal_count",
-      "sys.metrics.optimizer.type_index_stats.donor_semantics_refusal_count",
+      "sys.metrics.optimizer.type_index_stats.reference_semantics_refusal_count",
       "sys.metrics.optimizer.type_index_stats.recheck_required_plan_count"};
 }
 

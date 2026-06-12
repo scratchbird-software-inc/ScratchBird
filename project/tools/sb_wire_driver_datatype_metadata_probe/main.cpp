@@ -83,7 +83,7 @@ EngineCreateDomainResult CreateDomain(const EngineRequestContext& tx_context) {
   request.localized_names.push_back({"en", "default", "positive_int32", "positive_int32", true});
   request.descriptors.push_back(ScalarDescriptor("int32"));
   request.policy_profile.encoded_profiles.push_back("nullable:false");
-  request.option_envelopes.push_back("driver_metadata:driver_display_type=positive_int32,donor_label=POSITIVE_INT");
+  request.option_envelopes.push_back("driver_metadata:driver_display_type=positive_int32,reference_label=POSITIVE_INT");
   request.option_envelopes.push_back("wire_metadata:wire_in=int32_text,wire_out=int32_text");
   return EngineCreateDomain(request);
 }
@@ -115,18 +115,18 @@ int main(int argc, char** argv) {
   const bool native_distinguished = native_metadata.native_descriptor && !native_metadata.domain_descriptor &&
                                     native_metadata.canonical_type_name == "int32" &&
                                     native_metadata.driver_display_type == "int32" &&
-                                    native_metadata.donor_label.empty();
+                                    native_metadata.reference_label.empty();
 
-  const auto donor_descriptor = scratchbird::core::datatypes::ResolveDonorTypeLabelPlaceholder(
-      scratchbird::core::datatypes::DonorDialectId::postgresql, "INTEGER");
-  EngineDescriptor donor_engine_descriptor = ScalarDescriptor(
-      donor_descriptor.ok() ? donor_descriptor.descriptor.stable_name : std::string{});
-  const auto donor_metadata = RenderWireDriverMetadata(donor_engine_descriptor, "postgresql", "INTEGER");
-  const bool donor_label_distinguished = donor_descriptor.ok() && donor_metadata.canonical_type_name == "int32" &&
-                                         donor_metadata.donor_dialect == "postgresql" &&
-                                         donor_metadata.donor_label == "INTEGER" &&
-                                         donor_metadata.donor_label_alias_only &&
-                                         donor_metadata.driver_display_type == "INTEGER";
+  const auto reference_descriptor = scratchbird::core::datatypes::ResolveReferenceTypeLabelPlaceholder(
+      scratchbird::core::datatypes::ReferenceDialectId::postgresql, "INTEGER");
+  EngineDescriptor reference_engine_descriptor = ScalarDescriptor(
+      reference_descriptor.ok() ? reference_descriptor.descriptor.stable_name : std::string{});
+  const auto reference_metadata = RenderWireDriverMetadata(reference_engine_descriptor, "postgresql", "INTEGER");
+  const bool reference_label_distinguished = reference_descriptor.ok() && reference_metadata.canonical_type_name == "int32" &&
+                                         reference_metadata.compatibility_dialect == "postgresql" &&
+                                         reference_metadata.reference_label == "INTEGER" &&
+                                         reference_metadata.reference_label_alias_only &&
+                                         reference_metadata.driver_display_type == "INTEGER";
 
   const auto opaque_metadata = RenderWireDriverMetadata(ScalarDescriptor("opaque_extension"));
   const bool opaque_distinguished = opaque_metadata.opaque_render_only && !opaque_metadata.comparison_supported &&
@@ -147,20 +147,20 @@ int main(int argc, char** argv) {
   const bool domain_uuid_ok = domain_metadata.domain_uuid == create_domain.primary_object.uuid.canonical;
   const bool domain_base_ok = domain_metadata.base_canonical_type_name == "int32";
   const bool domain_driver_metadata_ok =
-      domain_metadata.driver_metadata_envelope.find("donor_label=POSITIVE_INT") != std::string::npos;
+      domain_metadata.driver_metadata_envelope.find("reference_label=POSITIVE_INT") != std::string::npos;
   const bool domain_wire_metadata_ok =
       domain_metadata.wire_metadata_envelope.find("wire_in=int32_text") != std::string::npos;
   const bool domain_distinguished = setup_commit && domain_lookup_ok && domain_kind_ok && domain_uuid_ok &&
                                     domain_base_ok && domain_driver_metadata_ok && domain_wire_metadata_ok;
   const bool read_commit = Commit(read_context);
 
-  const bool ok = native_distinguished && donor_label_distinguished && domain_distinguished &&
+  const bool ok = native_distinguished && reference_label_distinguished && domain_distinguished &&
                   opaque_distinguished && read_commit;
 
   std::cout << "{\n";
   PrintBool("ok", ok, true);
   PrintBool("native_distinguished", native_distinguished, true);
-  PrintBool("donor_label_alias_only", donor_label_distinguished, true);
+  PrintBool("reference_label_alias_only", reference_label_distinguished, true);
   PrintBool("domain_distinguished", domain_distinguished, true);
   PrintBool("domain_lookup_ok", domain_lookup_ok, true);
   PrintBool("domain_kind_ok", domain_kind_ok, true);

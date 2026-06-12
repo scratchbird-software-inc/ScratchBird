@@ -720,7 +720,7 @@ void TestArhc082ProductionFixtureSeparation() {
               HasEvidence(result.evidence,
                           "agent_fixture_separation.parser_authority=false") &&
               HasEvidence(result.evidence,
-                          "agent_fixture_separation.donor_authority=false") &&
+                          "agent_fixture_separation.reference_authority=false") &&
               HasEvidence(result.evidence,
                           "agent_fixture_separation.client_authority=false"),
           "ARHC-082 fixture separation evidence missed authority non-drift rows");

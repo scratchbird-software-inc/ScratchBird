@@ -31,7 +31,7 @@
     "optimized_path_consumed",
     "index_route_capability_generation_current",
     "mga_security_evidence",
-    "parser_client_donor_authority",
+    "parser_client_reference_authority",
     "benchmark_clean_overclaim"
   ],
   "available_artifacts": [
@@ -43,9 +43,9 @@
     },
     {
       "path": "project/tests/performance/optimizer_runtime_hot_path_orh_270_gate.py",
-      "classification": "donor_dominance_blocker_validator",
+      "classification": "reference_dominance_blocker_validator",
       "fresh_live_route_closure_authority": false,
-      "reason": "ORH-270 records missing fresh ScratchBird and donor-best benchmark lanes and explicitly refuses donor-dominance closure."
+      "reason": "ORH-270 records missing fresh ScratchBird and reference-best benchmark lanes and explicitly refuses reference-dominance closure."
     },
     {
       "path": "project/tests/performance/optimizer_runtime_hot_path_orh_287_gate.cpp",
@@ -88,7 +88,7 @@
       "optimized_path_consumed": false,
       "index_route_capability_generation_current": false,
       "mga_security_evidence": false,
-      "parser_client_donor_authority": false,
+      "parser_client_reference_authority": false,
       "exact_blocker": "fresh embedded ScratchBird route benchmark missing for post-rebase optimized-path runtime consumption"
     },
     {
@@ -106,7 +106,7 @@
       "optimized_path_consumed": false,
       "index_route_capability_generation_current": false,
       "mga_security_evidence": false,
-      "parser_client_donor_authority": false,
+      "parser_client_reference_authority": false,
       "exact_blocker": "fresh IPC ScratchBird route benchmark missing for post-rebase optimized-path runtime consumption"
     },
     {
@@ -124,7 +124,7 @@
       "optimized_path_consumed": false,
       "index_route_capability_generation_current": false,
       "mga_security_evidence": false,
-      "parser_client_donor_authority": false,
+      "parser_client_reference_authority": false,
       "exact_blocker": "fresh INET ScratchBird route benchmark missing for post-rebase optimized-path runtime consumption"
     }
   ],
@@ -170,7 +170,7 @@
       "validated": true
     },
     {
-      "case": "parser_client_donor_authority",
+      "case": "parser_client_reference_authority",
       "diagnostic_code": "ORH_FOCUSED_LIVE_ROUTE_UNSAFE_AUTHORITY",
       "validated": true
     },

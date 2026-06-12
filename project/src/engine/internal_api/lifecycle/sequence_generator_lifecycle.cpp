@@ -153,7 +153,7 @@ EngineApiDiagnostic SequenceDiagnostic(const char* code, std::string detail = {}
   else if (diagnostic_code == kSequenceDiagnosticExhausted) { message_key = "generator.exhausted"; }
   else if (diagnostic_code == kSequenceDiagnosticUnavailable) { message_key = "generator.unavailable"; }
   else if (diagnostic_code == kSequenceDiagnosticClusterPathAbsent) { message_key = "generator.cluster_path_absent"; }
-  else if (diagnostic_code == kSequenceDiagnosticDonorMappingIncomplete) { message_key = "generator.donor_mapping_incomplete"; }
+  else if (diagnostic_code == kSequenceDiagnosticReferenceMappingIncomplete) { message_key = "generator.reference_mapping_incomplete"; }
   else if (diagnostic_code == kSequenceDiagnosticIdentityDoubleUuidForbidden) {
     message_key = "generator.identity_double_uuid_forbidden";
   } else if (diagnostic_code == kSequenceDiagnosticIdentityAssigned) {
@@ -379,15 +379,15 @@ EngineSequenceGeneratorDefinition NormalizeDefinition(const EngineSequenceAlterG
   return NormalizeDefinition(create_request);
 }
 
-bool DonorMappingIncomplete(const EngineSequenceGeneratorDefinition& definition) {
-  if (definition.donor_profile_uuid.empty()) { return false; }
-  return !definition.donor_mapping_complete ||
-         definition.donor_family.empty() ||
-         definition.donor_mapping_label.empty() ||
-         definition.donor_allocation_timing.empty() ||
-         definition.donor_rollback_behavior.empty() ||
-         definition.donor_finality_behavior.empty() ||
-         definition.donor_cache_behavior.empty();
+bool ReferenceMappingIncomplete(const EngineSequenceGeneratorDefinition& definition) {
+  if (definition.reference_profile_uuid.empty()) { return false; }
+  return !definition.reference_mapping_complete ||
+         definition.reference_family.empty() ||
+         definition.reference_mapping_label.empty() ||
+         definition.reference_allocation_timing.empty() ||
+         definition.reference_rollback_behavior.empty() ||
+         definition.reference_finality_behavior.empty() ||
+         definition.reference_cache_behavior.empty();
 }
 
 EngineApiDiagnostic ValidateDefinition(const EngineRequestContext& context,
@@ -410,8 +410,8 @@ EngineApiDiagnostic ValidateDefinition(const EngineRequestContext& context,
   if (definition.allocation_mode.empty()) {
     return SequenceDiagnostic(kSequenceDiagnosticPolicyResolutionFailed, definition.generator_uuid);
   }
-  if (DonorMappingIncomplete(definition)) {
-    return SequenceDiagnostic(kSequenceDiagnosticDonorMappingIncomplete, definition.generator_uuid);
+  if (ReferenceMappingIncomplete(definition)) {
+    return SequenceDiagnostic(kSequenceDiagnosticReferenceMappingIncomplete, definition.generator_uuid);
   }
   if (validate_cluster_metric_request &&
       definition.cluster_metric_path_requested &&
@@ -446,14 +446,14 @@ std::vector<std::pair<std::string, std::string>> DefinitionFields(
       {"policy_uuid", definition.policy_uuid},
       {"policy_version_uuid", definition.policy_version_uuid},
       {"policy_generation", std::to_string(definition.policy_generation)},
-      {"donor_profile_uuid", definition.donor_profile_uuid},
-      {"donor_family", definition.donor_family},
-      {"donor_mapping_label", definition.donor_mapping_label},
-      {"donor_allocation_timing", definition.donor_allocation_timing},
-      {"donor_rollback_behavior", definition.donor_rollback_behavior},
-      {"donor_finality_behavior", definition.donor_finality_behavior},
-      {"donor_cache_behavior", definition.donor_cache_behavior},
-      {"donor_mapping_complete", BoolText(definition.donor_mapping_complete)},
+      {"reference_profile_uuid", definition.reference_profile_uuid},
+      {"reference_family", definition.reference_family},
+      {"reference_mapping_label", definition.reference_mapping_label},
+      {"reference_allocation_timing", definition.reference_allocation_timing},
+      {"reference_rollback_behavior", definition.reference_rollback_behavior},
+      {"reference_finality_behavior", definition.reference_finality_behavior},
+      {"reference_cache_behavior", definition.reference_cache_behavior},
+      {"reference_mapping_complete", BoolText(definition.reference_mapping_complete)},
       {"requires_cluster_authority", BoolText(definition.requires_cluster_authority)},
       {"cluster_metric_path_requested", BoolText(definition.cluster_metric_path_requested)}};
 }
@@ -482,14 +482,14 @@ EngineSequenceGeneratorDefinition DefinitionFromFields(const std::map<std::strin
   definition.policy_uuid = Field(fields, "policy_uuid");
   definition.policy_version_uuid = Field(fields, "policy_version_uuid");
   definition.policy_generation = FieldU64(fields, "policy_generation", 1);
-  definition.donor_profile_uuid = Field(fields, "donor_profile_uuid");
-  definition.donor_family = Field(fields, "donor_family");
-  definition.donor_mapping_label = Field(fields, "donor_mapping_label");
-  definition.donor_allocation_timing = Field(fields, "donor_allocation_timing");
-  definition.donor_rollback_behavior = Field(fields, "donor_rollback_behavior");
-  definition.donor_finality_behavior = Field(fields, "donor_finality_behavior");
-  definition.donor_cache_behavior = Field(fields, "donor_cache_behavior");
-  definition.donor_mapping_complete = FieldBool(fields, "donor_mapping_complete");
+  definition.reference_profile_uuid = Field(fields, "reference_profile_uuid");
+  definition.reference_family = Field(fields, "reference_family");
+  definition.reference_mapping_label = Field(fields, "reference_mapping_label");
+  definition.reference_allocation_timing = Field(fields, "reference_allocation_timing");
+  definition.reference_rollback_behavior = Field(fields, "reference_rollback_behavior");
+  definition.reference_finality_behavior = Field(fields, "reference_finality_behavior");
+  definition.reference_cache_behavior = Field(fields, "reference_cache_behavior");
+  definition.reference_mapping_complete = FieldBool(fields, "reference_mapping_complete");
   definition.requires_cluster_authority = FieldBool(fields, "requires_cluster_authority");
   definition.cluster_metric_path_requested = FieldBool(fields, "cluster_metric_path_requested");
   return definition;
@@ -688,7 +688,7 @@ void EnsureMetricPaths(EngineSequenceGeneratorLifecycleState* state) {
       "sys.metrics.generator.consumed_no_row_effect_total",
       "sys.metrics.generator.recovery_snapshots_total",
       "sys.metrics.generator.exhaustion_refusals_total",
-      "sys.metrics.generator.donor_mapping_reject_total",
+      "sys.metrics.generator.reference_mapping_reject_total",
       "sys.metrics.generator.cluster_path_reject_total",
       "sys.metrics.generator.mga_retention_blocked_total"};
 }
@@ -717,7 +717,7 @@ EngineSequenceAllocationRecord AllocationFromFields(const RawSequenceEvent& even
   allocation.external_exposure_allowed = FieldBool(event.fields, "external_exposure_allowed", true);
   allocation.row_effect_expected = FieldBool(event.fields, "row_effect_expected", true);
   allocation.unique_validation_required = FieldBool(event.fields, "unique_validation_required", true);
-  allocation.donor_mapping_label = Field(event.fields, "donor_mapping_label");
+  allocation.reference_mapping_label = Field(event.fields, "reference_mapping_label");
   allocation.cache_window_first_value = FieldI64(event.fields, "cache_window_first_value");
   allocation.cache_window_last_value = FieldI64(event.fields, "cache_window_last_value");
   allocation.durable_high_water_after = FieldI64(event.fields, "durable_high_water_after");
@@ -764,8 +764,8 @@ void FillAllocationResult(EngineApiResult* result, const EngineSequenceAllocatio
   AddEvidence(result, "sequence_reservation", allocation.reservation_uuid);
   AddEvidence(result, "cache_window_generation", std::to_string(allocation.cache_window_generation));
   AddEvidence(result, "unique_validation_required", allocation.unique_validation_required ? "true" : "false");
-  if (!allocation.donor_mapping_label.empty()) {
-    AddEvidence(result, "donor_mapping_label", allocation.donor_mapping_label);
+  if (!allocation.reference_mapping_label.empty()) {
+    AddEvidence(result, "reference_mapping_label", allocation.reference_mapping_label);
   }
   AddRow(result,
          {{"allocation_uuid", allocation.allocation_uuid},
@@ -903,7 +903,7 @@ EngineLoadSequenceGeneratorLifecycleStateResult LoadSequenceGeneratorLifecycleSt
     } else if (event.event_kind == "DIAGNOSTIC") {
       const std::string code = Field(event.fields, "diagnostic_code");
       if (code == kSequenceDiagnosticExhausted) { ++result.state.metrics.exhaustion_refusals_total; }
-      else if (code == kSequenceDiagnosticDonorMappingIncomplete) { ++result.state.metrics.donor_mapping_reject_total; }
+      else if (code == kSequenceDiagnosticReferenceMappingIncomplete) { ++result.state.metrics.reference_mapping_reject_total; }
       else if (code == kSequenceDiagnosticClusterPathAbsent || code == kSequenceDiagnosticUnavailable) {
         ++result.state.metrics.cluster_path_reject_total;
       } else if (code == kSequenceDiagnosticPolicyResolutionFailed) {
@@ -1092,9 +1092,9 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
     AppendDiagnosticEvent(request.context, diagnostic.code, generator_uuid, "standalone_cluster_generator_path");
     return DiagnosticResult<EngineSequenceAllocateValueResult>(request.context, kOperation, diagnostic);
   }
-  if (DonorMappingIncomplete(existing->definition)) {
-    diagnostic = SequenceDiagnostic(kSequenceDiagnosticDonorMappingIncomplete, generator_uuid);
-    AppendDiagnosticEvent(request.context, diagnostic.code, generator_uuid, "donor_mapping_required");
+  if (ReferenceMappingIncomplete(existing->definition)) {
+    diagnostic = SequenceDiagnostic(kSequenceDiagnosticReferenceMappingIncomplete, generator_uuid);
+    AppendDiagnosticEvent(request.context, diagnostic.code, generator_uuid, "reference_mapping_required");
     return DiagnosticResult<EngineSequenceAllocateValueResult>(request.context, kOperation, diagnostic);
   }
 
@@ -1136,7 +1136,7 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
          {"external_exposure_allowed", BoolText(request.external_exposure_allowed)},
          {"row_effect_expected", BoolText(request.row_effect_expected)},
          {"unique_validation_required", "1"},
-         {"donor_mapping_label", generator.definition.donor_mapping_label},
+         {"reference_mapping_label", generator.definition.reference_mapping_label},
          {"sequence_epoch", std::to_string(generator.metadata_epoch)},
          {"cache_window_generation", std::to_string(generator.cache_window_generation)},
          {"cache_window_first_value", std::to_string(generator.cache_window_first_value)},
@@ -1223,7 +1223,7 @@ EngineSequenceAllocateValueResult EngineSequenceAllocateValue(
        {"external_exposure_allowed", BoolText(request.external_exposure_allowed)},
        {"row_effect_expected", BoolText(request.row_effect_expected)},
        {"unique_validation_required", "1"},
-       {"donor_mapping_label", generator.definition.donor_mapping_label},
+       {"reference_mapping_label", generator.definition.reference_mapping_label},
        {"sequence_epoch", std::to_string(generator.metadata_epoch)},
        {"cache_window_generation", std::to_string(generator.cache_window_generation)},
        {"cache_window_first_value", std::to_string(generator.cache_window_first_value)},

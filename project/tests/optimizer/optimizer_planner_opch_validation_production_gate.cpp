@@ -73,7 +73,7 @@ bool PhysicalPlanValidationCoversMemoryAndAgentEvidence() {
   missing_agent.agent_evidence_trusted = false;
   const auto agent_bad = opt::ValidatePhysicalPlanNode(missing_agent);
   auto parser_authority = Join();
-  parser_authority.parser_or_donor_evidence_authority = true;
+  parser_authority.parser_or_reference_evidence_authority = true;
   const auto parser_bad = opt::ValidatePhysicalPlanNode(parser_authority);
 
   return Require(ok.ok, "valid physical plan rejected") &&
@@ -84,8 +84,8 @@ bool PhysicalPlanValidationCoversMemoryAndAgentEvidence() {
                      "SB_OPT_PHYSICAL_PLAN_AGENT_EVIDENCE_REQUIRED"),
                  "missing agent evidence accepted") &&
          Require(Has(parser_bad.diagnostics,
-                     "SB_OPT_PHYSICAL_PLAN_PARSER_DONOR_AUTHORITY_FORBIDDEN"),
-                 "parser/donor authority accepted by physical plan");
+                     "SB_OPT_PHYSICAL_PLAN_PARSER_REFERENCE_AUTHORITY_FORBIDDEN"),
+                 "parser/reference authority accepted by physical plan");
 }
 
 bool ProductionBuildGateBlocksTestOnlyOptimizerInputs() {
@@ -97,7 +97,7 @@ bool ProductionBuildGateBlocksTestOnlyOptimizerInputs() {
   unsafe.legacy_only_defaults_enabled = true;
   unsafe.local_default_statistics_enabled = true;
   unsafe.policy_default_statistics_enabled = true;
-  unsafe.donor_produced_evidence_enabled = true;
+  unsafe.reference_produced_evidence_enabled = true;
   unsafe.relaxed_benchmark_clean_paths_enabled = true;
   unsafe.relaxed_metrics_enabled = true;
   unsafe.placeholder_runtime_evidence_enabled = true;
@@ -115,8 +115,8 @@ bool ProductionBuildGateBlocksTestOnlyOptimizerInputs() {
                      "SB_OPT_PRODUCTION_GATE_FIXTURE_STATS_FORBIDDEN"),
                  "fixture stats production diagnostic missing") &&
          Require(Has(unsafe_result.diagnostics,
-                     "SB_OPT_PRODUCTION_GATE_DONOR_EVIDENCE_FORBIDDEN"),
-                 "donor evidence production diagnostic missing") &&
+                     "SB_OPT_PRODUCTION_GATE_REFERENCE_EVIDENCE_FORBIDDEN"),
+                 "reference evidence production diagnostic missing") &&
          Require(Has(unsafe_result.diagnostics,
                      "SB_OPT_PRODUCTION_GATE_PARSER_EXECUTION_FORBIDDEN"),
                  "parser shortcut production diagnostic missing") &&

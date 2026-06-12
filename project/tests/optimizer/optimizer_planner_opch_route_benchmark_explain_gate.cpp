@@ -46,12 +46,12 @@ opt::OptimizerBenchmarkRouteLaneEvidence BenchmarkLane(std::string id,
   lane.trusted = true;
   lane.fresh = true;
   lane.evidence_generation = "bench-gen:opch090";
-  lane.donor_comparison_required = true;
-  lane.donor_comparison_id = "donor-compare:customer_lookup";
-  lane.donor_engine = "postgresql";
-  lane.donor_oracle_result_hash = "donor-oracle-result:customer_lookup";
-  lane.donor_reference_only = true;
-  lane.donor_as_authority = false;
+  lane.reference_comparison_required = true;
+  lane.reference_comparison_id = "reference-compare:customer_lookup";
+  lane.reference_engine = "postgresql";
+  lane.reference_oracle_result_hash = "reference-oracle-result:customer_lookup";
+  lane.reference_reference_only = true;
+  lane.reference_as_authority = false;
   lane.benchmark_evidence_authority = false;
   lane.transaction_finality_authority = false;
   lane.visibility_authority = false;
@@ -98,7 +98,7 @@ std::vector<std::string> RequiredRoutes() {
   return {"embedded", "ipc", "inet", "cli", "driver"};
 }
 
-bool BenchmarkEvidenceAcceptsCleanColdWarmDonorLanes() {
+bool BenchmarkEvidenceAcceptsCleanColdWarmReferenceLanes() {
   // SEARCH_KEY: OPCH_BENCHMARK_ROUTE_EVIDENCE
   const auto validation =
       opt::ValidateOptimizerBenchmarkRouteEvidence(BenchmarkLanes(), true);
@@ -144,13 +144,13 @@ bool BenchmarkEvidenceRejectsRequiredGaps() {
   }
 
   lanes = BenchmarkLanes();
-  lanes.front().donor_comparison_id.clear();
+  lanes.front().reference_comparison_id.clear();
   validation = opt::ValidateOptimizerBenchmarkRouteEvidence(lanes, true);
-  if (!Require(!validation.ok, "missing donor comparison was accepted") ||
+  if (!Require(!validation.ok, "missing reference comparison was accepted") ||
       !Require(HasDiagnosticContaining(
                    validation.diagnostics,
-                   "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.DONOR_COMPARISON_MISSING"),
-               "donor comparison diagnostic absent")) {
+                   "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.REFERENCE_COMPARISON_MISSING"),
+               "reference comparison diagnostic absent")) {
     return false;
   }
 
@@ -166,13 +166,13 @@ bool BenchmarkEvidenceRejectsRequiredGaps() {
   }
 
   lanes = BenchmarkLanes();
-  lanes.front().donor_as_authority = true;
+  lanes.front().reference_as_authority = true;
   validation = opt::ValidateOptimizerBenchmarkRouteEvidence(lanes, true);
-  return Require(!validation.ok, "donor-as-authority evidence was accepted") &&
+  return Require(!validation.ok, "reference-as-authority evidence was accepted") &&
          Require(HasDiagnosticContaining(
                      validation.diagnostics,
-                     "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.DONOR_AUTHORITY_DRIFT"),
-                 "donor authority drift diagnostic absent");
+                     "SB_OPCH_BENCHMARK_ROUTE_EVIDENCE.REFERENCE_AUTHORITY_DRIFT"),
+                 "reference authority drift diagnostic absent");
 }
 
 bool ExplainRouteEquivalenceAcceptsDriverVisibleRoutes() {
@@ -274,7 +274,7 @@ bool ExplainRouteEquivalenceRejectsRequiredGaps() {
 }  // namespace
 
 int main() {
-  if (!BenchmarkEvidenceAcceptsCleanColdWarmDonorLanes()) return EXIT_FAILURE;
+  if (!BenchmarkEvidenceAcceptsCleanColdWarmReferenceLanes()) return EXIT_FAILURE;
   if (!BenchmarkEvidenceRejectsRequiredGaps()) return EXIT_FAILURE;
   if (!ExplainRouteEquivalenceAcceptsDriverVisibleRoutes()) return EXIT_FAILURE;
   if (!ExplainRouteEquivalenceRejectsRequiredGaps()) return EXIT_FAILURE;

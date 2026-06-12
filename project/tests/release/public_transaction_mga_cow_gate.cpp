@@ -94,8 +94,8 @@ bool IsolationLevelsAreExplicit() {
               "repeatable read should be supported") && ok;
   ok = Expect(txn::ValidateLocalIsolationLevel(txn::IsolationLevel::serializable).ok(),
               "serializable should be supported") && ok;
-  ok = Expect(!txn::ValidateLocalIsolationLevel(txn::IsolationLevel::donor_compatibility).ok(),
-              "donor compatibility isolation must not be local production authority") && ok;
+  ok = Expect(!txn::ValidateLocalIsolationLevel(txn::IsolationLevel::reference_compatibility).ok(),
+              "reference compatibility isolation must not be local production authority") && ok;
   return ok;
 }
 
@@ -437,9 +437,9 @@ bool PreparedAndHotKeyChangeProof() {
               "changed keys should require ordinary index rewrite") && ok;
 
   hot.exact_index_keys_unchanged = true;
-  hot.parser_or_donor_authority = true;
+  hot.parser_or_reference_authority = true;
   ok = Expect(!txn::EvaluateHotStableRowHeadDecision(hot).ok(),
-              "parser or donor HOT authority must be refused") && ok;
+              "parser or reference HOT authority must be refused") && ok;
   return ok;
 }
 

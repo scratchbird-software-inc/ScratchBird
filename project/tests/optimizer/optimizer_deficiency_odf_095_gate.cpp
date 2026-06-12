@@ -341,7 +341,7 @@ void OptimizerFailsClosedForUnsafeDescriptors() {
 
   descriptor = Descriptor(opt::RuntimeFilterFamily::kGraph,
                           opt::RuntimeFilterRoute::kProvider, 10, 3, 7);
-  descriptor.parser_or_donor_finality_or_visibility_authority = true;
+  descriptor.parser_or_reference_finality_or_visibility_authority = true;
   RequireOptimizerRefusal(descriptor, "SB_RUNTIME_FILTER.UNSAFE_AUTHORITY");
 
   descriptor = Descriptor(opt::RuntimeFilterFamily::kSearch,
@@ -394,7 +394,7 @@ void ExecutorFailsClosedForProviderDriftAndCorruptRows() {
   RequireExecutorRefusal(
       [](const exec::RuntimeFilterProviderRequest& request) {
         auto result = CandidateProvider(request);
-        result.parser_or_donor_finality_or_visibility_authority = true;
+        result.parser_or_reference_finality_or_visibility_authority = true;
         return result;
       },
       "SB_RUNTIME_FILTER_EXECUTOR.UNSAFE_AUTHORITY");

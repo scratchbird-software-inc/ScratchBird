@@ -26,9 +26,9 @@ using scratchbird::core::platform::Subsystem;
 constexpr const char* kCeic017EvidenceAnchor =
     "CEIC-017_MEMORY_PRESSURE_STATE_MACHINE";
 constexpr const char* kLegacyAuthorityBoundary =
-    "memory_pressure.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority";
+    "memory_pressure.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority";
 constexpr const char* kExpandedAuthorityBoundary =
-    "memory_pressure.authority_scope=evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
+    "memory_pressure.authority_scope=evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
 
 Status MemoryOkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -358,7 +358,7 @@ void AddExecutorBaseEvidence(MemoryPressureExecutorResult* result,
   result->evidence.push_back(
       "memory_pressure.executor.recovery_authority=false");
   result->evidence.push_back(
-      "memory_pressure.executor.parser_or_donor_authority=false");
+      "memory_pressure.executor.parser_or_reference_authority=false");
   result->evidence.push_back(
       "memory_pressure.executor.cluster_production_execution=external_provider_only");
 }
@@ -879,7 +879,7 @@ MemoryPressureDecision PlanMemoryPressureResponse(
         "memory.pressure.missing_engine_mga_authority",
         {{"route_label", observation.route_label}});
   }
-  if (observation.parser_or_donor_authority ||
+  if (observation.parser_or_reference_authority ||
       observation.client_authority ||
       observation.provider_authority ||
       observation.wal_authority ||
@@ -894,7 +894,7 @@ MemoryPressureDecision PlanMemoryPressureResponse(
     return ErrorDecision(
         "memory_pressure_unsafe_authority",
         "memory.pressure.unsafe_authority",
-        {{"parser_or_donor_authority", observation.parser_or_donor_authority ? "true" : "false"},
+        {{"parser_or_reference_authority", observation.parser_or_reference_authority ? "true" : "false"},
          {"client_authority", observation.client_authority ? "true" : "false"},
          {"provider_authority", observation.provider_authority ? "true" : "false"},
          {"wal_authority", observation.wal_authority ? "true" : "false"},

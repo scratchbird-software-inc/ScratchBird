@@ -470,7 +470,7 @@ bool ProveIndexDatatypeAndAgentBoundaries(const Fixture& fixture) {
   datatype_request.descriptor = Descriptor("int64", fixture.descriptor_uuid);
   datatype_request.support_path = "scalar_family:canonical_descriptor:btree";
   datatype_request.index_stats_status = "validated";
-  datatype_request.donor_label = "postgres_bigint";
+  datatype_request.reference_label = "postgres_bigint";
   const auto datatype = api::EvaluateDatatypeIndexOptimizerAdmission(
       datatype_request);
   ok = Expect(datatype.ok && datatype.index_admitted &&
@@ -479,7 +479,7 @@ bool ProveIndexDatatypeAndAgentBoundaries(const Fixture& fixture) {
        ok;
   ok = Expect(datatype.optimizer_uses_canonical_descriptor &&
                   datatype.canonical_descriptor_used == "int64",
-              "datatype/index/optimizer admission used donor label authority") &&
+              "datatype/index/optimizer admission used reference label authority") &&
        ok;
 
   agents::AgentPolicyRecommendationApplicationRequest agent_request;

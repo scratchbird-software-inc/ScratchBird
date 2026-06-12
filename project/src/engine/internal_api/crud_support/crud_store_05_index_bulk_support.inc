@@ -127,7 +127,7 @@ bool CrudIndexSupportsPredicate(const CrudIndexRecord& index, const EnginePredic
     return predicate.canonical_predicate_envelope == first_column &&
            (family == kCrudIndexFamilyBtree || family == kCrudIndexFamilyHash || family == kCrudIndexFamilyBitmap ||
             family == kCrudIndexFamilyCovering || family == kCrudIndexFamilyColumnarZone ||
-            family == kCrudIndexFamilyInMemory || family == kCrudIndexFamilyDonorEmulated);
+            family == kCrudIndexFamilyInMemory || family == kCrudIndexFamilyReferenceEmulated);
   }
   if (predicate.predicate_kind == "column_in_list") {
     return predicate.canonical_predicate_envelope == first_column &&

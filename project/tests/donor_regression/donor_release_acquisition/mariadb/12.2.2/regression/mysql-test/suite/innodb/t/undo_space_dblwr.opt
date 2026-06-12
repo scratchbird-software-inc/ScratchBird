@@ -1,3 +1,0 @@
---innodb_undo_tablespaces=3
---innodb_sys_tablespaces
---innodb-stats-persistent=0

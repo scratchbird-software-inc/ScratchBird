@@ -836,8 +836,8 @@ void TestPerformanceOptimizationSurface() {
           "DPC-010 management surface depends on execution_plan path");
   Require(!Contains(result.support_bundle_json, "docs" "/execution-plans"),
           "DPC-010 support bundle depends on execution_plan path");
-  Require(!result.parser_finality_authority && !result.donor_finality_authority,
-          "DPC-010 surface claimed parser or donor finality");
+  Require(!result.parser_finality_authority && !result.reference_finality_authority,
+          "DPC-010 surface claimed parser or reference finality");
 
   api::EngineShowManagementRequest show_request;
   show_request.context = context;

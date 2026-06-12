@@ -268,6 +268,17 @@ struct SbwpSessionState {
   std::string authenticated_user_uuid;
   std::string auth_provider_family;
   std::string principal_claim;
+  std::string language_profile;
+  std::string language_tag;
+  std::string default_language_tag;
+  std::string input_syntax_profile;
+  std::string input_language_fallback_tag;
+  std::string common_resource_hash;
+  std::uint64_t language_resource_epoch{0};
+  std::uint64_t localized_name_epoch{0};
+  std::uint64_t message_resource_epoch{0};
+  std::string resource_compatibility_identity;
+  std::string resource_version_identity;
   std::map<std::string, std::string> session_parameters;
   std::map<std::string, PreparedStatement> statements;
   std::map<std::string, BoundPortal> portals;
@@ -1463,6 +1474,45 @@ std::vector<std::pair<std::string, std::string>> StartupParameterStatuses(
   if (state.security_policy_epoch != 0) {
     values.push_back({"security.generation", std::to_string(state.security_policy_epoch)});
   }
+  if (!state.language_profile.empty()) {
+    values.push_back({"language.profile_id", state.language_profile});
+  }
+  if (!state.language_tag.empty()) {
+    values.push_back({"language.tag", state.language_tag});
+  }
+  if (!state.default_language_tag.empty()) {
+    values.push_back({"language.default_tag", state.default_language_tag});
+  }
+  if (!state.input_syntax_profile.empty()) {
+    values.push_back({"language.input_syntax_profile", state.input_syntax_profile});
+  }
+  if (!state.input_language_fallback_tag.empty()) {
+    values.push_back({"language.input_fallback_tag",
+                      state.input_language_fallback_tag});
+  }
+  if (!state.common_resource_hash.empty()) {
+    values.push_back({"language.common_resource_hash", state.common_resource_hash});
+  }
+  if (state.language_resource_epoch != 0) {
+    values.push_back({"language.resource_epoch",
+                      std::to_string(state.language_resource_epoch)});
+  }
+  if (state.localized_name_epoch != 0) {
+    values.push_back({"language.localized_name_epoch",
+                      std::to_string(state.localized_name_epoch)});
+  }
+  if (state.message_resource_epoch != 0) {
+    values.push_back({"language.message_epoch",
+                      std::to_string(state.message_resource_epoch)});
+  }
+  if (!state.resource_compatibility_identity.empty()) {
+    values.push_back({"language.resource_compatibility_identity",
+                      state.resource_compatibility_identity});
+  }
+  if (!state.resource_version_identity.empty()) {
+    values.push_back({"language.resource_version_identity",
+                      state.resource_version_identity});
+  }
   if (state.txn_id != 0) {
     values.push_back({"current_txn_id", std::to_string(state.txn_id)});
   }
@@ -2472,6 +2522,20 @@ bool HandleStartup(SbsqlTestWireSession* session,
   state->principal_claim = session->session().principal_claim.empty()
                                ? credentials.principal
                                : session->session().principal_claim;
+  state->language_profile = session->session().language_profile;
+  state->language_tag = session->session().language_tag;
+  state->default_language_tag = session->session().default_language;
+  state->input_syntax_profile = session->session().input_syntax_profile;
+  state->input_language_fallback_tag =
+      session->session().input_language_fallback_tag;
+  state->common_resource_hash = session->session().common_resource_hash;
+  state->language_resource_epoch = session->session().language_resource_epoch;
+  state->localized_name_epoch = session->session().localized_name_epoch;
+  state->message_resource_epoch = session->session().message_resource_epoch;
+  state->resource_compatibility_identity =
+      session->session().resource_compatibility_identity;
+  state->resource_version_identity =
+      session->session().resource_version_identity;
   if (state->txn_id == 0) {
     (void)SendError(io,
                     state,

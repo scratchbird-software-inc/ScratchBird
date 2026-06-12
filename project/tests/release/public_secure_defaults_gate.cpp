@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -75,6 +76,63 @@ void WriteFile(const std::filesystem::path& path, const std::string& text) {
   out << text;
   out.close();
   Require(static_cast<bool>(out), "PCR-123 file flush failed");
+}
+
+std::string JsonEscape(const std::string& value) {
+  std::ostringstream out;
+  for (const char ch : value) {
+    switch (ch) {
+      case '\\':
+        out << "\\\\";
+        break;
+      case '"':
+        out << "\\\"";
+        break;
+      case '\n':
+        out << "\\n";
+        break;
+      case '\r':
+        out << "\\r";
+        break;
+      case '\t':
+        out << "\\t";
+        break;
+      default:
+        out << ch;
+        break;
+    }
+  }
+  return out.str();
+}
+
+const char* BoolText(bool value) {
+  return value ? "true" : "false";
+}
+
+const char* GateServerModeName(server::ServerMode mode) {
+  switch (mode) {
+    case server::ServerMode::kForeground:
+      return "foreground";
+    case server::ServerMode::kService:
+      return "service";
+    case server::ServerMode::kValidationOnly:
+      return "validation_only";
+    case server::ServerMode::kMaintenance:
+      return "maintenance";
+    case server::ServerMode::kReadOnly:
+      return "read_only";
+  }
+  return "unknown";
+}
+
+const char* GateAllocationFailureModeName(memory::AllocationFailureMode mode) {
+  switch (mode) {
+    case memory::AllocationFailureMode::return_error:
+      return "return_error";
+    case memory::AllocationFailureMode::fatal_status:
+      return "fatal_status";
+  }
+  return "unknown";
 }
 
 std::string SecureServiceConfig(const std::filesystem::path& root) {
@@ -233,13 +291,52 @@ void TestRuntimeArtifactsArePrivate(const std::filesystem::path& root) {
 #endif
 }
 
+void WriteEffectiveConfigProof(const std::filesystem::path& output_path,
+                               const std::filesystem::path& root) {
+  const auto config_path = root / "effective_config_proof.conf";
+  WriteFile(config_path, SecureServiceConfig(root));
+  const auto loaded = LoadConfig(config_path);
+  Require(loaded.ok(), "PCR-123 effective config proof did not load");
+  const auto lifecycle =
+      server::WriteStartupLifecycleArtifacts(loaded.config, "effective_config_proof_ready");
+  Require(lifecycle.ok(), "PCR-123 effective config proof lifecycle write failed");
+
+  std::ostringstream out;
+  out << "{\n"
+      << "  \"schema\": \"scratchbird.public_secure_defaults_effective_config.v1\",\n"
+      << "  \"mode\": \"" << GateServerModeName(loaded.config.mode) << "\",\n"
+      << "  \"allow_current_directory\": " << BoolText(loaded.config.allow_current_directory) << ",\n"
+      << "  \"database_auto_create\": " << BoolText(loaded.config.database_auto_create) << ",\n"
+      << "  \"database_open_mode\": \"" << JsonEscape(loaded.config.database_open_mode) << "\",\n"
+      << "  \"listener_native_enabled\": " << BoolText(loaded.config.listener_native_enabled) << ",\n"
+      << "  \"listener_native_bind_host\": \"" << JsonEscape(loaded.config.listener_native_bind_host) << "\",\n"
+      << "  \"listener_native_tls_required\": " << BoolText(loaded.config.listener_native_tls_required) << ",\n"
+      << "  \"security_authority_mode\": \"" << JsonEscape(loaded.config.security_authority_mode) << "\",\n"
+      << "  \"security_provider_family\": \"" << JsonEscape(loaded.config.security_provider_family) << "\",\n"
+      << "  \"security_default_policy_installed\": " << BoolText(loaded.config.security_default_policy_installed) << ",\n"
+      << "  \"log_file\": \"" << JsonEscape(loaded.config.log_file) << "\",\n"
+      << "  \"log_level\": \"" << JsonEscape(loaded.config.log_level) << "\",\n"
+      << "  \"memory_policy_name\": \"" << JsonEscape(loaded.config.memory_policy_name) << "\",\n"
+      << "  \"memory_failure_mode\": \"" << GateAllocationFailureModeName(loaded.config.memory_failure_mode) << "\",\n"
+      << "  \"memory_zero_memory_on_release\": " << BoolText(loaded.config.memory_zero_memory_on_release) << ",\n"
+      << "  \"control_dir_private\": true,\n"
+      << "  \"data_dir_private\": true,\n"
+      << "  \"pid_file_private\": true,\n"
+      << "  \"debug_or_fixture_auth_enabled\": false\n"
+      << "}\n";
+  WriteFile(output_path, out.str());
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   const auto root = MakeTempRoot();
   TestCompiledDefaults();
   TestServiceProfileResolution(root);
   TestPermissiveProviderConfigFailsClosed(root);
   TestRuntimeArtifactsArePrivate(root);
+  if (argc == 2) {
+    WriteEffectiveConfigProof(argv[1], root / "effective_config_proof");
+  }
   return EXIT_SUCCESS;
 }

@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "donor_server_authority.hpp"
+#include "compatibility_server_authority.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -88,7 +88,7 @@ const std::string& Field(const std::map<std::string, std::string>& row,
   return it->second;
 }
 
-bool HasEvidence(const server::DonorServerAuthorityRouteResult& result,
+bool HasEvidence(const server::CompatibilityServerAuthorityRouteResult& result,
                  std::string_view key,
                  std::string_view value) {
   return std::any_of(result.evidence.begin(),
@@ -105,10 +105,10 @@ void VerifyKnownRow(const std::map<std::string, std::string>& row) {
   const auto& expected_action = Field(row, "server_action");
   const auto& expected_vector = Field(row, "security_vector");
 
-  Require(server::IsKnownDonorEngineForServerAuthority(engine_id),
-          decision_id + " donor engine is not recognized by server authority");
+  Require(server::IsKnownCompatibilityEngineForServerAuthority(engine_id),
+          decision_id + " engine is not recognized by server authority");
   const auto decision =
-      server::ResolveDonorServerAuthoritySurface(engine_id, surface_key);
+      server::ResolveCompatibilityServerAuthoritySurface(engine_id, surface_key);
   Require(decision.has_value(), decision_id + " did not resolve");
   Require(decision->server_action == expected_action,
           decision_id + " server action mismatch");
@@ -126,14 +126,14 @@ void VerifyKnownRow(const std::map<std::string, std::string>& row) {
           decision_id + " was marked as an SBLR execution surface");
   Require(decision->preserves_scratchbird_mga_authority,
           decision_id + " did not preserve ScratchBird MGA authority");
-  Require(!decision->accepts_donor_finality,
-          decision_id + " accepted donor finality");
+  Require(!decision->accepts_external_finality,
+          decision_id + " accepted external finality");
 
-  const auto route = server::EvaluateDonorServerAuthorityRoute(
-      server::DonorServerAuthorityRequest{
+  const auto route = server::EvaluateCompatibilityServerAuthorityRoute(
+      server::CompatibilityServerAuthorityRequest{
           engine_id,
           surface_key,
-          Field(row, "donor_visible_surface"),
+          Field(row, "reference_visible_surface"),
           true,
           true,
       });
@@ -149,14 +149,14 @@ void VerifyKnownRow(const std::map<std::string, std::string>& row) {
           decision_id + " did not block SBLR execution authority");
   Require(route.scratchbird_mga_authority_preserved,
           decision_id + " route did not preserve ScratchBird MGA authority");
-  Require(!route.donor_finality_accepted,
-          decision_id + " route accepted donor finality");
+  Require(!route.external_finality_accepted,
+          decision_id + " route accepted external finality");
   Require(HasEvidence(route, "sblr_execution_attempted", "false"),
           decision_id + " missing no-SBLR evidence");
   Require(HasEvidence(route, "scratchbird_mga_authority_preserved", "true"),
           decision_id + " missing MGA preservation evidence");
-  Require(HasEvidence(route, "donor_finality_accepted", "false"),
-          decision_id + " missing donor-finality refusal evidence");
+  Require(HasEvidence(route, "external_finality_accepted", "false"),
+          decision_id + " missing external-finality refusal evidence");
 
   if (expected_action == "security_denial" ||
       expected_action == "server_policy_gate") {
@@ -171,23 +171,23 @@ void VerifyKnownRow(const std::map<std::string, std::string>& row) {
 }
 
 void VerifyUnknownRowsFailClosed() {
-  auto unknown_donor = server::EvaluateDonorServerAuthorityRoute(
-      server::DonorServerAuthorityRequest{
-          "unknown_donor",
+  auto unknown_engine = server::EvaluateCompatibilityServerAuthorityRoute(
+      server::CompatibilityServerAuthorityRequest{
+          "unknown_engine",
           "database_create",
           "CREATE DATABASE external",
           true,
           true,
       });
-  Require(!unknown_donor.recognized && !unknown_donor.accepted && unknown_donor.denied,
-          "unknown donor did not fail closed");
-  Require(unknown_donor.diagnostic_code == "SB.SERVER_AUTHORITY.UNKNOWN_SURFACE",
-          "unknown donor diagnostic mismatch");
-  Require(!unknown_donor.sblr_execution_attempted,
-          "unknown donor attempted SBLR execution");
+  Require(!unknown_engine.recognized && !unknown_engine.accepted && unknown_engine.denied,
+          "unknown engine did not fail closed");
+  Require(unknown_engine.diagnostic_code == "SB.SERVER_AUTHORITY.UNKNOWN_SURFACE",
+          "unknown engine diagnostic mismatch");
+  Require(!unknown_engine.sblr_execution_attempted,
+          "unknown engine attempted SBLR execution");
 
-  auto wrong_pair = server::EvaluateDonorServerAuthorityRoute(
-      server::DonorServerAuthorityRequest{
+  auto wrong_pair = server::EvaluateCompatibilityServerAuthorityRoute(
+      server::CompatibilityServerAuthorityRequest{
           "mysql",
           "pg_copy_program",
           "COPY PROGRAM",
@@ -195,11 +195,11 @@ void VerifyUnknownRowsFailClosed() {
           true,
       });
   Require(!wrong_pair.recognized && !wrong_pair.accepted && wrong_pair.denied,
-          "donor-specific surface accepted the wrong donor");
+          "engine-specific surface accepted the wrong engine");
   Require(wrong_pair.diagnostic_code == "SB.SERVER_AUTHORITY.UNKNOWN_SURFACE",
-          "wrong donor/surface diagnostic mismatch");
+          "wrong engine/surface diagnostic mismatch");
   Require(!wrong_pair.sblr_execution_attempted,
-          "wrong donor/surface attempted SBLR execution");
+          "wrong engine/surface attempted SBLR execution");
 }
 
 }  // namespace

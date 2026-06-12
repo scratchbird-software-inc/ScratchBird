@@ -132,8 +132,8 @@ IndexFamilyRouteSemantic SemanticForFamily(IndexFamily family) {
   if (family == IndexFamily::in_memory) {
     return IndexFamilyRouteSemantic::in_memory_candidate;
   }
-  if (family == IndexFamily::donor_emulated) {
-    return IndexFamilyRouteSemantic::donor_emulated_non_runtime;
+  if (family == IndexFamily::reference_emulated) {
+    return IndexFamilyRouteSemantic::reference_emulated_non_runtime;
   }
   if (family == IndexFamily::policy_blocked) {
     return IndexFamilyRouteSemantic::policy_blocked_non_runtime;
@@ -187,7 +187,7 @@ IndexRouteClassificationRequirements RequirementsFor(
       route_supported &&
       family != IndexFamily::temporary_work &&
       family != IndexFamily::in_memory &&
-      family != IndexFamily::donor_emulated &&
+      family != IndexFamily::reference_emulated &&
       family != IndexFamily::policy_blocked;
   requirements.runtime_metrics_future_proof_required = true;
   requirements.crash_matrix_future_proof_required = true;
@@ -273,7 +273,7 @@ void AddAuthorityEvidence(IndexRouteFamilyClassificationResult* result) {
   AddBoolEvidence(result, "security_authority", result->security_authority);
   AddBoolEvidence(result, "recovery_authority", result->recovery_authority);
   AddBoolEvidence(result, "parser_authority", result->parser_authority);
-  AddBoolEvidence(result, "donor_authority", result->donor_authority);
+  AddBoolEvidence(result, "reference_authority", result->reference_authority);
   AddBoolEvidence(result, "wal_authority", result->wal_authority);
   AddBoolEvidence(result, "benchmark_authority", result->benchmark_authority);
   AddBoolEvidence(result, "optimizer_plan_authority",
@@ -303,8 +303,8 @@ void AddSuccessorEvidence(IndexRouteFamilyClassificationResult* result) {
                   result->ceic_042_readiness_drift_claimed);
   AddBoolEvidence(result, "all_index_readiness_claimed",
                   result->all_index_readiness_claimed);
-  AddBoolEvidence(result, "donor_dominance_claimed",
-                  result->donor_dominance_claimed);
+  AddBoolEvidence(result, "reference_dominance_claimed",
+                  result->reference_dominance_claimed);
   AddBoolEvidence(result, "enterprise_readiness_claimed",
                   result->enterprise_readiness_claimed);
 }
@@ -458,8 +458,8 @@ const char* IndexFamilyRouteSemanticName(IndexFamilyRouteSemantic semantic) {
       return "temporary_work_candidate";
     case IndexFamilyRouteSemantic::in_memory_candidate:
       return "in_memory_candidate";
-    case IndexFamilyRouteSemantic::donor_emulated_non_runtime:
-      return "donor_emulated_non_runtime";
+    case IndexFamilyRouteSemantic::reference_emulated_non_runtime:
+      return "reference_emulated_non_runtime";
     case IndexFamilyRouteSemantic::policy_blocked_non_runtime:
       return "policy_blocked_non_runtime";
     case IndexFamilyRouteSemantic::unsupported:
@@ -477,8 +477,8 @@ const char* IndexRouteClassificationStatusName(
       return "UNSUPPORTED_FAMILY";
     case IndexRouteClassificationStatus::unsupported_route:
       return "UNSUPPORTED_ROUTE";
-    case IndexRouteClassificationStatus::donor_emulated_non_runtime:
-      return "DONOR_EMULATED_NON_RUNTIME";
+    case IndexRouteClassificationStatus::reference_emulated_non_runtime:
+      return "REFERENCE_EMULATED_NON_RUNTIME";
     case IndexRouteClassificationStatus::policy_blocked_non_runtime:
       return "POLICY_BLOCKED_NON_RUNTIME";
     case IndexRouteClassificationStatus::route_not_supported:
@@ -502,7 +502,7 @@ bool IndexRouteClassificationAuthorityClaimsClear(
          !claims.security_authority &&
          !claims.recovery_authority &&
          !claims.parser_authority &&
-         !claims.donor_authority &&
+         !claims.reference_authority &&
          !claims.wal_authority &&
          !claims.benchmark_authority &&
          !claims.optimizer_plan_authority &&
@@ -523,7 +523,7 @@ bool IndexRouteClassificationSuccessorClaimsClear(
          !claims.ceic_041_crash_matrix_claimed &&
          !claims.ceic_042_readiness_drift_claimed &&
          !claims.all_index_readiness_claimed &&
-         !claims.donor_dominance_claimed &&
+         !claims.reference_dominance_claimed &&
          !claims.enterprise_readiness_claimed;
 }
 
@@ -551,7 +551,7 @@ IndexRouteFamilyClassificationResult ClassifyIndexFamilyRoute(
         request,
         route_supported,
         IndexRouteClassificationStatus::forbidden_authority_claim,
-        "classification evidence must not claim row truth result finality transaction finality visibility authorization security recovery parser donor WAL benchmark optimizer-plan index-finality local-cluster cluster-action or agent-action authority");
+        "classification evidence must not claim row truth result finality transaction finality visibility authorization security recovery parser reference WAL benchmark optimizer-plan index-finality local-cluster cluster-action or agent-action authority");
   }
   if (!IndexRouteClassificationSuccessorClaimsClear(
           request.successor_claims)) {
@@ -559,7 +559,7 @@ IndexRouteFamilyClassificationResult ClassifyIndexFamilyRoute(
         request,
         route_supported,
         IndexRouteClassificationStatus::successor_or_enterprise_overclaim,
-        "CEIC-038 classification cannot claim specialized provider closure runtime metrics crash matrix readiness drift all-index readiness donor dominance or enterprise readiness");
+        "CEIC-038 classification cannot claim specialized provider closure runtime metrics crash matrix readiness drift all-index readiness reference dominance or enterprise readiness");
   }
   if (descriptor == nullptr || request.family == IndexFamily::unknown) {
     return RefuseClassification(
@@ -568,13 +568,13 @@ IndexRouteFamilyClassificationResult ClassifyIndexFamilyRoute(
         IndexRouteClassificationStatus::unsupported_family,
         "family is not registered as a built-in index family");
   }
-  if (request.family == IndexFamily::donor_emulated ||
-      descriptor->persistence == IndexPersistenceClass::donor_emulated) {
+  if (request.family == IndexFamily::reference_emulated ||
+      descriptor->persistence == IndexPersistenceClass::reference_emulated) {
     return RefuseClassification(
         request,
         route_supported,
-        IndexRouteClassificationStatus::donor_emulated_non_runtime,
-        "donor-emulated index mappings are non-runtime semantic mappings and cannot provide row, visibility, finality, or recovery authority");
+        IndexRouteClassificationStatus::reference_emulated_non_runtime,
+        "reference-emulated index mappings are non-runtime semantic mappings and cannot provide row, visibility, finality, or recovery authority");
   }
   if (request.family == IndexFamily::policy_blocked ||
       descriptor->persistence == IndexPersistenceClass::policy_blocked) {

@@ -155,9 +155,9 @@ BufferPrefetchReadaheadResult EvaluateBufferPrefetchReadaheadRoute(
     return Refuse(request, "ORH_BUFFER_PREFETCH_READAHEAD_NO_RUNTIME",
                   "prefetch/read-ahead evidence must be runtime consumed");
   }
-  if (request.authority.parser_client_or_donor_authority) {
+  if (request.authority.parser_client_or_reference_authority) {
     return Refuse(request, "ORH_BUFFER_PREFETCH_READAHEAD_UNSAFE_AUTHORITY",
-                  "parser, client, and donor metadata cannot authorize "
+                  "parser, client, and reference metadata cannot authorize "
                   "prefetch/read-ahead routes");
   }
   if (request.authority.prefetch_visibility_or_finality_authority ||

@@ -164,7 +164,7 @@ struct DatatypeDescriptor {
   u32 default_scale = 0;
   bool nullable_allowed = true;
   bool descriptor_authoritative = true;
-  bool donor_name_is_alias_only = true;
+  bool reference_name_is_alias_only = true;
   bool requires_mandatory_library = false;
   std::string required_capability_key;
 };

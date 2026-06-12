@@ -20,13 +20,13 @@ namespace scratchbird::parser::ast {
 
 enum class ParserMode {
   kNativeSbsql,
-  kDonor,
+  kReference,
   kMeta,
   kToolLocal,
   kRefusalOnly,
 };
 
-enum class DonorMode {
+enum class ReferenceMode {
   kNone,
   kFirebird,
   kPostgreSql,
@@ -56,7 +56,7 @@ struct SourceRange {
 struct AstHeader {
   std::uint32_t ast_format_version = 1;
   ParserMode parser_mode = ParserMode::kNativeSbsql;
-  DonorMode donor_mode = DonorMode::kNone;
+  ReferenceMode reference_mode = ReferenceMode::kNone;
   AstFamily family = AstFamily::kRefusal;
   std::string parser_package_uuid;
   std::string parser_package_version;
@@ -76,7 +76,7 @@ struct ShowIdentityAst {
 };
 
 std::string ToString(ParserMode value);
-std::string ToString(DonorMode value);
+std::string ToString(ReferenceMode value);
 std::string ToString(AstFamily value);
 std::string ToString(ShowIdentityKind value);
 

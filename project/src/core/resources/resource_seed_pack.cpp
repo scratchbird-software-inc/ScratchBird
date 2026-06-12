@@ -1200,7 +1200,7 @@ ResourceSeedLifecycleEvaluationResult EvaluateResourceSeedRuntimeCache(
     result.actions.push_back("invalidate_collation_cache");
     result.actions.push_back("invalidate_statistics_cache");
     result.actions.push_back("invalidate_driver_metadata_cache");
-    result.actions.push_back("invalidate_donor_metadata_cache");
+    result.actions.push_back("invalidate_reference_metadata_cache");
     return result;
   }
 

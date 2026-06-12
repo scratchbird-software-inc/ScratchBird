@@ -118,8 +118,8 @@ void AddBaseEvidence(IndexMGARecoveryContractResult* result,
               contract.identity.provider_contract_version);
   AddBoolEvidence(result, "persistent_provider",
                   contract.identity.persistent_provider);
-  AddBoolEvidence(result, "donor_route_requested",
-                  contract.identity.donor_route_requested);
+  AddBoolEvidence(result, "reference_route_requested",
+                  contract.identity.reference_route_requested);
   AddBoolEvidence(result, "policy_route_requested",
                   contract.identity.policy_route_requested);
   AddBoolEvidence(result, "cluster_path_requested",
@@ -302,8 +302,8 @@ const char* IndexMGARecoveryContractStatusName(
       return "UNSUPPORTED_FAMILY";
     case IndexMGARecoveryContractStatus::non_persistent_family:
       return "NON_PERSISTENT_FAMILY";
-    case IndexMGARecoveryContractStatus::donor_policy_local_route_blocked:
-      return "DONOR_POLICY_LOCAL_ROUTE_BLOCKED";
+    case IndexMGARecoveryContractStatus::reference_policy_local_route_blocked:
+      return "REFERENCE_POLICY_LOCAL_ROUTE_BLOCKED";
     case IndexMGARecoveryContractStatus::cluster_external_provider_only:
       return "CLUSTER_EXTERNAL_PROVIDER_ONLY";
     case IndexMGARecoveryContractStatus::missing_provider_evidence:
@@ -338,7 +338,7 @@ bool IndexMGARecoveryAuthorityBoundaryClear(
          !boundary.security_authority &&
          !boundary.recovery_authority &&
          !boundary.parser_authority &&
-         !boundary.donor_authority &&
+         !boundary.reference_authority &&
          !boundary.wal_authority &&
          !boundary.benchmark_authority &&
          !boundary.optimizer_plan_authority &&
@@ -392,16 +392,16 @@ IndexMGARecoveryContractResult AdmitIndexMGARecoveryContract(
         IndexMGARecoveryContractStatus::unsupported_family,
         "family is not registered as a built-in index family");
   }
-  if (contract.identity.family == IndexFamily::donor_emulated ||
+  if (contract.identity.family == IndexFamily::reference_emulated ||
       contract.identity.family == IndexFamily::policy_blocked ||
-      descriptor->persistence == IndexPersistenceClass::donor_emulated ||
+      descriptor->persistence == IndexPersistenceClass::reference_emulated ||
       descriptor->persistence == IndexPersistenceClass::policy_blocked ||
-      contract.identity.donor_route_requested ||
+      contract.identity.reference_route_requested ||
       contract.identity.policy_route_requested) {
     return RefuseContract(
         contract,
-        IndexMGARecoveryContractStatus::donor_policy_local_route_blocked,
-        "donor and policy index routes cannot participate in local MGA recovery contracts");
+        IndexMGARecoveryContractStatus::reference_policy_local_route_blocked,
+        "reference and policy index routes cannot participate in local MGA recovery contracts");
   }
   if (descriptor->persistence != IndexPersistenceClass::persistent) {
     return RefuseContract(
@@ -428,7 +428,7 @@ IndexMGARecoveryContractResult AdmitIndexMGARecoveryContract(
     return RefuseContract(
         contract,
         IndexMGARecoveryContractStatus::forbidden_authority_claim,
-        "index provider evidence must not claim transaction finality visibility security recovery parser donor WAL provider finality benchmark optimizer plan index finality cluster or agent-action authority");
+        "index provider evidence must not claim transaction finality visibility security recovery parser reference WAL provider finality benchmark optimizer plan index finality cluster or agent-action authority");
   }
   if (!contract.identity.persistent_provider ||
       contract.identity.provider_id.empty() ||

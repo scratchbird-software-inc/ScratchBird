@@ -55,7 +55,7 @@ Status MemoryDeniedStatus() {
 
 bool AuthorityClaimed(const TemporaryWorkAuthorityProof& proof) {
   return proof.parser_finality_authority_claimed ||
-         proof.donor_finality_authority_claimed ||
+         proof.reference_finality_authority_claimed ||
          proof.provider_finality_authority_claimed ||
          proof.index_finality_authority_claimed ||
          proof.transaction_finality_authority_claimed ||
@@ -96,7 +96,7 @@ std::vector<std::string> BaseEvidence(TemporaryWorkFamily family) {
           "temporary_work.security_authority=false",
           "temporary_work.transaction_finality_authority=false",
           "temporary_work.recovery_finality_authority=false",
-          "temporary_work.parser_or_donor_authority=false",
+          "temporary_work.parser_or_reference_authority=false",
           "temporary_work.provider_authority=false",
           "temporary_work.index_authority=false",
           "temporary_work.exact_recheck.required=true",

@@ -895,7 +895,7 @@ DmlUpdateIndexMaintenanceDecision DecideDmlUpdateIndexMaintenance(
   decision.evidence.push_back({"cleanup_horizon_bound", "false"});
   decision.evidence.push_back({"durable_mga_inventory_remains_authority", "true"});
   decision.evidence.push_back({"transaction_finality_authority", "false"});
-  decision.evidence.push_back({"parser_or_donor_authority", "false"});
+  decision.evidence.push_back({"parser_or_reference_authority", "false"});
   decision.evidence.push_back({"runtime_route_capability", "false"});
   decision.evidence.push_back({"benchmark_clean", "false"});
 
@@ -1042,7 +1042,7 @@ DmlIndexWritePathResult ApplyDmlIndexWritePath(
                              std::to_string(request.events.size())});
   result.evidence.push_back({"mga_finality_authority",
                              "engine_transaction_inventory"});
-  result.evidence.push_back({"parser_or_donor_authority", "false"});
+  result.evidence.push_back({"parser_or_reference_authority", "false"});
   result.evidence.push_back({"hot_like_version_append_selected", "false"});
   result.evidence.push_back({"unchanged_index_churn_avoided", "false"});
   result.evidence.push_back({"secondary_delta_ledger_appended", "false"});

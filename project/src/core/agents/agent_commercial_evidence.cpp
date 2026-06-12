@@ -184,7 +184,7 @@ void RedactBeforeBuffering(AgentEvidenceRecord* evidence) {
 
 bool AuthorityFlagsClean(const AgentEvidenceRecord& evidence) {
   return !evidence.parser_authority && !evidence.client_authority &&
-         !evidence.donor_authority && !evidence.sidecar_authority &&
+         !evidence.reference_authority && !evidence.sidecar_authority &&
          !evidence.transaction_authority && !evidence.finality_authority &&
          !evidence.visibility_authority && !evidence.recovery_authority &&
          !evidence.security_authority;
@@ -255,7 +255,7 @@ std::string CommercialAgentEvidenceTamperDigest(
           << (evidence.key_material_exported ? "1" : "0") << '\n'
           << (evidence.parser_authority ? "1" : "0") << '\n'
           << (evidence.client_authority ? "1" : "0") << '\n'
-          << (evidence.donor_authority ? "1" : "0") << '\n'
+          << (evidence.reference_authority ? "1" : "0") << '\n'
           << (evidence.sidecar_authority ? "1" : "0") << '\n'
           << (evidence.transaction_authority ? "1" : "0") << '\n'
           << (evidence.finality_authority ? "1" : "0") << '\n'
@@ -474,7 +474,7 @@ AgentEvidenceRecord BuildCommercialAgentEvidence(
   evidence.redaction_applied_before_buffering = false;
   evidence.parser_authority = false;
   evidence.client_authority = false;
-  evidence.donor_authority = false;
+  evidence.reference_authority = false;
   evidence.sidecar_authority = false;
   evidence.transaction_authority = false;
   evidence.finality_authority = false;

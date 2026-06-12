@@ -59,7 +59,7 @@ void AddCommonAuthorityEvidence(OptimizerStatisticsLifecycleResult* result) {
   AddEvidence(result, "mga_visibility_authority=engine_recheck_required");
   AddEvidence(result, "mga_finality_authority=engine_transaction_inventory");
   AddEvidence(result, "security_recheck=required");
-  AddEvidence(result, "parser_or_donor_authority=false");
+  AddEvidence(result, "parser_or_reference_authority=false");
   AddEvidence(result, "result_semantics_changed=false");
 }
 
@@ -242,10 +242,10 @@ OptimizerStatisticsLifecycleResult EvaluateOptimizerStatisticsLifecycle(
                   "SB_OPT_STATS_LIFECYCLE.MISSING_SECURITY_RECHECK",
                   "missing_security_recheck");
   }
-  if (!request.advisory_only || request.parser_or_donor_authority) {
+  if (!request.advisory_only || request.parser_or_reference_authority) {
     return Refuse(request,
-                  "SB_OPT_STATS_LIFECYCLE.UNSAFE_PARSER_DONOR_AUTHORITY",
-                  "unsafe_parser_or_donor_authority");
+                  "SB_OPT_STATS_LIFECYCLE.UNSAFE_PARSER_REFERENCE_AUTHORITY",
+                  "unsafe_parser_or_reference_authority");
   }
   if (!request.epoch_evidence_present ||
       request.request_stats_epoch == 0 ||

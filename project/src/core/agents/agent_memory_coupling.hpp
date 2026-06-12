@@ -10,7 +10,7 @@
 
 // Memory-coupled operational agent checks. Agent memory evidence is diagnostic
 // and support material only; it is not finality, visibility, recovery,
-// security, parser, donor, benchmark, optimizer, index, provider, cluster,
+// security, parser, reference, benchmark, optimizer, index, provider, cluster,
 // memory, or agent-action authority.
 
 #include "agent_execution_lane_governance.hpp"
@@ -203,7 +203,7 @@ AgentMemoryProductionSeparationResult ValidateAgentMemoryProductionSeparation(
 // Integrates CEIC-073 lane admission, CEIC memory reservation evidence,
 // trusted metric snapshots, and CEIC-017 pressure decisions. The integration is
 // an admission/control-plane decision only; it cannot become transaction
-// finality, visibility, authorization/security, recovery, parser, donor, WAL,
+// finality, visibility, authorization/security, recovery, parser, reference, WAL,
 // benchmark, optimizer-plan, index-finality, provider-finality, cluster,
 // memory, or agent-action authority.
 enum class AgentMemoryPressureLaneDecisionKind {

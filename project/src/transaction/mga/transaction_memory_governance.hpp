@@ -38,7 +38,7 @@ enum class MgaTransactionMemoryUseKind {
 struct MgaTransactionMemoryAuthority {
   bool engine_mga_transaction_inventory_authoritative = true;
   bool parser_or_client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_or_redo_authority = false;
   bool memory_pressure_finality_authority = false;
 };

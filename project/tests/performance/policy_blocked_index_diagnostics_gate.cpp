@@ -227,8 +227,8 @@ AuthorityCases() {
   claims.parser = true;
   cases.push_back({"parser", claims});
   claims = {};
-  claims.donor = true;
-  cases.push_back({"donor", claims});
+  claims.reference = true;
+  cases.push_back({"reference", claims});
   claims = {};
   claims.provider = true;
   cases.push_back({"provider", claims});

@@ -328,7 +328,7 @@ void ValidateAuthorityBoundary() {
              "DPC-011 clean authority summary was not usable");
 
   metadata.parser_finality_authority_claimed = true;
-  metadata.donor_finality_authority_claimed = true;
+  metadata.reference_finality_authority_claimed = true;
   metadata.write_ahead_log_finality_authority_claimed = true;
   Require(!idx::PageExtentSummaryAuthorityFlagsClean(metadata),
           "DPC-011 external finality authority flags were accepted");

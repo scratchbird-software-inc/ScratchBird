@@ -201,7 +201,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!artifacts.envelope.parser_executes_sql,
           "CREATE SCHEMA lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "CREATE SCHEMA lowering allowed donor/file effects");
+          "CREATE SCHEMA lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload, "\"operation_id\":\"ddl.create_schema\""),
           "CREATE SCHEMA payload missing exact operation id");
   Require(Contains(artifacts.envelope.payload,
@@ -225,8 +225,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!Contains(artifacts.envelope.payload, "qa_schema") &&
               !Contains(artifacts.envelope.payload, kSql),
           "CREATE SCHEMA payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "CREATE SCHEMA payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "CREATE SCHEMA payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

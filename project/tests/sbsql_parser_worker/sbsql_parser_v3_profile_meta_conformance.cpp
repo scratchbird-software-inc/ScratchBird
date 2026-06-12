@@ -74,7 +74,7 @@ void VerifyMetaCommandRegistryAndRefusals() {
               describe->surface_class == sbsql::MetaCommandSurfaceClass::kMetadataReport,
           "describe meta-command did not resolve to metadata report surface");
   Require(describe->disposition == sbsql::MetaCommandDisposition::kExactRefusal,
-          "describe meta-command must fail closed without a donor/tool profile");
+          "describe meta-command must fail closed without a reference/tool profile");
 
   const auto shell_ast = sbsql::BuildAst(sbsql::BuildCst("\\! echo unsafe"));
   Require(shell_ast.exact_refusal_required, "local shell AST did not require exact refusal");
@@ -83,9 +83,9 @@ void VerifyMetaCommandRegistryAndRefusals() {
   Require(!shell_ast.produces_sblr, "refused meta-command produced SBLR");
 
   const auto describe_ast = sbsql::BuildAst(sbsql::BuildCst("\\d users.public.t"));
-  Require(describe_ast.exact_refusal_required, "donor metadata AST did not require exact refusal");
+  Require(describe_ast.exact_refusal_required, "reference metadata AST did not require exact refusal");
   Require(HasDiagnostic(describe_ast.messages, "SBSQL.META.PROFILE_REQUIRED"),
-          "donor metadata AST missing profile-required diagnostic");
+          "reference metadata AST missing profile-required diagnostic");
 }
 
 void VerifyManagementAndClusterClassification() {

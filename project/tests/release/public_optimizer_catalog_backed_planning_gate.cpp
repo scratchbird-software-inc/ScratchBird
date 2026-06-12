@@ -330,7 +330,7 @@ void DefaultStatisticsRemainDiagnosticOnly() {
           "PCR-061 statistics-only plan became benchmark-clean");
 }
 
-void ParserAndDonorAuthorityAreRejected() {
+void ParserAndReferenceAuthorityAreRejected() {
   auto request = ProductionRequest();
   request.bound_request.context.parser_owned_claims_present = true;
   auto validation = opt::ValidateCatalogBackedProductionPlanningRequest(request);
@@ -340,12 +340,12 @@ void ParserAndDonorAuthorityAreRejected() {
           "PCR-061 parser authority admitted");
 
   request = ProductionRequest();
-  request.bound_request.logical_plan.optimizer_policy.donor_or_legacy_policy_authority_claimed = true;
+  request.bound_request.logical_plan.optimizer_policy.reference_or_legacy_policy_authority_claimed = true;
   validation = opt::ValidateCatalogBackedProductionPlanningRequest(request);
   Require(!validation.ok &&
               Contains(validation.diagnostics,
-                       "SB_OPT_AUTHORITY_REJECTED.optimizer_policy_donor_or_legacy_authority"),
-          "PCR-061 donor policy authority admitted");
+                       "SB_OPT_AUTHORITY_REJECTED.optimizer_policy_reference_or_legacy_authority"),
+          "PCR-061 reference policy authority admitted");
 }
 
 }  // namespace
@@ -354,7 +354,7 @@ int main() {
   ValidCatalogBackedProductionPlanIsAdmitted();
   RequiredEvidenceFailsClosed();
   DefaultStatisticsRemainDiagnosticOnly();
-  ParserAndDonorAuthorityAreRejected();
+  ParserAndReferenceAuthorityAreRejected();
   std::cout << "public optimizer catalog-backed planning gate passed\n";
   return EXIT_SUCCESS;
 }

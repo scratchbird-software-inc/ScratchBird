@@ -24,7 +24,7 @@ namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_MGA_RELATION_ROW_STORE_AUTHORITY
 // Local MGA row-version authority for engine-internal DML. This layer is not a
-// donor/parser API and does not accept SQL names.
+// reference/parser API and does not accept SQL names.
 
 struct MgaRelationStoreState {
   CrudState crud_metadata;

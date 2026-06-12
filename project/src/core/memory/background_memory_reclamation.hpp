@@ -48,7 +48,7 @@ struct BackgroundMemoryReclamationWorkItem {
   u64 estimated_reclaim_bytes = 0;
   bool eligible = true;
   bool cancellation_safe = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_authority = false;
   bool provider_authority = false;
   bool wal_authority = false;

@@ -124,7 +124,7 @@ void RequireEvidenceHygiene(const std::vector<std::string>& evidence) {
   for (const auto& item : evidence) {
     for (const auto forbidden :
          {"docs/", "execution-plans", "findings", "contracts", "references",
-          "parser_or_donor_finality_or_visibility_authority=true",
+          "parser_or_reference_finality_or_visibility_authority=true",
           "write_after_stream_finality_or_recovery_authority=true",
           "worker_claims_transaction_finality=true",
           "worker_claims_visibility_authority=true",
@@ -516,7 +516,7 @@ void WorkerFinalityAndUnsafeAuthorityRefusalsAreExact() {
             lane->worker_claims_recovery_authority = true;
           },
           [](exec::ParallelPhysicalWorkerLane* lane) {
-            lane->parser_or_donor_finality_or_visibility_authority = true;
+            lane->parser_or_reference_finality_or_visibility_authority = true;
           },
           [](exec::ParallelPhysicalWorkerLane* lane) {
             lane->write_after_stream_finality_or_recovery_authority = true;
@@ -550,9 +550,9 @@ void WorkerFinalityAndUnsafeAuthorityRefusalsAreExact() {
                 "ODF-103 missing final exact recheck was accepted");
 
   request = Request(exec::ParallelPhysicalPipelineFamily::kPageScan);
-  request.authority.parser_or_donor_finality_or_visibility_authority = true;
+  request.authority.parser_or_reference_finality_or_visibility_authority = true;
   ExpectRefusal(request, "SB_CANDIDATE_SET.UNSAFE_AUTHORITY",
-                "ODF-103 parser/donor final authority was accepted");
+                "ODF-103 parser/reference final authority was accepted");
 }
 
 void UnsupportedCorruptCancellationPressureAndQuotaRefusalsAreExact() {

@@ -71,7 +71,7 @@ LegacyOptimizerCapabilityClosures() {
        "mapped_to_mga_pressure_metric_closure", "mga_*_evidence.*;optimizer_cost_full.*", "mapped"},
       {"legacy.route_labels", "route labels result hashes and route equivalence",
        "mapped_to_runtime_evidence_and_live_route_gates", "runtime_consumption_evidence.*", "mapped"},
-      {"legacy.donor_comparison", "donor comparison and oracle evidence",
+      {"legacy.reference_comparison", "reference comparison and oracle evidence",
        "reference_only_no_authority", "runtime_consumption_evidence.*", "mapped"},
       {"legacy.cluster_costing", "cluster route costing and cluster metrics",
        "cluster_external_provider_only", "cluster_candidate.*;cluster_refusal_path.*", "cluster_external"},
@@ -128,8 +128,8 @@ EnterpriseOptimizerSurfaceManifest() {
        "cluster_candidate.*;cluster_refusal_path.*", "SB_OPT_CLUSTER_EXTERNAL_PROVIDER_REQUIRED", false, false, false},
       {"remote_pushdown", "cluster_route", EnterpriseOptimizerSurfaceClass::cluster_external,
        "cluster_candidate.*;cluster_refusal_path.*", "SB_OPT_CLUSTER_EXTERNAL_PROVIDER_REQUIRED", false, false, false},
-      {"donor_authority", "removed_claim", EnterpriseOptimizerSurfaceClass::removed_claim,
-       "runtime_consumption_evidence.*", "SB_OPT_DONOR_AUTHORITY_FORBIDDEN", false, false, false},
+      {"reference_authority", "removed_claim", EnterpriseOptimizerSurfaceClass::removed_claim,
+       "runtime_consumption_evidence.*", "SB_OPT_REFERENCE_AUTHORITY_FORBIDDEN", false, false, false},
       {"parser_execution_authority", "removed_claim", EnterpriseOptimizerSurfaceClass::removed_claim,
        "optimizer_request.*", "SB_OPT_PARSER_EXECUTION_AUTHORITY_FORBIDDEN", false, false, false},
   };
@@ -192,7 +192,7 @@ EnterpriseOptimizerManifestValidation ValidateEnterpriseOptimizerManifest() {
       "graph_seed", "join_property_frontier", "adaptive_feedback",
       "memory_spill_feedback", "runtime_payload_explain", "plan_cache",
       "llvm_native_compile", "cluster_fragment", "remote_pushdown",
-      "donor_authority", "parser_execution_authority"};
+      "reference_authority", "parser_execution_authority"};
   for (const auto required_surface : required) {
     if (!HasSurface(entries, required_surface)) {
       validation.diagnostics.push_back(std::string("OEIC.MANIFEST.REQUIRED_SURFACE_MISSING:") +

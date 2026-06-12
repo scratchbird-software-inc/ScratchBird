@@ -590,12 +590,12 @@ void CleanupCrashBenchmarkAndAuthorityFailClosed() {
                     deterministic_diagnostics_missing,
                 "missing deterministic diagnostics did not fail closed");
 
-  auto donor = Request();
-  donor.donor_local_participation = true;
-  RequireStatus(index::AdmitHashDurableProviderClosure(donor),
+  auto reference = Request();
+  reference.reference_local_participation = true;
+  RequireStatus(index::AdmitHashDurableProviderClosure(reference),
                 index::HashDurableProviderClosureStatus::
-                    donor_policy_cluster_participation,
-                "donor local participation did not fail closed");
+                    reference_policy_cluster_participation,
+                "reference local participation did not fail closed");
 
   auto authority = Request();
   authority.authority_boundary.provider_finality_authority = true;

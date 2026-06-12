@@ -185,7 +185,7 @@ DamagedPageQuarantineDecision ClassifyDamagedPageAccess(
   }
   if (!request.evidence.durable_mga_inventory_authority_available ||
       request.evidence.repair_evidence_is_transaction_authority ||
-      request.evidence.parser_or_donor_authority ||
+      request.evidence.parser_or_reference_authority ||
       request.evidence.names_are_authority) {
     return Blocked(request,
                    "SB-DAMAGED-PAGE-AUTHORITY-REFUSED",

@@ -189,11 +189,11 @@ void AuthorityClaimsFailClosed() {
                 index::IndexMGARecoveryContractStatus::forbidden_authority_claim,
                 "parser authority claim did not fail closed");
 
-  auto donor = ValidContract();
-  donor.authority_boundary.donor_authority = true;
-  RequireStatus(index::AdmitIndexMGARecoveryContract(donor),
+  auto reference = ValidContract();
+  reference.authority_boundary.reference_authority = true;
+  RequireStatus(index::AdmitIndexMGARecoveryContract(reference),
                 index::IndexMGARecoveryContractStatus::forbidden_authority_claim,
-                "donor authority claim did not fail closed");
+                "reference authority claim did not fail closed");
 
   auto wal = ValidContract();
   wal.authority_boundary.wal_authority = true;
@@ -228,18 +228,18 @@ void IdentityCleanupRecoveryAndRouteFailures() {
                 index::IndexMGARecoveryContractStatus::recovery_evidence_not_durable,
                 "weak recovery evidence did not fail closed");
 
-  auto donor_family = ValidContract();
-  donor_family.identity.family = index::IndexFamily::donor_emulated;
+  auto reference_family = ValidContract();
+  reference_family.identity.family = index::IndexFamily::reference_emulated;
   RequireStatus(
-      index::AdmitIndexMGARecoveryContract(donor_family),
-      index::IndexMGARecoveryContractStatus::donor_policy_local_route_blocked,
-      "donor family did not fail closed");
+      index::AdmitIndexMGARecoveryContract(reference_family),
+      index::IndexMGARecoveryContractStatus::reference_policy_local_route_blocked,
+      "reference family did not fail closed");
 
   auto policy_route = ValidContract();
   policy_route.identity.policy_route_requested = true;
   RequireStatus(
       index::AdmitIndexMGARecoveryContract(policy_route),
-      index::IndexMGARecoveryContractStatus::donor_policy_local_route_blocked,
+      index::IndexMGARecoveryContractStatus::reference_policy_local_route_blocked,
       "policy route did not fail closed");
 
   auto cluster = ValidContract();

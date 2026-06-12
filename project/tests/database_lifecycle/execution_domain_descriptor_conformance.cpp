@@ -109,14 +109,14 @@ engine::ExecutionDomainDescriptor ValidDomain(
         engine::ExecutionDomainElementAddressingPolicy::opaque_accessor;
     descriptor.storage_codec = engine::ExecutionDomainStorageCodec::external_locator;
   }
-  if (kind == engine::ExecutionDomainKind::donor_compatibility) {
-    descriptor.storage_codec = engine::ExecutionDomainStorageCodec::donor_native;
-    descriptor.cast_policy = engine::ExecutionDomainCastPolicy::donor_compatibility;
-    descriptor.donor_metadata.present = true;
-    descriptor.donor_metadata.donor_profile_uuid = Uuid(0xc0);
-    descriptor.donor_metadata.donor_mapping_uuid = Uuid(0xd0);
-    descriptor.donor_metadata.donor_family = "postgresql";
-    descriptor.donor_metadata.donor_type_name = "citext";
+  if (kind == engine::ExecutionDomainKind::reference_compatibility) {
+    descriptor.storage_codec = engine::ExecutionDomainStorageCodec::reference_native;
+    descriptor.cast_policy = engine::ExecutionDomainCastPolicy::reference_compatibility;
+    descriptor.reference_metadata.present = true;
+    descriptor.reference_metadata.reference_profile_uuid = Uuid(0xc0);
+    descriptor.reference_metadata.reference_mapping_uuid = Uuid(0xd0);
+    descriptor.reference_metadata.reference_family = "postgresql";
+    descriptor.reference_metadata.reference_type_name = "citext";
   }
   return descriptor;
 }
@@ -150,7 +150,7 @@ void TestValidDomainProfiles() {
       engine::ExecutionDomainKind::composite,
       engine::ExecutionDomainKind::container,
       engine::ExecutionDomainKind::opaque,
-      engine::ExecutionDomainKind::donor_compatibility};
+      engine::ExecutionDomainKind::reference_compatibility};
   for (const auto kind : valid_kinds) {
     Require(engine::ValidateExecutionDomainDescriptor(ValidDomain(kind)).ok(),
             "EDR-024 rejected valid domain descriptor profile");
@@ -591,56 +591,56 @@ void TestPolicyFailures() {
       "EDR-024 accepted opaque domain without opaque accessor policy");
 }
 
-void TestDonorMetadataFailures() {
+void TestReferenceMetadataFailures() {
   auto descriptor =
-      ValidDomain(engine::ExecutionDomainKind::donor_compatibility);
-  descriptor.donor_metadata.present = false;
+      ValidDomain(engine::ExecutionDomainKind::reference_compatibility);
+  descriptor.reference_metadata.present = false;
   RequireStatus(descriptor,
-                engine::ExecutionDomainDescriptorStatus::donor_metadata_required,
-                "EDR-024 accepted donor domain without donor metadata");
+                engine::ExecutionDomainDescriptorStatus::reference_metadata_required,
+                "EDR-024 accepted reference domain without reference metadata");
 
-  descriptor = ValidDomain(engine::ExecutionDomainKind::donor_compatibility);
-  descriptor.donor_metadata.donor_profile_uuid = {};
+  descriptor = ValidDomain(engine::ExecutionDomainKind::reference_compatibility);
+  descriptor.reference_metadata.reference_profile_uuid = {};
   RequireStatus(
       descriptor,
-      engine::ExecutionDomainDescriptorStatus::donor_profile_uuid_required,
-      "EDR-024 accepted donor metadata without profile UUID");
+      engine::ExecutionDomainDescriptorStatus::reference_profile_uuid_required,
+      "EDR-024 accepted reference metadata without profile UUID");
 
-  descriptor = ValidDomain(engine::ExecutionDomainKind::donor_compatibility);
-  descriptor.donor_metadata.donor_mapping_uuid = {};
+  descriptor = ValidDomain(engine::ExecutionDomainKind::reference_compatibility);
+  descriptor.reference_metadata.reference_mapping_uuid = {};
   RequireStatus(
       descriptor,
-      engine::ExecutionDomainDescriptorStatus::donor_mapping_uuid_required,
-      "EDR-024 accepted donor metadata without mapping UUID");
+      engine::ExecutionDomainDescriptorStatus::reference_mapping_uuid_required,
+      "EDR-024 accepted reference metadata without mapping UUID");
 
-  descriptor = ValidDomain(engine::ExecutionDomainKind::donor_compatibility);
-  descriptor.donor_metadata.donor_family.clear();
+  descriptor = ValidDomain(engine::ExecutionDomainKind::reference_compatibility);
+  descriptor.reference_metadata.reference_family.clear();
   RequireStatus(descriptor,
-                engine::ExecutionDomainDescriptorStatus::donor_family_required,
-                "EDR-024 accepted donor metadata without family");
+                engine::ExecutionDomainDescriptorStatus::reference_family_required,
+                "EDR-024 accepted reference metadata without family");
 
-  descriptor = ValidDomain(engine::ExecutionDomainKind::donor_compatibility);
-  descriptor.donor_metadata.donor_type_name.clear();
+  descriptor = ValidDomain(engine::ExecutionDomainKind::reference_compatibility);
+  descriptor.reference_metadata.reference_type_name.clear();
   RequireStatus(
       descriptor,
-      engine::ExecutionDomainDescriptorStatus::donor_type_name_required,
-      "EDR-024 accepted donor metadata without type name");
+      engine::ExecutionDomainDescriptorStatus::reference_type_name_required,
+      "EDR-024 accepted reference metadata without type name");
 
-  descriptor = ValidDomain(engine::ExecutionDomainKind::donor_compatibility);
-  descriptor.donor_metadata.descriptor_authoritative = false;
+  descriptor = ValidDomain(engine::ExecutionDomainKind::reference_compatibility);
+  descriptor.reference_metadata.descriptor_authoritative = false;
   RequireStatus(
       descriptor,
       engine::ExecutionDomainDescriptorStatus::
-          donor_metadata_not_authoritative,
-      "EDR-024 accepted non-authoritative donor metadata");
+          reference_metadata_not_authoritative,
+      "EDR-024 accepted non-authoritative reference metadata");
 
-  descriptor = ValidDomain(engine::ExecutionDomainKind::donor_compatibility);
-  descriptor.donor_metadata.parser_independent = false;
+  descriptor = ValidDomain(engine::ExecutionDomainKind::reference_compatibility);
+  descriptor.reference_metadata.parser_independent = false;
   RequireStatus(
       descriptor,
       engine::ExecutionDomainDescriptorStatus::
-          donor_metadata_parser_dependent,
-      "EDR-024 accepted parser-dependent donor metadata");
+          reference_metadata_parser_dependent,
+      "EDR-024 accepted parser-dependent reference metadata");
 }
 
 }  // namespace
@@ -652,6 +652,6 @@ int main() {
   TestDefaultFailures();
   TestConstraintFailures();
   TestPolicyFailures();
-  TestDonorMetadataFailures();
+  TestReferenceMetadataFailures();
   return EXIT_SUCCESS;
 }

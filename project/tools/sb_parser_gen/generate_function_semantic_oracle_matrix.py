@@ -41,7 +41,7 @@ Match policy:
    `builtin-expression-registry.yaml`. On match, copy the full oracle
    record (volatility, determinism, side_effects, null_behavior,
    collation_charset_rule, timezone_rule, return_type_rule, coercion_rule,
-   error_semantics, optimizer_properties, security_policy, donor_rendering,
+   error_semantics, optimizer_properties, security_policy, reference_rendering,
    syntax_forms, sblr_binding, ast_binding, engine_entrypoint).
    oracle_authority_status = `full_oracle`.
 
@@ -120,7 +120,7 @@ COLUMNS = [
     "sblr_binding",
     "ast_binding",
     "engine_entrypoint",
-    "donor_rendering",
+    "reference_rendering",
     "syntax_forms",
     "conformance_cases",
     "notes",
@@ -161,7 +161,7 @@ SBSFC032_SCALAR_UTILITY_ORACLE_OVERRIDES = {
         "engine_entrypoint": "atan2d",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": True, "cost_class": "cpu_scalar"},
         "security_policy": "pure scalar numeric helper; no catalog, storage, security, or transaction authority",
-        "donor_rendering": "parser renders donor spelling and diagnostics through donor alias registry when applicable",
+        "reference_rendering": "parser renders reference spelling and diagnostics through reference alias registry when applicable",
         "error_semantics": "invalid arity or non-numeric arguments refuse with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["SBSFC032-atan2d-quadrant"],
@@ -183,7 +183,7 @@ SBSFC032_SCALAR_UTILITY_ORACLE_OVERRIDES = {
         "engine_entrypoint": "collation_for",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": False, "cost_class": "cpu_scalar"},
         "security_policy": "reads only already-bound value descriptor metadata",
-        "donor_rendering": "parser renders donor spelling and diagnostics through donor alias registry when applicable",
+        "reference_rendering": "parser renders reference spelling and diagnostics through reference alias registry when applicable",
         "error_semantics": "invalid arity refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["SBSFC032-collation-for-bare-invalid", "SBSFC032-collation-for-text"],
@@ -206,7 +206,7 @@ SBSFC032_SCALAR_UTILITY_ORACLE_OVERRIDES = {
         "engine_entrypoint": "descriptor_of",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": False, "cost_class": "cpu_scalar"},
         "security_policy": "reads only already-bound value descriptor metadata",
-        "donor_rendering": "parser renders donor spelling and diagnostics through donor alias registry when applicable",
+        "reference_rendering": "parser renders reference spelling and diagnostics through reference alias registry when applicable",
         "error_semantics": "invalid arity refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["SBSFC032-descriptor-of-bare-invalid", "SBSFC032-descriptor-of-expr"],
@@ -229,7 +229,7 @@ SBSFC032_SCALAR_UTILITY_ORACLE_OVERRIDES = {
         "engine_entrypoint": "pg_typeof",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": False, "cost_class": "cpu_scalar"},
         "security_policy": "reads only already-bound value descriptor metadata",
-        "donor_rendering": "parser renders donor spelling and diagnostics through donor alias registry when applicable",
+        "reference_rendering": "parser renders reference spelling and diagnostics through reference alias registry when applicable",
         "error_semantics": "arity greater than 1 refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["SBSFC032-pg-typeof-bare-unknown", "SBSFC032-pg-typeof-expr"],
@@ -252,7 +252,7 @@ SBSFC032_SCALAR_UTILITY_ORACLE_OVERRIDES = {
         "engine_entrypoint": "safe_cast",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": False, "cost_class": "cpu_scalar"},
         "security_policy": "conversion helper does not bypass security policy dependency gates",
-        "donor_rendering": "parser renders donor spelling and diagnostics through donor alias registry when applicable",
+        "reference_rendering": "parser renders reference spelling and diagnostics through reference alias registry when applicable",
         "error_semantics": "unknown target descriptor or invalid arity refuses with SBSQL.FUNCTION.INVALID_INPUT; data conversion failure returns SQL null",
         "syntax_forms": ["function_call", "cast_like_function_call"],
         "conformance_cases": ["SBSFC032-safe-cast-bare-invalid", "SBSFC032-safe-cast-expr-as-type"],
@@ -275,7 +275,7 @@ SBSFC032_SCALAR_UTILITY_ORACLE_OVERRIDES = {
         "engine_entrypoint": "try_cast",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": False, "cost_class": "cpu_scalar"},
         "security_policy": "conversion helper does not bypass security policy dependency gates",
-        "donor_rendering": "parser renders donor spelling and diagnostics through donor alias registry when applicable",
+        "reference_rendering": "parser renders reference spelling and diagnostics through reference alias registry when applicable",
         "error_semantics": "unknown target descriptor or invalid arity refuses with SBSQL.FUNCTION.INVALID_INPUT; data conversion failure returns SQL null",
         "syntax_forms": ["function_call", "cast_like_function_call"],
         "conformance_cases": ["SBSFC032-try-cast-bare-invalid", "SBSFC032-try-cast-expr-as-type-null-on-failure"],
@@ -298,7 +298,7 @@ SBSFC032_SCALAR_UTILITY_ORACLE_OVERRIDES = {
         "engine_entrypoint": "similar_to_escape",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": True, "cost_class": "cpu_scalar"},
         "security_policy": "pure text helper; no catalog, storage, security, or transaction authority",
-        "donor_rendering": "parser renders donor spelling and diagnostics through donor alias registry when applicable",
+        "reference_rendering": "parser renders reference spelling and diagnostics through reference alias registry when applicable",
         "error_semantics": "invalid arity refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["SBSFC032-similar-to-escape-bare-invalid", "SBSFC032-similar-to-escape-text"],
@@ -321,7 +321,7 @@ SBSFC032_SCALAR_UTILITY_ORACLE_OVERRIDES = {
         "engine_entrypoint": "value_state",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": False, "cost_class": "cpu_scalar"},
         "security_policy": "reads only already-bound value payload metadata",
-        "donor_rendering": "parser renders donor spelling and diagnostics through donor alias registry when applicable",
+        "reference_rendering": "parser renders reference spelling and diagnostics through reference alias registry when applicable",
         "error_semantics": "invalid arity refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["SBSFC032-value-state-bare-invalid", "SBSFC032-value-state-any"],
@@ -365,9 +365,9 @@ def _sbsfc033_oracle_record(
         },
         "security_policy": (
             "reads only SblrExecutionContext metadata or already-bound compact descriptor metadata; "
-            "no parser SQL execution, donor execution, storage lookup, mutation, or transaction-finality authority"
+            "no parser SQL execution, reference execution, storage lookup, mutation, or transaction-finality authority"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity refuses with SBSQL.FUNCTION.INVALID_INPUT; unknown catalog UUID/name probes return SQL NULL",
         "syntax_forms": ["function_call"],
         "conformance_cases": [conformance_case],
@@ -553,9 +553,9 @@ def _sbsfc044_oracle_record(
         },
         "security_policy": (
             "reads engine-owned MGA relation metadata, row-version sidecars, and index sidecars; "
-            "no parser SQL execution, donor execution, mutation, WAL/recovery shortcut, SQLite shortcut, or cluster authority"
+            "no parser SQL execution, reference execution, mutation, WAL/recovery shortcut, SQLite shortcut, or cluster authority"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity or invalid include_indexes refuses with SBSQL.FUNCTION.INVALID_INPUT; null or unknown table_uuid returns SQL NULL uint64",
         "syntax_forms": ["function_call"],
         "conformance_cases": [conformance_case],
@@ -635,7 +635,7 @@ def _sbsfc046_oracle_record(
         "coercion_rule": "pid arguments are positive int64-compatible scalars; setting names and values are character-compatible scalars; is_local is boolean-compatible",
         "null_behavior": null_behavior,
         "collation_charset_rule": "text results use the session character descriptor",
-        "timezone_rule": "timezone is a session config name and does not consult donor timezone authority",
+        "timezone_rule": "timezone is a session config name and does not consult reference timezone authority",
         "volatility": "volatile",
         "determinism": "deterministic within the supplied SBLR session runtime context except for process-id fallback",
         "side_effects": side_effects,
@@ -650,9 +650,9 @@ def _sbsfc046_oracle_record(
         },
         "security_policy": (
             "uses SBLR local session runtime config and backend-control evidence vectors only; "
-            "unknown backend pids return false, current-backend termination is blocked, and no parser SQL, donor execution, WAL/recovery shortcut, SQLite shortcut, cluster provider authority, or process kill is used"
+            "unknown backend pids return false, current-backend termination is blocked, and no parser SQL, reference execution, WAL/recovery shortcut, SQLite shortcut, cluster provider authority, or process kill is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, invalid pid, invalid boolean is_local, or invalid temp_buffers value refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": [conformance_case],
@@ -804,9 +804,9 @@ def _sbsfc047_oracle_record(
         "security_policy": (
             "uses bounded SBLR local session advisory-lock state and evidence vectors only; "
             "current-session ownership is reentrant, try-lock conflicts with another bounded owner return false, "
-            "pg_advisory_lock(key) is bounded and nonblocking, and no parser SQL, donor execution, WAL/recovery shortcut, SQLite shortcut, cluster provider authority, external lock manager, or transaction finality change is used"
+            "pg_advisory_lock(key) is bounded and nonblocking, and no parser SQL, reference execution, WAL/recovery shortcut, SQLite shortcut, cluster provider authority, external lock manager, or transaction finality change is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, invalid advisory lock key, or missing session runtime state refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": [conformance_case],
@@ -906,9 +906,9 @@ def _sbsfc048_oracle_record(
         "security_policy": (
             "uses bounded SBLR local advisory-lock state and evidence vectors only; "
             "session unlock affects only local session advisory locks, transaction-scope locks use separate transaction-token state, "
-            "and no parser SQL, donor execution, WAL/recovery shortcut, SQLite shortcut, cluster provider authority, external lock manager, or transaction finality change is used"
+            "and no parser SQL, reference execution, WAL/recovery shortcut, SQLite shortcut, cluster provider authority, external lock manager, or transaction finality change is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, invalid advisory lock key, missing session state, or missing transaction context refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": [conformance_case],
@@ -1010,12 +1010,12 @@ def _sbsql_miss_gate_011_lock_oracle_record(
         },
         "security_policy": (
             "uses bounded SBLR local session advisory-lock state and evidence vectors only; "
-            "returns donor-compatible int64/NULL result shape; no parser SQL execution, donor "
+            "returns reference-compatible int64/NULL result shape; no parser SQL execution, reference "
             "execution, WAL/recovery shortcut, SQLite shortcut, table/row/page lock authority, "
             "external lock manager, cluster provider behavior, MGA visibility change, cleanup "
             "horizon pin, or transaction finality change is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and donor-compatible integer/NULL result shape through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and reference-compatible integer/NULL result shape through generated registry evidence",
         "error_semantics": "invalid arity, invalid timeout, or missing session runtime state refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": [conformance_case],
@@ -1088,9 +1088,9 @@ def _sbsfc049_oracle_record(
         },
         "security_policy": (
             "executes inside the SBLR data-scalar runtime through ICU Unicode normalization/classification APIs; "
-            "no parser SQL, donor execution, WAL/recovery shortcut, SQLite shortcut, cluster provider authority, or external service is used"
+            "no parser SQL, reference execution, WAL/recovery shortcut, SQLite shortcut, cluster provider authority, or external service is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, invalid UTF-8 text, or unsupported normalization form refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": [conformance_case],
@@ -1187,9 +1187,9 @@ def _sbsfc052_oracle_record(
         },
         "security_policy": (
             "executes inside the SBLR nosql.document runtime using bounded in-core JSON helpers; "
-            "no parser SQL, donor execution, storage scan, WAL/recovery shortcut, cluster provider authority, or external service is used"
+            "no parser SQL, reference execution, storage scan, WAL/recovery shortcut, cluster provider authority, or external service is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, invalid pretty flag, or malformed text-array json_object input refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": [conformance_case],
@@ -1356,9 +1356,9 @@ def _sbsfc053_oracle_record(
         },
         "security_policy": (
             "executes inside the SBLR rowset.table runtime using bounded in-core descriptor helpers; "
-            "no parser SQL, donor execution, storage scan, cursor lifecycle authority, WAL/recovery shortcut, cluster provider authority, or external service is used"
+            "no parser SQL, reference execution, storage scan, cursor lifecycle authority, WAL/recovery shortcut, cluster provider authority, or external service is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, malformed descriptor, scalar non-array unnest, step-zero generate_series, or non-array multiset input refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call", "table_function_call"],
         "conformance_cases": [proof],
@@ -1429,9 +1429,9 @@ def _sbsfc054_oracle_record(
         },
         "security_policy": (
             "executes inside the SBLR cursor.stream runtime using bounded in-core descriptor helpers; "
-            "no parser SQL execution, donor execution, storage scan, cursor backend, WAL/recovery shortcut, cluster provider authority, or external service is used"
+            "no parser SQL execution, reference execution, storage scan, cursor backend, WAL/recovery shortcut, cluster provider authority, or external service is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, malformed handle descriptor, wrong descriptor kind, or negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": [proof],
@@ -1502,9 +1502,9 @@ def _sbsfc055_oracle_record(builtin_id: str,
         },
         "security_policy": (
             "executes inside the SBLR lob.locator runtime using bounded in-core descriptor helpers; "
-            "no parser SQL execution, donor execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
+            "no parser SQL execution, reference execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, malformed locator descriptor, non-positive offset, negative length, or unsupported open mode refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": [proof],
@@ -1571,9 +1571,9 @@ def _sbsfc056_oracle_record(
         },
         "security_policy": (
             "executes inside the SBLR surface.scalar runtime using bounded in-core descriptor helpers; "
-            "no parser SQL execution, donor execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
+            "no parser SQL execution, reference execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity or malformed bounded descriptor refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": [proof],
@@ -1605,8 +1605,8 @@ SBSFC056_NATIVE_SURFACE_ORACLE_OVERRIDES = {
     "SBSQL-A1B94C83C5F1": _sbsfc056_oracle_record("sb.aggregate.collect_expr", "collect(expr)", "one expression", "json_document array containing expression", "sblr.expr.native_surface.collect_expr.v3", "collect_expr", "SBSFC056-collect-expr"),
     "SBSQL-5550BDA0A76C": _sbsfc056_oracle_record("sb.scalar.domain_stack", "domain_stack", "zero or one value", "json_document domain stack", "sblr.expr.native_surface.domain_stack.v3", "domain_stack", "SBSFC056-domain-stack-marker"),
     "SBSQL-1906412209C9": _sbsfc056_oracle_record("sb.scalar.domain_stack_value", "domain_stack(value)", "one value", "json_document domain stack", "sblr.expr.native_surface.domain_stack_value.v3", "domain_stack_value", "SBSFC056-domain-stack-value"),
-    "SBSQL-8F66D89149F5": _sbsfc056_oracle_record("sb.scalar.donor_only", "donor_only", "no arguments", "character surface marker", "sblr.expr.native_surface.donor_only.v3", "donor_only", "SBSFC056-donor-only"),
-    "SBSQL-F785EAF383DE": _sbsfc056_oracle_record("sb.scalar.donor_rewrite", "donor_rewrite", "no arguments", "character surface marker", "sblr.expr.native_surface.donor_rewrite.v3", "donor_rewrite", "SBSFC056-donor-rewrite"),
+    "SBSQL-8F66D89149F5": _sbsfc056_oracle_record("sb.scalar.reference_only", "reference_only", "no arguments", "character surface marker", "sblr.expr.native_surface.reference_only.v3", "reference_only", "SBSFC056-reference-only"),
+    "SBSQL-F785EAF383DE": _sbsfc056_oracle_record("sb.scalar.reference_rewrite", "reference_rewrite", "no arguments", "character surface marker", "sblr.expr.native_surface.reference_rewrite.v3", "reference_rewrite", "SBSFC056-reference-rewrite"),
     "SBSQL-FD0DF4067008": _sbsfc056_oracle_record("sb.multiset.element", "element", "singleton array-backed multiset", "json_document singleton value", "sblr.expr.multiset_element.v3", "multiset_element", "SBSFC056-element"),
     "SBSQL-1A8470FC95E7": _sbsfc056_oracle_record("sb.expr.match_recognize.v1", "expr.match_recognize.v1", "optional pattern descriptor", "match_recognize JSON descriptor", "sblr.expr.native_surface.expr_match_recognize_v1.v3", "expr_match_recognize_v1", "SBSFC056-expr-match-recognize"),
     "SBSQL-9F6F909938A0": _sbsfc056_oracle_record("sb.multiset.fusion", "fusion", "array-backed multisets", "json_document fused array", "sblr.expr.multiset_fusion.v3", "multiset_fusion", "SBSFC056-fusion"),
@@ -1655,9 +1655,9 @@ def _sbsfc057_oracle_record(
         "security_policy": (
             "executes inside the SBLR crypto.hash runtime using OpenSSL EVP/RAND/HMAC/scrypt where locally available, "
             "in-core xxhash64, deterministic ScratchBird armor/dearmor, and bounded ScratchBird PGP envelopes that do not claim OpenPGP compatibility; "
-            "no parser SQL execution, donor execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
+            "no parser SQL execution, reference execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": (
             "provider-gated row refuses with SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE"
             if dependency_unavailable
@@ -1733,9 +1733,9 @@ def _sbsfc058_oracle_record(
         },
         "security_policy": (
             "executes inside the SBLR expression runtime using in-core scalar helpers and the existing SBLR sequence runtime; "
-            "no parser SQL execution, donor execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
+            "no parser SQL execution, reference execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, malformed regex/temporal/numeric text, unsupported timezone, or sequence current-state errors use canonical SBLR diagnostics",
         "syntax_forms": ["function_call"],
         "conformance_cases": [proof],
@@ -1830,9 +1830,9 @@ def _sbsfc059_oracle_record(
         },
         "security_policy": (
             "executes inside the SBLR expression runtime using in-core scalar helpers and the existing SBLR sequence runtime; "
-            "no parser SQL execution, donor execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
+            "no parser SQL execution, reference execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, malformed regex/temporal text, unsupported locale, or sequence increment errors use canonical SBLR diagnostics",
         "syntax_forms": ["function_call"],
         "conformance_cases": [proof],
@@ -1866,8 +1866,8 @@ SBSFC034_TEXT_TRIGRAM_BIT_STRING_ORACLE_OVERRIDES = {
         "ast_binding": "ast.expr.scalar_bit_string_position",
         "engine_entrypoint": "bit_string_position",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": True, "cost_class": "cpu_scalar"},
-        "security_policy": "pure bit-string helper; no catalog, storage, security, transaction, donor, plugin, or cluster authority",
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "security_policy": "pure bit-string helper; no catalog, storage, security, transaction, reference, plugin, or cluster authority",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity or mixed descriptors refuse with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["SBSFC034-bit-string-position"],
@@ -1888,8 +1888,8 @@ SBSFC034_TEXT_TRIGRAM_BIT_STRING_ORACLE_OVERRIDES = {
         "ast_binding": "ast.expr.scalar_bit_string_substring",
         "engine_entrypoint": "bit_string_substring",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": True, "cost_class": "cpu_scalar"},
-        "security_policy": "pure bit-string helper; no catalog, storage, security, transaction, donor, plugin, or cluster authority",
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "security_policy": "pure bit-string helper; no catalog, storage, security, transaction, reference, plugin, or cluster authority",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity, non-int64 bounds, or invalid bounds refuse with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["SBSFC034-bit-string-substring"],
@@ -1910,8 +1910,8 @@ SBSFC034_TEXT_TRIGRAM_BIT_STRING_ORACLE_OVERRIDES = {
         "ast_binding": "ast.expr.scalar_show_trgm",
         "engine_entrypoint": "show_trgm",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": True, "cost_class": "cpu_scalar"},
-        "security_policy": "pure trigram helper; no donor/plugin call, catalog lookup, storage lookup, transaction finality, WAL/recovery, or cluster behavior",
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "security_policy": "pure trigram helper; no reference/plugin call, catalog lookup, storage lookup, transaction finality, WAL/recovery, or cluster behavior",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["SBSFC034-show-trgm-bare-invalid", "SBSFC034-show-trgm-text", "SBSFC034-show-trgm-null"],
@@ -1933,8 +1933,8 @@ SBSFC034_TEXT_TRIGRAM_BIT_STRING_ORACLE_OVERRIDES = {
         "ast_binding": "ast.expr.scalar_pg_trgm",
         "engine_entrypoint": "pg_trgm",
         "optimizer_properties": {"foldable": False, "index_eligible": False, "generated_column_eligible": False, "cost_class": "metadata_scalar"},
-        "security_policy": "fixed capability metadata route; no donor/plugin call, catalog lookup, storage lookup, transaction finality, WAL/recovery, or cluster behavior",
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "security_policy": "fixed capability metadata route; no reference/plugin call, catalog lookup, storage lookup, transaction finality, WAL/recovery, or cluster behavior",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "nonzero arity refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": ["SBSFC034-pg-trgm-capability"],
@@ -1977,9 +1977,9 @@ def _sbsfc035_oracle_record(
         },
         "security_policy": (
             "pure range scalar helper; accepts deterministic textual and flat-json range descriptors; "
-            "no parser SQL execution, catalog/storage lookup, donor/plugin call, transaction finality, WAL/recovery, or cluster behavior"
+            "no parser SQL execution, catalog/storage lookup, reference/plugin call, transaction finality, WAL/recovery, or cluster behavior"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": "invalid arity or malformed descriptor refuses with SBSQL.FUNCTION.INVALID_INPUT",
         "syntax_forms": ["function_call"],
         "conformance_cases": conformance_cases,
@@ -2083,7 +2083,7 @@ def _sbsfc036_oracle_record(function_id: str, conformance_cases: list[str]) -> d
         ],
         "coercion_rule": (
             "accepts only deterministic bounded textual geometry descriptors, narrow GeoJSON, "
-            "point WKB hex, and scalar numeric helper arguments; no donor or catalog coercion"
+            "point WKB hex, and scalar numeric helper arguments; no reference or catalog coercion"
         ),
         "null_behavior": "SQL null input returns SQL null using the target descriptor where applicable",
         "collation_charset_rule": "implementation default character descriptor for textual geometry and GeoJSON output; boolean/numeric helpers use native scalar descriptors",
@@ -2103,10 +2103,10 @@ def _sbsfc036_oracle_record(function_id: str, conformance_cases: list[str]) -> d
         "security_policy": (
             "pure bounded spatial geometry scalar helper; deterministic in-core WKT, POINT, "
             "LINESTRING, POLYGON, GEOMETRYCOLLECTION, narrow GeoJSON, and point WKB hex route; "
-            "no parser SQL execution, donor/plugin call, storage/catalog lookup, transaction "
+            "no parser SQL execution, reference/plugin call, storage/catalog lookup, transaction "
             "finality, WAL/recovery, or cluster behavior"
         ),
-        "donor_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
         "error_semantics": (
             "invalid arity, malformed geometry, or unsupported WKB refuses with "
             "SBSQL.FUNCTION.INVALID_INPUT"
@@ -2220,11 +2220,11 @@ def _sbsfc037_oracle_record(function_id: str, conformance_cases: list[str]) -> d
         },
         "security_policy": (
             "pure bounded XML/multimodel scalar helper; deterministic in-core XML text "
-            "construction/inspection only; no parser SQL execution, donor/plugin XML "
+            "construction/inspection only; no parser SQL execution, reference/plugin XML "
             "engine, storage/catalog lookup, transaction finality, WAL/recovery, or "
             "cluster behavior"
         ),
-        "donor_rendering": "parser renders native SBsql XML spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql XML spelling and diagnostics through generated registry evidence",
         "error_semantics": (
             "invalid arity, unsafe XML name/content, malformed XML control value, or "
             "bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT"
@@ -2364,11 +2364,11 @@ def _sbsfc039_oracle_record(function_id: str, conformance_cases: list[str]) -> d
         "security_policy": (
             "pure bounded XML document/query scalar helper; deterministic in-core XML "
             "normalization, escaping, namespace/attribute descriptor, serialize, validate, "
-            "and narrow tag-path query behavior only; no parser SQL execution, donor/plugin "
+            "and narrow tag-path query behavior only; no parser SQL execution, reference/plugin "
             "XML engine, storage/catalog lookup, transaction finality, WAL/recovery, or "
             "cluster behavior"
         ),
-        "donor_rendering": "parser renders native SBsql XML document/query spelling and diagnostics through generated registry evidence",
+        "reference_rendering": "parser renders native SBsql XML document/query spelling and diagnostics through generated registry evidence",
         "error_semantics": (
             "invalid arity, unsafe XML name/content/entity, malformed XML document text, "
             "DTD/entity declaration, or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT"
@@ -2442,7 +2442,7 @@ def _sbsfc040_regr_oracle_record(function_id: str, conformance_case: str) -> dic
             "cost_class": "aggregate_state",
         },
         "security_policy": "none unless source expressions read session/security/system metadata",
-        "donor_rendering": "parser renders donor spelling and diagnostics through donor alias registry",
+        "reference_rendering": "parser renders reference spelling and diagnostics through reference alias registry",
         "error_semantics": (
             "missing y/x input pair refuses with SB_DIAG_AGGREGATE_CORR_PAIR_REQUIRED; "
             "non-numeric inputs refuse with SB_DIAG_AGGREGATE_NUMERIC_INPUT_REQUIRED"
@@ -2863,7 +2863,7 @@ def _full_oracle_row(
         "sblr_binding": str(expr.get("sblr_binding", PENDING)),
         "ast_binding": str(expr.get("ast_binding", PENDING)),
         "engine_entrypoint": str(expr.get("engine_entrypoint", PENDING)),
-        "donor_rendering": str(expr.get("donor_rendering", PENDING)),
+        "reference_rendering": str(expr.get("reference_rendering", PENDING)),
         "syntax_forms": join_list(expr.get("syntax_forms")),
         "conformance_cases": join_list(expr.get("conformance_cases")),
         "notes": f"oracle sourced from {authority_source}.",
@@ -2900,7 +2900,7 @@ def _binding_only_row(
         "sblr_binding": str(binding.get("sblr_binding", PENDING)),
         "ast_binding": PENDING,
         "engine_entrypoint": str(binding.get("engine_entrypoint", PENDING)),
-        "donor_rendering": PENDING,
+        "reference_rendering": PENDING,
         "syntax_forms": "",
         "conformance_cases": "",
         "notes": "sblr_binding and engine_entrypoint sourced from builtin-sblr-expression-binding.yaml; semantic oracle fields pending canonical builtin-expression-registry entry.",
@@ -2932,7 +2932,7 @@ def _pending_row(surface: dict[str, str], norm: str) -> dict[str, str]:
         "sblr_binding": PENDING,
         "ast_binding": PENDING,
         "engine_entrypoint": PENDING,
-        "donor_rendering": PENDING,
+        "reference_rendering": PENDING,
         "syntax_forms": "",
         "conformance_cases": "",
         "notes": "no canonical builtin-expression-registry or builtin-sblr-expression-binding entry matched; row blocked from P2 implementation until canonical authority records the oracle. Coordinator must add canonical entries (or route the surface to remove_by_spec_change in NATIVE_FUTURE_PROMOTION_MATRIX) before any P2 slice may implement.",

@@ -58,7 +58,7 @@ void AppendBudgetEvidence(AgentMemoryReservationResult* result,
   Add(&result->evidence, "agent_memory_budget.operation_id=" +
                              request.operation_id);
   Add(&result->evidence,
-      "agent_memory_budget.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "agent_memory_budget.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 }
 
 AgentMemoryReservationResult ReservationFailure(
@@ -106,7 +106,7 @@ AgentMemoryPressureActionBoundaryDecision BoundaryFailure(
   Add(&decision.evidence,
       "agent_memory_action.diagnostic_code=" + decision.status.diagnostic_code);
   Add(&decision.evidence,
-      "agent_memory_action.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "agent_memory_action.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
   return decision;
 }
 
@@ -130,7 +130,7 @@ bool AuthorityClean(const AgentSystemProfileForbiddenAuthority& authority) {
          !authority.authorization_security_authority &&
          !authority.recovery_authority &&
          !authority.parser_authority &&
-         !authority.donor_authority &&
+         !authority.reference_authority &&
          !authority.wal_authority &&
          !authority.benchmark_authority &&
          !authority.optimizer_plan_authority &&
@@ -240,7 +240,7 @@ void AddLaneNoAuthorityRows(
   AddMetricRow(result, request,
                "agent_memory_pressure_lane.parser_authority", "false");
   AddMetricRow(result, request,
-               "agent_memory_pressure_lane.donor_authority", "false");
+               "agent_memory_pressure_lane.reference_authority", "false");
   AddMetricRow(result, request,
                "agent_memory_pressure_lane.wal_authority", "false");
   AddMetricRow(result, request,
@@ -396,7 +396,7 @@ void FinalizeLaneIntegration(
       "agent_memory_pressure_lane.estimated_overhead_microseconds=" +
       std::to_string(result->estimated_overhead_microseconds));
   result->evidence.push_back(
-      "agent_memory_pressure_lane.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_provider_finality_cluster_memory_or_agent_action_authority");
+      "agent_memory_pressure_lane.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_provider_finality_cluster_memory_or_agent_action_authority");
 }
 
 AgentMemoryPressureLaneIntegrationDecision LaneIntegrationFailure(
@@ -741,7 +741,7 @@ AgentMemoryPressureActionBoundaryDecision EvaluateAgentMemoryPressureActionBound
   Add(&decision.evidence,
       "agent_memory_action.fail_closed=false");
   Add(&decision.evidence,
-      "agent_memory_action.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "agent_memory_action.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
   return decision;
 }
 
@@ -755,7 +755,7 @@ AgentMemoryEvidenceBundleResult BuildAgentMemoryEvidenceBundle(
       "agent_memory_evidence.support_bundle_uuid=" +
           request.support_bundle_uuid);
   Add(&result.evidence,
-      "agent_memory_evidence.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "agent_memory_evidence.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   result.estimated_overhead_bytes = EstimateEvidenceOverhead(request);
   result.overhead_budget_evidence_present = request.overhead_budget_bytes != 0;
@@ -811,7 +811,7 @@ AgentMemoryCrashRestartRouteResult EvaluateAgentMemoryCrashRestartRoute(
       "agent_memory_crash.agent_type_id=" + request.agent_type_id);
   Add(&result.evidence, "agent_memory_crash.route_id=" + request.route_id);
   Add(&result.evidence,
-      "agent_memory_crash.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "agent_memory_crash.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   auto fail = [&](std::string code, std::string detail) {
     result.status = MemoryError(std::move(code), std::move(detail));
@@ -870,7 +870,7 @@ AgentMemoryProductionSeparationResult ValidateAgentMemoryProductionSeparation(
       "agent_memory_production.production_build=" +
           BoolText(input.production_build));
   Add(&result.evidence,
-      "agent_memory_production.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "agent_memory_production.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   const bool forbidden =
       input.fixture_agent_state ||

@@ -149,7 +149,7 @@ api::DmlRowLocatorStreamRequest BaseStreamRequest(
   request.durable_mga_inventory_proof = true;
   request.mga_visibility_recheck_planned = true;
   request.security_recheck_planned = true;
-  request.parser_or_donor_authority = false;
+  request.parser_or_reference_authority = false;
   request.index_or_cache_finality_authority = false;
   return request;
 }

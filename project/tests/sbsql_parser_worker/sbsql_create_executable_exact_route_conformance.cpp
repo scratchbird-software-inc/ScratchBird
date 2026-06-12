@@ -235,7 +235,7 @@ void RequireExactLowering(const Case& route, const PipelineArtifacts& artifacts)
   Require(!artifacts.envelope.parser_executes_sql,
           "CREATE executable lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "CREATE executable lowering allowed donor/file effects");
+          "CREATE executable lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload,
                    "\"catalog_envelope_kind\":\"create_executable_object_ddl\""),
           "CREATE executable payload missing catalog envelope kind");
@@ -266,8 +266,8 @@ void RequireExactLowering(const Case& route, const PipelineArtifacts& artifacts)
   Require(!Contains(artifacts.envelope.payload, route.object_name) &&
               !Contains(artifacts.envelope.payload, route.sql),
           "CREATE executable payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "CREATE executable payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "CREATE executable payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),
@@ -342,7 +342,7 @@ void RequireCursorRoutineArgumentRoute() {
   Require(!artifacts.envelope.parser_executes_sql,
           "cursor routine lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "cursor routine lowering allowed donor/file effects");
+          "cursor routine lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload,
                    "\"signature_descriptor_embedded\":true"),
           "cursor routine payload did not embed signature descriptor");
@@ -373,8 +373,8 @@ void RequireCursorRoutineArgumentRoute() {
               !Contains(artifacts.envelope.payload, route.object_name) &&
               !Contains(artifacts.envelope.payload, route.sql),
           "cursor routine payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "cursor routine payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "cursor routine payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

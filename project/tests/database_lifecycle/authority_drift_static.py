@@ -10,9 +10,9 @@
 """DBLC-017 authority drift gate.
 
 The gate is intentionally scoped to accepted lifecycle, parser-admission,
-donor-mapping, and MGA authority paths. It allows explicit anti-WAL/refusal
+reference-mapping, and MGA authority paths. It allows explicit anti-WAL/refusal
 evidence, but rejects any shortcut that would make WAL, SQLite/PRAGMA,
-parser finality, donor SQL, or cluster paths authoritative.
+parser finality, reference SQL, or cluster paths authoritative.
 """
 
 from __future__ import annotations
@@ -31,8 +31,8 @@ SCAN_FILES = (
     "project/src/server/sblr_dispatch_server.cpp",
     "project/src/server/session_registry.cpp",
     "project/src/server/manager_control.cpp",
-    "project/src/parsers/donor/firebird/firebird_dialect.cpp",
-    "project/src/parsers/donor/firebird/firebird_worker_session.cpp",
+    "project/src/parsers/compatibility/firebird/firebird_dialect.cpp",
+    "project/src/parsers/compatibility/firebird/firebird_worker_session.cpp",
     "project/src/parsers/sbsql_worker/lowering/lowering.cpp",
     "project/src/parsers/sbsql_worker/runtime/parser_runtime.cpp",
     "project/src/transaction/mga/cluster_transaction_fail_closed.cpp",
@@ -61,8 +61,8 @@ REQUIRED_TOKENS = {
         "SECURITY.AUTHENTICATION.FAILED",
         "ENGINE.DBLC_ATTACH_ADMISSION_DENIED",
     ),
-    "project/src/parsers/donor/firebird/firebird_dialect.cpp": (
-        "\\\"donor_engine_sql_executed\\\":false",
+    "project/src/parsers/compatibility/firebird/firebird_dialect.cpp": (
+        "\\\"reference_engine_sql_executed\\\":false",
         "\\\"real_firebird_file_effects\\\":false",
         "\\\"sql_text_included\\\":false",
     ),
@@ -99,12 +99,12 @@ FORBIDDEN_PATTERNS = (
      "parser finality authority"),
     (re.compile(r"\bparser.*\bstorage\s+authority\b", re.IGNORECASE),
      "parser storage authority"),
-    (re.compile(r"\bdonor_engine_sql_executed\s*=\s*true", re.IGNORECASE),
-     "donor SQL execution enabled"),
-    (re.compile(r"\"donor_engine_sql_executed\"\s*:\s*true", re.IGNORECASE),
-     "donor SQL execution enabled"),
+    (re.compile(r"\breference_engine_sql_executed\s*=\s*true", re.IGNORECASE),
+     "reference SQL execution enabled"),
+    (re.compile(r"\"reference_engine_sql_executed\"\s*:\s*true", re.IGNORECASE),
+     "reference SQL execution enabled"),
     (re.compile(r"\"real_firebird_file_effects\"\s*:\s*true", re.IGNORECASE),
-     "donor file effect enabled"),
+     "reference file effect enabled"),
     (re.compile(r"\"parser_executes_sql\"\s*:\s*true", re.IGNORECASE),
      "parser SQL execution enabled"),
 )

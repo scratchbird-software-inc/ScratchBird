@@ -200,7 +200,7 @@ void ReopenRecoverAndRefuseCorrectly() {
 
 int main() {
   std::cout << "MMCH-042 authority_note=temp_workspace_recovery_evidence_only;"
-               "not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_or_agent_action_authority"
+               "not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_or_agent_action_authority"
             << '\n';
   ReopenRecoverAndRefuseCorrectly();
   return EXIT_SUCCESS;

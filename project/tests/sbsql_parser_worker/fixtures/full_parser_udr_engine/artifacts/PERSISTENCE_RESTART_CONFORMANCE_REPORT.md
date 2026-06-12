@@ -11,7 +11,7 @@ This report records the persistence/restart gate for SBSQL-visible effects that
 are admitted as server SBLR and executed by engine-owned SBLR/internal
 procedures.
 
-The gate does not send SQL text, donor command text, parser AST, or BoundAST to
+The gate does not send SQL text, reference command text, parser AST, or BoundAST to
 `sb_engine`. Server admission rejects SQL-text-marked envelopes before dispatch.
 
 ## Coverage

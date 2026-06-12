@@ -288,8 +288,8 @@ EngineInsertRowsRequest MakeInsertRequestForRows(const EngineExecuteImportRowsRe
   insert.insert_mode = plan.normalized_insert_mode;
   insert.duplicate_mode = request.duplicate_mode;
   insert.strict_bulk_load_requested = request.import_policy.strict_bulk_load_requested;
-  insert.donor_unique_checks_relaxed = false;
-  insert.donor_foreign_key_checks_relaxed = false;
+  insert.reference_unique_checks_relaxed = false;
+  insert.reference_foreign_key_checks_relaxed = false;
   insert.option_envelopes = StripWriteResultPolicyOptions(request.option_envelopes);
   insert.diagnostic_options = request.diagnostic_options;
   return insert;
@@ -430,7 +430,7 @@ void AddImportExecutionCompletionEvidence(std::vector<EngineEvidenceReference>* 
   evidence->push_back({"import_execution_row_persistence_claimed", "true"});
   evidence->push_back({"import_execution_row_execution_completed", "true"});
   evidence->push_back({"parser_finality_authority", "false"});
-  evidence->push_back({"donor_finality_authority", "false"});
+  evidence->push_back({"reference_finality_authority", "false"});
 }
 
 EngineInsertRowsRequest MakeRejectTargetInsertRequest(const EngineExecuteImportRowsRequest& request,
@@ -445,8 +445,8 @@ EngineInsertRowsRequest MakeRejectTargetInsertRequest(const EngineExecuteImportR
   insert.insert_mode = "singleton";
   insert.duplicate_mode = "error";
   insert.strict_bulk_load_requested = false;
-  insert.donor_unique_checks_relaxed = false;
-  insert.donor_foreign_key_checks_relaxed = false;
+  insert.reference_unique_checks_relaxed = false;
+  insert.reference_foreign_key_checks_relaxed = false;
   insert.option_envelopes = StripWriteResultPolicyOptions(request.option_envelopes);
   insert.diagnostic_options = request.diagnostic_options;
   return insert;

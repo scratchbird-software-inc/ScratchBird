@@ -27,23 +27,23 @@
       "sha256": "f19e3cbd5ef99551caf9077a9eebcd7e2ebc288adc031c89405a51a5226dfca7"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
       "resource_kind": "parser_facing_sbsql_sync_requirements",
       "sha256": "f123ec8ab90d86144a5077a8701ab09df45928cb0be43ff44801087940f8e4b7"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
       "resource_kind": "parser_facing_sblr_family_snapshot",
       "sha256": "8cb2d700649912b90830689df57e196b68c35616920bf601bf2a18c9a03aed4b"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_surface_traceability_manifest.json",
-      "resource_kind": "donor_sblr_traceability_seed",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_surface_traceability_manifest.json",
+      "resource_kind": "reference_sblr_traceability_seed",
       "sha256": "49dd7fd7d218873ff4d665e888c6bca3d9ac6f95192cf2d529db7ba46046bbee"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_surface_fixture_hashes.json",
-      "resource_kind": "donor_sblr_fixture_hash_manifest",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_surface_fixture_hashes.json",
+      "resource_kind": "reference_sblr_fixture_hash_manifest",
       "sha256": "9720be72c2be556e34757002d9edd0afb22679aa58dd60e56829723d255e6b94"
     },
     {

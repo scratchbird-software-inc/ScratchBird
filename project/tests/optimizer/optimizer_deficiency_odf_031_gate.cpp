@@ -507,7 +507,7 @@ void FallbacksAreExplicit() {
                "unsafe-route-fallback",
                {"odf031.disable_mga_visibility_recheck=true",
                 "odf031.disable_security_recheck=true",
-                "odf031.parser_or_donor_authority=true"});
+                "odf031.parser_or_reference_authority=true"});
     RequireUnsafeRouteRefused(updated, "missing MGA recheck");
     Require(EvidenceContains(updated.evidence,
                              "dml_target_access_plan_refusal",
@@ -515,8 +515,8 @@ void FallbacksAreExplicit() {
             "ODF-031 missing security recheck evidence missing");
     Require(EvidenceContains(updated.evidence,
                              "dml_target_access_plan_refusal",
-                             "unsafe parser/donor authority"),
-            "ODF-031 unsafe parser/donor authority evidence missing");
+                             "unsafe parser/reference authority"),
+            "ODF-031 unsafe parser/reference authority evidence missing");
     Commit(context);
   }
 }

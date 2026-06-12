@@ -28,7 +28,7 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityBoundary =
-    "optimizer_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority";
+    "optimizer_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority";
 
 struct OptimizerScratchCandidate {
   u64 ordinal = 0;
@@ -103,10 +103,10 @@ OptimizerTypedArenaWorkAreaResult BuildOptimizerTypedArenaWorkArea(
                   "optimizer.typed_arena.catalog_stats_unproven",
                   "catalog_stats_authority_required");
   }
-  if (request.parser_or_donor_authority || request.memory_benchmark_authority) {
+  if (request.parser_or_reference_authority || request.memory_benchmark_authority) {
     return Refuse(std::move(request), "optimizer_typed_arena_unsafe_authority",
                   "optimizer.typed_arena.unsafe_authority",
-                  "parser_donor_or_memory_benchmark_authority_claimed");
+                  "parser_reference_or_memory_benchmark_authority_claimed");
   }
   if (request.candidate_count == 0) {
     return Refuse(std::move(request), "optimizer_typed_arena_empty_work",

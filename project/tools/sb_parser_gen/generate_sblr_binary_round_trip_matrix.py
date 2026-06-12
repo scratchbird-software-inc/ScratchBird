@@ -55,7 +55,7 @@ Per status:
   binary envelope; no public dispatch or execution path.
 
 Forbidden execution-authority sources are uniform across every row:
-SQL text, identifier names, parser branch names, donor command names, and
+SQL text, identifier names, parser branch names, reference command names, and
 operation-family-only routing are never execution authority. The round-trip
 gate must reject any envelope whose dispatch attempts to use one of these.
 
@@ -116,7 +116,7 @@ COLUMNS = [
 
 CANONICAL_CONTAINER_MAGIC = "0x53424C52"
 CANONICAL_CONTAINER_HEADER_SIZE = "40"
-FORBIDDEN_AUTHORITY = "sql_text;identifier_names;parser_branch_names;donor_command_names;operation_family_only_routing"
+FORBIDDEN_AUTHORITY = "sql_text;identifier_names;parser_branch_names;reference_command_names;operation_family_only_routing"
 EXECUTION_AUTHORITY = "mga_copy_on_write;no_wal_authority;sblr_envelope_with_uuid_and_descriptor_authority_only"
 PENDING = "pending_canonical_authority_entry"
 FIXTURE_KIND = "sblr_binary_round_trip"
@@ -186,13 +186,13 @@ def native_now_phases(oracle_status: str, sblr_binding: str) -> dict[str, str]:
         "expected_canonical_function_or_api_operation_id": op_id,
         "parse_phase_expectation": "parse_sbsql_text_to_cst_pass",
         "bind_phase_expectation": "bind_to_bound_ast_with_uuid_and_descriptor_pass_no_names_as_authority",
-        "lower_phase_expectation": "lower_bound_ast_to_sblrexecutionenvelope_v3_with_canonical_operation_id_pass_no_text_branch_or_donor_command_as_authority",
+        "lower_phase_expectation": "lower_bound_ast_to_sblrexecutionenvelope_v3_with_canonical_operation_id_pass_no_text_branch_or_reference_command_as_authority",
         "binary_serialize_phase_expectation": "serialize_envelope_to_canonical_container_magic_0x53424C52_with_40byte_header_crc32c_deterministic_byte_identical_pass",
         "verify_phase_expectation": "verifier_admit_container_with_magic_version_length_checksum_and_payload_authority_pass",
         "binary_deserialize_phase_expectation": "deserialize_bytes_to_byte_identical_sblrexecutionenvelope_v3_pass",
         "dispatch_phase_expectation": "engine_dispatch_by_canonical_function_or_api_operation_id_pass_reject_family_only_routing",
         "execute_phase_expectation": "engine_execute_under_mga_copy_on_write_authority_emit_ExecutionResultEnvelope_v3_and_message_vector_set_pass",
-        "render_phase_expectation": "renderer_emit_native_or_donor_render_pack_per_session_profile_pass",
+        "render_phase_expectation": "renderer_emit_native_or_reference_render_pack_per_session_profile_pass",
         "byte_identical_round_trip_required": round_trip_required,
         "notes": "native_now row: all 9 round-trip phases must pass; serialization byte-identical with CRC-32C; engine dispatches by canonical operation id (not family-only); MGA copy-on-write is the only transaction authority; no WAL recovery path may be used at execute or persist."
         + (" Oracle is full; round-trip fixture may be authored immediately." if oracle_status == "full_oracle" else
@@ -206,13 +206,13 @@ def native_now_manifest_phases(operation_id: str, authority_status: str) -> dict
         "expected_canonical_function_or_api_operation_id": operation_id,
         "parse_phase_expectation": "parse_sbsql_text_to_cst_pass",
         "bind_phase_expectation": "bind_to_bound_ast_with_uuid_and_descriptor_pass_no_names_as_authority",
-        "lower_phase_expectation": "lower_bound_ast_to_sblrexecutionenvelope_v3_with_canonical_operation_id_pass_no_text_branch_or_donor_command_as_authority",
+        "lower_phase_expectation": "lower_bound_ast_to_sblrexecutionenvelope_v3_with_canonical_operation_id_pass_no_text_branch_or_reference_command_as_authority",
         "binary_serialize_phase_expectation": "serialize_envelope_to_canonical_container_magic_0x53424C52_with_40byte_header_crc32c_deterministic_byte_identical_pass",
         "verify_phase_expectation": "verifier_admit_container_with_magic_version_length_checksum_and_payload_authority_pass",
         "binary_deserialize_phase_expectation": "deserialize_bytes_to_byte_identical_sblrexecutionenvelope_v3_pass",
         "dispatch_phase_expectation": "engine_dispatch_by_canonical_function_or_api_operation_id_pass_reject_family_only_routing",
         "execute_phase_expectation": "engine_execute_under_mga_copy_on_write_authority_emit_ExecutionResultEnvelope_v3_and_message_vector_set_pass",
-        "render_phase_expectation": "renderer_emit_native_or_donor_render_pack_per_session_profile_pass",
+        "render_phase_expectation": "renderer_emit_native_or_reference_render_pack_per_session_profile_pass",
         "byte_identical_round_trip_required": "yes",
         "notes": "native_now row: per-row manifest already records final e2e evidence with a canonical function/API operation id; all 9 round-trip phases must pass; serialization byte-identical with CRC-32C; engine dispatches by canonical operation id (not family-only); MGA copy-on-write is the only transaction authority; no WAL recovery path may be used at execute or persist."
         + f" Round-trip authority source={authority_status}.",

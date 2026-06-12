@@ -111,16 +111,16 @@ bool RejectsParserExecutionPolicyAuthority() {
                  "unbound parser directive rejection diagnostic missing");
 }
 
-bool RejectsDonorLegacyPolicyAuthority() {
+bool RejectsReferenceLegacyPolicyAuthority() {
   auto request = SafeRequest();
   request.logical_plan.optimizer_policy.policy_source_kind = "legacy_sql_text";
-  request.logical_plan.optimizer_policy.donor_or_legacy_policy_authority_claimed = true;
+  request.logical_plan.optimizer_policy.reference_or_legacy_policy_authority_claimed = true;
 
   const auto validation = opt::ValidateBoundOptimizerRequest(request);
-  return Require(!validation.ok, "donor/legacy policy authority was accepted") &&
+  return Require(!validation.ok, "reference/legacy policy authority was accepted") &&
          Require(Contains(validation.diagnostics,
-                          "SB_OPT_AUTHORITY_REJECTED.optimizer_policy_donor_or_legacy_authority"),
-                 "donor/legacy policy authority rejection diagnostic missing");
+                          "SB_OPT_AUTHORITY_REJECTED.optimizer_policy_reference_or_legacy_authority"),
+                 "reference/legacy policy authority rejection diagnostic missing");
 }
 
 }  // namespace
@@ -130,6 +130,6 @@ int main() {
   if (!AcceptsOnlySafeSblrApiLogicalPlanPolicy()) return 1;
   if (!RejectsRawSqlTextPolicyAuthority()) return 1;
   if (!RejectsParserExecutionPolicyAuthority()) return 1;
-  if (!RejectsDonorLegacyPolicyAuthority()) return 1;
+  if (!RejectsReferenceLegacyPolicyAuthority()) return 1;
   return 0;
 }

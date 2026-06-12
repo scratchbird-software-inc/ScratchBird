@@ -60,10 +60,10 @@ constexpr const char* kDefaultDeallocationCallsite = "core.memory.deallocate";
 constexpr const char* kReallocateActiveMapValidationCallsite = "core.memory.reallocate.active_map_validation";
 constexpr const char* kPageBufferAllocationCallsite = "core.memory.page_buffer.allocate";
 constexpr const char* kFailureInjectionAuthorityNote =
-    "test_fixture_evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority";
+    "test_fixture_evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority";
 constexpr const char* kProtectedMemoryAllocationCallsite = "core.memory.protected.allocate";
 constexpr const char* kProtectedMemoryAuthorityNote =
-    "protected_memory_evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
+    "protected_memory_evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
 
 u64 EffectiveHardLimit(const AllocationPolicy& policy) {
   if (policy.hard_limit_bytes != 0) {

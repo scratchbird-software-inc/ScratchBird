@@ -53,7 +53,7 @@ void DriverOwnedCStringLifecycle() {
     Require(std::string_view(info.release_function) == "sb_memory_release",
             "MMCH-016 owned pointer release function changed");
     Require(std::string_view(info.authority_scope) ==
-                "abi_memory_ownership_evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority",
+                "abi_memory_ownership_evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority",
             "MMCH-016 ownership authority scope changed");
 
     const int release_status = sb_memory_release(payload, &err);
@@ -88,7 +88,7 @@ void LegacyFreeDelegatesSafely() {
     Require(info.ownership_kind == SB_MEMORY_OWNERSHIP_UNKNOWN,
             "MMCH-016 stack pointer ownership kind was not unknown");
     Require(std::string_view(info.authority_scope) ==
-                "abi_memory_ownership_evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority",
+                "abi_memory_ownership_evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority",
             "MMCH-016 unknown pointer authority scope missing");
 
     const int release_status = sb_memory_release(&stack_value, &err);
@@ -118,7 +118,7 @@ void NullAndOutputValidation() {
 
 int main() {
     std::cout << "MMCH-016 authority_note=abi_memory_ownership_evidence_only;"
-                 "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+                 "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
               << '\n';
     DriverOwnedCStringLifecycle();
     LegacyFreeDelegatesSafely();

@@ -468,7 +468,7 @@ DatatypeDescriptorResult ValidateDatatypeDescriptor(const DatatypeDescriptor& de
     return result;
   }
 
-  if (!descriptor.descriptor_authoritative || !descriptor.donor_name_is_alias_only) {
+  if (!descriptor.descriptor_authoritative || !descriptor.reference_name_is_alias_only) {
     result.status = DatatypeErrorStatus();
     result.diagnostic = MakeDatatypeDiagnostic(result.status,
                                                "SB-DATATYPE-DESCRIPTOR-AUTHORITY-VIOLATION",

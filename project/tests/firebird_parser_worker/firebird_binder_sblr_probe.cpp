@@ -39,11 +39,11 @@ bool Probe(std::string_view sql,
       !Contains(parsed.sblr_envelope, "\"operation_family\":\"") ||
       !Contains(parsed.sblr_envelope, "\"enterprise_readiness_evidence\":{") ||
       !Contains(parsed.sblr_envelope,
-                "\"evidence_contract\":\"donor_parser_enterprise_readiness_evidence.v1\"") ||
+                "\"evidence_contract\":\"compatibility_parser_enterprise_readiness_evidence.v1\"") ||
       !Contains(parsed.sblr_envelope,
                 "\"procedural_body_encoding_status\":\"route_and_descriptor_only_not_enterprise\"") ||
       !Contains(parsed.sblr_envelope,
-                "\"observable_equivalence_status\":\"donor_native_equivalence_proof_pending\"") ||
+                "\"observable_equivalence_status\":\"compatibility_native_equivalence_proof_pending\"") ||
       !Contains(parsed.sblr_envelope, "\"enterprise_implemented_proven\":false") ||
       !Contains(parsed.sblr_envelope, "\"descriptor_resolution\":\"uuid_required\"") ||
       !Contains(parsed.sblr_envelope, "\"engine_authority\":\"scratchbird\"") ||
@@ -65,13 +65,13 @@ bool Probe(std::string_view sql,
        !Contains(parsed.sblr_envelope,
                  "\"body_lowering_status\":\"parser_bound_sblr_instruction_stream_encoded\"") ||
        !Contains(parsed.sblr_envelope,
-                 "\"runtime_equivalence_status\":\"pending_donor_native_psql_replay\""))) {
+                 "\"runtime_equivalence_status\":\"pending_compatibility_native_psql_replay\""))) {
     std::cerr << "Firebird PSQL functional encoding evidence mismatch: "
               << parsed.sblr_envelope << '\n';
     return false;
   }
   if (Contains(parsed.sblr_envelope, sql)) {
-    std::cerr << "SBLR envelope leaked donor SQL text\n";
+    std::cerr << "SBLR envelope leaked reference SQL text\n";
     return false;
   }
   return true;

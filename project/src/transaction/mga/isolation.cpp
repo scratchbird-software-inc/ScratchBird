@@ -109,7 +109,7 @@ SerializableConflictResult SerializableAdmitted(std::string evidence) {
   result.admitted = true;
   AddEvidence(&result, std::move(evidence));
   AddEvidence(&result, "serializable.inventory_authority=durable_transaction_inventory");
-  AddEvidence(&result, "serializable.parser_or_donor_authority=false");
+  AddEvidence(&result, "serializable.parser_or_reference_authority=false");
   return result;
 }
 
@@ -137,7 +137,7 @@ SerializableConflictResult SerializableRefused(SerializableConflictKind conflict
 
 SerializableConflictResult ValidateSerializableAccess(
     const SerializableAccessRecord& access) {
-  if (access.parser_or_donor_authority) {
+  if (access.parser_or_reference_authority) {
     return SerializableRefused(
         SerializableConflictKind::external_authority_refused,
         SerializableRetryClass::invalid_request,
@@ -182,7 +182,7 @@ const char* IsolationLevelName(IsolationLevel level) {
     case IsolationLevel::read_committed: return "read_committed";
     case IsolationLevel::repeatable_read: return "repeatable_read";
     case IsolationLevel::serializable: return "serializable";
-    case IsolationLevel::donor_compatibility: return "donor_compatibility";
+    case IsolationLevel::reference_compatibility: return "reference_compatibility";
     case IsolationLevel::unknown: return "unknown";
   }
   return "unknown";

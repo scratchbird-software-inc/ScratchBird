@@ -12,7 +12,7 @@ FSPE-012G added the security redaction and side-channel gate for public parser/s
 ## Implementation Evidence
 
 - `project/tests/sbsql_parser_worker/generated/security/sbsql_security_redaction_side_channel_gate.cpp` adds the generated security redaction and side-channel gate.
-- `project/tests/sbsql_parser_worker/generated/security/SECURITY_REDACTION_SIDE_CHANNEL_FIXTURES.csv` records hidden, missing, diagnostic, cache-authority, metadata-projection, and donor-rendering fixtures.
+- `project/tests/sbsql_parser_worker/generated/security/SECURITY_REDACTION_SIDE_CHANNEL_FIXTURES.csv` records hidden, missing, diagnostic, cache-authority, metadata-projection, and reference-rendering fixtures.
 - `project/tests/sbsql_parser_worker/CMakeLists.txt` wires `sbsql_security_redaction_side_channel_gate` into CTest with labels `sbsql_security_redaction_side_channel_gate`, `sbsql_security_redaction_gate`, `sbsql_side_channel_gate`, and `sbsql_parser_worker`.
 - `project/src/wire/parser_server_ipc/parser_ipc_common.cpp`, `project/src/server/diagnostics.cpp`, and `project/src/server/sbps.cpp` filter public diagnostic/message-vector fields.
 - `project/src/parsers/sbsql_worker/rendering/rendering.cpp` redacts hidden/system result metadata from public parser rendering.

@@ -408,20 +408,20 @@ void RequiredProofFailuresFailClosed() {
 }
 
 void AuthorityParticipationAndSuccessorScopeFailClosed() {
-  auto donor = Request(index::IndexFamily::btree);
-  donor.donor_local_participation = true;
+  auto reference = Request(index::IndexFamily::btree);
+  reference.reference_local_participation = true;
   RequireStatus(
-      index::AdmitBtreeUniqueDurableProviderClosure(donor),
+      index::AdmitBtreeUniqueDurableProviderClosure(reference),
       index::BtreeUniqueDurableProviderClosureStatus::
-          donor_policy_cluster_participation,
-      "donor local participation did not fail closed");
+          reference_policy_cluster_participation,
+      "reference local participation did not fail closed");
 
   auto policy = Request(index::IndexFamily::btree);
   policy.policy_local_participation = true;
   RequireStatus(
       index::AdmitBtreeUniqueDurableProviderClosure(policy),
       index::BtreeUniqueDurableProviderClosureStatus::
-          donor_policy_cluster_participation,
+          reference_policy_cluster_participation,
       "policy local participation did not fail closed");
 
   auto cluster = Request(index::IndexFamily::btree);
@@ -429,7 +429,7 @@ void AuthorityParticipationAndSuccessorScopeFailClosed() {
   RequireStatus(
       index::AdmitBtreeUniqueDurableProviderClosure(cluster),
       index::BtreeUniqueDurableProviderClosureStatus::
-          donor_policy_cluster_participation,
+          reference_policy_cluster_participation,
       "cluster local participation did not fail closed");
 
   auto authority = Request(index::IndexFamily::btree);

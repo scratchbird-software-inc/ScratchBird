@@ -30,7 +30,7 @@ struct ParallelIndexConstraintAuthorityProof {
   bool engine_mga_snapshot_bound = false;
   bool transaction_inventory_authoritative = false;
   bool security_context_bound = false;
-  bool parser_client_or_donor_index_authority = false;
+  bool parser_client_or_reference_index_authority = false;
   bool index_metadata_visibility_or_finality_authority = false;
   bool index_metadata_recovery_authority = false;
   bool recovery_from_index_metadata_alone = false;
@@ -88,7 +88,7 @@ struct ParallelIndexConstraintPublicationResult {
   bool worker_result_match = false;
   bool mga_visibility_recheck_proven = false;
   bool security_recheck_proven = false;
-  bool parser_client_donor_authority = false;
+  bool parser_client_reference_authority = false;
   bool index_metadata_finality_authority = false;
   bool index_metadata_recovery_authority = false;
   bool recovery_from_index_metadata_alone = false;

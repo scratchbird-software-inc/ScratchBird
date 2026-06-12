@@ -247,7 +247,7 @@ opt::CachedOptimizerPlan CachedPlan(const opt::OptimizerPlanCacheKeyInput& input
   cached.metadata_only = true;
   cached.mga_visibility_recheck_required = true;
   cached.security_recheck_required = true;
-  cached.parser_or_donor_finality_authority = false;
+  cached.parser_or_reference_finality_authority = false;
   return cached;
 }
 
@@ -378,11 +378,11 @@ void ProductionPlanCacheKeysRequireRealDigestsAndEpochs() {
           "production builder must reject unbound parameter shape");
 
   auto parser_authority = ProductionCacheKeyRequest();
-  parser_authority.parser_or_donor_authority_claimed = true;
+  parser_authority.parser_or_reference_authority_claimed = true;
   Require(opt::BuildProductionOptimizerPlanCacheKeyInput(parser_authority)
               .diagnostic_code ==
               "SB_OPTIMIZER_PLAN_CACHE_PRODUCTION_REQUEST_REFUSED",
-          "production builder must reject parser or donor cache authority");
+          "production builder must reject parser or reference cache authority");
 
   auto cluster_route = ProductionCacheKeyRequest();
   cluster_route.cluster_route_requested = true;

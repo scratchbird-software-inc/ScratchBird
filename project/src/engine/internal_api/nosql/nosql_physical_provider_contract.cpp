@@ -191,7 +191,7 @@ std::vector<std::string> EngineNoSqlProviderCompressionPolicyEvidence(
       "compression_adapter=nosql_physical_provider_contract",
       "compression_metadata_only=true",
       "provider_finality_authority=false",
-      "parser_or_donor_authority=false",
+      "parser_or_reference_authority=false",
   };
 }
 

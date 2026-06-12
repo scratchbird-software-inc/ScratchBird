@@ -15,6 +15,7 @@ add_library(sb_core_metrics
   metric_producer.cpp
   metric_registry.cpp
   metric_retention_policy.cpp
+  storage_metrics_management.cpp
 )
 
 target_compile_features(sb_core_metrics PUBLIC cxx_std_17)

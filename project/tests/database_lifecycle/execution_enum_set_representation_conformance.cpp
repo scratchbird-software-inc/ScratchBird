@@ -45,7 +45,7 @@ engine::EnumSetLabelDescriptor Label(std::uint8_t seed,
   label.ordinal = ordinal;
   label.stable_name = std::string(name);
   label.canonical_rendering = std::string(name);
-  label.donor_rendering_name = std::string(name);
+  label.reference_rendering_name = std::string(name);
   return label;
 }
 
@@ -101,12 +101,12 @@ void TestValidProfiles() {
           "EDR-028 rejected valid string enum with unknown label mapping");
 
   descriptor = ValidEnum();
-  descriptor.storage_kind = engine::EnumSetStorageKind::donor_native;
+  descriptor.storage_kind = engine::EnumSetStorageKind::reference_native;
   descriptor.unknown_label_policy =
-      engine::EnumSetUnknownLabelPolicy::donor_compatibility;
-  descriptor.donor_profile_uuid = Uuid(0x50);
+      engine::EnumSetUnknownLabelPolicy::reference_compatibility;
+  descriptor.reference_profile_uuid = Uuid(0x50);
   Require(engine::ValidateEnumSetRepresentationDescriptor(descriptor).ok(),
-          "EDR-028 rejected valid donor enum rendering");
+          "EDR-028 rejected valid reference enum rendering");
 
   descriptor = ValidSet();
   Require(engine::ValidateEnumSetRepresentationDescriptor(descriptor).ok(),
@@ -297,20 +297,20 @@ void TestLabelFailures() {
                 "EDR-028 accepted empty label alias");
 }
 
-void TestDonorAndUnknownPolicyFailures() {
+void TestReferenceAndUnknownPolicyFailures() {
   auto descriptor = ValidEnum();
-  descriptor.storage_kind = engine::EnumSetStorageKind::donor_native;
+  descriptor.storage_kind = engine::EnumSetStorageKind::reference_native;
   RequireStatus(descriptor,
-                engine::EnumSetRepresentationStatus::donor_profile_uuid_required,
-                "EDR-028 accepted donor rendering without profile UUID");
+                engine::EnumSetRepresentationStatus::reference_profile_uuid_required,
+                "EDR-028 accepted reference rendering without profile UUID");
 
   descriptor = ValidEnum();
-  descriptor.storage_kind = engine::EnumSetStorageKind::donor_native;
-  descriptor.donor_profile_uuid = Uuid(0x90);
-  descriptor.labels.front().donor_rendering_name.clear();
+  descriptor.storage_kind = engine::EnumSetStorageKind::reference_native;
+  descriptor.reference_profile_uuid = Uuid(0x90);
+  descriptor.labels.front().reference_rendering_name.clear();
   RequireStatus(descriptor,
-                engine::EnumSetRepresentationStatus::donor_rendering_required,
-                "EDR-028 accepted donor rendering without label names");
+                engine::EnumSetRepresentationStatus::reference_rendering_required,
+                "EDR-028 accepted reference rendering without label names");
 
   descriptor = ValidEnum();
   descriptor.unknown_label_policy =
@@ -335,6 +335,6 @@ int main() {
   TestIdentityFailures();
   TestShapeFailures();
   TestLabelFailures();
-  TestDonorAndUnknownPolicyFailures();
+  TestReferenceAndUnknownPolicyFailures();
   return EXIT_SUCCESS;
 }

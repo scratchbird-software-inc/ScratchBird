@@ -88,7 +88,7 @@ const CaseRow kCases[] = {
     {"SBSQL-C16916312DA6", "create_filespace_stmt_full", "CREATE FILESPACE fs LOCATION 'tmp';", "catalog.mutation.create_filespace", "SBLR_CATALOG_MUTATION_CREATE_FILESPACE", "filespace", false},
     {"SBSQL-C1D72E3D9A5B", "create_transform_stmt", "CREATE TRANSFORM tr;", "catalog.mutation.create_transform", "SBLR_CATALOG_MUTATION_CREATE_TRANSFORM", "transform", false},
     {"SBSQL-C22117F1754C", "create_secret_stmt", "CREATE SECRET sec;", "catalog.mutation.create_secret", "SBLR_CATALOG_MUTATION_CREATE_SECRET", "secret", false},
-    {"SBSQL-C75FEC2CAA69", "alter_donor_action", "ALTER DONOR d SET PROFILE p;", "catalog.mutation.alter_donor", "SBLR_CATALOG_MUTATION_ALTER_DONOR", "donor", true},
+    {"SBSQL-C75FEC2CAA69", "alter_reference_action", "ALTER REFERENCE d SET PROFILE p;", "catalog.mutation.alter_reference", "SBLR_CATALOG_MUTATION_ALTER_REFERENCE", "reference", true},
     {"SBSQL-CAB8A126ED9E", "create_pipeline_stmt", "CREATE PIPELINE pipe;", "catalog.mutation.create_pipeline", "SBLR_CATALOG_MUTATION_CREATE_PIPELINE", "pipeline", false},
     {"SBSQL-CDF9CAB99BFE", "create_collation_stmt", "CREATE COLLATION coll;", "catalog.mutation.create_collation", "SBLR_CATALOG_MUTATION_CREATE_COLLATION", "collation", false},
     {"SBSQL-D13498FA0EF4", "create_type_stmt", "CREATE TYPE typ;", "catalog.mutation.create_type", "SBLR_CATALOG_MUTATION_CREATE_TYPE", "type", false},

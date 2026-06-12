@@ -21,7 +21,7 @@ using scratchbird::core::platform::Status;
 struct DocumentCanonicalizationRequest {
   CanonicalTypeId type_id = CanonicalTypeId::document;
   std::string encoded_value;
-  std::string donor_profile;
+  std::string reference_profile;
   bool allow_hstore_domain = false;
 };
 

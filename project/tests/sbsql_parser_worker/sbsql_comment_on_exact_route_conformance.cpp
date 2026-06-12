@@ -224,8 +224,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!Contains(artifacts.envelope.payload, "replay_target") &&
               !Contains(artifacts.envelope.payload, std::string(kSql)),
           "COMMENT ON payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "COMMENT ON payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "COMMENT ON payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

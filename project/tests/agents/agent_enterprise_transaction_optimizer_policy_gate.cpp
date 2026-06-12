@@ -350,7 +350,7 @@ agents::AgentOptimizerReadinessEvidence OptimizerReadiness() {
   evidence.transformation_memo_complete = true;
   evidence.workload_regression_complete = true;
   evidence.driver_explain_complete = true;
-  evidence.donor_comparison_complete = true;
+  evidence.reference_comparison_complete = true;
   evidence.memory_feedback_complete = true;
   evidence.index_readiness_coupling_complete = true;
   evidence.llvm_memory_accounting_complete = true;

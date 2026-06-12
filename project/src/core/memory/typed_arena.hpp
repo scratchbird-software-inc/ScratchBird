@@ -36,7 +36,7 @@ inline Status ErrorStatus(StatusCode code) {
 }
 
 inline constexpr const char* kAuthorityScope =
-    "typed_arena_evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_donor_wal_or_benchmark_authority";
+    "typed_arena_evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_reference_wal_or_benchmark_authority";
 
 inline DiagnosticRecord MakeTypedArenaDiagnostic(Status status,
                                                  std::string diagnostic_code,

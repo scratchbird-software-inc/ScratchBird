@@ -322,7 +322,7 @@ WritePathBatchingResult ExecuteDurabilityWritePathBatch(
     return Refuse(request, "ORH_WRITE_BATCHING_NO_EXACT_FALLBACK",
                   "exact_unbatched_fallback_required");
   }
-  if (request.authority.parser_client_or_donor_write_batch_authority ||
+  if (request.authority.parser_client_or_reference_write_batch_authority ||
       request.authority.batch_metadata_finality_or_visibility_authority ||
       request.authority.batch_metadata_recovery_authority) {
     return Refuse(request, "ORH_WRITE_BATCHING_UNSAFE_AUTHORITY",

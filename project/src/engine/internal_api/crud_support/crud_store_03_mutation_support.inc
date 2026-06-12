@@ -105,12 +105,12 @@ std::string NormalizeCrudIndexProfile(const std::string& profile) {
   if (profile == "hash" || profile == "bitmap" || profile == "full_text" || profile == "spatial" ||
       profile == "vector_exact" || profile == "vector_hnsw" || profile == "vector_ivf" || profile == "columnar_zone" ||
       profile == "graph_adjacency" || profile == "expression" || profile == "partial" || profile == "covering" ||
-      profile == "in_memory" || profile == "donor_emulated") {
+      profile == "in_memory" || profile == "reference_emulated") {
     return profile;
   }
-  if (StartsWith(profile, "donor:") || StartsWith(profile, "postgres_") || StartsWith(profile, "mysql_") ||
+  if (StartsWith(profile, "reference:") || StartsWith(profile, "postgres_") || StartsWith(profile, "mysql_") ||
       StartsWith(profile, "firebird_")) {
-    return kCrudIndexFamilyDonorEmulated;
+    return kCrudIndexFamilyReferenceEmulated;
   }
   return profile;
 }
@@ -133,7 +133,7 @@ std::string CrudIndexFamilyForProfile(const std::string& profile) {
   if (normalized == "partial") { return kCrudIndexFamilyPartial; }
   if (normalized == "covering") { return kCrudIndexFamilyCovering; }
   if (normalized == "in_memory") { return kCrudIndexFamilyInMemory; }
-  if (normalized == "donor_emulated") { return kCrudIndexFamilyDonorEmulated; }
+  if (normalized == "reference_emulated") { return kCrudIndexFamilyReferenceEmulated; }
   return {};
 }
 

@@ -27,27 +27,27 @@ constexpr auto kAliasDefs = std::to_array<AliasDef>({
     {"SBSQL.LOWER", "data.scalar.lower", FunctionAliasSource::sb_native, "sbsql"},
     {"SBSQL.UPPER", "data.scalar.upper", FunctionAliasSource::sb_native, "sbsql"},
     {"SBSQL.LENGTH", "data.scalar.length", FunctionAliasSource::sb_native, "sbsql"},
-    {"POSTGRES.substring", "data.scalar.substring", FunctionAliasSource::donor, "postgresql"},
-    {"POSTGRES.lower", "data.scalar.lower", FunctionAliasSource::donor, "postgresql"},
-    {"POSTGRES.upper", "data.scalar.upper", FunctionAliasSource::donor, "postgresql"},
-    {"POSTGRES.length", "data.scalar.length", FunctionAliasSource::donor, "postgresql"},
-    {"POSTGRES.nextval", "data.sequence.next", FunctionAliasSource::donor, "postgresql"},
-    {"POSTGRES.currval", "data.sequence.current", FunctionAliasSource::donor, "postgresql"},
-    {"MYSQL.LCASE", "data.scalar.lower", FunctionAliasSource::donor, "mysql"},
-    {"MYSQL.UCASE", "data.scalar.upper", FunctionAliasSource::donor, "mysql"},
-    {"MYSQL.JSON_EXTRACT", "nosql.document.get", FunctionAliasSource::donor, "mysql"},
-    {"MYSQL.JSON_SET", "nosql.document.put", FunctionAliasSource::donor, "mysql"},
-    {"MYSQL.JSON_REMOVE", "nosql.document.delete", FunctionAliasSource::donor, "mysql"},
-    {"MYSQL.GROUP_CONCAT", "data.aggregate.string_agg", FunctionAliasSource::donor, "mysql"},
-    {"FIREBIRD.GEN_ID", "data.sequence.next", FunctionAliasSource::donor, "firebird"},
-    {"FIREBIRD.NEXT_VALUE_FOR", "data.sequence.next", FunctionAliasSource::donor, "firebird"},
-    {"SQLITE.json_extract", "nosql.document.get", FunctionAliasSource::donor, "sqlite"},
-    {"SQLITE.last_insert_rowid", "data.identity.current", FunctionAliasSource::donor, "sqlite"},
-    {"REDIS.GET", "nosql.kv.get", FunctionAliasSource::donor, "redis"},
-    {"REDIS.SET", "nosql.kv.put", FunctionAliasSource::donor, "redis"},
-    {"REDIS.DEL", "nosql.kv.delete", FunctionAliasSource::donor, "redis"},
-    {"NEO4J.shortestPath", "nosql.graph.path", FunctionAliasSource::donor, "neo4j"},
-    {"OPENSEARCH.match", "search.query", FunctionAliasSource::donor, "opensearch"},
+    {"POSTGRES.substring", "data.scalar.substring", FunctionAliasSource::reference, "postgresql"},
+    {"POSTGRES.lower", "data.scalar.lower", FunctionAliasSource::reference, "postgresql"},
+    {"POSTGRES.upper", "data.scalar.upper", FunctionAliasSource::reference, "postgresql"},
+    {"POSTGRES.length", "data.scalar.length", FunctionAliasSource::reference, "postgresql"},
+    {"POSTGRES.nextval", "data.sequence.next", FunctionAliasSource::reference, "postgresql"},
+    {"POSTGRES.currval", "data.sequence.current", FunctionAliasSource::reference, "postgresql"},
+    {"MYSQL.LCASE", "data.scalar.lower", FunctionAliasSource::reference, "mysql"},
+    {"MYSQL.UCASE", "data.scalar.upper", FunctionAliasSource::reference, "mysql"},
+    {"MYSQL.JSON_EXTRACT", "nosql.document.get", FunctionAliasSource::reference, "mysql"},
+    {"MYSQL.JSON_SET", "nosql.document.put", FunctionAliasSource::reference, "mysql"},
+    {"MYSQL.JSON_REMOVE", "nosql.document.delete", FunctionAliasSource::reference, "mysql"},
+    {"MYSQL.GROUP_CONCAT", "data.aggregate.string_agg", FunctionAliasSource::reference, "mysql"},
+    {"FIREBIRD.GEN_ID", "data.sequence.next", FunctionAliasSource::reference, "firebird"},
+    {"FIREBIRD.NEXT_VALUE_FOR", "data.sequence.next", FunctionAliasSource::reference, "firebird"},
+    {"SQLITE.json_extract", "nosql.document.get", FunctionAliasSource::reference, "sqlite"},
+    {"SQLITE.last_insert_rowid", "data.identity.current", FunctionAliasSource::reference, "sqlite"},
+    {"REDIS.GET", "nosql.kv.get", FunctionAliasSource::reference, "redis"},
+    {"REDIS.SET", "nosql.kv.put", FunctionAliasSource::reference, "redis"},
+    {"REDIS.DEL", "nosql.kv.delete", FunctionAliasSource::reference, "redis"},
+    {"NEO4J.shortestPath", "nosql.graph.path", FunctionAliasSource::reference, "neo4j"},
+    {"OPENSEARCH.match", "search.query", FunctionAliasSource::reference, "opensearch"},
     {"POSTGIS.ST_Distance", "spatial.distance", FunctionAliasSource::plugin_extension, "postgis"},
     {"POSTGIS.ST_Contains", "spatial.contains", FunctionAliasSource::plugin_extension, "postgis"},
     {"PGVECTOR.vector_l2_distance", "vector.distance", FunctionAliasSource::plugin_extension, "pgvector"},
@@ -92,7 +92,7 @@ FunctionParserProjectionRow BuildRow(const FunctionRegistry& registry,
   row.result_descriptor_rule = request.metadata_visible && entry != nullptr
                                    ? entry->optimizer_metadata.descriptor_rule
                                    : "redacted";
-  row.diagnostic_rendering_hint = "parser renders donor/client diagnostic text from canonical engine diagnostic";
+  row.diagnostic_rendering_hint = "parser renders reference/client diagnostic text from canonical engine diagnostic";
   row.refusal_policy = entry == nullptr ? "canonical_function_not_registered" :
                        row.projection_state == "disabled" ? "disabled_or_unimplemented" :
                        row.projection_state == "runtime_refusal" ? "policy_security_or_dependency_runtime_refusal" :
@@ -135,7 +135,7 @@ FunctionParserAuthorityDecision ValidateFunctionParserProjectionAuthority(
 const char* ToString(FunctionAliasSource source) {
   switch (source) {
     case FunctionAliasSource::sb_native: return "sb_native";
-    case FunctionAliasSource::donor: return "donor";
+    case FunctionAliasSource::reference: return "reference";
     case FunctionAliasSource::plugin_extension: return "plugin_extension";
   }
   return "unknown";

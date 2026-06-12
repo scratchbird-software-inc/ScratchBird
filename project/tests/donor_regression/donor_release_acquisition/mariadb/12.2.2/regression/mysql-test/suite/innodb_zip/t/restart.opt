@@ -1,5 +1,0 @@
---innodb-sys-tables
---innodb-sys-tablespaces
---skip-innodb-stats-persistent
---skip-innodb-buffer-pool-dump-at-shutdown
---skip-innodb-fast-shutdown

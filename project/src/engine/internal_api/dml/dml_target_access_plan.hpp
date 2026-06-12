@@ -62,7 +62,7 @@ struct DmlTargetAccessPlanRequest {
   bool security_recheck_planned = true;
   bool grants_proven = true;
   bool security_context_present = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   std::uint64_t observed_catalog_epoch = 0;
   std::uint64_t current_catalog_epoch = 0;
   std::uint64_t observed_security_epoch = 0;

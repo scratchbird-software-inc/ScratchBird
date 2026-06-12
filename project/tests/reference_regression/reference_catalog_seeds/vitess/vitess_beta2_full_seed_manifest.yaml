@@ -1,0 +1,1308 @@
+{
+  "seed_manifest_uuid": "ffad84e1-440b-5ff6-afc5-fe1192ebb1af",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "vitess-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_REFERENCE_CATALOG_SEED_VITESS_BETA2_FULL",
+  "seed_manifest_status": "profile_derived_private_seed_manifest",
+  "reference_family": "vitess",
+  "reference_version_profile_id": "vitess_beta2_full",
+  "reference_version_profile_uuid": "53af60a3-736d-5b49-9482-a62532b655a1",
+  "reference_exact_version": "Vitess beta2-full compatibility profile",
+  "new_database_recipe_id": "vitess_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-05-10T00:00:00Z",
+  "extraction_tool_ref": "docs/specifications/registries/reference-catalog-source-derived-seed-rows.yaml",
+  "normalization_profile_ref": "embedded:SB_REFERENCE_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "vt_heartbeat",
+      "reference_catalog_object_name": "_vt.heartbeat",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_heartbeat",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/misc/heartbeat.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_reparent_journal",
+      "reference_catalog_object_name": "_vt.reparent_journal",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_reparent_journal",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/misc/reparent_journal.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_semisync_heartbeat",
+      "reference_catalog_object_name": "_vt.semisync_heartbeat",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_semisync_heartbeat",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/misc/semisync_heartbeat.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_schema_migrations",
+      "reference_catalog_object_name": "_vt.schema_migrations",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_schema_migrations",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/onlineddl/schema_migrations.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_tables",
+      "reference_catalog_object_name": "_vt.tables",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_tables",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/schemaengine/tables.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_udfs",
+      "reference_catalog_object_name": "_vt.udfs",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_udfs",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/schemaengine/udfs.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_views",
+      "reference_catalog_object_name": "_vt.views",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_views",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/schemaengine/views.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_dt_participant",
+      "reference_catalog_object_name": "_vt.dt_participant",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_dt_participant",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/twopc/dt_participant.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_dt_state",
+      "reference_catalog_object_name": "_vt.dt_state",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_dt_state",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/twopc/dt_state.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_redo_state",
+      "reference_catalog_object_name": "_vt.redo_state",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_redo_state",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/twopc/redo_state.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_redo_statement",
+      "reference_catalog_object_name": "_vt.redo_statement",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_redo_statement",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/twopc/redo_statement.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_vdiff",
+      "reference_catalog_object_name": "_vt.vdiff",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_vdiff",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vdiff/vdiff.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_vdiff_log",
+      "reference_catalog_object_name": "_vt.vdiff_log",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_vdiff_log",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vdiff/vdiff_log.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_vdiff_table",
+      "reference_catalog_object_name": "_vt.vdiff_table",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_vdiff_table",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vdiff/vdiff_table.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_copy_state",
+      "reference_catalog_object_name": "_vt.copy_state",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_copy_state",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/copy_state.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_post_copy_action",
+      "reference_catalog_object_name": "_vt.post_copy_action",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_post_copy_action",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/post_copy_action.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_resharding_journal",
+      "reference_catalog_object_name": "_vt.resharding_journal",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_resharding_journal",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/resharding_journal.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_schema_version",
+      "reference_catalog_object_name": "_vt.schema_version",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_schema_version",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/schema_version.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_vreplication",
+      "reference_catalog_object_name": "_vt.vreplication",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_vreplication",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/vreplication.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "vt_vreplication_log",
+      "reference_catalog_object_name": "_vt.vreplication_log",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "vitess_sidecar",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_vitess_vt_vreplication_log",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/vreplication_log.sql",
+      "diagnostic_code": "REFERENCE.VITESS.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "column_id": "vt_heartbeat_object_name",
+      "object_ref": "vt_heartbeat",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b89325872546fbb571ad486c669dc9aae336bccbf78835a7d5d717f0cda3856c"
+    },
+    {
+      "column_id": "vt_heartbeat_object_kind",
+      "object_ref": "vt_heartbeat",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b33fbf4a9518427a016d5a2b6f9c890b940d5fc968c2ecd5e15d65355af22f66"
+    },
+    {
+      "column_id": "vt_heartbeat_source_ref",
+      "object_ref": "vt_heartbeat",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "70835d666f0c7d524302c49e4e1768c4b177b175ab7cf3a2b561183135ea42ac"
+    },
+    {
+      "column_id": "vt_reparent_journal_object_name",
+      "object_ref": "vt_reparent_journal",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "60216c2919a30ca2a7a617f1eda1b7dff384d63f6318c519b028a83b917c849b"
+    },
+    {
+      "column_id": "vt_reparent_journal_object_kind",
+      "object_ref": "vt_reparent_journal",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "331f1012db98db946bd8150b5cf3d683ef9f69cfc6d6f2d62434bc2e1a2ece05"
+    },
+    {
+      "column_id": "vt_reparent_journal_source_ref",
+      "object_ref": "vt_reparent_journal",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "d14b951f2b66115b78fb336f549510ea78fb5558f0996e95a77819eef9a97082"
+    },
+    {
+      "column_id": "vt_semisync_heartbeat_object_name",
+      "object_ref": "vt_semisync_heartbeat",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6760fd63a51d525ccc93a65edc70f088e238fcf4486491cb4e45ad6e78f9d397"
+    },
+    {
+      "column_id": "vt_semisync_heartbeat_object_kind",
+      "object_ref": "vt_semisync_heartbeat",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "8d704c890face202d7b57db895f8bb328fa6f407bba545b50d78601d5e6eaada"
+    },
+    {
+      "column_id": "vt_semisync_heartbeat_source_ref",
+      "object_ref": "vt_semisync_heartbeat",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "5b2b4afdf7e02d280d6dfd154ee2e91a2ee033475eea5621e134b9a670c3d9c2"
+    },
+    {
+      "column_id": "vt_schema_migrations_object_name",
+      "object_ref": "vt_schema_migrations",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "66d878a2acb67238aacbdc7bfb97c457132e9a2a9466dc731d6a3400fac4f04b"
+    },
+    {
+      "column_id": "vt_schema_migrations_object_kind",
+      "object_ref": "vt_schema_migrations",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "5f3b99a192ed610b838e579099cc1bbc418723f06883dfed9cffc318ac1dc73a"
+    },
+    {
+      "column_id": "vt_schema_migrations_source_ref",
+      "object_ref": "vt_schema_migrations",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "49446ee982681983d3caffab35f5f9309a61491512d2636b14cb2f6f4f6486b1"
+    },
+    {
+      "column_id": "vt_tables_object_name",
+      "object_ref": "vt_tables",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "96b0095430ccacc66a6c0241b830dcbfd1e7c2a371a1742130316c1edcf4b169"
+    },
+    {
+      "column_id": "vt_tables_object_kind",
+      "object_ref": "vt_tables",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b083415e2672b320f2135a1df257aaa81b9588c00cc05828ce1b71fa5fe6f399"
+    },
+    {
+      "column_id": "vt_tables_source_ref",
+      "object_ref": "vt_tables",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "b91763a28281530548920d27e26a977000d3c3beb00493cd78e769dbc012f5d8"
+    },
+    {
+      "column_id": "vt_udfs_object_name",
+      "object_ref": "vt_udfs",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6b6da6fae36a19d48d4ac9dc90e618ebc22d4fe99506bb707eaeef4f816e76b4"
+    },
+    {
+      "column_id": "vt_udfs_object_kind",
+      "object_ref": "vt_udfs",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "0424d1541546b724ae190bdaeab68bae391c3997eb7ccf2cbae84c5ece2a7822"
+    },
+    {
+      "column_id": "vt_udfs_source_ref",
+      "object_ref": "vt_udfs",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "34a76c9e3b130b41ff366b5fd6c33aa17b84fd59aeb04114fbcd131750754e80"
+    },
+    {
+      "column_id": "vt_views_object_name",
+      "object_ref": "vt_views",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d7aaf47008ab1533c69721f90bcac7bee487e695c2b2e22321a7f10968ca7c52"
+    },
+    {
+      "column_id": "vt_views_object_kind",
+      "object_ref": "vt_views",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "c4415ff30c68f6d7d34dba1c7e6c39b6848a9633bafa2ea54421e7cc5111f21a"
+    },
+    {
+      "column_id": "vt_views_source_ref",
+      "object_ref": "vt_views",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "750f3378ae31b889f57a3649ae97f32260661f5b3b0ebafc76a31efae1555b84"
+    },
+    {
+      "column_id": "vt_dt_participant_object_name",
+      "object_ref": "vt_dt_participant",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "e5834476735e1641be749f69d2a9df9c50a25acfbe3d9e1dc7e717d3f3c46ec2"
+    },
+    {
+      "column_id": "vt_dt_participant_object_kind",
+      "object_ref": "vt_dt_participant",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "fe839e624e9166579defb60015868f198072f86fad1f8485162dfdcb923665d9"
+    },
+    {
+      "column_id": "vt_dt_participant_source_ref",
+      "object_ref": "vt_dt_participant",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "3c060c8d51e1a94f13e3202ec6ba2887630a7e7a63c75d0edb944b6610860afa"
+    },
+    {
+      "column_id": "vt_dt_state_object_name",
+      "object_ref": "vt_dt_state",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "8de8123572fd26a3b3750194c8348685454c1ba148f80572bdb96eae6c3e501c"
+    },
+    {
+      "column_id": "vt_dt_state_object_kind",
+      "object_ref": "vt_dt_state",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "37a9b64926f82e15659616fba3b948476c05ec5f223aa287c6dcba5f38aac631"
+    },
+    {
+      "column_id": "vt_dt_state_source_ref",
+      "object_ref": "vt_dt_state",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "e39c0a76d105afca778bdf3c6190977f758f3f5f34a7da009e6c8c3dacef86bc"
+    },
+    {
+      "column_id": "vt_redo_state_object_name",
+      "object_ref": "vt_redo_state",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "0c939b76dbdd6eabcac0eb4ae0d4291af7b1c535f372e5d00c8ab6066dfa8317"
+    },
+    {
+      "column_id": "vt_redo_state_object_kind",
+      "object_ref": "vt_redo_state",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "c6cd26eb71c7ff325384f579fe05b94c57ccf1f6aca9cea748ddece179ee9e6b"
+    },
+    {
+      "column_id": "vt_redo_state_source_ref",
+      "object_ref": "vt_redo_state",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "886a241aac0069f5e1891989e0c8bec2537e9ca278b5929512d0619465a1cb82"
+    },
+    {
+      "column_id": "vt_redo_statement_object_name",
+      "object_ref": "vt_redo_statement",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b7ed1ae12a85976b7bb612dbb75d88842a0d47322ad0eaa57508bd79b09e8c65"
+    },
+    {
+      "column_id": "vt_redo_statement_object_kind",
+      "object_ref": "vt_redo_statement",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "13c8673456d8b393fb51473d3488a26b9634c1a2171a60376ae38f3649a04dfd"
+    },
+    {
+      "column_id": "vt_redo_statement_source_ref",
+      "object_ref": "vt_redo_statement",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "abac7d7efbbd07c17b20fedacde3a9ac32056306e52f3e790391695a7780516b"
+    },
+    {
+      "column_id": "vt_vdiff_object_name",
+      "object_ref": "vt_vdiff",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "dcf70bd96c5987fc70fa9ed72d275d9be0964e207a7bbecb3e04b612a2784e29"
+    },
+    {
+      "column_id": "vt_vdiff_object_kind",
+      "object_ref": "vt_vdiff",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4a861aa1830162300d7fe2e3dd49617813cba2ed9a07fec4e16d943081f48278"
+    },
+    {
+      "column_id": "vt_vdiff_source_ref",
+      "object_ref": "vt_vdiff",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "6c6a230b630a474df1529b4bfc82ba74e0514e0cccf9f3d519bd5748c2435f52"
+    },
+    {
+      "column_id": "vt_vdiff_log_object_name",
+      "object_ref": "vt_vdiff_log",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "166a903fa78cdd5754c5b0afb655436bcb280c7804e7c58f0ac3b88431cf4adc"
+    },
+    {
+      "column_id": "vt_vdiff_log_object_kind",
+      "object_ref": "vt_vdiff_log",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "c78ac9b82347d21d3d11a15199dd180b4879a4f9d8640a253d482f64bb4eaad5"
+    },
+    {
+      "column_id": "vt_vdiff_log_source_ref",
+      "object_ref": "vt_vdiff_log",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "2918c21d862fd7183d1f9b0615ea849d1d01be9728af94437a611b6ad8e642a1"
+    },
+    {
+      "column_id": "vt_vdiff_table_object_name",
+      "object_ref": "vt_vdiff_table",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "265f02c5971d98539bdbf8ede2809ecad89ef698e02b5c31d10172a62301bc64"
+    },
+    {
+      "column_id": "vt_vdiff_table_object_kind",
+      "object_ref": "vt_vdiff_table",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6a21a3e8c66566fa71042a403d080d382e3b4b3d90ed7081bdb81b446c4a31be"
+    },
+    {
+      "column_id": "vt_vdiff_table_source_ref",
+      "object_ref": "vt_vdiff_table",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "d9fd43f2b2b6a5465f4e9ffa7aa9f1491142f1ca9f0e0cc9a06af63b7bf9c728"
+    },
+    {
+      "column_id": "vt_copy_state_object_name",
+      "object_ref": "vt_copy_state",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "9fe39b4b4bdcf5bd94373d075c20af6a8747c11c1e77f55c69cd1bc3cf8bc294"
+    },
+    {
+      "column_id": "vt_copy_state_object_kind",
+      "object_ref": "vt_copy_state",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b1c5a236472980b11a2fdcd4b52a81d91af0b420b09f8ab159f4fe1fc0bc418f"
+    },
+    {
+      "column_id": "vt_copy_state_source_ref",
+      "object_ref": "vt_copy_state",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "dd9dc8379444147314df0648976edcc7589f266b39618aaf970195fad8ab5745"
+    },
+    {
+      "column_id": "vt_post_copy_action_object_name",
+      "object_ref": "vt_post_copy_action",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "f2445cdff8ecf01a2e9fdfa9959222d921d79e1bee9edae8383ac2eb58780d4a"
+    },
+    {
+      "column_id": "vt_post_copy_action_object_kind",
+      "object_ref": "vt_post_copy_action",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "abad8311a71722a3f61711c2706f6bbfbe05381b3487a24e6bd81ee70e4ca071"
+    },
+    {
+      "column_id": "vt_post_copy_action_source_ref",
+      "object_ref": "vt_post_copy_action",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "5be7eb8f70cc9ba75786443c331f1bf2149a4e5afd9290d124e1eca9fa7e8e99"
+    },
+    {
+      "column_id": "vt_resharding_journal_object_name",
+      "object_ref": "vt_resharding_journal",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "9b8d508b19c984489404cb8086e45aa7dae848f5928fee995780ebbe9abcbb27"
+    },
+    {
+      "column_id": "vt_resharding_journal_object_kind",
+      "object_ref": "vt_resharding_journal",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d2cb64237b4563abab2556dddaa001737e13172144a020152fb87f84b3afbd1e"
+    },
+    {
+      "column_id": "vt_resharding_journal_source_ref",
+      "object_ref": "vt_resharding_journal",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "3ebb19abf677f7c966dcdb3b9517d7e2dbf12157fbd138a422ce616596a1c204"
+    },
+    {
+      "column_id": "vt_schema_version_object_name",
+      "object_ref": "vt_schema_version",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "5881fbb4e44fc460891ed7035c6792e8175becd4818c65507e008dd6cd1b1bdd"
+    },
+    {
+      "column_id": "vt_schema_version_object_kind",
+      "object_ref": "vt_schema_version",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "44af6335a03eeccb1acdebe0bdad25c1c4df1b5772488000ec09e2bcf19ebf21"
+    },
+    {
+      "column_id": "vt_schema_version_source_ref",
+      "object_ref": "vt_schema_version",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "eed433c1ffa2f4c9c5b12f6bf604a56836bb1c5ac51a7eb9c94b5192dd12413f"
+    },
+    {
+      "column_id": "vt_vreplication_object_name",
+      "object_ref": "vt_vreplication",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "3210f7dd229de8941f24863b4963e3ed6377ab32ebc90471090df307f47162a4"
+    },
+    {
+      "column_id": "vt_vreplication_object_kind",
+      "object_ref": "vt_vreplication",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "01fcf081f1b5b8cd9a6c2da1a2e3d7014e9d9406e06646f1e097b711ffc79fba"
+    },
+    {
+      "column_id": "vt_vreplication_source_ref",
+      "object_ref": "vt_vreplication",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "eb566fba7a1fa98586ece2dc2aaf63b3afe4fdbc6d3fb7ec18b1a9cf8de03abf"
+    },
+    {
+      "column_id": "vt_vreplication_log_object_name",
+      "object_ref": "vt_vreplication_log",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "17d2dafabc1a0f77c85a5f02924907b36a4f962ea7a90eabee176abde433d373"
+    },
+    {
+      "column_id": "vt_vreplication_log_object_kind",
+      "object_ref": "vt_vreplication_log",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d6526f4d1e22c0a4d4f69cdbc59ecb18ccb7566642717b5a9ccc6549e5808c67"
+    },
+    {
+      "column_id": "vt_vreplication_log_source_ref",
+      "object_ref": "vt_vreplication_log",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "94f12ee43d46efcdcff31c246fa351c7a79964461eae02d4ce54796b503df34d"
+    }
+  ],
+  "default_row_set": [
+    {
+      "row_id": "vitess.seed.vt_heartbeat",
+      "reference_object_ref": "vt_heartbeat",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.heartbeat",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/misc/heartbeat.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "f438f54e29f3bd043d470c097b8faf4a67d7f5bd1c639a09933a4415a078f7bf"
+    },
+    {
+      "row_id": "vitess.seed.vt_reparent_journal",
+      "reference_object_ref": "vt_reparent_journal",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.reparent_journal",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/misc/reparent_journal.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "fd32b84dbf1d5491fb3640ec914009d8ca7c4f26e3f3ee1b8c797905d6429896"
+    },
+    {
+      "row_id": "vitess.seed.vt_semisync_heartbeat",
+      "reference_object_ref": "vt_semisync_heartbeat",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.semisync_heartbeat",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/misc/semisync_heartbeat.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "fb90e12b96aeb9e2b67562676eb82b34a15ea0d133f783ad6ebe7874fb1ed762"
+    },
+    {
+      "row_id": "vitess.seed.vt_schema_migrations",
+      "reference_object_ref": "vt_schema_migrations",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.schema_migrations",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/onlineddl/schema_migrations.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "8b9b982bfe3a891bfaf3081e5928fb181d065de6c2016f6df3d5d9b61779d909"
+    },
+    {
+      "row_id": "vitess.seed.vt_tables",
+      "reference_object_ref": "vt_tables",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.tables",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/schemaengine/tables.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "4878a1b88981e5d28d024e391169c3775f3243e884e9f056c540680c3bb02327"
+    },
+    {
+      "row_id": "vitess.seed.vt_udfs",
+      "reference_object_ref": "vt_udfs",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.udfs",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/schemaengine/udfs.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "25e3839a335c1abab4c4ff6dc9c080a011fd5e77a4a055f8ffc3b8a12c47acae"
+    },
+    {
+      "row_id": "vitess.seed.vt_views",
+      "reference_object_ref": "vt_views",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.views",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/schemaengine/views.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "0f053fdc268528ea025df620bc556b26279e7779a82b0144508c51849f736f7a"
+    },
+    {
+      "row_id": "vitess.seed.vt_dt_participant",
+      "reference_object_ref": "vt_dt_participant",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.dt_participant",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/twopc/dt_participant.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "b5406e331dbe49a29316fc251cd8454bb33e80fa4b5cdf9aee6b1090eea64157"
+    },
+    {
+      "row_id": "vitess.seed.vt_dt_state",
+      "reference_object_ref": "vt_dt_state",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.dt_state",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/twopc/dt_state.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "e55b6fa6c3fe48a364aa3586d951c0fbaf7fea8d4f6685bb9a703b0c2fe8c1f7"
+    },
+    {
+      "row_id": "vitess.seed.vt_redo_state",
+      "reference_object_ref": "vt_redo_state",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.redo_state",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/twopc/redo_state.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "3117706d4e284831e7af4d6a6135d38612e81bffa1600290278f2083f6396a42"
+    },
+    {
+      "row_id": "vitess.seed.vt_redo_statement",
+      "reference_object_ref": "vt_redo_statement",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.redo_statement",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/twopc/redo_statement.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "8bc0fdb2d4dd39bdd88e52f098aa2028c3c34477838989f05a39433cb3fb4e33"
+    },
+    {
+      "row_id": "vitess.seed.vt_vdiff",
+      "reference_object_ref": "vt_vdiff",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.vdiff",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vdiff/vdiff.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "7ab81894faef1f6df4c0921b742b8ec883a11e18d1e2e0cc04e116102dcc6e5c"
+    },
+    {
+      "row_id": "vitess.seed.vt_vdiff_log",
+      "reference_object_ref": "vt_vdiff_log",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.vdiff_log",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vdiff/vdiff_log.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "8461255d51cbfb85da24d2c6f082f156e6b1bd820392432b2f77f0c7e365bc8d"
+    },
+    {
+      "row_id": "vitess.seed.vt_vdiff_table",
+      "reference_object_ref": "vt_vdiff_table",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.vdiff_table",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vdiff/vdiff_table.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "1e7f8483d3695f63a697240324f6d3f8c8a34d201f693e53c455cec849b98e5d"
+    },
+    {
+      "row_id": "vitess.seed.vt_copy_state",
+      "reference_object_ref": "vt_copy_state",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.copy_state",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/copy_state.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "1fbb9d67198d60d06f43552e06c7212653a8dfc1ed654b8a7342767f71487396"
+    },
+    {
+      "row_id": "vitess.seed.vt_post_copy_action",
+      "reference_object_ref": "vt_post_copy_action",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.post_copy_action",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/post_copy_action.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "00eb452dd77f58126256dec638cf9609f88fc3a0012913ce6398126e4ebf1eaf"
+    },
+    {
+      "row_id": "vitess.seed.vt_resharding_journal",
+      "reference_object_ref": "vt_resharding_journal",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.resharding_journal",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/resharding_journal.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "1cc8bbb31fe05ae75d168ed1f58c09c92649efa5c3cf16efe5300d4493148436"
+    },
+    {
+      "row_id": "vitess.seed.vt_schema_version",
+      "reference_object_ref": "vt_schema_version",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.schema_version",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/schema_version.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "d55c552402c2594aa624bb0783878ec4c7f25e5de98ce2f67c3e1780d911ee71"
+    },
+    {
+      "row_id": "vitess.seed.vt_vreplication",
+      "reference_object_ref": "vt_vreplication",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.vreplication",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/vreplication.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "c38581548efc88a6f5700a726b9c8f9b87d568685b223e07f05d39a0e7e1dd53"
+    },
+    {
+      "row_id": "vitess.seed.vt_vreplication_log",
+      "reference_object_ref": "vt_vreplication_log",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "_vt.vreplication_log",
+      "definition_source_ref": "reference_source_reference:vitess/go/vt/sidecardb/schema/vreplication/vreplication_log.sql",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "576440e330fa81442368be8b0ab1f80b48a572bf4043b02ad1d305d548ca1f58"
+    }
+  ],
+  "default_metadata_set": [],
+  "default_security_row_set": [
+    {
+      "row_id": "vitess.security.default_visibility_policy",
+      "principal": "PUBLIC",
+      "secret_material": "redacted_not_applicable",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "row_hash": "4cac0dbf5c7c7f5518f78b854bb07d6371fef02a36e2fe9a691dcd2c7784e001"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "value_id": "vitess.runtime.database_identity",
+      "value_class": "instance_generated_uuid",
+      "emulation_rule": "generate ScratchBird UUIDv7 at database/profile create and expose only reference-compatible rendering",
+      "row_hash": "34f1cb440fe7164c733d4c4681a6ee7e403b5d78cb922991bebf49f9e6aa31d0"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "rule_id": "grant_filtered_metadata",
+      "rule": "visible only through reference metadata policy and ScratchBird engine authorization"
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "rule_id": "raw_secret_forbidden",
+      "rule": "raw secrets are never stored in reference seed manifests"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "rule_id": "report_only",
+      "rule": "catalog seed rows are report-only; mutation routes through UUID-backed ScratchBird catalog APIs"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_vitess_vt_heartbeat",
+      "reference_object_ref": "vt_heartbeat",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "97628bd7-3473-5cc2-82a7-e1f1ad5ff8c3",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_reparent_journal",
+      "reference_object_ref": "vt_reparent_journal",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "c562860b-36d1-50f3-86b4-7f3b1396dc02",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_semisync_heartbeat",
+      "reference_object_ref": "vt_semisync_heartbeat",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "99e3ba84-da05-5f86-bcd6-4f2698718d5d",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_schema_migrations",
+      "reference_object_ref": "vt_schema_migrations",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "2aa206e4-2e57-5787-8e50-a7450c6d3c14",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_tables",
+      "reference_object_ref": "vt_tables",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "8a8e64aa-ee73-54e5-a856-8832eff82f81",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_udfs",
+      "reference_object_ref": "vt_udfs",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "52b4cf08-3ccc-50c0-8322-c12e92369413",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_views",
+      "reference_object_ref": "vt_views",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a9cdc58e-3495-589c-9d8f-87530bd3d8be",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_dt_participant",
+      "reference_object_ref": "vt_dt_participant",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "c5dfc6df-f1c4-5904-b9d1-a066c14fb88c",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_dt_state",
+      "reference_object_ref": "vt_dt_state",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "01d85cac-763b-5f8a-9ce1-2d8e7d53f047",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_redo_state",
+      "reference_object_ref": "vt_redo_state",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "8294fde0-cb63-515e-b413-285f92f65d15",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_redo_statement",
+      "reference_object_ref": "vt_redo_statement",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "683fa4f7-fd6c-55f2-ada0-1d0ea69794fc",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_vdiff",
+      "reference_object_ref": "vt_vdiff",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "faa806c6-0b7c-57aa-9d8b-cdf7d03e1960",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_vdiff_log",
+      "reference_object_ref": "vt_vdiff_log",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "f5a6c6c0-f5e3-590f-9727-fe7448cff448",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_vdiff_table",
+      "reference_object_ref": "vt_vdiff_table",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "8f122362-2884-5636-898d-f4d5cf4d658b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_copy_state",
+      "reference_object_ref": "vt_copy_state",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "5f76fa11-d6f7-5ac3-be96-3b19afba3ef9",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_post_copy_action",
+      "reference_object_ref": "vt_post_copy_action",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "5b7ac512-8e6d-54b4-b85a-74f90f1e38f4",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_resharding_journal",
+      "reference_object_ref": "vt_resharding_journal",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "de972397-a27b-595a-b27c-50939007337b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_schema_version",
+      "reference_object_ref": "vt_schema_version",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d18f396e-0705-560d-80d6-4d253e2941d7",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_vreplication",
+      "reference_object_ref": "vt_vreplication",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "e9a7ab92-6e4f-5764-98ea-8ce7828402ec",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_vitess_vt_vreplication_log",
+      "reference_object_ref": "vt_vreplication_log",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "97c99da2-682d-573a-94b2-8a484d39831f",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "REFERENCE.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "REFERENCE.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "REFERENCE.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "REFERENCE.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "REFERENCE.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "REFERENCE.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "REFERENCE.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "rowset_hashes": {
+    "catalog_object_set": "27159fff7974ec1c743c0f08817edb61e550985bfbfe1ab154b5aef48746a777",
+    "catalog_column_set": "f0cd0daa893ca35c561788081549888a6c9a23736eb78fb1e897502b785411d4",
+    "default_row_set": "b3d6541ca199648f22dee4885ff1a00d9a7786ba3ccba90646a650557418a8e2",
+    "default_metadata_set": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "default_security_row_set": "3fc30f09487d912da81d8bc36edbafb144cb43d5d22c3dc722ee01447047de72",
+    "default_runtime_generated_value_set": "c85b1e8b045a652d358824e9957caa64eed666ebd6f68cbe954a5b10a95b1f2c",
+    "visibility_rule_set": "e3d11affebfa8ba62fe7e7f0c2014ac363d6d1ac1ccaa3f47aafd18109cdd20c",
+    "redaction_rule_set": "c081d87b2dadb71687177f97c210a024f823fba2383d3e299998c66deee46f2f",
+    "mutation_rule_set": "8b806b0d95bbd92e3c2aeb3d7d4ecd0fd0abc1aaf9c6a14639f8966080719fed",
+    "scratchbird_mapping_set": "fc930f258f5163c34abe7c5deb315e6dcc7e27ccf63c193fdbab0dbfc9a98194"
+  },
+  "manifest_hash": "3c2020ceed4ef9d81d82aeb09edabc6b3c4f4ecc1257396d84169b0612ebb44c"
+}

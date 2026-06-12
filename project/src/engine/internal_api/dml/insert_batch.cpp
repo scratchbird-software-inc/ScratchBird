@@ -150,7 +150,7 @@ const char* InsertBatchModeName(InsertBatchMode mode) {
     case InsertBatchMode::multi_values: return "multi_values";
     case InsertBatchMode::insert_select: return "insert_select";
     case InsertBatchMode::copy_import: return "copy_import";
-    case InsertBatchMode::donor_bulk: return "donor_bulk";
+    case InsertBatchMode::reference_bulk: return "reference_bulk";
     case InsertBatchMode::native_bulk: return "native_bulk";
   }
   return "unknown";
@@ -215,12 +215,12 @@ InsertBatchMode ResolveInsertBatchMode(const EngineInsertRowsRequest& request) {
     if (request.insert_mode == "multi_values") return InsertBatchMode::multi_values;
     if (request.insert_mode == "insert_select") return InsertBatchMode::insert_select;
     if (request.insert_mode == "copy_import") return InsertBatchMode::copy_import;
-    if (request.insert_mode == "donor_bulk") return InsertBatchMode::donor_bulk;
+    if (request.insert_mode == "reference_bulk") return InsertBatchMode::reference_bulk;
     if (request.insert_mode == "native_bulk") return InsertBatchMode::native_bulk;
   }
   if (InsertBatchOptionEnabled(request, "insert_mode=insert_select")) return InsertBatchMode::insert_select;
   if (InsertBatchOptionEnabled(request, "insert_mode=copy_import")) return InsertBatchMode::copy_import;
-  if (InsertBatchOptionEnabled(request, "insert_mode=donor_bulk")) return InsertBatchMode::donor_bulk;
+  if (InsertBatchOptionEnabled(request, "insert_mode=reference_bulk")) return InsertBatchMode::reference_bulk;
   if (InsertBatchOptionEnabled(request, "insert_mode=native_bulk")) return InsertBatchMode::native_bulk;
   return request.input_rows.size() <= 1 ? InsertBatchMode::singleton : InsertBatchMode::multi_values;
 }

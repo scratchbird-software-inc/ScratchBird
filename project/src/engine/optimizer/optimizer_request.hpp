@@ -20,7 +20,7 @@
 namespace scratchbird::engine::optimizer {
 
 // SEARCH_KEY: SB_OPTIMIZER_REQUEST_RESULT_ABI
-// Bound optimizer requests are engine-owned. SQL text, donor syntax, parser
+// Bound optimizer requests are engine-owned. SQL text, reference syntax, parser
 // claims, and durable object names are not accepted as optimizer authority.
 enum class OptimizerAuthorityStatus {
   kPresent,

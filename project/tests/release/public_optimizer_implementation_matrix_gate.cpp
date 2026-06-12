@@ -434,7 +434,7 @@ bool PlanCacheDependencyProof(std::string_view surface_id) {
   plan_record.metadata_only = true;
   plan_record.mga_visibility_recheck_required = true;
   plan_record.security_recheck_required = true;
-  plan_record.parser_or_donor_finality_authority = false;
+  plan_record.parser_or_reference_finality_authority = false;
 
   opt::OptimizerPlanCache cache;
   const auto put = cache.PutEnterprise(plan_record);
@@ -503,7 +503,7 @@ void ApplyAccessProof(const opt::EnterpriseOptimizerSurfaceEntry& entry,
   row->authority_clean = !target->cluster_candidate &&
                          access_request.base_row_mga_recheck_planned &&
                          access_request.base_row_security_recheck_planned &&
-                         !physical.parser_or_donor_evidence_authority;
+                         !physical.parser_or_reference_evidence_authority;
   row->runtime_execution_tested = row->candidate_generated &&
                                   row->physical_node_emitted &&
                                   row->executor_validation &&
@@ -613,7 +613,7 @@ opt::OptimizerRuntimeFeedback RuntimeFeedback() {
   feedback.max_freshness_microseconds = 60000000;
   feedback.advisory_only = true;
   feedback.mga_visibility_recheck_preserved = true;
-  feedback.parser_or_donor_authority = false;
+  feedback.parser_or_reference_authority = false;
   feedback.transaction_finality_authority = "engine_transaction_inventory";
   return feedback;
 }
@@ -769,19 +769,19 @@ void ApplyClusterProof(const opt::EnterpriseOptimizerSurfaceEntry& entry,
 
 void ApplyRemovedClaimProof(const opt::EnterpriseOptimizerSurfaceEntry& entry,
                             MatrixRow* row) {
-  row->scenario_id = entry.surface_id == "donor_authority"
-                         ? "donor_authority_refusal"
+  row->scenario_id = entry.surface_id == "reference_authority"
+                         ? "reference_authority_refusal"
                          : "parser_execution_authority_refusal";
-  if (entry.surface_id == "donor_authority") {
+  if (entry.surface_id == "reference_authority") {
     opt::OptimizerProductionBuildGateInput input;
-    input.donor_produced_evidence_enabled = true;
+    input.reference_produced_evidence_enabled = true;
     const auto result = opt::EvaluateOptimizerProductionBuildGate(input);
     row->fail_closed = !result.ok &&
                        Contains(result.diagnostics,
-                                "SB_OPT_PRODUCTION_GATE_DONOR_EVIDENCE_FORBIDDEN");
+                                "SB_OPT_PRODUCTION_GATE_REFERENCE_EVIDENCE_FORBIDDEN");
     row->diagnostic_code = row->fail_closed
-                               ? "SB_OPT_PRODUCTION_GATE_DONOR_EVIDENCE_FORBIDDEN"
-                               : "PCR060_DONOR_REFUSAL_MISSING";
+                               ? "SB_OPT_PRODUCTION_GATE_REFERENCE_EVIDENCE_FORBIDDEN"
+                               : "PCR060_REFERENCE_REFUSAL_MISSING";
   } else {
     auto request = BoundRequestFor("table_scan",
                                    AccessRequestFor("table_scan", AccessScenario{}));

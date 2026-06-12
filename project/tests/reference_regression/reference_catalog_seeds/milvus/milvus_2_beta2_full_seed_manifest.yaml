@@ -1,0 +1,2772 @@
+{
+  "seed_manifest_uuid": "00c92008-79f9-5393-b161-4e01fecfb9f6",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "milvus-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_REFERENCE_CATALOG_SEED_MILVUS_BETA2_FULL",
+  "seed_manifest_status": "actual_private_seed_manifest",
+  "reference_family": "milvus",
+  "reference_version_profile_id": "milvus_beta2_full",
+  "reference_version_profile_uuid": "54f242c8-c8bf-5be0-8ef4-d5447a8fc61f",
+  "reference_exact_version": "Milvus 2 beta2-full compatibility profile",
+  "new_database_recipe_id": "milvus_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-04-27T00:00:00Z",
+  "extraction_tool_ref": null,
+  "normalization_profile_ref": "embedded:SB_REFERENCE_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "collections",
+      "reference_catalog_object_name": "collections",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_collections",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "fields",
+      "reference_catalog_object_name": "fields",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_fields",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "partitions",
+      "reference_catalog_object_name": "partitions",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_partitions",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "indexes",
+      "reference_catalog_object_name": "indexes",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_indexes",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "aliases",
+      "reference_catalog_object_name": "aliases",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_aliases",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "users",
+      "reference_catalog_object_name": "users",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "superuser_only_metadata",
+      "scratchbird_mapping_ref": "map_milvus_users",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "roles",
+      "reference_catalog_object_name": "roles",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_roles",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "grants",
+      "reference_catalog_object_name": "grants",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_grants",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "resource_groups",
+      "reference_catalog_object_name": "resource_groups",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_resource_groups",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "segments",
+      "reference_catalog_object_name": "segments",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_segments",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "compaction_reports",
+      "reference_catalog_object_name": "compaction_reports",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_compaction_reports",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "import_jobs",
+      "reference_catalog_object_name": "import_jobs",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_import_jobs",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "metric_types",
+      "reference_catalog_object_name": "metric_types",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_metric_types",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "reference_catalog_object_name": "index_algorithm_types",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_milvus_index_algorithm_types",
+      "diagnostic_code": "REFERENCE.MILVUS.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "object_id": "collections",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "collections",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "collections",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "collections",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "collections",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "collections",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "collections",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "collections",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "collections",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "fields",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "fields",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "fields",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "fields",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "fields",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "fields",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "fields",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "fields",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "fields",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "partitions",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "partitions",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "partitions",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "partitions",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "partitions",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "partitions",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "partitions",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "partitions",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "partitions",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "indexes",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "indexes",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "indexes",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "indexes",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "indexes",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "indexes",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "indexes",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "indexes",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "indexes",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "aliases",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "aliases",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "aliases",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "aliases",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "aliases",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "aliases",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "aliases",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "aliases",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "aliases",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "users",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "users",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "users",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "users",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "users",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "users",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "users",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "users",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "users",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "roles",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "roles",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "roles",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "roles",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "roles",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "roles",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "roles",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "roles",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "roles",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "grants",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "grants",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "grants",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "grants",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "grants",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "grants",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "grants",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "grants",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "grants",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "resource_groups",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "resource_groups",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "resource_groups",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "resource_groups",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "resource_groups",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "resource_groups",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "resource_groups",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "resource_groups",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "resource_groups",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "segments",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "segments",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "segments",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "segments",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "segments",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "segments",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "segments",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "segments",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "segments",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "compaction_reports",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "compaction_reports",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "compaction_reports",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "compaction_reports",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "compaction_reports",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "compaction_reports",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "compaction_reports",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "compaction_reports",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "compaction_reports",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "import_jobs",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "import_jobs",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "import_jobs",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "import_jobs",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "import_jobs",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "import_jobs",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "import_jobs",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "import_jobs",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "import_jobs",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "metric_types",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "metric_types",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "metric_types",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "metric_types",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "metric_types",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "metric_types",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "metric_types",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "metric_types",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "metric_types",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    }
+  ],
+  "default_row_set": [
+    {
+      "object_id": "collections",
+      "row_ordinal": 1,
+      "row_key": "milvus:collections:default",
+      "values": {
+        "reference_name": "collections",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_collections",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "52186b2b6765370103be243d0c8614991e5859473b6aecf21569ebad93b6e5ef"
+    },
+    {
+      "object_id": "fields",
+      "row_ordinal": 2,
+      "row_key": "milvus:fields:default",
+      "values": {
+        "reference_name": "fields",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_fields",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "cd6e5d342c6b6d20954c79b1609f1f463b581d37541032dd6bf5800f682645be"
+    },
+    {
+      "object_id": "partitions",
+      "row_ordinal": 3,
+      "row_key": "milvus:partitions:default",
+      "values": {
+        "reference_name": "partitions",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_partitions",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "de2d29df34c4f7ef55211bcf900aeec7502f8ed689186e233156d2f7130cdf1a"
+    },
+    {
+      "object_id": "indexes",
+      "row_ordinal": 4,
+      "row_key": "milvus:indexes:default",
+      "values": {
+        "reference_name": "indexes",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_indexes",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "c674146a3c578247732c204aa4c7906a0f09371b691960bd1b7a8acba47a0abf"
+    },
+    {
+      "object_id": "aliases",
+      "row_ordinal": 5,
+      "row_key": "milvus:aliases:default",
+      "values": {
+        "reference_name": "aliases",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_aliases",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "c5f86ddf8a38664d70161ef77fbf687109433edff26eed58c1da7529ede874bc"
+    },
+    {
+      "object_id": "users",
+      "row_ordinal": 6,
+      "row_key": "milvus:users:default",
+      "values": {
+        "reference_name": "users",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_users",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "superuser_only_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "redacted_metadata"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "3782516880c774a5daf7328645c98e976189253c9ab0d855d6ce8f05ddf01c80"
+    },
+    {
+      "object_id": "roles",
+      "row_ordinal": 7,
+      "row_key": "milvus:roles:default",
+      "values": {
+        "reference_name": "roles",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_roles",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "5ee2b5c17dac12148769335e5723f1703e5b0d221cedde2f97513ca1509d4593"
+    },
+    {
+      "object_id": "grants",
+      "row_ordinal": 8,
+      "row_key": "milvus:grants:default",
+      "values": {
+        "reference_name": "grants",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_grants",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "c177fd51a1e23c5578869580dd504f1d24fa30d69461db0509f3fa57c63be94f"
+    },
+    {
+      "object_id": "resource_groups",
+      "row_ordinal": 9,
+      "row_key": "milvus:resource_groups:default",
+      "values": {
+        "reference_name": "resource_groups",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_resource_groups",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "15845a1a94b05e48d7bf8943c1c1a9c20e93d96d5fe6e9dac23531fa7f99f862"
+    },
+    {
+      "object_id": "segments",
+      "row_ordinal": 10,
+      "row_key": "milvus:segments:default",
+      "values": {
+        "reference_name": "segments",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_segments",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "3498a6a830865872400d136880de9cf2481ac890a5045326656e1ec5e9e34049"
+    },
+    {
+      "object_id": "compaction_reports",
+      "row_ordinal": 11,
+      "row_key": "milvus:compaction_reports:default",
+      "values": {
+        "reference_name": "compaction_reports",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_compaction_reports",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "17983cc6d738d82ae2558d066f39246cbbdfd74f5ec88dcff7cb93f06babb448"
+    },
+    {
+      "object_id": "import_jobs",
+      "row_ordinal": 12,
+      "row_key": "milvus:import_jobs:default",
+      "values": {
+        "reference_name": "import_jobs",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_import_jobs",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "55b2630fd80fa4b3ce5b8b386570de407d178ba2421b2fcc1638e2d1494db5e8"
+    },
+    {
+      "object_id": "metric_types",
+      "row_ordinal": 13,
+      "row_key": "milvus:metric_types:default",
+      "values": {
+        "reference_name": "metric_types",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_metric_types",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "60314cb45ec6a6be7471de78ed2bc0e49fd1653be4cd898ccf8b61a92025ad92"
+    },
+    {
+      "object_id": "index_algorithm_types",
+      "row_ordinal": 14,
+      "row_key": "milvus:index_algorithm_types:default",
+      "values": {
+        "reference_name": "index_algorithm_types",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_milvus_index_algorithm_types",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "collection_id",
+        "partition_id",
+        "field_id"
+      ],
+      "row_hash": "c37d8b8e3b46458f35665fe5319d41a3bad9bed881355636e436967fed078d9a"
+    }
+  ],
+  "default_metadata_set": [
+    {
+      "metadata_row_key": "milvus:collections:metadata",
+      "object_id": "collections",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "7d7d4720943115baa3fa3aedc26bd24d07654d1f6bcf5c1aa1568e5fe5edd2da"
+    },
+    {
+      "metadata_row_key": "milvus:fields:metadata",
+      "object_id": "fields",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "7c085dcfecd7c8115734777ee4258e9ddc3fe1d2db77f66c07a2c12349d320ba"
+    },
+    {
+      "metadata_row_key": "milvus:partitions:metadata",
+      "object_id": "partitions",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "277dfb63f4b1978ae6e34518903c63e5f7eeba374bc6e0d9c58c8962f9861728"
+    },
+    {
+      "metadata_row_key": "milvus:indexes:metadata",
+      "object_id": "indexes",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "f221427c79ab015a16494f626bf4152d263fb3c87c61cce0fffbc197d6f2d99e"
+    },
+    {
+      "metadata_row_key": "milvus:aliases:metadata",
+      "object_id": "aliases",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "4742ba5fbd30054a68571a905296faa36c78d281f799f8d7bc5f8940dd05218c"
+    },
+    {
+      "metadata_row_key": "milvus:users:metadata",
+      "object_id": "users",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "superuser_only_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "bf1f53ebc2fd5f2c8ad3e59958defbd8705aa6d80cb32cdfeb85d2c2ccc6aec7"
+    },
+    {
+      "metadata_row_key": "milvus:roles:metadata",
+      "object_id": "roles",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "462fb017ec8c2b584f775e6c9e4702fb15f8e72ddf607f9ca15fdd8646242b19"
+    },
+    {
+      "metadata_row_key": "milvus:grants:metadata",
+      "object_id": "grants",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "9efcd41fe447821df879a060e14034751f50f87c60158b6671df7f871bf6912e"
+    },
+    {
+      "metadata_row_key": "milvus:resource_groups:metadata",
+      "object_id": "resource_groups",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "2234c409c0e95e2afc95af0b4bd61396e8e86e6344406e97685d9059f4bc5dde"
+    },
+    {
+      "metadata_row_key": "milvus:segments:metadata",
+      "object_id": "segments",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "50d1eb2feae6d1facd759f382205ec1da9cbbd6bc2e483bc51d955dbce23d3fa"
+    },
+    {
+      "metadata_row_key": "milvus:compaction_reports:metadata",
+      "object_id": "compaction_reports",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "71fdc7093f4ecc682a84b967af5d1bbf25c338238b6c2c5ae6d303ba99b10cee"
+    },
+    {
+      "metadata_row_key": "milvus:import_jobs:metadata",
+      "object_id": "import_jobs",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "263ed175cf8ac9d93c92484b666ee3078ef96bd7805403ddb8d5591dad0d1deb"
+    },
+    {
+      "metadata_row_key": "milvus:metric_types:metadata",
+      "object_id": "metric_types",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "47881b71ee171fd22f88d58ee7c6335a3a669de767e9c8003ef92b43e2ccefbd"
+    },
+    {
+      "metadata_row_key": "milvus:index_algorithm_types:metadata",
+      "object_id": "index_algorithm_types",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "aa3892feb9d9e7060b3e4cfcb95a4daeb25d2a9f5a70c482ec6cfe660d3317cf"
+    }
+  ],
+  "default_security_row_set": [
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "milvus:security:1",
+      "values": {
+        "security_seed_name": "user credential redacted",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "71117f920e3162665f5e992bcfa65e7c93b1e92a3a1a07a7b88743120d5b68b1"
+    },
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "milvus:security:2",
+      "values": {
+        "security_seed_name": "token secret_ref",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "e65fe7eb055b6dcd7763b70cab8fdccab986a6d52556457b34a0f28905c80a06"
+    },
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "milvus:security:3",
+      "values": {
+        "security_seed_name": "TLS material secret_ref",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "cd8e4f8d81519a6b82a802daef771f4546c7097b6a909a820690e9c7737f7219"
+    },
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "milvus:security:4",
+      "values": {
+        "security_seed_name": "object-store credential secret_ref",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "035ddebd0528fdb5b1fe390212b0810a5bfebbc4b5b8248d2e83d58eb70fbeee"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "runtime_value_id": "collection_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "collection_id",
+      "reference_behavior": "collection_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "partition_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "partition_id",
+      "reference_behavior": "partition_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "field_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "field_id",
+      "reference_behavior": "field_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "segment_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "segment_id",
+      "reference_behavior": "segment_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "index_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "index_id",
+      "reference_behavior": "index_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "load_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "load_id",
+      "reference_behavior": "load_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "resource_group_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "resource_group_id",
+      "reference_behavior": "resource_group_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "index_build_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "index_build_id",
+      "reference_behavior": "index_build_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "counter",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "counter",
+      "reference_behavior": "counter is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "computed_on_read",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "creation_timestamp",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "creation_timestamp",
+      "reference_behavior": "creation_timestamp is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "computed_on_read",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "visibility_rule_id": "public_metadata",
+      "rule": "public",
+      "security_authority": "sys.security local policy; cluster.sys.security only when cluster exists",
+      "applies_to": [
+        "non-secret built-in metadata"
+      ]
+    },
+    {
+      "visibility_rule_id": "grant_filtered_metadata",
+      "rule": "grant_filtered",
+      "security_authority": "effective user grants, roles, and external group UUID cache",
+      "applies_to": [
+        "user objects and privilege-dependent metadata"
+      ]
+    },
+    {
+      "visibility_rule_id": "session_filtered_metadata",
+      "rule": "session_filtered",
+      "security_authority": "attachment/session policy",
+      "applies_to": [
+        "monitoring, command, task, connection, and status surfaces"
+      ]
+    },
+    {
+      "visibility_rule_id": "superuser_only_metadata",
+      "rule": "superuser_only",
+      "security_authority": "SysArch/root/superuser equivalent policy",
+      "applies_to": [
+        "security catalogs and privileged settings"
+      ]
+    },
+    {
+      "visibility_rule_id": "redacted_metadata",
+      "rule": "redacted",
+      "security_authority": "redaction_rule_set",
+      "applies_to": [
+        "secret-bearing rows and fields"
+      ]
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "redaction_rule_id": "raw_secret_forbidden",
+      "rule": "raw passwords, password hashes, tokens, certificates, private keys, replication secrets, and host secrets are never stored raw",
+      "replacement": "secret_ref or redacted sentinel",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN"
+    },
+    {
+      "redaction_rule_id": "host_path_redaction",
+      "rule": "host paths and file-system locations are redacted unless policy explicitly exposes them",
+      "replacement": "redacted_path",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN"
+    },
+    {
+      "redaction_rule_id": "network_endpoint_redaction",
+      "rule": "host names, peer addresses, node ids, and topology values are redacted when policy marks topology sensitive",
+      "replacement": "redacted_endpoint",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN"
+    },
+    {
+      "redaction_rule_id": "generated_secret_ref",
+      "rule": "setup-generated credentials are represented by generated_at_setup secret refs",
+      "replacement": "secret_ref:generated_at_setup",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "mutation_rule_id": "read_only_overlay",
+      "rule": "read_only",
+      "write_path": "none",
+      "rollback_behavior": "none"
+    },
+    {
+      "mutation_rule_id": "reference_ddl_translation",
+      "rule": "reference_compatible_write",
+      "write_path": "parser_overlay_to_native_v3_catalog",
+      "rollback_behavior": "transactional"
+    },
+    {
+      "mutation_rule_id": "native_v3_only",
+      "rule": "native_v3_only",
+      "write_path": "native_v3_command",
+      "rollback_behavior": "transactional"
+    },
+    {
+      "mutation_rule_id": "migration_only",
+      "rule": "migration_only",
+      "write_path": "migration_stage",
+      "rollback_behavior": "transactional"
+    },
+    {
+      "mutation_rule_id": "report_only",
+      "rule": "report_only",
+      "write_path": "none",
+      "rollback_behavior": "none"
+    },
+    {
+      "mutation_rule_id": "explicitly_unsupported",
+      "rule": "explicitly_unsupported",
+      "write_path": "none",
+      "rollback_behavior": "none"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_milvus_collections",
+      "reference_object_ref": "collections",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "093eb666-b48a-52b4-8231-3e38047d5105",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_fields",
+      "reference_object_ref": "fields",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "e2acb620-6b9b-5052-a086-d6caf8bed1c4",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_partitions",
+      "reference_object_ref": "partitions",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "e114379f-028b-526c-8853-933db476f551",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_indexes",
+      "reference_object_ref": "indexes",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "19cf4506-b788-59b0-9017-e7e17b571b01",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_aliases",
+      "reference_object_ref": "aliases",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "9c23b9fb-2434-5a17-bbc8-5b32b9ef8e08",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_users",
+      "reference_object_ref": "users",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d7df14ef-3388-5da7-904e-cfb140bbdfbb",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_roles",
+      "reference_object_ref": "roles",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "bda79f71-b25b-5c5a-a67f-cd44168cbef3",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_grants",
+      "reference_object_ref": "grants",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "4a3e84f6-760d-5663-b1a5-1e68afe6edf9",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_resource_groups",
+      "reference_object_ref": "resource_groups",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "390f0d3f-057d-5512-86c0-98f608ffce1a",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_segments",
+      "reference_object_ref": "segments",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "b190443f-e636-54ed-a1f3-da91c9f5b1d0",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_compaction_reports",
+      "reference_object_ref": "compaction_reports",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d310abe8-47bf-5eda-8a98-23239c750a15",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_import_jobs",
+      "reference_object_ref": "import_jobs",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "2e81bce6-da3e-5eeb-82fa-e5f110b68fc4",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_metric_types",
+      "reference_object_ref": "metric_types",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "db0f9762-fb3e-57ff-a406-38afaf758059",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_milvus_index_algorithm_types",
+      "reference_object_ref": "index_algorithm_types",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "1d4aad34-2ff7-5289-8f19-10eb6b61ed7d",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "rowset_hashes": {
+    "catalog_object_set": "0280004ad6d027d51ac0d4dd76f98f536c5f31c28132a98530808b84cafa3748",
+    "catalog_column_set": "9b757f2672455d0a232a491af7d65a928dc107e441a2950ef35d41c876304c6c",
+    "default_row_set": "15948e0c558559b4010714d362b700ee6317d3cb12350c52cde7dd3e27e38e6e",
+    "default_metadata_set": "87bae5fb53372969ddbe3608f517105f89b59875cb4c76f19a5aac131e81dabb",
+    "default_security_row_set": "f63d4213084b00b3d6a4e6b78b0b3445332b1587eb4b7015de4bcee9ddb339ed",
+    "default_runtime_generated_value_set": "4850dd29807eb672aef436a2256195e0b74c76d4971194f73dd9b44b620ce256",
+    "visibility_rule_set": "a4ff62809b18a5598c9c433aaf85518e9b890ab27281c2a10c835bdf3e4b4ebb",
+    "redaction_rule_set": "19c1ee9c4c8a2c3b8a0284f1b8e67a0979c7b8f758b983f9f98df014c737cbc3",
+    "mutation_rule_set": "1a4c0ffc820a04116da2585f61eafa9c5e9f6a383bd54b9e1ce8bde110bf90ba",
+    "scratchbird_mapping_set": "3ff47eaef258bcf08158377facdf0f63eb06b425eaed9ef69fd08bddeb29d86b"
+  },
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "REFERENCE.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "REFERENCE.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "REFERENCE.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "REFERENCE.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "REFERENCE.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "REFERENCE.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "REFERENCE.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "manifest_hash": "adc37b5b53dfb3f6e5508fbc3862cc7ba17e8f971fe83578e5b57b034bff9553"
+}

@@ -124,7 +124,7 @@ void WriteFile(const std::filesystem::path& path, const std::string& text) {
 }
 
 void AddCommonAuthorityEvidence(GateRecord* record) {
-  record->evidence.push_back("parser_client_donor_authority=false");
+  record->evidence.push_back("parser_client_reference_authority=false");
   record->evidence.push_back(
       "mga_authority=engine_transaction_inventory_native_metadata");
 }
@@ -144,8 +144,8 @@ void Record(GateRecord record) {
           "MGA/native engine authority evidence missing for " + record.family);
   Require(HasPrefix(record.diagnostics, kUnsafePrefix),
           "unsafe diagnostic class missing for " + record.family);
-  Require(Has(record.evidence, "parser_client_donor_authority=false"),
-          "parser/client/donor authority was not refused for " + record.family);
+  Require(Has(record.evidence, "parser_client_reference_authority=false"),
+          "parser/client/reference authority was not refused for " + record.family);
   g_records.push_back(std::move(record));
 }
 
@@ -246,7 +246,7 @@ CompatibilityDecision OpenMetadata(PersistedMetadataRecord record,
                               std::to_string(record.persisted_schema));
   decision.evidence.push_back("generation=" + std::to_string(record.generation));
   decision.evidence.push_back("provider_id=" + record.contract.provider_id);
-  decision.evidence.push_back("parser_client_donor_authority=false");
+  decision.evidence.push_back("parser_client_reference_authority=false");
   decision.evidence.push_back(
       "mga_authority=engine_transaction_inventory_native_metadata");
 
@@ -297,7 +297,7 @@ CompatibilityDecision OpenMetadata(PersistedMetadataRecord record,
 CompatibilityDecision RepairMetadata(PersistedMetadataRecord record) {
   CompatibilityDecision decision;
   decision.evidence.push_back("family=" + record.contract.family);
-  decision.evidence.push_back("parser_client_donor_authority=false");
+  decision.evidence.push_back("parser_client_reference_authority=false");
   decision.evidence.push_back(
       "mga_authority=engine_transaction_inventory_native_metadata");
   if (record.self_authoritative_repair_claimed) {
@@ -331,7 +331,7 @@ CompatibilityDecision SupportBundleMetadata(const PersistedMetadataRecord& recor
   decision.evidence.push_back("support_bundle_repair_source=" +
                               record.repair_source);
   decision.evidence.push_back("support_bundle_sensitive_payload=<redacted>");
-  decision.evidence.push_back("parser_client_donor_authority=false");
+  decision.evidence.push_back("parser_client_reference_authority=false");
   const std::string rendered = decision.evidence.back() +
                                "|support_bundle_sensitive_payload=<redacted>";
   Require(rendered.find("secret=") == std::string::npos,
@@ -489,13 +489,13 @@ GateRecord ProveCompressionDictionaryFamily() {
 
   auto self_authority =
       BeneficialCompressionRequest(idx::CompressionFamily::kDocumentShape);
-  self_authority.parser_or_donor_authority = true;
+  self_authority.parser_or_reference_authority = true;
   const auto self_authority_refused =
       idx::EvaluateCompressionPolicy(self_authority);
   Require(!self_authority_refused.accepted &&
               Has(self_authority_refused.diagnostics,
-                  "compression_policy.unsafe_parser_or_donor_authority"),
-          "compression dictionary accepted parser/donor authority");
+                  "compression_policy.unsafe_parser_or_reference_authority"),
+          "compression dictionary accepted parser/reference authority");
 
   GateRecord record;
   record.family = "compression_dictionary";
@@ -508,7 +508,7 @@ GateRecord ProveCompressionDictionaryFamily() {
   record.mga_authority_preserved =
       Has(current.dictionary.evidence, "finality_authority=false") &&
       Has(current.dictionary.evidence, "visibility_authority=false") &&
-      Has(accepted.evidence, "parser_or_donor_authority=false");
+      Has(accepted.evidence, "parser_or_reference_authority=false");
   record.diagnostics.push_back(Diagnostic(record.family, "DICTIONARY_REFUSED"));
   record.evidence.insert(record.evidence.end(),
                          accepted.evidence.begin(),
@@ -1049,7 +1049,7 @@ GateRecord ProveProviderGenerationFamily() {
                          repaired.evidence.end());
   record.evidence.push_back("old_open_class=compatible_provider_generation");
   record.evidence.push_back("backfill_source=authoritative_engine_metadata");
-  record.evidence.push_back("parser_client_donor_authority=false");
+  record.evidence.push_back("parser_client_reference_authority=false");
   return record;
 }
 

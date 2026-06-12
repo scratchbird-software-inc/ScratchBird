@@ -232,7 +232,7 @@ ServerObservabilityState InitializeServerObservability(const ServerBootstrapConf
   SeedMetric(&state, "sys.metrics.ipc.session.lifecycle_route_total", "counter", 0,
              {{"operation", "all"}, {"outcome", "all"}});
   SeedMetric(&state, "sys.metrics.parser.lifecycle_render_total", "counter", 0,
-             {{"operation", "all"}, {"donor_profile", "all"}, {"outcome", "all"}});
+             {{"operation", "all"}, {"reference_profile", "all"}, {"outcome", "all"}});
 
   RecordServerAuditEvent(&state, "server.startup", "completed", "server observability initialized");
   RecordServerLog(&state, {"server.startup", "info", "sb_server", {}, "server observability initialized", "clean"});
@@ -363,7 +363,7 @@ std::vector<std::string> CanonicalLifecycleObservabilityOperations() {
       "parser_package_route",
       "upgrade_database",
       "refuse_upgrade_database",
-      "donor_mapping_render"};
+      "reference_mapping_render"};
 }
 
 bool LifecycleOperationRequiresCacheInvalidation(std::string_view operation_key) {
@@ -421,7 +421,7 @@ ServerLifecycleObservabilityRecord RecordServerLifecycleObservability(
        {"database_uuid", event.database_uuid},
        {"session_uuid", event.session_uuid},
        {"request_uuid", event.request_uuid},
-       {"donor_profile_uuid", event.donor_profile_uuid},
+       {"reference_profile_uuid", event.reference_profile_uuid},
        {"private_detail", event.private_detail},
        {"cache_invalidation_required", event.cache_invalidation_required ? "true" : "false"}},
       "diag.server.lifecycle.v1",
@@ -474,14 +474,14 @@ ServerLifecycleObservabilityRecord RecordServerLifecycleObservability(
                           {{"operation", event.operation_key},
                            {"outcome", LifecycleMetricOutcome(event.outcome)}});
   }
-  if (event.route_family == "parser" || !event.donor_profile_uuid.empty()) {
+  if (event.route_family == "parser" || !event.reference_profile_uuid.empty()) {
     IncrementServerMetric(state,
                           "sys.metrics.parser.lifecycle_render_total",
                           1,
                           {{"operation", event.operation_key},
-                           {"donor_profile", event.donor_profile_uuid.empty()
+                           {"reference_profile", event.reference_profile_uuid.empty()
                                                 ? "native"
-                                                : event.donor_profile_uuid},
+                                                : event.reference_profile_uuid},
                            {"outcome", LifecycleMetricOutcome(event.outcome)}});
   }
   if (event.cache_invalidation_required) {

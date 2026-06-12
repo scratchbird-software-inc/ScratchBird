@@ -279,7 +279,7 @@ std::string BridgeCapabilitiesJson(std::string_view family,
       << "\"provider_family\":\"" << EscapeJson(family) << "\","
       << "\"package_role\":\"parser_support." << EscapeJson(family) << "\","
       << "\"single_common_abi\":true,"
-      << "\"donor_specialization\":\"" << EscapeJson(family) << "\","
+      << "\"compatibility_specialization\":\"" << EscapeJson(family) << "\","
       << "\"engine_authorizes_before_udr\":true,"
       << "\"mga_transaction_authority\":\"per_database_engine_mga\","
       << "\"parser_transaction_authority\":false,"
@@ -327,7 +327,7 @@ UdrResult BridgeDispatch(std::string_view request_packet,
                          std::string_view context_packet,
                          std::string_view provider_name,
                          std::string_view family,
-                         bool donor_legacy_bridge) {
+                         bool compatibility_legacy_bridge) {
   if (HasRawSecretMaterial(request_packet)) {
     return BridgeRefuse("UDR.BRIDGE.SECRET_MATERIAL_DENIED",
                         "Bridge requests must use secret references, not raw secrets.",
@@ -441,7 +441,7 @@ UdrResult BridgeDispatch(std::string_view request_packet,
   out << "{\"bridge_abi\":\"sb_universal_bridge_v1\","
       << "\"provider\":\"" << EscapeJson(provider_name) << "\","
       << "\"provider_family\":\"" << EscapeJson(family) << "\","
-      << "\"donor_legacy_bridge\":" << BoolJson(donor_legacy_bridge) << ','
+      << "\"compatibility_legacy_bridge\":" << BoolJson(compatibility_legacy_bridge) << ','
       << "\"operation\":\"" << EscapeJson(operation) << "\","
       << "\"sblr_opcode\":\"" << EscapeJson(BridgeOpcodeForOperation(operation)) << "\","
       << "\"result_class\":\"admitted\","

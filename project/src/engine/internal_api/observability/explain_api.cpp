@@ -102,7 +102,7 @@ void AddExplainOdf108Surface(
       "odf108_explain_runtime_compatibility_count",
       std::to_string(snapshot.odf108_runtime_compatibility.size()));
   AddApiBehaviorEvidence(result, "parser_finality_authority", "false");
-  AddApiBehaviorEvidence(result, "donor_finality_authority", "false");
+  AddApiBehaviorEvidence(result, "reference_finality_authority", "false");
   AddApiBehaviorEvidence(result, "wal_recovery_authority", "false");
 }
 

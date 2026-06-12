@@ -48,7 +48,7 @@ struct DmlRowLocatorStreamRequest {
   bool durable_mga_inventory_proof = false;
   bool mga_visibility_recheck_planned = true;
   bool security_recheck_planned = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool index_or_cache_finality_authority = false;
   bool applicable_physical_index_exists = false;
   bool table_scan_fallback_allowed = false;

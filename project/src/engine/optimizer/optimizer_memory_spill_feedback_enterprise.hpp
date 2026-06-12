@@ -22,7 +22,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: OEIC_MEMORY_SPILL_FEEDBACK_ENTERPRISE
 // Governed memory/spill feedback is optimizer-advisory evidence only. It can
 // tune grants and spill costs, but it cannot own transaction finality,
-// visibility, parser behavior, donor behavior, security, or recovery outcome.
+// visibility, parser behavior, reference behavior, security, or recovery outcome.
 struct EnterpriseMemorySpillFeedbackApplyRequest {
   std::string feedback_uuid;
   std::string reservation_id;

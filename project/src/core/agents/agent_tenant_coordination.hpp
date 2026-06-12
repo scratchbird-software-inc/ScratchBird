@@ -13,7 +13,7 @@
 // Local noncluster tenant workload isolation and agent coordination admission.
 // This evidence is operational admission evidence only; it is not transaction
 // finality, visibility, authorization/security, recovery, parser execution,
-// donor behavior, WAL recovery, benchmark truth, optimizer plan authority,
+// reference behavior, WAL recovery, benchmark truth, optimizer plan authority,
 // index finality, provider finality, cluster authority, memory authority, or
 // agent action authority.
 

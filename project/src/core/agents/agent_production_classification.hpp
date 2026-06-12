@@ -56,7 +56,7 @@ struct AgentProductionRouteProofInputs {
 struct AgentProductionAuthoritySafety {
   bool parser_authority = false;
   bool client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool sidecar_authority = false;
   bool transaction_finality_authority = false;
   bool visibility_authority = false;

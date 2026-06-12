@@ -139,12 +139,12 @@ void TestSupportBundleRefusals() {
           "untrusted metric support bundle was not refused");
 
   request = GoodRequest();
-  request.authority.parser_or_donor_authority = true;
+  request.authority.parser_or_reference_authority = true;
   refused = obs::BuildOptimizerMetricSupportBundle(request);
   Require(!refused.ok &&
               refused.diagnostic_code ==
                   "SB_OPTIMIZER_METRIC_BUNDLE.UNSAFE_AUTHORITY",
-          "parser/donor support bundle authority was not refused");
+          "parser/reference support bundle authority was not refused");
 
   request = GoodRequest();
   request.min_source_generation = 999;

@@ -39,7 +39,7 @@ constexpr const char* kStaleSecurityEpoch = "stale security epoch";
 constexpr const char* kStalePolicyEpoch = "stale policy epoch";
 constexpr const char* kStaleStatsEpoch = "stale stats epoch";
 constexpr const char* kUnsafeSummaryPruning = "unsafe summary pruning";
-constexpr const char* kUnsafeParserDonorAuthority = "unsafe parser/donor authority";
+constexpr const char* kUnsafeParserReferenceAuthority = "unsafe parser/reference authority";
 
 bool EpochIsStale(std::uint64_t observed, std::uint64_t current) {
   return current != 0 && observed != 0 && observed < current;
@@ -315,7 +315,7 @@ void AddCommonEvidence(const DmlTargetAccessPlanRequest& request,
   plan->evidence.push_back("mga_visibility_recheck=required");
   plan->evidence.push_back("security_recheck=required");
   plan->evidence.push_back("grants_security_context=present");
-  plan->evidence.push_back("parser_or_donor_authority=false");
+  plan->evidence.push_back("parser_or_reference_authority=false");
   plan->evidence.push_back("mga_finality_authority=engine_transaction_inventory");
 }
 
@@ -423,8 +423,8 @@ DmlTargetAccessPlan BuildDmlTargetAccessPlan(const DmlTargetAccessPlanRequest& r
   if (!SummaryPruningSafe(request.summary_prune)) {
     AddDiagnostic(&plan.diagnostics, kUnsafeSummaryPruning);
   }
-  if (request.parser_or_donor_authority) {
-    AddDiagnostic(&plan.diagnostics, kUnsafeParserDonorAuthority);
+  if (request.parser_or_reference_authority) {
+    AddDiagnostic(&plan.diagnostics, kUnsafeParserReferenceAuthority);
   }
   if (!plan.diagnostics.empty()) {
     plan.evidence.push_back("dml_target_access_kind=refused");

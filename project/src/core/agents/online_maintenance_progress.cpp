@@ -95,7 +95,7 @@ void AddCommonEvidence(OnlineMaintenanceRecord* record,
               "durable_mga_transaction_inventory");
   AddEvidence(&snapshot, "parser_finality_authority", "false");
   AddEvidence(&snapshot, "client_state_authority", "false");
-  AddEvidence(&snapshot, "donor_finality_authority", "false");
+  AddEvidence(&snapshot, "reference_finality_authority", "false");
   AddEvidence(&snapshot, "timestamp_ordering_authority", "false");
   AddEvidence(&snapshot, "uuid_ordering_authority", "false");
   AddEvidence(&snapshot, "write_ahead_recovery_authority", "false");

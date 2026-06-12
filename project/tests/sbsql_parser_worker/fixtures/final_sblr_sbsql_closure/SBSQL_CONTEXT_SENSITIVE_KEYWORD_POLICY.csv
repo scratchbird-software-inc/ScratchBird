@@ -1,4 +1,4 @@
 policy_id,requirement,proof
 SBSQL-KEYWORD-001,SBSQL is context-sensitive and command words are contextual grammar tokens rather than a broad reserved-word list,project/src/parsers/sbsql_worker/lexer/lexer.cpp returns contextual_native for command words
 SBSQL-KEYWORD-002,SBSQL maintains a near-empty global reserved-word set and accepts command words as identifiers outside active command grammar positions,sbsql_scalar_syntax_exact_route_conformance proves SELECT 1 AS WHERE through SBLR query.evaluate_projection
-SBSQL-KEYWORD-003,Literals such as TRUE FALSE and NULL are contextual literal tokens and do not create a donor-style SQL reserved-word model,sbp_sbsql_lexer_conformance_probe plus sbsql_final_language_expansion_closure_gate validate contextual_literal and reject reserved_native lexer classification
+SBSQL-KEYWORD-003,Literals such as TRUE FALSE and NULL are contextual literal tokens and do not create a reference-style SQL reserved-word model,sbp_sbsql_lexer_conformance_probe plus sbsql_final_language_expansion_closure_gate validate contextual_literal and reject reserved_native lexer classification

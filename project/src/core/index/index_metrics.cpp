@@ -93,7 +93,7 @@ void Gauge(IndexMetricPublishResult* out, const std::string& family, const Index
 constexpr const char* kCEIC040SearchKey =
     "CEIC_040_INDEX_OPERATION_METRICS_SUPPORT_BUNDLE";
 constexpr const char* kCEIC040AuthorityScope =
-    "index_operation_metrics.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_clean_optimizer_plan_index_finality_provider_finality_local_cluster_cluster_action_or_agent_authority";
+    "index_operation_metrics.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_clean_optimizer_plan_index_finality_provider_finality_local_cluster_cluster_action_or_agent_authority";
 constexpr const char* kProtectedExcluded = "<protected-material-excluded>";
 constexpr const char* kTruncatedSuffix = "...<truncated>";
 
@@ -104,7 +104,7 @@ bool AnyForbiddenAuthority(const IndexOperationMetricAuthorityBoundary& boundary
          boundary.security_authority ||
          boundary.recovery_authority ||
          boundary.parser_authority ||
-         boundary.donor_authority ||
+         boundary.reference_authority ||
          boundary.wal_authority ||
          boundary.benchmark_authority ||
          boundary.benchmark_clean_authority ||
@@ -123,7 +123,7 @@ bool AnySuccessorOverclaim(const IndexOperationMetricSample& sample) {
          sample.ceic_042_readiness_drift_claimed ||
          sample.ceic_090_integrated_metrics_coverage_claimed ||
          sample.ceic_091_integrated_support_bundle_claimed ||
-         sample.donor_dominance_claimed ||
+         sample.reference_dominance_claimed ||
          sample.all_index_readiness_claimed ||
          sample.enterprise_readiness_claimed;
 }
@@ -134,7 +134,7 @@ bool AnySuccessorOverclaim(
          request.ceic_042_readiness_drift_claimed ||
          request.ceic_090_integrated_metrics_coverage_claimed ||
          request.ceic_091_integrated_support_bundle_claimed ||
-         request.donor_dominance_claimed ||
+         request.reference_dominance_claimed ||
          request.all_index_readiness_claimed ||
          request.enterprise_readiness_claimed;
 }
@@ -437,13 +437,13 @@ MetricValidationResult EnsureIndexMetricDescriptors() {
       Descriptor("sb_index_optimizer_stale_stats_total", MetricType::counter, MetricUnit::count, "Index optimizer stale-stat detections."),
       Descriptor("sb_index_optimizer_invalidations_total", MetricType::counter, MetricUnit::count, "Index optimizer invalidations."),
       Descriptor("sb_index_optimizer_fallback_refusals_total", MetricType::counter, MetricUnit::count, "Index optimizer fallback/refusal events."),
-      Descriptor("sb_index_donor_profile_hits_total", MetricType::counter, MetricUnit::count, "Donor semantic profile hits."),
-      Descriptor("sb_index_donor_profile_refusals_total", MetricType::counter, MetricUnit::count, "Donor semantic profile refusals."),
-      Descriptor("sb_index_donor_rechecks_total", MetricType::counter, MetricUnit::count, "Donor semantic profile rechecks."),
-      Descriptor("sb_index_donor_fallback_sorts_total", MetricType::counter, MetricUnit::count, "Donor semantic profile fallback sorts."),
-      Descriptor("sb_index_donor_order_proofs_total", MetricType::counter, MetricUnit::count, "Donor semantic order proofs."),
-      Descriptor("sb_index_donor_catalog_projections_total", MetricType::counter, MetricUnit::count, "Donor catalog projection events."),
-      Descriptor("sb_index_donor_compatibility_diagnostics_total", MetricType::counter, MetricUnit::count, "Donor compatibility diagnostics."),
+      Descriptor("sb_index_reference_profile_hits_total", MetricType::counter, MetricUnit::count, "Reference semantic profile hits."),
+      Descriptor("sb_index_reference_profile_refusals_total", MetricType::counter, MetricUnit::count, "Reference semantic profile refusals."),
+      Descriptor("sb_index_reference_rechecks_total", MetricType::counter, MetricUnit::count, "Reference semantic profile rechecks."),
+      Descriptor("sb_index_reference_fallback_sorts_total", MetricType::counter, MetricUnit::count, "Reference semantic profile fallback sorts."),
+      Descriptor("sb_index_reference_order_proofs_total", MetricType::counter, MetricUnit::count, "Reference semantic order proofs."),
+      Descriptor("sb_index_reference_catalog_projections_total", MetricType::counter, MetricUnit::count, "Reference catalog projection events."),
+      Descriptor("sb_index_reference_compatibility_diagnostics_total", MetricType::counter, MetricUnit::count, "Reference compatibility diagnostics."),
       Descriptor("sb_index_resident_bytes", MetricType::gauge, MetricUnit::bytes, "Index resident bytes."),
       Descriptor("sb_index_residency_hits_total", MetricType::counter, MetricUnit::count, "Index residency hits."),
       Descriptor("sb_index_residency_misses_total", MetricType::counter, MetricUnit::count, "Index residency misses."),
@@ -512,17 +512,17 @@ IndexMetricPublishResult PublishIndexOptimizerMetrics(const IndexMetricIdentity&
   return out;
 }
 
-IndexMetricPublishResult PublishIndexDonorProfileMetrics(const IndexMetricIdentity& identity,
-                                                         const IndexDonorProfileMetricDelta& delta) {
+IndexMetricPublishResult PublishIndexReferenceProfileMetrics(const IndexMetricIdentity& identity,
+                                                         const IndexReferenceProfileMetricDelta& delta) {
   IndexMetricPublishResult out;
   Push(&out, EnsureIndexMetricDescriptors());
-  Counter(&out, "sb_index_donor_profile_hits_total", identity, delta.profile_hits);
-  Counter(&out, "sb_index_donor_profile_refusals_total", identity, delta.profile_refusals);
-  Counter(&out, "sb_index_donor_rechecks_total", identity, delta.rechecks);
-  Counter(&out, "sb_index_donor_fallback_sorts_total", identity, delta.fallback_sorts);
-  Counter(&out, "sb_index_donor_order_proofs_total", identity, delta.order_proofs);
-  Counter(&out, "sb_index_donor_catalog_projections_total", identity, delta.catalog_projections);
-  Counter(&out, "sb_index_donor_compatibility_diagnostics_total", identity, delta.compatibility_diagnostics);
+  Counter(&out, "sb_index_reference_profile_hits_total", identity, delta.profile_hits);
+  Counter(&out, "sb_index_reference_profile_refusals_total", identity, delta.profile_refusals);
+  Counter(&out, "sb_index_reference_rechecks_total", identity, delta.rechecks);
+  Counter(&out, "sb_index_reference_fallback_sorts_total", identity, delta.fallback_sorts);
+  Counter(&out, "sb_index_reference_order_proofs_total", identity, delta.order_proofs);
+  Counter(&out, "sb_index_reference_catalog_projections_total", identity, delta.catalog_projections);
+  Counter(&out, "sb_index_reference_compatibility_diagnostics_total", identity, delta.compatibility_diagnostics);
   return out;
 }
 
@@ -724,7 +724,7 @@ IndexOperationMetricPublishResult PublishIndexOperationMetrics(
   result.evidence.push_back("index_operation_metrics.ceic_042_readiness_drift_claimed=false");
   result.evidence.push_back("index_operation_metrics.ceic_090_integrated_metrics_coverage_claimed=false");
   result.evidence.push_back("index_operation_metrics.ceic_091_integrated_support_bundle_claimed=false");
-  result.evidence.push_back("index_operation_metrics.donor_dominance_claimed=false");
+  result.evidence.push_back("index_operation_metrics.reference_dominance_claimed=false");
   result.evidence.push_back("index_operation_metrics.enterprise_readiness_claimed=false");
 
   result.metric_results.push_back(EnsureIndexOperationMetricDescriptors());

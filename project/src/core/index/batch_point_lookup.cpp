@@ -128,7 +128,7 @@ BatchPointLookupResult RefuseWithDiagnostic(
 BatchPointLookupResult ValidateAuthority(
     const BatchPointLookupPlan& plan,
     const CandidateSetAuthorityContext& authority) {
-  if (authority.parser_or_donor_finality_or_visibility_authority ||
+  if (authority.parser_or_reference_finality_or_visibility_authority ||
       authority.client_finality_or_visibility_authority ||
       authority.provider_finality_or_visibility_authority ||
       authority.wal_recovery_or_finality_authority) {

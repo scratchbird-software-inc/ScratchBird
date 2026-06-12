@@ -89,7 +89,7 @@ struct CandidateSetAuthorityContext {
   bool row_security_recheck_required = true;
   bool exact_recheck_available = true;
   bool exact_rerank_source_available = true;
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool wal_recovery_or_finality_authority = false;
@@ -106,7 +106,7 @@ struct CandidateSet {
   bool final_rows_authorized = false;
   bool deleted_overlay_present = false;
   bool candidate_set_finality_authority = false;
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool wal_recovery_or_finality_authority = false;
   bool non_authority_evidence_present = false;

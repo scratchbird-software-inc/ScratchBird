@@ -11,7 +11,7 @@
   "result_hash": "ddd6c815703b52f8e5c7e0343dbc54bf6b7bf885df3d4fa1c70272c4e2211dd9",
   "negative_gate": {
     "hard_coded_catalog_object_ids": "blocked_outside_allowlist",
-    "parser_client_donor_finality": "blocked",
+    "parser_client_reference_finality": "blocked",
     "write_ahead_finality": "blocked",
     "unbounded_background_agents": "blocked"
   },
@@ -19,7 +19,7 @@
     "engine_mga_authority": true,
     "parser_finality_authority": false,
     "client_finality_authority": false,
-    "donor_finality_authority": false,
+    "reference_finality_authority": false,
     "write_ahead_finality_authority": false
   }
 }

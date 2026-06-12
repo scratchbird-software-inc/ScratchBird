@@ -61,7 +61,7 @@ struct HeavyImmutableGenerationValidationRequest {
   bool timestamp_ordering_authority = false;
   bool uuid_ordering_authority = false;
   bool event_stream_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool write_ahead_authority = false;
   bool cluster_provider_routed = false;
 };

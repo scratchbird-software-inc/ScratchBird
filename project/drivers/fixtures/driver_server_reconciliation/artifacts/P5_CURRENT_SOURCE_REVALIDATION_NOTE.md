@@ -13,7 +13,7 @@ The following command passed `10/10` driver-server reconciliation gates as part
 of the Phase 5 focused run:
 
 ```bash
-ctest --test-dir build -R "driver_server_release_declaration_gate|driver_row_status_manifest_gate|adapter_row_status_manifest_gate|tool_row_status_manifest_gate|driver_status_packaging_evidence_gate|driver_server_verification_packets_gate|driver_full_route_benchmark_evidence_gate|driver_performance_budget_threshold_gate|driver_documentation_sample_app_evidence_gate|driver_donor_compatibility_route_evidence_gate" --output-on-failure
+ctest --test-dir build -R "driver_server_release_declaration_gate|driver_row_status_manifest_gate|adapter_row_status_manifest_gate|tool_row_status_manifest_gate|driver_status_packaging_evidence_gate|driver_server_verification_packets_gate|driver_full_route_benchmark_evidence_gate|driver_performance_budget_threshold_gate|driver_documentation_sample_app_evidence_gate|driver_reference_compatibility_route_evidence_gate" --output-on-failure
 ```
 
 The broader focused command passed `19/19` and included

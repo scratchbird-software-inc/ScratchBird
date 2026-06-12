@@ -75,7 +75,7 @@ struct PhysicalZoneRowEvidence {
   u64 base_generation = 0;
   bool engine_mga_visible = true;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
   std::vector<PhysicalZoneColumnValueEvidence> columns;
 };
@@ -119,7 +119,7 @@ struct PhysicalZoneRangeSummaryRecord {
   bool mga_recheck_required = true;
   bool security_recheck_required = true;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
   std::vector<PhysicalZoneColumnSummary> columns;
   std::vector<PhysicalZoneMultiColumnSummary> multi_columns;

@@ -164,7 +164,7 @@ DmlTargetAccessPlanRequest BuildOnConflictLocatorPlanRequest(
   plan_request.security_recheck_planned = true;
   plan_request.grants_proven = request.context.security_context_present;
   plan_request.security_context_present = request.context.security_context_present;
-  plan_request.parser_or_donor_authority = false;
+  plan_request.parser_or_reference_authority = false;
   const std::uint64_t observed_catalog_epoch =
       request.bound_object_identity.catalog_generation_id != 0
           ? request.bound_object_identity.catalog_generation_id
@@ -207,7 +207,7 @@ DmlRowLocatorStreamResult BuildOnConflictRowLocatorStream(
   stream_request.durable_mga_inventory_proof = true;
   stream_request.mga_visibility_recheck_planned = true;
   stream_request.security_recheck_planned = true;
-  stream_request.parser_or_donor_authority = false;
+  stream_request.parser_or_reference_authority = false;
   stream_request.index_or_cache_finality_authority = false;
   return BuildDmlRowLocatorStream(stream_request);
 }
@@ -443,8 +443,8 @@ UniquePreflightRouteValidation ValidateUniquePreflightRoute(
   if (InsertOptionEnabled(request, "odf033.disable_security_recheck=true")) {
     refuse("missing security recheck");
   }
-  if (InsertOptionEnabled(request, "odf033.parser_or_donor_authority=true")) {
-    refuse("unsafe parser/donor authority");
+  if (InsertOptionEnabled(request, "odf033.parser_or_reference_authority=true")) {
+    refuse("unsafe parser/reference authority");
   }
 
   const std::uint64_t observed_catalog_epoch =
@@ -904,13 +904,13 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   if (bulk_validation.error) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", bulk_validation);
   }
-  if (request.donor_unique_checks_relaxed || request.donor_foreign_key_checks_relaxed ||
-      InsertBatchOptionEnabled(request, "donor.unique_checks=0") ||
-      InsertBatchOptionEnabled(request, "donor.foreign_key_checks=0")) {
+  if (request.reference_unique_checks_relaxed || request.reference_foreign_key_checks_relaxed ||
+      InsertBatchOptionEnabled(request, "reference.unique_checks=0") ||
+      InsertBatchOptionEnabled(request, "reference.foreign_key_checks=0")) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
         request.context,
         "dml.insert_rows",
-        MakeInvalidRequestDiagnostic("dml.insert_rows", "donor_relaxer_requires_engine_policy"));
+        MakeInvalidRequestDiagnostic("dml.insert_rows", "reference_relaxer_requires_engine_policy"));
   }
   std::string conflict_target_column;
   std::optional<CrudIndexRecord> conflict_index;

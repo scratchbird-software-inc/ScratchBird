@@ -65,7 +65,7 @@ struct OptimizerMetricCostInput {
   std::string cost_profile_id;
   bool advisory_only = true;
   bool mga_visibility_recheck_preserved = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   std::string transaction_finality_authority = "engine_transaction_inventory";
 };
 
@@ -78,7 +78,7 @@ struct AgentCostRecommendation {
 
 // SEARCH_KEY: OPCH_MGA_PRESSURE_COSTING
 // MGA pressure evidence adjusts cost/risk only. It is not transaction finality,
-// visibility authority, authorization authority, parser authority, donor
+// visibility authority, authorization authority, parser authority, reference
 // authority, or recovery authority.
 struct OptimizerMgaPressureEvidence {
   std::uint64_t cleanup_debt_bytes = 0;
@@ -94,7 +94,7 @@ struct OptimizerMgaPressureEvidence {
   bool exact_recheck_required = true;
   bool mga_visibility_recheck_required = true;
   bool security_recheck_required = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool transaction_finality_authority = false;
   bool visibility_authority = false;
   bool recovery_authority = false;

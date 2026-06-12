@@ -285,6 +285,8 @@ engine_api::EngineRequestContext EngineContextForManagement(
   engine_context.security_epoch = session.security_epoch;
   engine_context.resource_epoch = session.resource_epoch;
   engine_context.name_resolution_epoch = session.name_resolution_epoch;
+  PopulateEngineLanguageContextFromSession(session,
+                                           &engine_context.language_context);
   engine_context.trace_tags = session.engine_authorization_trace_tags;
   if (session.principal_claim == "root" || session.principal_claim == "sysdba") {
     engine_context.trace_tags.push_back("group:ROOT");

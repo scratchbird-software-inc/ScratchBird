@@ -70,7 +70,7 @@ void RequireGovernanceEvidence(const mga::MgaTransactionMemoryResult& result) {
           "MMCH-070 evidence marker missing");
   Require(EvidenceHas(
               result.evidence,
-              "mga_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority"),
+              "mga_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority"),
           "MMCH-070 authority boundary evidence missing");
 }
 
@@ -183,9 +183,9 @@ void PressureAndUnsafeAuthorityFailClosed() {
                    "tx-unsafe",
                    "abort",
                    1024);
-  unsafe.authority.donor_authority = true;
+  unsafe.authority.reference_authority = true;
   Require(!governor.Acquire(unsafe).ok(),
-          "MMCH-070 donor authority did not fail closed");
+          "MMCH-070 reference authority did not fail closed");
 
   unsafe = Request(mga::MgaTransactionMemoryUseKind::cleanup_sweep,
                    "tx-unsafe",

@@ -18,7 +18,7 @@ namespace scratchbird::engine::optimizer {
 // capabilities are live local engine routes, exact-fallback routes, test-only
 // gates, removed claims, or cluster-external boundaries. It is not execution
 // authority and it never supplies transaction, visibility, security, recovery,
-// catalog, donor, or parser authority.
+// catalog, reference, or parser authority.
 
 enum class EnterpriseOptimizerSurfaceClass {
   noncluster_live,

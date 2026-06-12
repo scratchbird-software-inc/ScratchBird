@@ -85,9 +85,9 @@ idx::TemporaryWorkAuthorityProof Proof(const TempSpillRequest& request,
       recovery_proof && request.authority.security_recheck_required &&
       request.authority.security_context_bound;
   proof.parser_finality_authority_claimed =
-      request.authority.parser_client_or_donor_spill_authority;
-  proof.donor_finality_authority_claimed =
-      request.authority.parser_client_or_donor_spill_authority;
+      request.authority.parser_client_or_reference_spill_authority;
+  proof.reference_finality_authority_claimed =
+      request.authority.parser_client_or_reference_spill_authority;
   proof.transaction_finality_authority_claimed =
       request.authority.temp_metadata_visibility_or_finality_authority;
   proof.visibility_authority_claimed =
@@ -269,11 +269,11 @@ TempSpillResult ExecuteBoundedTempSpillRoute(const TempSpillRequest& request) {
     return Refuse(request, "ORH_SORT_SPILL_EXACT_FALLBACK_UNAVAILABLE",
                   "exact_fallback_required");
   }
-  if (request.benchmark_or_donor_dominance_claim) {
+  if (request.benchmark_or_reference_dominance_claim) {
     return Refuse(request, "ORH_SORT_SPILL_DOMINANCE_OVERCLAIM",
-                  "temp_spill_gate_is_not_donor_dominance");
+                  "temp_spill_gate_is_not_reference_dominance");
   }
-  if (request.authority.parser_client_or_donor_spill_authority ||
+  if (request.authority.parser_client_or_reference_spill_authority ||
       request.authority.temp_metadata_visibility_or_finality_authority ||
       request.authority.temp_metadata_recovery_authority) {
     return Refuse(request, "ORH_SORT_SPILL_UNSAFE_AUTHORITY",

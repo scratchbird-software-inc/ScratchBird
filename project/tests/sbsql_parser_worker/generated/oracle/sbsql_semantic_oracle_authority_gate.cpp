@@ -273,7 +273,7 @@ void ValidateOracles(const CsvTable& oracles,
       "canonical_spec_plus_sblr_matrix",
       "promotion_or_canonical_refusal_decision",
       "cluster_profile_and_standalone_refusal_policy",
-      "donor_reference_behavior",
+      "reference_reference_behavior",
       "standards_reference",
       "explicit_scratchbird_design_decision",
   };

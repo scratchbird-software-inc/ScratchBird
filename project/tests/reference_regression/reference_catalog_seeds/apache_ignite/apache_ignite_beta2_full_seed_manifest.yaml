@@ -1,0 +1,1188 @@
+{
+  "seed_manifest_uuid": "80690a89-3a08-5d85-a439-008f80ac108b",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "apache_ignite-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_REFERENCE_CATALOG_SEED_APACHE_IGNITE_BETA2_FULL",
+  "seed_manifest_status": "profile_derived_private_seed_manifest",
+  "reference_family": "apache_ignite",
+  "reference_version_profile_id": "apache_ignite_beta2_full",
+  "reference_version_profile_uuid": "a9a63f78-3c90-5024-b252-86d6d7764b23",
+  "reference_exact_version": "Apache Ignite beta2-full compatibility profile",
+  "new_database_recipe_id": "apache_ignite_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-05-10T00:00:00Z",
+  "extraction_tool_ref": "docs/specifications/registries/reference-catalog-source-derived-seed-rows.yaml",
+  "normalization_profile_ref": "embedded:SB_REFERENCE_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "sys_baseline_nodes",
+      "reference_catalog_object_name": "SYS.BASELINE_NODES",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_baseline_nodes",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_baseline_node_attributes",
+      "reference_catalog_object_name": "SYS.BASELINE_NODE_ATTRIBUTES",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_baseline_node_attributes",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_caches",
+      "reference_catalog_object_name": "SYS.CACHES",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_caches",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_cache_groups",
+      "reference_catalog_object_name": "SYS.CACHE_GROUPS",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_cache_groups",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_client_connections",
+      "reference_catalog_object_name": "SYS.CLIENT_CONNECTIONS",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_client_connections",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_client_connection_attributes",
+      "reference_catalog_object_name": "SYS.CLIENT_CONNECTION_ATTRIBUTES",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_client_connection_attributes",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_configuration",
+      "reference_catalog_object_name": "SYS.CONFIGURATION",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_configuration",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_indexes",
+      "reference_catalog_object_name": "SYS.INDEXES",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_indexes",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_local_cache_groups_io",
+      "reference_catalog_object_name": "SYS.LOCAL_CACHE_GROUPS_IO",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_local_cache_groups_io",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_n",
+      "reference_catalog_object_name": "SYS.N",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_n",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_nodes",
+      "reference_catalog_object_name": "SYS.NODES",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_nodes",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_node_attributes",
+      "reference_catalog_object_name": "SYS.NODE_ATTRIBUTES",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_node_attributes",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_node_metrics",
+      "reference_catalog_object_name": "SYS.NODE_METRICS",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_node_metrics",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_schemas",
+      "reference_catalog_object_name": "SYS.SCHEMAS",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_schemas",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_snapshot",
+      "reference_catalog_object_name": "SYS.SNAPSHOT",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_snapshot",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_sql_queries",
+      "reference_catalog_object_name": "SYS.SQL_QUERIES",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_sql_queries",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_sql_queries_history",
+      "reference_catalog_object_name": "SYS.SQL_QUERIES_HISTORY",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_sql_queries_history",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "sys_tables",
+      "reference_catalog_object_name": "SYS.TABLES",
+      "reference_catalog_object_kind": "system_view",
+      "namespace_kind": "SYS",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_apache_ignite_sys_tables",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "diagnostic_code": "REFERENCE.APACHE_IGNITE.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "column_id": "sys_baseline_nodes_object_name",
+      "object_ref": "sys_baseline_nodes",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "e259d203935af852effe6544b35e8ecf7ee7072c712e5da7b07687341da5eeae"
+    },
+    {
+      "column_id": "sys_baseline_nodes_object_kind",
+      "object_ref": "sys_baseline_nodes",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2e4b5eb44a28831fa84fbe91f638dacb09261710c52756902d9da7c8df887382"
+    },
+    {
+      "column_id": "sys_baseline_nodes_source_ref",
+      "object_ref": "sys_baseline_nodes",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "2f28c48cbbe910afdadbf06d9d220e2a34cfdacb587f300ed905a066f39ae93a"
+    },
+    {
+      "column_id": "sys_baseline_node_attributes_object_name",
+      "object_ref": "sys_baseline_node_attributes",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2d8310539a34205e6b09037dcdecabb7ad780749b0fe3c8056a451fcade2536e"
+    },
+    {
+      "column_id": "sys_baseline_node_attributes_object_kind",
+      "object_ref": "sys_baseline_node_attributes",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6eb67cede31b62bbdf45d63534024fd2a1e5903ca6346e387fb21c53b4ecaf29"
+    },
+    {
+      "column_id": "sys_baseline_node_attributes_source_ref",
+      "object_ref": "sys_baseline_node_attributes",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "966de6f3b16260c48131e7bd4a40996005593982546269aec66159bf74492c13"
+    },
+    {
+      "column_id": "sys_caches_object_name",
+      "object_ref": "sys_caches",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "176be0b597d6936aa26ad1feec12cb130509abdee632fdaa8a6e9659c48fbee4"
+    },
+    {
+      "column_id": "sys_caches_object_kind",
+      "object_ref": "sys_caches",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b416220a3d1a493816282dfecacc043f4166673cce9302de261742f620f4e503"
+    },
+    {
+      "column_id": "sys_caches_source_ref",
+      "object_ref": "sys_caches",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "b1bf46d200fd40ad6e85983eb3ca238cb468d6882f04863c8a7202ffc5aeb679"
+    },
+    {
+      "column_id": "sys_cache_groups_object_name",
+      "object_ref": "sys_cache_groups",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "ebce526f34c18c794e0523ebc01f98979664f8e9c9231a540a5430bb5f4c678d"
+    },
+    {
+      "column_id": "sys_cache_groups_object_kind",
+      "object_ref": "sys_cache_groups",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "be5341008e07ced9e5af1ef9d54df263d81dc24bf483bb541c79146ae10e681b"
+    },
+    {
+      "column_id": "sys_cache_groups_source_ref",
+      "object_ref": "sys_cache_groups",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "0be0d2a798b118d2cb58b49b1566344845e8ea4c487fa4b09b9fe953a6fe7bdb"
+    },
+    {
+      "column_id": "sys_client_connections_object_name",
+      "object_ref": "sys_client_connections",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "1dfa3a66882d29facd961a71c8b914760d8cca1cbff4f2027a7469e8d413550c"
+    },
+    {
+      "column_id": "sys_client_connections_object_kind",
+      "object_ref": "sys_client_connections",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "5d4092647b12b313077ab1fa2f3c3d4572106e97579422906e20117030ae2b59"
+    },
+    {
+      "column_id": "sys_client_connections_source_ref",
+      "object_ref": "sys_client_connections",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "2304dff1d572e2fa82de3942b634bc3713e13bec4f449474c928039d6864a0cd"
+    },
+    {
+      "column_id": "sys_client_connection_attributes_object_name",
+      "object_ref": "sys_client_connection_attributes",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "67f1be06700e326b63f9fd2992261eea497c41b8d319b53c33ed7dd8886455d7"
+    },
+    {
+      "column_id": "sys_client_connection_attributes_object_kind",
+      "object_ref": "sys_client_connection_attributes",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "1db5610d2fcee48cae8b350381695a131eea84c7c449d0ebd86b730478b720a9"
+    },
+    {
+      "column_id": "sys_client_connection_attributes_source_ref",
+      "object_ref": "sys_client_connection_attributes",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "a4e0bd80f70507eb2280d17241c9410d1377add5c239d7dbb127d5d83375530b"
+    },
+    {
+      "column_id": "sys_configuration_object_name",
+      "object_ref": "sys_configuration",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "34da0f0f3546246a67c5a874a43296da05b4b9a373b0430f53d6cfd91a6d2e03"
+    },
+    {
+      "column_id": "sys_configuration_object_kind",
+      "object_ref": "sys_configuration",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "56d43290884cd02438ff2e3f88de0b687f4266356b474bd9d9862afd68727b23"
+    },
+    {
+      "column_id": "sys_configuration_source_ref",
+      "object_ref": "sys_configuration",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "256cd2075d36c9ccd7fe323e06d51c590fa044c66c743ac63fcf304dfefb90d7"
+    },
+    {
+      "column_id": "sys_indexes_object_name",
+      "object_ref": "sys_indexes",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "fcd0c92aaad60ba0680c43b13bf95ee6c37ad287d94bed3ec836bdc244423365"
+    },
+    {
+      "column_id": "sys_indexes_object_kind",
+      "object_ref": "sys_indexes",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "33c4947bdfb0d6ddf506a42bf4907f26900c6908563b075866c956d5fca6a5a5"
+    },
+    {
+      "column_id": "sys_indexes_source_ref",
+      "object_ref": "sys_indexes",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "8794bb113fa1cf8e39e76fed66eb5cb8995f2d6c38b59d18ccbba343285a35ea"
+    },
+    {
+      "column_id": "sys_local_cache_groups_io_object_name",
+      "object_ref": "sys_local_cache_groups_io",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "02c5ed6c71c2ac7dbd35e8e799b66144d617aaf9db6b3381d14c337c1452453d"
+    },
+    {
+      "column_id": "sys_local_cache_groups_io_object_kind",
+      "object_ref": "sys_local_cache_groups_io",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "ef3f59b530427b05f6f834053a7677789ba74ff3dae30854f467c7fe4363d229"
+    },
+    {
+      "column_id": "sys_local_cache_groups_io_source_ref",
+      "object_ref": "sys_local_cache_groups_io",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "1829333fed1878673373ac0f9519406d08168d6f2bcf7c7bc257f638291c5de0"
+    },
+    {
+      "column_id": "sys_n_object_name",
+      "object_ref": "sys_n",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "201cc337ea4f04d5d43af7122ec2a71c47ad6f8247e6d6239c7656ff16026492"
+    },
+    {
+      "column_id": "sys_n_object_kind",
+      "object_ref": "sys_n",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6a4230a5140819011217a33b3cd3032b14f217015c3019604647db9b65696bf9"
+    },
+    {
+      "column_id": "sys_n_source_ref",
+      "object_ref": "sys_n",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "f59d593f03aab8f19588bca3e42c1cf872eead872c0ca3ecb8c346ce59cfae7b"
+    },
+    {
+      "column_id": "sys_nodes_object_name",
+      "object_ref": "sys_nodes",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7de3e183d5f58a982c359b0d9a671c531c8b0717a0d6f0cd5f4b5ce37a1ffd89"
+    },
+    {
+      "column_id": "sys_nodes_object_kind",
+      "object_ref": "sys_nodes",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "c281915405304d53ff8b7e0772d55ef14c230526553f81720abd43cd7172588a"
+    },
+    {
+      "column_id": "sys_nodes_source_ref",
+      "object_ref": "sys_nodes",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "3052ae5238b8c9697f0d4d49db549796332d1e5fa29a366b86fe53aa57c33b4e"
+    },
+    {
+      "column_id": "sys_node_attributes_object_name",
+      "object_ref": "sys_node_attributes",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "8aa5bfc43e69c17e327aa7afdb3a56a50e00d516c0b549a881b74a9fa37304b0"
+    },
+    {
+      "column_id": "sys_node_attributes_object_kind",
+      "object_ref": "sys_node_attributes",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "917a8090bd0f3168343e32529a7941e7a30a409b247942f628db7118586bc5a2"
+    },
+    {
+      "column_id": "sys_node_attributes_source_ref",
+      "object_ref": "sys_node_attributes",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "881164268ca601d1b105550e400091e49aaf52ed6fc017bef1c32fd0e614b4b9"
+    },
+    {
+      "column_id": "sys_node_metrics_object_name",
+      "object_ref": "sys_node_metrics",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "5965ac44548fc9ff838b75db65f7c11bc39b7d38bacd3a1af266007a6c56d359"
+    },
+    {
+      "column_id": "sys_node_metrics_object_kind",
+      "object_ref": "sys_node_metrics",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4826ae4002bcf879be9f494d62aae73e3508c5f7826504e66da92c1e9895bba5"
+    },
+    {
+      "column_id": "sys_node_metrics_source_ref",
+      "object_ref": "sys_node_metrics",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "bcfa90b4da151c164fd92e7ea4529933798feacf3b3cb34529fd806b992fc316"
+    },
+    {
+      "column_id": "sys_schemas_object_name",
+      "object_ref": "sys_schemas",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "bd0d8836caca2fd1ee0179d0719fc9632207d24fe12719d3c44c4fc7bc7c122e"
+    },
+    {
+      "column_id": "sys_schemas_object_kind",
+      "object_ref": "sys_schemas",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "27864507767d8a39ecb421e753fcfedded85da5a112ecd12efca1a990029cfcf"
+    },
+    {
+      "column_id": "sys_schemas_source_ref",
+      "object_ref": "sys_schemas",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "6c28857dff06bf732d6785de27f91ec7ba21cf44bf1bc7e53c9cbc57906bf11e"
+    },
+    {
+      "column_id": "sys_snapshot_object_name",
+      "object_ref": "sys_snapshot",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "762180631c2c85ee1b9626a5f74e64f1d8f10f74a6af9ee349c4f8f217bcf1c9"
+    },
+    {
+      "column_id": "sys_snapshot_object_kind",
+      "object_ref": "sys_snapshot",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b96d57ea093467644e42d2d8ac3f17ca564f67542be5c67554e95d20145c0022"
+    },
+    {
+      "column_id": "sys_snapshot_source_ref",
+      "object_ref": "sys_snapshot",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "b2d036cd28649f550d18cb473950a9f82760bf42d53094bb8abe8903f30378e0"
+    },
+    {
+      "column_id": "sys_sql_queries_object_name",
+      "object_ref": "sys_sql_queries",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7d2c40b86557e242f25c51cbd7c6eaf61da961e5d2f3b12e2475a64587872af2"
+    },
+    {
+      "column_id": "sys_sql_queries_object_kind",
+      "object_ref": "sys_sql_queries",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6e70144407d423365474479cc43326648ff03705691e1d87e8db7d23a8c4685c"
+    },
+    {
+      "column_id": "sys_sql_queries_source_ref",
+      "object_ref": "sys_sql_queries",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "bda28ffd1cfa79f1c6566a087a1fffa218daaa865f8f51f5ecb18f034caa2387"
+    },
+    {
+      "column_id": "sys_sql_queries_history_object_name",
+      "object_ref": "sys_sql_queries_history",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "128d2388bcdcb611e501cfccca982d70f9e482e4e584143b21fcc66c2ec141eb"
+    },
+    {
+      "column_id": "sys_sql_queries_history_object_kind",
+      "object_ref": "sys_sql_queries_history",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "9e8d8679acfd02469a31e2707580608246adb39a8a903989d77f17afb00bec72"
+    },
+    {
+      "column_id": "sys_sql_queries_history_source_ref",
+      "object_ref": "sys_sql_queries_history",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "fa4d9f353e69d1c95d5f83f44429dde0e1ddd54e830706399505eaea20b32b9c"
+    },
+    {
+      "column_id": "sys_tables_object_name",
+      "object_ref": "sys_tables",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "31c5a5402a44489392ce68356e7cf8b5f3a913389138154d4d8c9eb05472077c"
+    },
+    {
+      "column_id": "sys_tables_object_kind",
+      "object_ref": "sys_tables",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "9519089a60892771104475d99a3d19582c4d314805d0bf4fc8a64a0a05d20a7f"
+    },
+    {
+      "column_id": "sys_tables_source_ref",
+      "object_ref": "sys_tables",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "cc68171699202e3c2a1f21daff890aa2072f6cf13c86370aad21ba8456ff3ce9"
+    }
+  ],
+  "default_row_set": [
+    {
+      "row_id": "apache_ignite.seed.sys_baseline_nodes",
+      "reference_object_ref": "sys_baseline_nodes",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.BASELINE_NODES",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "3ee915a9a7c1dbbd44ea26f6ad483ec84f2a7fe6ee3a5f4c4789fbd554b1ee49"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_baseline_node_attributes",
+      "reference_object_ref": "sys_baseline_node_attributes",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.BASELINE_NODE_ATTRIBUTES",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "5db0df0ad5836bb3b285990e3d49f528f30b79292b98241e6a32917712572066"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_caches",
+      "reference_object_ref": "sys_caches",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.CACHES",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "d1d13681777888f08532d45287e7993e65c3fce0e0443a6bbfb02841059760da"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_cache_groups",
+      "reference_object_ref": "sys_cache_groups",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.CACHE_GROUPS",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "f2b86d16b672b2101dd272cd2ca6baec2bb6c48b5d2807dce5ae36cae926cf64"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_client_connections",
+      "reference_object_ref": "sys_client_connections",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.CLIENT_CONNECTIONS",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "fcae870d825236f36511d2f09065920b4876f9624e519c28fcf13cca5594340c"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_client_connection_attributes",
+      "reference_object_ref": "sys_client_connection_attributes",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.CLIENT_CONNECTION_ATTRIBUTES",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "f5b96b59563a8d64c1822df8ed7f600563589c3ab8bc59a72e5275bfe9a75330"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_configuration",
+      "reference_object_ref": "sys_configuration",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.CONFIGURATION",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "d8c64db5d57fc18f9202d1822075c0916591b37193d2a1d8cd3f37d2e4215635"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_indexes",
+      "reference_object_ref": "sys_indexes",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.INDEXES",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "10cacafc0a53601e783e3d6a7d8b100b7ad8cf43598c99f8b52532d905ccda55"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_local_cache_groups_io",
+      "reference_object_ref": "sys_local_cache_groups_io",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.LOCAL_CACHE_GROUPS_IO",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "13e88d5bc69f77d3adeac8d94f728dc7ee1b4186b53cb12d1ae1b0fd02b59f02"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_n",
+      "reference_object_ref": "sys_n",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.N",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "19821d49bb4048facb1fce966fbf3d4660062649f3b1b0e9bfc128f999447ab1"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_nodes",
+      "reference_object_ref": "sys_nodes",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.NODES",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "9d48502a000e87f88dec923da3b45bd8ea9e61c838686e1f78285158c17fe6e5"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_node_attributes",
+      "reference_object_ref": "sys_node_attributes",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.NODE_ATTRIBUTES",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "ee8fcda4fa3bde7db66d23e6c619f6f56fe81eea7163ec1f6d3e889784713268"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_node_metrics",
+      "reference_object_ref": "sys_node_metrics",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.NODE_METRICS",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "53ad484cbd68341a4eb68edbc4c101a7a10daf0283f2cb16d950e75803c51888"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_schemas",
+      "reference_object_ref": "sys_schemas",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.SCHEMAS",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "a4f9ec1b6e2b7d192d646462dc625f158f5d555c31bdcd05cf96091f659076dd"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_snapshot",
+      "reference_object_ref": "sys_snapshot",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.SNAPSHOT",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "d4ef2a983eb0282b00129f5ff0ddea25c19feba4d3a69934cbe0786131325b63"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_sql_queries",
+      "reference_object_ref": "sys_sql_queries",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.SQL_QUERIES",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "207e85bbc18008a0a8dcb195263051b7eb185c3c70ac353ff904beb8cde9c0ce"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_sql_queries_history",
+      "reference_object_ref": "sys_sql_queries_history",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.SQL_QUERIES_HISTORY",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "fd10a9f595ad76905cd1c0fd47afa69891f124041abe185e13d20fbd6ead7840"
+    },
+    {
+      "row_id": "apache_ignite.seed.sys_tables",
+      "reference_object_ref": "sys_tables",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "SYS.TABLES",
+      "definition_source_ref": "reference_source_reference:apache_ignite/modules/indexing/src/test/java/org/apache/ignite/internal/processors/query/SqlSystemViewsSelfTest.java",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "dce14ef3025df8ed41f62030fa8a341c31891856a643190cc3b3077f7b920f14"
+    }
+  ],
+  "default_metadata_set": [],
+  "default_security_row_set": [
+    {
+      "row_id": "apache_ignite.security.default_visibility_policy",
+      "principal": "PUBLIC",
+      "secret_material": "redacted_not_applicable",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "row_hash": "4f04fed27c9a7c3686879b8916090516799f3559b67674015390e51e969937eb"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "value_id": "apache_ignite.runtime.database_identity",
+      "value_class": "instance_generated_uuid",
+      "emulation_rule": "generate ScratchBird UUIDv7 at database/profile create and expose only reference-compatible rendering",
+      "row_hash": "12ace12ea766521a4115cd8a016b47fc5a430d851abb83608662f36bce98f8dd"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "rule_id": "grant_filtered_metadata",
+      "rule": "visible only through reference metadata policy and ScratchBird engine authorization"
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "rule_id": "raw_secret_forbidden",
+      "rule": "raw secrets are never stored in reference seed manifests"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "rule_id": "report_only",
+      "rule": "catalog seed rows are report-only; mutation routes through UUID-backed ScratchBird catalog APIs"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_apache_ignite_sys_baseline_nodes",
+      "reference_object_ref": "sys_baseline_nodes",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "6f9e191e-26d2-5694-be7f-17b0da024e2b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_baseline_node_attributes",
+      "reference_object_ref": "sys_baseline_node_attributes",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "ddfd4a04-93a5-5510-9987-6875b90dc439",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_caches",
+      "reference_object_ref": "sys_caches",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "e2dca91e-8df7-5822-a8b8-f2db0c52bfd5",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_cache_groups",
+      "reference_object_ref": "sys_cache_groups",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "ca3a6301-e0cb-5f4a-a8d5-9b49cbaf6b5b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_client_connections",
+      "reference_object_ref": "sys_client_connections",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "6472055f-4e6b-5834-b752-35cb79572665",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_client_connection_attributes",
+      "reference_object_ref": "sys_client_connection_attributes",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "4ae37f15-933f-5871-9f2e-3856fcadf8df",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_configuration",
+      "reference_object_ref": "sys_configuration",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "b74ac065-6efd-5fb4-b7e0-7a66acbab279",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_indexes",
+      "reference_object_ref": "sys_indexes",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "6c10dc00-32a7-56fa-a8b9-f9f1cf955582",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_local_cache_groups_io",
+      "reference_object_ref": "sys_local_cache_groups_io",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "26036650-02a6-5cbf-938b-eae04789f5b3",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_n",
+      "reference_object_ref": "sys_n",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d8c4fddd-e79d-58af-be4c-f8e2a8a9a74f",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_nodes",
+      "reference_object_ref": "sys_nodes",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "2645dcaf-880e-5e6b-a58e-5d0e7ef27043",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_node_attributes",
+      "reference_object_ref": "sys_node_attributes",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "62ac193d-32be-5f89-b1dd-2b34f8a980e4",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_node_metrics",
+      "reference_object_ref": "sys_node_metrics",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a7abafcf-5d87-5eaf-9a01-4621f7081f2b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_schemas",
+      "reference_object_ref": "sys_schemas",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "66b13ddc-7be7-542f-870f-28e9dafbee13",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_snapshot",
+      "reference_object_ref": "sys_snapshot",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a9243a9a-f0a7-5237-b2ec-f966596c9688",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_sql_queries",
+      "reference_object_ref": "sys_sql_queries",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "1273d09a-1542-5e8d-bf86-33a0ad0e6c52",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_sql_queries_history",
+      "reference_object_ref": "sys_sql_queries_history",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "18c68ed1-a448-5c0d-8908-2310e309489c",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_apache_ignite_sys_tables",
+      "reference_object_ref": "sys_tables",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "60b581e2-eb07-5a7e-b6ed-00f47804ced6",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "REFERENCE.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "REFERENCE.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "REFERENCE.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "REFERENCE.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "REFERENCE.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "REFERENCE.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "REFERENCE.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "rowset_hashes": {
+    "catalog_object_set": "2f6b25419b8e09b8be7fe198b16a82794b7899ac256a3180b9aaf1bb72147200",
+    "catalog_column_set": "64080ffdc58cfc1ae5bea4a1e4def86f5efb4be9baef313d14eb187ba5bbb490",
+    "default_row_set": "b05c6c81ed33713916c7bf92a1e17f225eb934a4fad6834cb55b658b402cb793",
+    "default_metadata_set": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "default_security_row_set": "53625acde3df3aa2cc65a61f3c95b7069b755005bbcff70248d2f3fffbbc58d8",
+    "default_runtime_generated_value_set": "d70fb9648ef8eb1b8fe02150bcdcc71ed5d558fbcf2ea945844994217580dd7a",
+    "visibility_rule_set": "e3d11affebfa8ba62fe7e7f0c2014ac363d6d1ac1ccaa3f47aafd18109cdd20c",
+    "redaction_rule_set": "c081d87b2dadb71687177f97c210a024f823fba2383d3e299998c66deee46f2f",
+    "mutation_rule_set": "8b806b0d95bbd92e3c2aeb3d7d4ecd0fd0abc1aaf9c6a14639f8966080719fed",
+    "scratchbird_mapping_set": "96d0f61503c34b5cf37248bed34b6b8a9859f4124cdfb55661427950bcf3a7ef"
+  },
+  "manifest_hash": "371c66cf057ae776cc9ef8f4c5e13e8aa1e57b81e3fae8c1b5e5f666c3983e4d"
+}

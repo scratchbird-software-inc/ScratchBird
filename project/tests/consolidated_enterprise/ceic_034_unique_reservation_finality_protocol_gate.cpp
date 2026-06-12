@@ -674,20 +674,20 @@ void RequiredEvidenceFailuresFailClosed() {
 }
 
 void AuthorityParticipationAndReadinessOverclaimFailClosed() {
-  auto donor = ProtocolRequest();
-  donor.donor_local_participation = true;
+  auto reference = ProtocolRequest();
+  reference.reference_local_participation = true;
   RequireStatus(
-      index::AdmitUniqueReservationFinalityProtocol(donor),
+      index::AdmitUniqueReservationFinalityProtocol(reference),
       index::UniqueReservationFinalityProtocolStatus::
-          donor_policy_cluster_participation,
-      "donor local participation did not fail closed");
+          reference_policy_cluster_participation,
+      "reference local participation did not fail closed");
 
   auto policy = ProtocolRequest();
   policy.policy_local_participation = true;
   RequireStatus(
       index::AdmitUniqueReservationFinalityProtocol(policy),
       index::UniqueReservationFinalityProtocolStatus::
-          donor_policy_cluster_participation,
+          reference_policy_cluster_participation,
       "policy local participation did not fail closed");
 
   auto cluster = ProtocolRequest();
@@ -695,7 +695,7 @@ void AuthorityParticipationAndReadinessOverclaimFailClosed() {
   RequireStatus(
       index::AdmitUniqueReservationFinalityProtocol(cluster),
       index::UniqueReservationFinalityProtocolStatus::
-          donor_policy_cluster_participation,
+          reference_policy_cluster_participation,
       "cluster local participation did not fail closed");
 
   auto authority = ProtocolRequest();

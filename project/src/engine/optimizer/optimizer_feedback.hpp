@@ -19,7 +19,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: SB_OPTIMIZER_METRIC_FEEDBACK_CONTRACTS
 // Runtime feedback is optimizer-advisory only. It may calibrate relative cost
 // and memory-grant estimates, but it is never transaction finality, visibility,
-// parser execution, or donor authority.
+// parser execution, or reference authority.
 struct OptimizerRuntimeFeedback {
   std::string operator_family;
   std::string plan_shape;
@@ -48,7 +48,7 @@ struct OptimizerRuntimeFeedback {
   bool policy_allowed = true;
   bool advisory_only = true;
   bool mga_visibility_recheck_preserved = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   std::string transaction_finality_authority = "engine_transaction_inventory";
 };
 
@@ -89,7 +89,7 @@ struct OptimizerFeedbackStatus {
 // SEARCH_KEY: OPCH_ADAPTIVE_FEEDBACK_ACTUALS_PERSISTENCE
 // Scoped runtime actuals and feedback persistence is optimizer-advisory only.
 // Records carry policy/scope generations and can be invalidated; they never
-// become transaction finality, visibility, security, recovery, parser, or donor
+// become transaction finality, visibility, security, recovery, parser, or reference
 // authority.
 struct OptimizerRuntimeFeedbackRecord {
   std::string feedback_uuid;

@@ -62,7 +62,7 @@ void RequireNoForbiddenRuntimeEvidence(const std::vector<std::string>& values,
   for (const auto& value : values) {
     for (const auto forbidden :
          {"docs/", "execution-plans", "findings", "audit", "contracts",
-          "references", "parser_or_donor_finality_authority=true",
+          "references", "parser_or_reference_finality_authority=true",
           "parser_transaction_finality_authority=true",
           "provider_transaction_finality_authority=true",
           "provider_visibility_authority=true",
@@ -193,7 +193,7 @@ opt::CachedOptimizerPlan CachedPlan(const opt::OptimizerPlanCacheKeyInput& input
   plan.metadata_only = true;
   plan.mga_visibility_recheck_required = true;
   plan.security_recheck_required = true;
-  plan.parser_or_donor_finality_authority = false;
+  plan.parser_or_reference_finality_authority = false;
   return plan;
 }
 

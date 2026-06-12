@@ -311,7 +311,7 @@ std::string CanonicalAuthProviderFamily(std::string provider_family) {
     return "local_password";
   }
   if (provider_family == "internal.password_compat" || provider_family == "md5_password_compat" ||
-      provider_family == "donor_password_compat" || provider_family == "builtin.password_compat") {
+      provider_family == "reference_password_compat" || provider_family == "builtin.password_compat") {
     return "password_compat";
   }
   if (provider_family == "internal.scram_sha256" || provider_family == "scram-sha-256" ||

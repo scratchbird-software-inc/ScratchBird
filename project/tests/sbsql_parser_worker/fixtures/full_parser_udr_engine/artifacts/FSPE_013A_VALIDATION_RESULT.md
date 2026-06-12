@@ -11,7 +11,7 @@ FSPE-013A verifies stable standard function identity by reconciling engine seed 
 
 ## Implementation Evidence
 
-- `project/src/engine/functions/registry/function_seed_registry.cpp` contains 114 canonical fixed UUID seed rows and 6,257 canonical/default/donor/plugin name seed rows.
+- `project/src/engine/functions/registry/function_seed_registry.cpp` contains 114 canonical fixed UUID seed rows and 6,257 canonical/default/reference/plugin name seed rows.
 - `project/src/engine/functions/registry/function_seed_registry.hpp` adds name seed metadata fields for seed ID, namespace, target kind, parser profile, and notes.
 - `project/tests/sbsql_parser_worker/generated/catalog/sbsql_fixed_uuid_catalog_seed_gate.cpp` validates canonical fixed UUIDs, name lookup rows, catalog object requirements, engine seed package parity, and non-authoritative parser registry evidence.
 - `project/tests/sbsql_parser_worker/CMakeLists.txt` wires the FSPE-013A gate into CTest.

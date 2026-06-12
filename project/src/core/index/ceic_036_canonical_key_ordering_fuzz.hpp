@@ -11,7 +11,7 @@
 // CEIC-036 canonical key ordering and encoding fuzz proof.
 // This proof layer is deterministic encoding/order evidence only. It does not
 // decide row visibility, authorization, transaction finality, recovery, parser
-// behavior, donor dominance, optimizer finality, cluster action, or agent action.
+// behavior, reference dominance, optimizer finality, cluster action, or agent action.
 
 #include "index_key_encoding.hpp"
 
@@ -26,7 +26,7 @@ struct Ceic036AuthorityBoundaryClaims {
   bool transaction_finality_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -39,8 +39,8 @@ struct Ceic036CanonicalKeyOrderingFuzzRequest {
   IndexKeySemanticProfile semantic_profile;
   bool typed_comparable_payload_contract_declared = false;
   bool raw_textual_numeric_ordering_claimed = false;
-  bool donor_comparison_recorded = false;
-  bool donor_comparison_evidence_only = true;
+  bool reference_comparison_recorded = false;
+  bool reference_comparison_evidence_only = true;
   Ceic036AuthorityBoundaryClaims authority_claims;
 };
 
@@ -59,7 +59,7 @@ struct Ceic036CanonicalKeyOrderingFuzzResult {
   bool expression_envelope_validation_proven = false;
   bool partial_predicate_implication_evidence_proven = false;
   bool prefix_bounds_proven = false;
-  bool donor_comparison_authority = false;
+  bool reference_comparison_authority = false;
   bool ceic_037_exact_recheck_claimed = false;
   bool ceic_040_runtime_metrics_claimed = false;
   bool ceic_041_crash_matrix_claimed = false;

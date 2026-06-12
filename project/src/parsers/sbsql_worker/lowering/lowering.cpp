@@ -1137,7 +1137,40 @@ struct ScalarSubqueryInfo {
   std::string projected_field;
 };
 
+struct LanguageControlInfo {
+  bool active{false};
+  bool valid{false};
+  bool session_operation{false};
+  bool bundle_operation{false};
+  bool mutates_session_language{false};
+  bool requires_admitted_bundle_manifest{false};
+  bool admitted_bundle_manifest_attached{false};
+  std::string invalid_reason;
+  std::string operation_id;
+  std::string opcode;
+  std::string control_kind;
+  std::string target_language_profile;
+  std::string bundle_uuid;
+};
+
 std::vector<std::string> MeaningfulUpperTokens(const CstDocument& cst) {
+  if (!cst.canonical_element_stream.elements.empty()) {
+    std::vector<std::string> words;
+    for (const auto& element : cst.canonical_element_stream.elements) {
+      if (!element.canonical_text.empty()) {
+        words.push_back(ToUpperAscii(element.canonical_text));
+      } else {
+        constexpr std::string_view prefix = "SBSQL.TOKEN.";
+        if (element.canonical_id.rfind(prefix, 0) == 0) {
+          words.push_back(element.canonical_id.substr(prefix.size()));
+        } else {
+          words.push_back(ToUpperAscii(element.canonical_id));
+        }
+      }
+      if (words.back() == "STATEMENT_TERMINATOR") break;
+    }
+    return words;
+  }
   std::vector<std::string> words;
   for (const auto& token : cst.tokens) {
     if (token.kind == TokenKind::kEnd) break;
@@ -1468,7 +1501,7 @@ constexpr std::array<PublicExactCommandSpec, 187> kPublicExactCommandSpecs{{
     {"security.protected_material.audit.inspect", "SHOW PROTECTED MATERIAL AUDIT", "SHOW PROTECTED MATERIAL AUDIT", "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineInspectProtectedMaterialCatalog", "protected_material_inspect", "sys.security.protected_material_audit", "", false},
     {"security.protected_material.package.export", "EXPORT PROTECTED MATERIAL PACKAGE", "EXPORT PROTECTED MATERIAL PACKAGE", "security.protected_material.package.export", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_EXPORT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineExportProtectedMaterialPackage", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
     {"security.protected_material.package.import", "IMPORT PROTECTED MATERIAL PACKAGE", "IMPORT PROTECTED MATERIAL PACKAGE", "security.protected_material.package.import", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_IMPORT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineImportProtectedMaterialPackage", "protected_material_control", "sys.security.protected_material_catalog", "", true},
-    {"migrate.from_donor", "MIGRATE FROM DONOR <donor_profile> WITH PACKAGE <package_ref>", "MIGRATE FROM DONOR", "op.migration.begin_from_donor", "SBLR_MIGRATION_BEGIN_FROM_DONOR", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineBeginMigration", "migration_control", "sys.migration.context", "donor_profile", true},
+    {"migrate.from_reference", "MIGRATE FROM REFERENCE <reference_profile> WITH PACKAGE <package_ref>", "MIGRATE FROM REFERENCE", "op.migration.begin_from_reference", "SBLR_MIGRATION_BEGIN_FROM_REFERENCE", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineBeginMigration", "migration_control", "sys.migration.context", "reference_profile", true},
     {"alter.migration", "ALTER MIGRATION <migration_ref> START|PAUSE|RESUME|ABORT|FINALIZE", "ALTER MIGRATION", "op.migration.alter", "SBLR_MIGRATION_ALTER", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineAlterMigration", "migration_control", "sys.migration.context", "migration", true},
     {"show.migration", "SHOW MIGRATION <migration_ref>", "SHOW MIGRATION", "op.show.migration", "SBLR_SHOW_MIGRATION", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineShowMigration", "migration_inspect", "sys.migration.context", "migration", false},
     {"show.migrations", "SHOW MIGRATIONS", "SHOW MIGRATIONS", "op.show.migrations", "SBLR_SHOW_MIGRATIONS", "sblr.migration.operation.v3", "rs.migration.list.v1", "EngineShowMigrations", "migration_inspect", "sys.migration.context", "", false},
@@ -2148,19 +2181,19 @@ PublicExactCommandRouteInfo AnalyzePublicExactMigrationRoute(
     const std::vector<const Token*>& tokens) {
   if (!tokens.empty() && PublicExactTokenEquals(tokens, 0, "MIGRATE")) {
     if (tokens.size() == 7 && PublicExactTokenEquals(tokens, 1, "FROM") &&
-        PublicExactTokenEquals(tokens, 2, "DONOR") &&
+        PublicExactTokenEquals(tokens, 2, "REFERENCE") &&
         PublicExactIsReferenceToken(*tokens[3]) &&
         PublicExactTokenEquals(tokens, 4, "WITH") &&
         PublicExactTokenEquals(tokens, 5, "PACKAGE") &&
         PublicExactIsReferenceToken(*tokens[6])) {
-      return PublicExactValid("migrate.from_donor",
+      return PublicExactValid("migrate.from_reference",
                               tokens[3]->text,
                               {},
-                              "donor_package",
+                              "reference_package",
                               tokens[6]->text);
     }
-    return PublicExactInvalid("migrate.from_donor",
-                       "migrate_from_donor_requires_donor_profile_with_package_ref");
+    return PublicExactInvalid("migrate.from_reference",
+                       "migrate_from_reference_requires_reference_profile_with_package_ref");
   }
   if (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "ALTER") &&
       PublicExactTokenEquals(tokens, 1, "MIGRATION")) {
@@ -3032,7 +3065,7 @@ std::string CatalogOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "catalog.mutation.refresh_materialized_view") return "SBLR_CATALOG_MUTATION_REFRESH_MATERIALIZED_VIEW";
   if (operation_id == "catalog.mutation.create_transform") return "SBLR_CATALOG_MUTATION_CREATE_TRANSFORM";
   if (operation_id == "catalog.mutation.create_secret") return "SBLR_CATALOG_MUTATION_CREATE_SECRET";
-  if (operation_id == "catalog.mutation.alter_donor") return "SBLR_CATALOG_MUTATION_ALTER_DONOR";
+  if (operation_id == "catalog.mutation.alter_reference") return "SBLR_CATALOG_MUTATION_ALTER_REFERENCE";
   if (operation_id == "catalog.mutation.create_pipeline") return "SBLR_CATALOG_MUTATION_CREATE_PIPELINE";
   if (operation_id == "catalog.mutation.create_collation") return "SBLR_CATALOG_MUTATION_CREATE_COLLATION";
   if (operation_id == "catalog.mutation.create_type") return "SBLR_CATALOG_MUTATION_CREATE_TYPE";
@@ -4621,7 +4654,7 @@ Sbsfc084GrammarSurfaceRouteInfo AnalyzeSbsfc084GrammarSurfaceRoute(
   if (StartsWithWords(words, {"LIMBO", "STMT"})) return MakeSbsfc084ManagementRoute("SBSQL-CE7735D5B9EF", "limbo_stmt");
   if (StartsWithWords(words, {"PRE", "SPLIT", "CLAUSE"})) return MakeSbsfc084QueryRoute("SBSQL-CE84AC72F5A6", "pre_split_clause");
   if (StartsWithWords(words, {"SALVAGE", "OPTIONS"})) return MakeSbsfc084StorageRoute("SBSQL-CEDFBAFE07AC", "salvage_options");
-  if (StartsWithWords(words, {"DONOR", "PROFILE", "STMT"})) return MakeSbsfc084ManagementRoute("SBSQL-CFBAFFF843B6", "donor_profile_stmt");
+  if (StartsWithWords(words, {"REFERENCE", "PROFILE", "STMT"})) return MakeSbsfc084ManagementRoute("SBSQL-CFBAFFF843B6", "reference_profile_stmt");
   if (StartsWithWords(words, {"RETURNING", "CLAUSE"})) return MakeSbsfc084QueryRoute("SBSQL-CFF8590ACD1B", "returning_clause");
   if (StartsWithWords(words, {"HISTORICAL", "READ", "CLAUSE"})) return MakeSbsfc084QueryRoute("SBSQL-D055AACF2C98", "historical_read_clause");
   if (StartsWithWords(words, {"ARTIFACT", "REF"})) return MakeSbsfc084CatalogRoute("SBSQL-D059E587EC5D", "artifact_ref");
@@ -4758,7 +4791,7 @@ Sbsfc085GrammarSurfaceRouteInfo AnalyzeSbsfc085GrammarSurfaceRoute(
   if (StartsWithWords(words, {"PSQL", "PIPE", "ROW", "STMT"})) return MakeSbsfc085ProceduralRoute("SBSQL-F178404D32D6", "psql_pipe_row_stmt");
   if (StartsWithWords(words, {"CALL", "RESULT", "CLAUSE"})) return MakeSbsfc085ProceduralRoute("SBSQL-F24C10C05F96", "call_result_clause");
   if (StartsWithWords(words, {"PSQL", "COMPOUND", "STMT"})) return MakeSbsfc085ProceduralRoute("SBSQL-F2580B10CA17", "psql_compound_stmt");
-  if (StartsWithWords(words, {"DONOR", "PROFILE", "OPTIONS"})) return MakeSbsfc085ManagementRoute("SBSQL-F29DE2ED8D20", "donor_profile_options");
+  if (StartsWithWords(words, {"REFERENCE", "PROFILE", "OPTIONS"})) return MakeSbsfc085ManagementRoute("SBSQL-F29DE2ED8D20", "reference_profile_options");
   if (StartsWithWords(words, {"CALL", "STMT"})) return MakeSbsfc085ProceduralRoute("SBSQL-FAC34DDEAC9D", "call_stmt");
   if (StartsWithWords(words, {"CALL"}) && !StartsWithWords(words, {"CALL", "TARGET"}) && !StartsWithWords(words, {"CALL", "ARG"}) && !IsParenthesizedCallInvocation(cst)) return MakeSbsfc085ProceduralRoute("SBSQL-F3006C91D952", "call");
   if (StartsWithWords(words, {"NEW", "SURFACE", "STMT"})) return MakeSbsfc085ManagementRoute("SBSQL-F375BA38C102", "new_surface_stmt");
@@ -5255,8 +5288,8 @@ Sbsfc077NonGeneralResidualRouteInfo AnalyzeSbsfc077NonGeneralResidualRoute(
   if (StartsWithWords(words, {"CHECKPOINT"})) {
     return MakeSbsfc077StorageRoute("SBSQL-941FB8EEC93C", "checkpoint_stmt", "checkpoint_stmt");
   }
-  if (StartsWithWords(words, {"STORAGE", "DONOR"})) {  // donor compatibility, not authority
-    return MakeSbsfc077StorageRoute("SBSQL-98D487EA96E0", "donor_log_mode", "donor_log_mode");  // donor compatibility, not authority
+  if (StartsWithWords(words, {"STORAGE", "REFERENCE"})) {  // reference compatibility, not authority
+    return MakeSbsfc077StorageRoute("SBSQL-98D487EA96E0", "reference_log_mode", "reference_log_mode");  // reference compatibility, not authority
   }
   if (StartsWithWords(words, {"STORAGE", "TIER"})) {
     return MakeSbsfc077StorageRoute("SBSQL-E2BCC530037E", "storage_tier", "storage_tier");
@@ -6951,6 +6984,117 @@ std::vector<const Token*> MeaningfulTokens(const CstDocument& cst) {
   return out;
 }
 
+bool LanguageControlTokenEquals(const std::vector<const Token*>& tokens,
+                                std::size_t index,
+                                std::string_view expected) {
+  if (index >= tokens.size()) return false;
+  const auto& token = *tokens[index];
+  const auto text = token.canonical_text.empty()
+                        ? std::string_view(token.text)
+                        : std::string_view(token.canonical_text);
+  return ToUpperAscii(text) == expected;
+}
+
+std::string LanguageControlOperandText(const Token& token) {
+  return token.raw_text.empty() ? token.text : token.raw_text;
+}
+
+std::string LanguageControlOpcodeForOperation(std::string_view operation_id) {
+  if (operation_id == "language.session.set") return "SBLR_LANGUAGE_SESSION_SET";
+  if (operation_id == "language.session.reset") return "SBLR_LANGUAGE_SESSION_RESET";
+  if (operation_id == "language.session.show") return "SBLR_LANGUAGE_SESSION_SHOW";
+  if (operation_id == "language.bundle.load") return "SBLR_LANGUAGE_BUNDLE_LOAD";
+  if (operation_id == "language.bundle.unload") return "SBLR_LANGUAGE_BUNDLE_UNLOAD";
+  if (operation_id == "language.bundle.validate") return "SBLR_LANGUAGE_BUNDLE_VALIDATE";
+  return {};
+}
+
+bool IsSupportedLanguageControlOperation(std::string_view operation_id) {
+  return operation_id == "language.session.set" ||
+         operation_id == "language.session.reset" ||
+         operation_id == "language.session.show" ||
+         operation_id == "language.bundle.load" ||
+         operation_id == "language.bundle.unload" ||
+         operation_id == "language.bundle.validate";
+}
+
+LanguageControlInfo AnalyzeLanguageControlRoute(const CstDocument& cst) {
+  const auto tokens = MeaningfulTokens(cst);
+  LanguageControlInfo info;
+  if (tokens.size() >= 2 && LanguageControlTokenEquals(tokens, 0, "SET") &&
+      LanguageControlTokenEquals(tokens, 1, "LANGUAGE")) {
+    info.active = true;
+    info.valid = true;
+    info.session_operation = true;
+    info.mutates_session_language = true;
+    info.operation_id = "language.session.set";
+    info.opcode = LanguageControlOpcodeForOperation(info.operation_id);
+    info.control_kind = "session_set_language";
+    if (tokens.size() == 3) {
+      info.target_language_profile = LanguageControlOperandText(*tokens[2]);
+    } else if (tokens.size() == 4 &&
+               LanguageControlTokenEquals(tokens, 2, "PROFILE")) {
+      info.target_language_profile = LanguageControlOperandText(*tokens[3]);
+    } else {
+      info.valid = false;
+      info.invalid_reason = "set_language_requires_profile_ref";
+    }
+    return info;
+  }
+  if (tokens.size() >= 2 && LanguageControlTokenEquals(tokens, 0, "RESET") &&
+      LanguageControlTokenEquals(tokens, 1, "LANGUAGE")) {
+    info.active = true;
+    info.valid = tokens.size() == 2;
+    info.session_operation = true;
+    info.mutates_session_language = true;
+    info.operation_id = "language.session.reset";
+    info.opcode = LanguageControlOpcodeForOperation(info.operation_id);
+    info.control_kind = "session_reset_language";
+    if (!info.valid) info.invalid_reason = "reset_language_takes_no_operands";
+    return info;
+  }
+  if (tokens.size() >= 2 && LanguageControlTokenEquals(tokens, 0, "SHOW") &&
+      LanguageControlTokenEquals(tokens, 1, "LANGUAGE")) {
+    info.active = true;
+    info.valid = tokens.size() == 2;
+    info.session_operation = true;
+    info.operation_id = "language.session.show";
+    info.opcode = LanguageControlOpcodeForOperation(info.operation_id);
+    info.control_kind = "session_show_language";
+    if (!info.valid) info.invalid_reason = "show_language_takes_no_operands";
+    return info;
+  }
+  if (tokens.size() >= 3 &&
+      (LanguageControlTokenEquals(tokens, 0, "LOAD") ||
+       LanguageControlTokenEquals(tokens, 0, "UNLOAD") ||
+       LanguageControlTokenEquals(tokens, 0, "VALIDATE")) &&
+      LanguageControlTokenEquals(tokens, 1, "LANGUAGE") &&
+      LanguageControlTokenEquals(tokens, 2, "BUNDLE")) {
+    info.active = true;
+    info.valid = tokens.size() == 4;
+    info.bundle_operation = true;
+    info.requires_admitted_bundle_manifest = true;
+    if (LanguageControlTokenEquals(tokens, 0, "LOAD")) {
+      info.operation_id = "language.bundle.load";
+      info.control_kind = "bundle_load";
+    } else if (LanguageControlTokenEquals(tokens, 0, "UNLOAD")) {
+      info.operation_id = "language.bundle.unload";
+      info.control_kind = "bundle_unload";
+    } else {
+      info.operation_id = "language.bundle.validate";
+      info.control_kind = "bundle_validate";
+    }
+    info.opcode = LanguageControlOpcodeForOperation(info.operation_id);
+    if (info.valid) {
+      info.bundle_uuid = LanguageControlOperandText(*tokens[3]);
+    } else {
+      info.invalid_reason = "language_bundle_operation_requires_single_bundle_ref";
+    }
+    return info;
+  }
+  return info;
+}
+
 bool ParseValuesRowsAt(const std::vector<const Token*>& tokens,
                        std::size_t* index,
                        std::vector<std::vector<ScalarProjectionItem>>* rows,
@@ -7703,7 +7847,7 @@ std::optional<ScalarFunctionProjectionDescriptor> CanonicalFunctionForScalarProj
       // function. Public surface refuses to prevent accidental invocation.
       {"customer.table", "sb.scalar.refusal_customer_table", "customer.table", false},
       // SBSFC-027R-C: bare @@ T-SQL system-variable prefix without a member.
-      // Donor compatibility surface; ScratchBird refuses since there is no
+      // Reference compatibility surface; ScratchBird refuses since there is no
       // standalone system-variable evaluation contract.
       {"@@", "sb.scalar.refusal_at_at", "@@", true},
       // SBSFC-027R-D: f(name=>value) named-argument syntax artifact from the
@@ -7950,8 +8094,8 @@ std::optional<ScalarFunctionProjectionDescriptor> CanonicalFunctionForScalarProj
   if (lowered == "deprecated_keyword") {
     return ScalarFunctionProjectionDescriptor{"sb.scalar.deprecated_keyword", "character"};
   }
-  if (lowered == "donor_contextual_keyword") {
-    return ScalarFunctionProjectionDescriptor{"sb.scalar.donor_contextual_keyword", "character"};
+  if (lowered == "reference_contextual_keyword") {
+    return ScalarFunctionProjectionDescriptor{"sb.scalar.reference_contextual_keyword", "character"};
   }
   if (lowered == "reserved_native_keyword") {
     return ScalarFunctionProjectionDescriptor{"sb.scalar.reserved_native_keyword", "character"};
@@ -7959,8 +8103,8 @@ std::optional<ScalarFunctionProjectionDescriptor> CanonicalFunctionForScalarProj
   if (lowered == "contextual_native_keyword") {
     return ScalarFunctionProjectionDescriptor{"sb.scalar.contextual_native_keyword", "character"};
   }
-  if (lowered == "donor_reserved_keyword") {
-    return ScalarFunctionProjectionDescriptor{"sb.scalar.donor_reserved_keyword", "character"};
+  if (lowered == "reference_reserved_keyword") {
+    return ScalarFunctionProjectionDescriptor{"sb.scalar.reference_reserved_keyword", "character"};
   }
   if (lowered == "meta_command_keyword") {
     return ScalarFunctionProjectionDescriptor{"sb.scalar.meta_command_keyword", "character"};
@@ -8009,8 +8153,8 @@ std::optional<ScalarFunctionProjectionDescriptor> CanonicalFunctionForScalarProj
   if (lowered == "refuse") return ScalarFunctionProjectionDescriptor{"sb.scalar.refuse", "character"};
   if (lowered == "metrics") return ScalarFunctionProjectionDescriptor{"sb.scalar.metrics", "character"};
   if (lowered == "catalog_read") return ScalarFunctionProjectionDescriptor{"sb.scalar.catalog_read", "character"};
-  if (lowered == "donor_log_compatibility") {
-    return ScalarFunctionProjectionDescriptor{"sb.scalar.donor_log_compatibility", "character"};
+  if (lowered == "reference_log_compatibility") {
+    return ScalarFunctionProjectionDescriptor{"sb.scalar.reference_log_compatibility", "character"};
   }
   if (lowered == "fail_closed") return ScalarFunctionProjectionDescriptor{"sb.scalar.fail_closed", "character"};
   if (lowered == "requires_new_function") {
@@ -8115,10 +8259,10 @@ std::optional<ScalarFunctionProjectionDescriptor> CanonicalFunctionForScalarProj
                                               "character",
                                               "SBSQL.SYNTAX_PARSER_ONLY"};
   }
-  if (lowered == "donor_only_rewrite") {
-    return ScalarFunctionProjectionDescriptor{"sb.scalar.donor_only_rewrite",
+  if (lowered == "reference_only_rewrite") {
+    return ScalarFunctionProjectionDescriptor{"sb.scalar.reference_only_rewrite",
                                               "character",
-                                              "donor_only(rewrite)"};
+                                              "reference_only(rewrite)"};
   }
   if (lowered == "object_resolution_failed") {
     return ScalarFunctionProjectionDescriptor{"sb.scalar.object_resolution_failed",
@@ -10261,7 +10405,7 @@ bool ParseSystemVariableProjectionItem(const std::vector<const Token*>& tokens,
   return true;
 }
 
-struct DonorContextProjectionDescriptor {
+struct ReferenceContextProjectionDescriptor {
   std::string_view surface_id;
   std::string_view function_id;
   std::string_view result_type_name;
@@ -10269,7 +10413,7 @@ struct DonorContextProjectionDescriptor {
   bool retain_first_argument{false};
 };
 
-std::optional<DonorContextProjectionDescriptor> DonorContextProjectionForCall(
+std::optional<ReferenceContextProjectionDescriptor> ReferenceContextProjectionForCall(
     std::string_view function_name,
     const std::vector<ScalarProjectionItem>& arguments) {
   const std::string lowered = LowerAscii(std::string(function_name));
@@ -10278,15 +10422,15 @@ std::optional<DonorContextProjectionDescriptor> DonorContextProjectionForCall(
       LowerAscii(arguments[0].value) == "system") {
     const std::string context_name = LowerAscii(arguments[1].value);
     if (context_name == "current_user") {
-      return DonorContextProjectionDescriptor{
+      return ReferenceContextProjectionDescriptor{
           "SBSQL-11D5ED7A686F", "sb.session.current_user", "uuid", "SBSQL-8395558E18E8"};
     }
     if (context_name == "engine_version") {
-      return DonorContextProjectionDescriptor{
+      return ReferenceContextProjectionDescriptor{
           "SBSQL-594209C32142", "sb.scalar.current_engine_version", "character", "SBSQL-8395558E18E8"};
     }
     if (context_name == "transaction_id") {
-      return DonorContextProjectionDescriptor{
+      return ReferenceContextProjectionDescriptor{
           "SBSQL-C25F2B374483", "sb.session.transaction_id", "uint64", "SBSQL-8395558E18E8"};
     }
   }
@@ -10297,24 +10441,24 @@ std::optional<DonorContextProjectionDescriptor> DonorContextProjectionForCall(
       arguments[1].type_name == "text") {
     const std::string context_name = LowerAscii(arguments[1].value);
     if (context_name == "current_user") {
-      return DonorContextProjectionDescriptor{
+      return ReferenceContextProjectionDescriptor{
           "SBSQL-B0DCA7477008", "sb.session.current_user", "uuid", "SBSQL-8395558E18E8"};
     }
     if (context_name == "sessionid") {
-      return DonorContextProjectionDescriptor{
+      return ReferenceContextProjectionDescriptor{
           "SBSQL-B8F2EF583846", "sb.session.session_id", "uuid", "SBSQL-8395558E18E8"};
     }
     if (context_name == "session_user") {
-      return DonorContextProjectionDescriptor{
+      return ReferenceContextProjectionDescriptor{
           "SBSQL-20BB356E693A", "sb.session.session_user", "uuid", "SBSQL-8395558E18E8"};
     }
     if (context_name == "client_info") {
-      return DonorContextProjectionDescriptor{
+      return ReferenceContextProjectionDescriptor{
           "SBSQL-82082E76658A", "sb.scalar.refusal_sys_context_client_info", "character",
           "SBSQL-8395558E18E8"};
     }
     if (context_name == "name") {
-      return DonorContextProjectionDescriptor{
+      return ReferenceContextProjectionDescriptor{
           "SBSQL-73AAF62A5CC3", "sb.scalar.refusal_sys_context_userenv_name", "character",
           "SBSQL-8395558E18E8"};
     }
@@ -10324,7 +10468,7 @@ std::optional<DonorContextProjectionDescriptor> DonorContextProjectionForCall(
       arguments[0].type_name == "text" && arguments[1].type_name == "text" &&
       LowerAscii(arguments[0].value) == "user_session" &&
       LowerAscii(arguments[1].value) == "client_pid") {
-    return DonorContextProjectionDescriptor{
+    return ReferenceContextProjectionDescriptor{
         "SBSQL-93B790433D9D", "sb.scalar.refusal_rdb_get_context_client_pid", "character",
         "SBSQL-8395558E18E8"};
   }
@@ -10332,7 +10476,7 @@ std::optional<DonorContextProjectionDescriptor> DonorContextProjectionForCall(
       arguments[0].type_name == "text" && arguments[1].type_name == "text" &&
       LowerAscii(arguments[0].value) == "user_session" &&
       LowerAscii(arguments[1].value) == "name") {
-    return DonorContextProjectionDescriptor{
+    return ReferenceContextProjectionDescriptor{
         "SBSQL-B26CC22AE57C", "sb.scalar.refusal_rdb_get_context_user_session_name", "character",
         "SBSQL-8395558E18E8"};
   }
@@ -10340,7 +10484,7 @@ std::optional<DonorContextProjectionDescriptor> DonorContextProjectionForCall(
   if (lowered == "system_var" && arguments.size() == 1 &&
       arguments[0].type_name == "text" &&
       LowerAscii(arguments[0].value) == "timezone") {
-    return DonorContextProjectionDescriptor{
+    return ReferenceContextProjectionDescriptor{
         "SBSQL-6BD2088A414A", "sb.scalar.current_setting", "character",
         "SBSQL-7FF120A84845", true};
   }
@@ -10348,7 +10492,7 @@ std::optional<DonorContextProjectionDescriptor> DonorContextProjectionForCall(
   return std::nullopt;
 }
 
-bool ParseDonorContextProjectionItem(const std::vector<const Token*>& tokens,
+bool ParseReferenceContextProjectionItem(const std::vector<const Token*>& tokens,
                                      std::size_t* index,
                                      ScalarProjectionItem* item) {
   if (index == nullptr || item == nullptr) return false;
@@ -10380,7 +10524,7 @@ bool ParseDonorContextProjectionItem(const std::vector<const Token*>& tokens,
     return false;
   }
 
-  const auto descriptor = DonorContextProjectionForCall(parsed_name->text, arguments);
+  const auto descriptor = ReferenceContextProjectionForCall(parsed_name->text, arguments);
   if (!descriptor) return false;
   if (!NativeNowExpressionSurfaceIds({descriptor->surface_id,
                                       descriptor->grammar_surface_id,
@@ -10443,9 +10587,9 @@ bool ParsePolicyOptionRefusalProjectionItem(const std::vector<const Token*>& tok
   } else if (lowered_function == "explain" && option == "waltrue") {
     surface_id = "SBSQL-F9144106E9F2";
     function_id = "sb.scalar.refusal_explain_waltrue";
-  } else if (lowered_function == "explain" && option == "donor_log_compatibilitytrue") {
+  } else if (lowered_function == "explain" && option == "reference_log_compatibilitytrue") {
     surface_id = "SBSQL-E9D1FF70EC0D";
-    function_id = "sb.scalar.refusal_explain_donor_log_compatibilitytrue";
+    function_id = "sb.scalar.refusal_explain_reference_log_compatibilitytrue";
   } else if (lowered_function == "explain" && option == "evidencetrue") {
     surface_id = "SBSQL-BEB64FF33809";
     function_id = "sb.scalar.refusal_explain_evidencetrue";
@@ -10522,18 +10666,18 @@ bool ParsePolicySurfaceRefusalProjectionItem(const std::vector<const Token*>& to
     return true;
   }
 
-  if (TokenTextEquals(tokens, cursor, "donor_log_mode")) {
+  if (TokenTextEquals(tokens, cursor, "reference_log_mode")) {
     if (!BuildPolicySurfaceRefusalProjectionItem(
-            "SBSQL-6637546ABDF0", "sb.scalar.refusal_donor_log_mode", item)) {
+            "SBSQL-6637546ABDF0", "sb.scalar.refusal_reference_log_mode", item)) {
       return false;
     }
     *index = cursor + 1;
     return true;
   }
 
-  if (TokenTextEquals(tokens, cursor, "checkpoint_donor_log")) {
+  if (TokenTextEquals(tokens, cursor, "checkpoint_reference_log")) {
     if (!BuildPolicySurfaceRefusalProjectionItem(
-            "SBSQL-17068E518638", "sb.scalar.refusal_checkpoint_donor_log", item)) {
+            "SBSQL-17068E518638", "sb.scalar.refusal_checkpoint_reference_log", item)) {
       return false;
     }
     *index = cursor + 1;
@@ -11992,7 +12136,7 @@ ScalarProjectionInfo AnalyzeScalarProjection(const CstDocument& cst) {
         !ParseArrayConstructorProjectionItem(tokens, &index, &item) &&
         !ParseRowConstructorProjectionItem(tokens, &index, &item) &&
         !ParseSystemVariableProjectionItem(tokens, &index, &item) &&
-        !ParseDonorContextProjectionItem(tokens, &index, &item) &&
+        !ParseReferenceContextProjectionItem(tokens, &index, &item) &&
         !ParsePolicyOptionRefusalProjectionItem(tokens, &index, &item) &&
         !ParseJsonSpecialProjectionItem(tokens, &index, &item) &&
         !ParseXmlSpecialProjectionItem(tokens, &index, &item) &&
@@ -17096,9 +17240,9 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
   } else if (words.size() >= 3 && words[0] == "CREATE" && words[1] == "SECRET") {
     info = create("SBSQL-C22117F1754C", "create_secret_stmt",
                   "create_secret", "secret", "sys.catalog.secret");
-  } else if (words.size() >= 3 && words[0] == "ALTER" && words[1] == "DONOR") {
-    info = alter("SBSQL-C75FEC2CAA69", "alter_donor_action",
-                 "alter_donor", "donor", "sys.catalog.donor");
+  } else if (words.size() >= 3 && words[0] == "ALTER" && words[1] == "REFERENCE") {
+    info = alter("SBSQL-C75FEC2CAA69", "alter_reference_action",
+                 "alter_reference", "reference", "sys.catalog.reference");
   } else if (words.size() >= 3 && words[0] == "CREATE" && words[1] == "PIPELINE") {
     info = create("SBSQL-CAB8A126ED9E", "create_pipeline_stmt",
                   "create_pipeline", "pipeline", "sys.catalog.pipeline");
@@ -18662,9 +18806,9 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
   } else {
     AppendIfMissing(&envelope->policy_refs, "observability_inspection_policy");
   }
-  if (spec.surface_key == "migrate.from_donor") {
-    envelope->operands.push_back({"text", "donor_profile", info.target_ref});
-    envelope->operands.push_back({"text", "donor_package", info.secondary_ref});
+  if (spec.surface_key == "migrate.from_reference") {
+    envelope->operands.push_back({"text", "reference_profile", info.target_ref});
+    envelope->operands.push_back({"text", "reference_package", info.secondary_ref});
   } else if (spec.surface_key == "alter.migration") {
     envelope->operands.push_back({"text", "migration_ref", info.target_ref});
     envelope->operands.push_back({"text", "migration_action", info.secondary_ref});
@@ -20905,8 +21049,8 @@ void AppendPublicExactCommandJson(std::ostream& out,
     out << "\"target_ref_kind\":\"" << EscapeJson(spec.target_kind) << "\","
         << "\"target_ref_descriptor\":\"engine_resolves_from_public_registry\","
         << "\"target_ref\":\"" << EscapeJson(info.target_ref) << "\",";
-    if (spec.surface_key == "migrate.from_donor") {
-      out << "\"donor_profile\":\"" << EscapeJson(info.target_ref) << "\",";
+    if (spec.surface_key == "migrate.from_reference") {
+      out << "\"reference_profile\":\"" << EscapeJson(info.target_ref) << "\",";
     } else if (spec.surface_key == "alter.migration" ||
                spec.surface_key == "show.migration") {
       out << "\"migration_ref\":\"" << EscapeJson(info.target_ref) << "\",";
@@ -20919,8 +21063,8 @@ void AppendPublicExactCommandJson(std::ostream& out,
     out << "\"secondary_ref_kind\":\"" << EscapeJson(info.secondary_ref_kind) << "\","
         << "\"secondary_ref_descriptor\":\"engine_resolves_from_public_registry\","
         << "\"secondary_ref\":\"" << EscapeJson(info.secondary_ref) << "\",";
-    if (spec.surface_key == "migrate.from_donor") {
-      out << "\"donor_package\":\"" << EscapeJson(info.secondary_ref) << "\",";
+    if (spec.surface_key == "migrate.from_reference") {
+      out << "\"reference_package\":\"" << EscapeJson(info.secondary_ref) << "\",";
     } else if (spec.surface_key == "alter.migration") {
       out << "\"migration_action\":\"" << EscapeJson(info.secondary_ref) << "\",";
     }
@@ -22199,7 +22343,7 @@ void PopulateLifecycleAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->required_authority_steps,
                   "authority.parser.no_storage_or_finality");
   AppendIfMissing(&envelope->required_authority_steps,
-                  "authority.donor_filesystem_effects_forbidden");
+                  "authority.reference_filesystem_effects_forbidden");
   if (mapping.requires_security_context) {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.server.security_policy_context_required");
@@ -22314,6 +22458,130 @@ SblrEnvelope LowerLifecycleMapping(const LifecycleMappingDescriptor& mapping,
   return envelope;
 }
 
+void PopulateLanguageControlAuthority(SblrEnvelope* envelope,
+                                      const LanguageControlInfo& info) {
+  envelope->operation_family = "sblr.language.resource_control.v3";
+  envelope->sblr_operation_key = "sblr.language.resource_control.v3";
+  envelope->operation_id = info.operation_id;
+  envelope->engine_api_operation_id = info.operation_id;
+  envelope->sblr_opcode = info.opcode;
+  envelope->engine_api_function =
+      info.session_operation ? "ServerSessionLanguageContext"
+                             : "SecurityAdmitLanguageResourceBundle";
+  envelope->result_shape_key = info.operation_id == "language.session.show"
+                                   ? "result.shape.management_report"
+                                   : "result.shape.command_status";
+  envelope->diagnostic_shape_key = "diagnostic.canonical_message_vector";
+  envelope->resource_contract_key = "resource.contract.sbsql_language_resource";
+  envelope->required_authority_steps.clear();
+  envelope->descriptor_refs.clear();
+  envelope->policy_refs.clear();
+  envelope->required_rights.clear();
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.parser.syntax_evidence_only");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.parser.surface_descriptor_candidate");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.parser.no_sql_text_execution");
+  AppendIfMissing(&envelope->required_authority_steps,
+                  "authority.parser.no_storage_or_finality");
+  AppendIfMissing(&envelope->descriptor_refs, "sys.language.profile");
+  if (info.session_operation) {
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.server.session_language_context_required");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.session.language_context");
+    AppendIfMissing(&envelope->required_rights,
+                    info.operation_id == "language.session.show"
+                        ? "right.observe"
+                        : "right.language_session_control");
+  }
+  if (info.bundle_operation) {
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.server.language_resource_registry_required");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.security.language_bundle_admission_required");
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.parser.no_bundle_loading");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.language.resource_bundle");
+    AppendIfMissing(&envelope->policy_refs, "language_resource_admission_policy");
+    AppendIfMissing(&envelope->required_rights, "right.language_bundle_admin");
+  }
+}
+
+std::string LanguageControlPayload(const SblrEnvelope& envelope,
+                                   const BoundStatement& bound,
+                                   const CstDocument& cst,
+                                   const SessionContext& session,
+                                   const LanguageControlInfo& info) {
+  std::ostringstream out;
+  out << "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
+      << "\"operation_family\":\"" << EscapeJson(envelope.operation_family) << "\","
+      << "\"surface_key\":\"" << EscapeJson(envelope.surface_key) << "\","
+      << "\"command_family\":\"" << EscapeJson(envelope.command_family) << "\","
+      << "\"operation_id\":\"" << EscapeJson(envelope.operation_id) << "\","
+      << "\"engine_api_operation_id\":\"" << EscapeJson(envelope.engine_api_operation_id) << "\","
+      << "\"sblr_operation\":\"" << EscapeJson(envelope.sblr_opcode) << "\","
+      << "\"statement_surface_name\":\"" << EscapeJson(bound.statement_surface_name) << "\","
+      << "\"sblr_operation_key\":\"" << EscapeJson(envelope.sblr_operation_key) << "\","
+      << "\"result_shape\":\"" << EscapeJson(envelope.result_shape_key) << "\","
+      << "\"diagnostic_shape\":\"" << EscapeJson(envelope.diagnostic_shape_key) << "\","
+      << "\"resource_contract\":\"" << EscapeJson(envelope.resource_contract_key) << "\","
+      << "\"trace_key\":\"" << EscapeJson(envelope.trace_key) << "\","
+      << "\"statement_hash\":" << bound.statement_hash << ','
+      << "\"catalog_epoch\":" << envelope.catalog_epoch << ','
+      << "\"security_policy_epoch\":" << envelope.security_policy_epoch << ','
+      << "\"descriptor_epoch\":" << envelope.descriptor_epoch << ','
+      << "\"source_artifact_policy\":\"" << EscapeJson(envelope.source_artifact_policy) << "\","
+      << "\"source_length\":" << cst.source.size() << ','
+      << "\"source_payload_embedded\":false,"
+      << "\"language_control\":true,"
+      << "\"language_control_kind\":\"" << EscapeJson(info.control_kind) << "\","
+      << "\"language_operation_id\":\"" << EscapeJson(info.operation_id) << "\","
+      << "\"session_language_profile_before\":\"" << EscapeJson(session.language_profile) << "\","
+      << "\"session_language_tag_before\":\"" << EscapeJson(session.language_tag) << "\","
+      << "\"session_language_resource_epoch\":" << session.language_resource_epoch << ','
+      << "\"server_session_language_context_required\":"
+      << (info.session_operation ? "true" : "false") << ','
+      << "\"mutates_session_language\":"
+      << (info.mutates_session_language ? "true" : "false") << ','
+      << "\"parser_updates_session_language\":false,"
+      << "\"prepared_statement_reinterpretation\":false,"
+      << "\"resource_bundle_operation\":"
+      << (info.bundle_operation ? "true" : "false") << ','
+      << "\"signed_bundle_required\":"
+      << (info.bundle_operation ? "true" : "false") << ','
+      << "\"compatible_bundle_required\":"
+      << (info.bundle_operation ? "true" : "false") << ','
+      << "\"security_admission_required\":"
+      << (info.bundle_operation ? "true" : "false") << ','
+      << "\"admitted_bundle_manifest_attached\":"
+      << (info.admitted_bundle_manifest_attached ? "true" : "false") << ','
+      << "\"parser_language_library_admission\":false,"
+      << "\"load_or_unload_effects_executed_by_parser\":false,"
+      << "\"row_storage_touched\":false,"
+      << "\"mga_finality_claimed\":false,"
+      << "\"sql_text_included\":false,"
+      << "\"parser_executes_sql\":false,";
+  if (!info.target_language_profile.empty()) {
+    out << "\"target_language_profile\":\""
+        << EscapeJson(info.target_language_profile) << "\",";
+  }
+  if (!info.bundle_uuid.empty()) {
+    out << "\"bundle_uuid\":\"" << EscapeJson(info.bundle_uuid) << "\",";
+  }
+  AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
+  out << ',';
+  AppendJsonStringArray(out, "descriptor_refs", envelope.descriptor_refs);
+  out << ',';
+  AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
+  out << ',';
+  AppendJsonStringArray(out, "required_rights", envelope.required_rights);
+  out << ',';
+  AppendJsonStringArray(out, "required_authority_steps", envelope.required_authority_steps);
+  out << "]}";
+  return out.str();
+}
+
 std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstDocument& cst) {
   const auto words = MeaningfulUpperTokens(cst);
   if (const auto exact_command_route = AnalyzePublicExactCommandRoute(cst);
@@ -22328,6 +22596,10 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
   if (const auto bridge_route = AnalyzeBridgeRoute(cst);
       bridge_route.active && bridge_route.valid) {
     return bridge_route.operation_id;
+  }
+  if (const auto language_control = AnalyzeLanguageControlRoute(cst);
+      language_control.active && language_control.valid) {
+    return language_control.operation_id;
   }
   if (AnalyzeSimpleCreateDomain(cst).active) return "ddl.create_domain";
   if (const auto sbsfc085_surface = AnalyzeSbsfc085GrammarSurfaceRoute(cst);
@@ -22546,8 +22818,10 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto simple_create_executable_object = AnalyzeSimpleCreateExecutableObject(cst);
   const auto transaction_lock_route = AnalyzeTransactionLockRoute(cst);
   const auto exact_command_route = AnalyzePublicExactCommandRoute(cst);
+  const auto language_control_route = AnalyzeLanguageControlRoute(cst);
   const auto catalog_descriptor_mutation =
-      (transaction_lock_route.active || exact_command_route.active)
+      (transaction_lock_route.active || exact_command_route.active ||
+       language_control_route.active)
           ? CatalogDescriptorMutationInfo{}
           : AnalyzeCatalogDescriptorMutation(cst, bound.resolved_object_uuids);
   const auto index_template_ddl =
@@ -22666,6 +22940,13 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   envelope.required_rights = bound.required_rights;
   envelope.required_authority_steps = bound.required_authority_steps;
   envelope.messages = bound.messages;
+  if (language_control_route.active && language_control_route.valid) {
+    PopulateLanguageControlAuthority(&envelope, language_control_route);
+    if (!bound.bound || envelope.messages.has_errors()) return envelope;
+    envelope.payload =
+        LanguageControlPayload(envelope, bound, cst, session, language_control_route);
+    return envelope;
+  }
   const auto sbsfc085_surface = AnalyzeSbsfc085GrammarSurfaceRoute(cst);
   if (sbsfc085_surface.active && sbsfc085_surface.valid) {
     PopulateSbsfc085GrammarSurfaceAuthority(&envelope, sbsfc085_surface);
@@ -23426,6 +23707,12 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AddVerifierError(&envelope.messages, "SBSQL.BRIDGE.UNSUPPORTED_SHAPE",
                      "bridge commands must match the universal bridge command surface",
                      {{"feature", bridge_route.invalid_reason}});
+  }
+  if (language_control_route.active && !language_control_route.valid) {
+    AddVerifierError(&envelope.messages,
+                     "SBSQL.LANGUAGE_CONTROL.UNSUPPORTED_SHAPE",
+                     "language control requires SET LANGUAGE [PROFILE] ref, RESET LANGUAGE, SHOW LANGUAGE, or LOAD/UNLOAD/VALIDATE LANGUAGE BUNDLE ref",
+                     {{"feature", language_control_route.invalid_reason}});
   }
   if (job_route.active && !job_route.valid) {
     AddVerifierError(&envelope.messages, "SBSQL.JOBS_SCHEDULER.UNSUPPORTED_SHAPE",
@@ -25162,6 +25449,102 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.ARCHIVE_REPLICATION_PAYLOAD_INVALID",
                        "backup, restore, and archive routes require structured manifest URI payload");
+    }
+  }
+  if (IsSupportedLanguageControlOperation(envelope.operation_id)) {
+    const std::string expected_opcode =
+        LanguageControlOpcodeForOperation(envelope.operation_id);
+    if (expected_opcode.empty() || envelope.sblr_opcode != expected_opcode) {
+      AddVerifierError(&result.messages,
+                       "SBSQL.SBLR.LANGUAGE_CONTROL_OPCODE_MISMATCH",
+                       "language-control SBLR operation id and opcode do not match");
+    }
+    const bool session_operation =
+        envelope.operation_id == "language.session.set" ||
+        envelope.operation_id == "language.session.reset" ||
+        envelope.operation_id == "language.session.show";
+    const bool bundle_operation =
+        envelope.operation_id == "language.bundle.load" ||
+        envelope.operation_id == "language.bundle.unload" ||
+        envelope.operation_id == "language.bundle.validate";
+    if (envelope.operation_family != "sblr.language.resource_control.v3" ||
+        envelope.sblr_operation_key != "sblr.language.resource_control.v3" ||
+        envelope.resource_contract_key != "resource.contract.sbsql_language_resource" ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.parser.syntax_evidence_only") ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.parser.no_sql_text_execution") ||
+        !HasValue(envelope.required_authority_steps,
+                  "authority.parser.no_storage_or_finality") ||
+        !HasValue(envelope.descriptor_refs, "sys.language.profile") ||
+        envelope.payload.find("\"language_control\":true") == std::string::npos ||
+        envelope.payload.find("\"language_operation_id\"") == std::string::npos ||
+        envelope.payload.find("\"parser_updates_session_language\":false") ==
+            std::string::npos ||
+        envelope.payload.find("\"prepared_statement_reinterpretation\":false") ==
+            std::string::npos ||
+        envelope.payload.find("\"row_storage_touched\":false") ==
+            std::string::npos ||
+        envelope.payload.find("\"mga_finality_claimed\":false") ==
+            std::string::npos ||
+        envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
+        envelope.payload.find("\"parser_executes_sql\":false") ==
+            std::string::npos) {
+      AddVerifierError(&result.messages,
+                       "SBSQL.SBLR.LANGUAGE_CONTROL_AUTHORITY_INVALID",
+                       "language-control SBLR must preserve server authority without parser SQL execution, session mutation, storage, or finality");
+    }
+    if (session_operation) {
+      const bool right_ok =
+          envelope.operation_id == "language.session.show"
+              ? HasValue(envelope.required_rights, "right.observe")
+              : HasValue(envelope.required_rights,
+                         "right.language_session_control");
+      if (!right_ok ||
+          !HasValue(envelope.required_authority_steps,
+                    "authority.server.session_language_context_required") ||
+          !HasValue(envelope.descriptor_refs, "sys.session.language_context") ||
+          envelope.payload.find("\"server_session_language_context_required\":true") ==
+              std::string::npos ||
+          (envelope.operation_id == "language.session.set" &&
+           envelope.payload.find("\"target_language_profile\"") ==
+               std::string::npos)) {
+        AddVerifierError(&result.messages,
+                         "SBSQL.SBLR.LANGUAGE_SESSION_AUTHORITY_INVALID",
+                         "SET/RESET/SHOW LANGUAGE must route through server session language context authority");
+      }
+    }
+    if (bundle_operation) {
+      if (!HasValue(envelope.required_rights, "right.language_bundle_admin") ||
+          !HasValue(envelope.required_authority_steps,
+                    "authority.server.language_resource_registry_required") ||
+          !HasValue(envelope.required_authority_steps,
+                    "authority.security.language_bundle_admission_required") ||
+          !HasValue(envelope.required_authority_steps,
+                    "authority.parser.no_bundle_loading") ||
+          !HasValue(envelope.descriptor_refs, "sys.language.resource_bundle") ||
+          !HasValue(envelope.policy_refs, "language_resource_admission_policy") ||
+          envelope.payload.find("\"resource_bundle_operation\":true") ==
+              std::string::npos ||
+          envelope.payload.find("\"signed_bundle_required\":true") ==
+              std::string::npos ||
+          envelope.payload.find("\"compatible_bundle_required\":true") ==
+              std::string::npos ||
+          envelope.payload.find("\"security_admission_required\":true") ==
+              std::string::npos ||
+          envelope.payload.find("\"load_or_unload_effects_executed_by_parser\":false") ==
+              std::string::npos ||
+          envelope.payload.find("\"bundle_uuid\"") == std::string::npos) {
+        AddVerifierError(&result.messages,
+                         "SBSQL.SBLR.LANGUAGE_BUNDLE_AUTHORITY_INVALID",
+                         "language bundle operations require signed compatible security-admitted bundle authority and parser no-load evidence");
+      }
+      if (envelope.payload.find("\"admitted_bundle_manifest_attached\":true") ==
+          std::string::npos) {
+        AddVerifierError(&result.messages,
+                         "SBSQL.SBLR.LANGUAGE_BUNDLE_MANIFEST_REQUIRED",
+                         "LOAD/UNLOAD/VALIDATE LANGUAGE BUNDLE fails closed without an admitted signed compatible bundle manifest");
+      }
     }
   }
   if (envelope.operation_id == "session.cursor_open" ||

@@ -112,14 +112,14 @@ std::string RowShapeHash(const std::vector<byte>& bytes) {
 
 bool HasUnsafeAuthorityDrift(
     const CoveringIndexPayloadAssemblyRequest& request) {
-  return request.parser_or_donor_finality_authority ||
+  return request.parser_or_reference_finality_authority ||
          request.client_finality_authority ||
          request.provider_finality_authority;
 }
 
 bool HasUnsafeAuthorityDrift(
     const CoveringIndexPayloadValidationRequest& request) {
-  return request.parser_or_donor_finality_authority ||
+  return request.parser_or_reference_finality_authority ||
          request.client_finality_authority ||
          request.provider_finality_authority;
 }
@@ -352,7 +352,7 @@ CoveringIndexPayloadAssemblyResult ValidateAssemblyRequest(
   if (HasUnsafeAuthorityDrift(request)) {
     return RefuseAssembly("SB_COVERING_PAYLOAD.UNSAFE_AUTHORITY",
                           "core.index.covering_payload.unsafe_authority",
-                          "parser client provider or donor finality authority is forbidden");
+                          "parser client provider or reference finality authority is forbidden");
   }
   if (!request.projection_only) {
     return RefuseAssembly("SB_COVERING_PAYLOAD.PROJECTION_ONLY_REQUIRED",
@@ -597,7 +597,7 @@ CoveringIndexPayloadAdmission ValidateCoveringIndexPayloadForLocator(
     return RefuseAdmission(
         request, "SB_COVERING_PAYLOAD.UNSAFE_AUTHORITY",
         "core.index.covering_payload.unsafe_authority",
-        "parser client provider or donor finality authority is forbidden",
+        "parser client provider or reference finality authority is forbidden",
         "covering_payload_unsafe_authority");
   }
   if (!request.locator.physical_btree_locator_scan ||

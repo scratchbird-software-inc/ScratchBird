@@ -1,7 +1,0 @@
-[orig]
-
-[vers]
-system_versioning_alter_history=keep
-
-[vers_trx]
-system_versioning_alter_history=keep

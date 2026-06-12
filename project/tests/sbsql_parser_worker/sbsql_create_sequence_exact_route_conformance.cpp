@@ -195,7 +195,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!artifacts.envelope.parser_executes_sql,
           "CREATE SEQUENCE lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "CREATE SEQUENCE lowering allowed donor/file effects");
+          "CREATE SEQUENCE lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload,
                    "\"catalog_envelope_kind\":\"create_sequence_ddl\""),
           "CREATE SEQUENCE payload missing catalog envelope kind");
@@ -219,8 +219,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!Contains(artifacts.envelope.payload, "customer_id_seq") &&
               !Contains(artifacts.envelope.payload, std::string(kSql)),
           "CREATE SEQUENCE payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "CREATE SEQUENCE payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "CREATE SEQUENCE payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

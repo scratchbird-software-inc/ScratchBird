@@ -1,3 +1,0 @@
---innodb-buffer-pool-size=32M
---innodb-page-size=64k
---innodb-strict-mode=OFF

@@ -333,7 +333,7 @@ ApproximateCandidateDecision DecideMinHashLshCandidate(const MinHashLshProbe& pr
 
 RedisEqualityAliasPlan ResolveRedisEqualityAlias(const RedisEqualityAliasRequest& request) {
   RedisEqualityAliasPlan plan;
-  const bool implementation_available = request.native_helper_enabled || request.donor_emulation_enabled;
+  const bool implementation_available = request.native_helper_enabled || request.reference_emulation_enabled;
   if (!implementation_available) {
     plan.reason_code = "redis_equality_alias_no_enabled_implementation";
     return plan;

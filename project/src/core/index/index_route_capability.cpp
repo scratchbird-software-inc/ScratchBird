@@ -99,15 +99,15 @@ bool RouteSupportsFamily(IndexRouteKind route, IndexFamily family) {
     case IndexRouteKind::dml_insert:
     case IndexRouteKind::dml_update:
     case IndexRouteKind::dml_delete:
-      return family != IndexFamily::donor_emulated &&
+      return family != IndexFamily::reference_emulated &&
              family != IndexFamily::policy_blocked &&
              family != IndexFamily::unknown;
     case IndexRouteKind::sql_select:
-      return family != IndexFamily::donor_emulated &&
+      return family != IndexFamily::reference_emulated &&
              family != IndexFamily::policy_blocked &&
              family != IndexFamily::unknown;
     case IndexRouteKind::bulk_build:
-      return family != IndexFamily::donor_emulated &&
+      return family != IndexFamily::reference_emulated &&
              family != IndexFamily::policy_blocked &&
              family != IndexFamily::unknown;
     case IndexRouteKind::nosql_document:
@@ -120,7 +120,7 @@ bool RouteSupportsFamily(IndexRouteKind route, IndexFamily family) {
       return TokenSearchFamily(family);
     case IndexRouteKind::maintenance:
     case IndexRouteKind::validate_repair:
-      return family != IndexFamily::donor_emulated &&
+      return family != IndexFamily::reference_emulated &&
              family != IndexFamily::policy_blocked &&
              family != IndexFamily::unknown;
     case IndexRouteKind::unknown:

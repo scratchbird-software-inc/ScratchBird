@@ -295,8 +295,8 @@ void AddBaseEvidence(UniqueReservationFinalityProtocolResult* result,
   AddBoolEvidence(result, "cleanup_horizon_engine_bound",
                   request.rollback_retry_cleanup.cleanup_horizon_engine_bound &&
                       request.mga_transaction_binding.cleanup_horizon_engine_bound);
-  AddBoolEvidence(result, "donor_local_participation",
-                  request.donor_local_participation);
+  AddBoolEvidence(result, "reference_local_participation",
+                  request.reference_local_participation);
   AddBoolEvidence(result, "policy_local_participation",
                   request.policy_local_participation);
   AddBoolEvidence(result, "cluster_local_participation",
@@ -464,8 +464,8 @@ const char* UniqueReservationFinalityProtocolStatusName(
         cleanup_horizon_not_engine_bound:
       return "CLEANUP_HORIZON_NOT_ENGINE_BOUND";
     case UniqueReservationFinalityProtocolStatus::
-        donor_policy_cluster_participation:
-      return "DONOR_POLICY_CLUSTER_PARTICIPATION";
+        reference_policy_cluster_participation:
+      return "REFERENCE_POLICY_CLUSTER_PARTICIPATION";
     case UniqueReservationFinalityProtocolStatus::forbidden_authority_claim:
       return "FORBIDDEN_AUTHORITY_CLAIM";
     case UniqueReservationFinalityProtocolStatus::readiness_overclaim:
@@ -490,7 +490,7 @@ bool UniqueReservationProtocolAuthorityBoundaryClear(
          !boundary.security_authority &&
          !boundary.recovery_authority &&
          !boundary.parser_authority &&
-         !boundary.donor_authority &&
+         !boundary.reference_authority &&
          !boundary.wal_authority &&
          !boundary.benchmark_authority &&
          !boundary.optimizer_plan_authority &&
@@ -509,14 +509,14 @@ AdmitUniqueReservationFinalityProtocol(
         UniqueReservationFinalityProtocolStatus::unsupported_family,
         "CEIC-034 closes only unique_btree reservation protocol evidence");
   }
-  if (request.donor_local_participation ||
+  if (request.reference_local_participation ||
       request.policy_local_participation ||
       request.cluster_local_participation) {
     return RefuseProtocol(
         request,
         UniqueReservationFinalityProtocolStatus::
-            donor_policy_cluster_participation,
-        "donor policy and cluster paths cannot participate in local unique reservation protocol evidence");
+            reference_policy_cluster_participation,
+        "reference policy and cluster paths cannot participate in local unique reservation protocol evidence");
   }
   if (request.enterprise_ready_claimed ||
       request.all_index_readiness_claimed ||
@@ -532,7 +532,7 @@ AdmitUniqueReservationFinalityProtocol(
     return RefuseProtocol(
         request,
         UniqueReservationFinalityProtocolStatus::forbidden_authority_claim,
-        "unique reservation protocol evidence must not claim transaction finality visibility security recovery parser donor WAL benchmark optimizer plan index finality cluster or agent-action authority");
+        "unique reservation protocol evidence must not claim transaction finality visibility security recovery parser reference WAL benchmark optimizer plan index finality cluster or agent-action authority");
   }
   if (!request.unique_protocol_evidence_claimed) {
     return RefuseProtocol(
@@ -691,7 +691,7 @@ AdmitUniqueReservationFinalityProtocol(
   AddBoolEvidence(&result, "visibility_authority", false);
   AddBoolEvidence(&result, "recovery_authority", false);
   AddBoolEvidence(&result, "parser_authority", false);
-  AddBoolEvidence(&result, "donor_authority", false);
+  AddBoolEvidence(&result, "reference_authority", false);
   AddBoolEvidence(&result, "wal_authority", false);
   AddEvidence(&result, "diagnostic_code", result.diagnostic.diagnostic_code);
   return result;

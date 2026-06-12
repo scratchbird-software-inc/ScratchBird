@@ -296,7 +296,7 @@ MatrixRow BuildRow(const index::IndexFamilyDescriptor& descriptor) {
           "static_capability_not_provider_evidence";
       break;
     case index::IndexProviderAdmissionStatus::non_persistent_family:
-    case index::IndexProviderAdmissionStatus::donor_emulated_non_runtime:
+    case index::IndexProviderAdmissionStatus::reference_emulated_non_runtime:
     case index::IndexProviderAdmissionStatus::policy_blocked_non_runtime:
       row.provider_evidence_status = "non_runtime_not_admitted";
       break;

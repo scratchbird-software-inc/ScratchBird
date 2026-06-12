@@ -26,7 +26,7 @@ struct IndexTypedSlabWorkAreaRequest {
   u64 cursor_count = 0;
   bool engine_mga_authoritative = true;
   bool exact_recheck_required = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool memory_index_finality_authority = false;
 };
 

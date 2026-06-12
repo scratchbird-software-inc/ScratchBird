@@ -17,7 +17,7 @@ namespace scratchbird::engine::functions {
 
 enum class FunctionAliasSource {
   sb_native,
-  donor,
+  reference,
   plugin_extension,
 };
 

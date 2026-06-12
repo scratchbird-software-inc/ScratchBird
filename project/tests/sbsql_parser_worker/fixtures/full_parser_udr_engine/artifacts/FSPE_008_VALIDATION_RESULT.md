@@ -56,4 +56,4 @@ engine-internal trusted SBSQL text request
   -> no SQL execution inside parser/UDR
 ```
 
-FSPE-008 does not close server admission, engine execution, donor bridge wire protocol roles, UDR registration/signature lifecycle, cache invalidation semantics, or generated full-surface conformance. UUID, descriptor, security, transaction, policy, capability, and MGA authority remain server/engine-owned. Recovery remains MGA-based; no WAL authority is introduced.
+FSPE-008 does not close server admission, engine execution, reference bridge wire protocol roles, UDR registration/signature lifecycle, cache invalidation semantics, or generated full-surface conformance. UUID, descriptor, security, transaction, policy, capability, and MGA authority remain server/engine-owned. Recovery remains MGA-based; no WAL authority is introduced.

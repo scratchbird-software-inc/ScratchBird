@@ -30,7 +30,7 @@ namespace mem = scratchbird::core::memory;
 
 constexpr mem::u64 kModelHardLimit = 64 * 1024;
 constexpr std::string_view kAuthorityBoundary =
-    "memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
+    "memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';

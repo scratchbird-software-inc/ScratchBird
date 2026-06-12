@@ -11,7 +11,7 @@ if(NOT TARGET sb_udr_runtime)
 endif()
 
 if(NOT TARGET sbl_foundationdb_parser_pipeline)
-  add_subdirectory(${PROJECT_SOURCE_DIR}/src/parsers/donor/foundationdb ${CMAKE_CURRENT_BINARY_DIR}/foundationdb_parser_for_udr)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/parsers/compatibility/foundationdb ${CMAKE_CURRENT_BINARY_DIR}/foundationdb_parser_for_udr)
 endif()
 
 add_library(sbu_foundationdb_parser_support STATIC
@@ -21,7 +21,7 @@ add_library(sbu_foundationdb_parser_support STATIC
 target_compile_features(sbu_foundationdb_parser_support PUBLIC cxx_std_23)
 target_include_directories(sbu_foundationdb_parser_support PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
-  ${PROJECT_SOURCE_DIR}/src/parsers/donor/foundationdb
+  ${PROJECT_SOURCE_DIR}/src/parsers/compatibility/foundationdb
 )
 target_link_libraries(sbu_foundationdb_parser_support PUBLIC
   sb_udr_runtime

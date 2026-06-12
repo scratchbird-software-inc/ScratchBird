@@ -72,7 +72,7 @@ struct RuntimeFilterDescriptor {
   bool stale = false;
   bool lossy_or_false_negative_possible = false;
 
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool write_ahead_log_finality_or_visibility_authority = false;

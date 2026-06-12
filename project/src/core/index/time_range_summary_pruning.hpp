@@ -63,7 +63,7 @@ struct TimeRangeSummaryDescriptor {
   bool timestamp_finality_authority_claimed = false;
   bool uuid_ordering_finality_authority_claimed = false;
   bool event_stream_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
 };
 

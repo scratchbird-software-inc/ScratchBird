@@ -19,7 +19,7 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityBoundary =
-    "memory_metadata.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_donor_wal_or_benchmark_authority";
+    "memory_metadata.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_reference_wal_or_benchmark_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -128,11 +128,11 @@ MemoryMetadataOpenResult ValidateMemoryMetadataOpen(
                        "core.memory.metadata.missing_schema_digest",
                        "missing_schema_digest");
   }
-  if (record.parser_or_client_authority || record.donor_authority ||
+  if (record.parser_or_client_authority || record.reference_authority ||
       record.wal_authority || record.recovery_authority_claimed) {
     return MakeFailure(policy, record, "memory_metadata_unsafe_authority",
                        "core.memory.metadata.unsafe_authority",
-                       "parser_client_donor_wal_or_recovery_authority_claimed");
+                       "parser_client_reference_wal_or_recovery_authority_claimed");
   }
   if (policy.require_authoritative_base_input &&
       !record.authoritative_base_input_present) {

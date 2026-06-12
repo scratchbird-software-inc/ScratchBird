@@ -51,8 +51,8 @@ IndexValidationRepairOperation ValidationRepairOperationFor(
     case IndexCanonicalOperation::move:
     case IndexCanonicalOperation::query_candidates:
     case IndexCanonicalOperation::explain:
-    case IndexCanonicalOperation::donor_catalog_projection:
-    case IndexCanonicalOperation::unsupported_donor_feature:
+    case IndexCanonicalOperation::reference_catalog_projection:
+    case IndexCanonicalOperation::unsupported_reference_feature:
       return IndexValidationRepairOperation::validate;
   }
   return IndexValidationRepairOperation::validate;
@@ -75,24 +75,24 @@ IndexApiPlan BindIndexSblrOperation(const IndexSblrOperationEnvelope& envelope) 
                                                  "index.sblr.invalid_envelope");
     return plan;
   }
-  if (envelope.operation == IndexCanonicalOperation::unsupported_donor_feature) {
+  if (envelope.operation == IndexCanonicalOperation::unsupported_reference_feature) {
     plan.status = RefuseStatus();
     plan.policy_blocked = true;
     plan.diagnostic = MakeIndexApiSblrDiagnostic(plan.status,
-                                                 "SB-INDEX-SBLR-UNSUPPORTED-DONOR-FEATURE",
-                                                 "index.sblr.unsupported_donor_feature",
-                                                 envelope.donor_command);
+                                                 "SB-INDEX-SBLR-UNSUPPORTED-REFERENCE-FEATURE",
+                                                 "index.sblr.unsupported_reference_feature",
+                                                 envelope.reference_command);
     return plan;
   }
   plan.status = OkStatus();
   plan.admitted = true;
   plan.mutates_state = Mutating(envelope.operation);
-  plan.donor_catalog_projection = envelope.operation == IndexCanonicalOperation::donor_catalog_projection;
-  plan.emulated = envelope.parser_surface_is_donor;
+  plan.reference_catalog_projection = envelope.operation == IndexCanonicalOperation::reference_catalog_projection;
+  plan.emulated = envelope.parser_surface_is_reference;
   plan.parser_shaping_required = true;
   plan.steps.push_back("validate_sblr_envelope_uuid_authority");
   plan.steps.push_back("bind_canonical_index_operation");
-  plan.steps.push_back(envelope.parser_surface_is_donor ? "record_donor_projection_context" : "record_sbsql_context");
+  plan.steps.push_back(envelope.parser_surface_is_reference ? "record_reference_projection_context" : "record_sbsql_context");
   return plan;
 }
 
@@ -126,16 +126,16 @@ IndexValidationRepairResult BindIndexValidationRepairSblrOperation(
   return result;
 }
 
-IndexApiPlan MapDonorIndexCommandToCanonicalOperation(const IndexSblrOperationEnvelope& envelope) {
+IndexApiPlan MapReferenceIndexCommandToCanonicalOperation(const IndexSblrOperationEnvelope& envelope) {
   IndexSblrOperationEnvelope mapped = envelope;
-  mapped.parser_surface_is_donor = true;
+  mapped.parser_surface_is_reference = true;
   mapped.names_resolved_to_uuids = true;
   mapped.contains_sql_text = false;
-  if (mapped.donor_command.empty()) {
-    mapped.operation = IndexCanonicalOperation::unsupported_donor_feature;
-  } else if (mapped.donor_command.find("show") != std::string::npos ||
-             mapped.donor_command.find("catalog") != std::string::npos) {
-    mapped.operation = IndexCanonicalOperation::donor_catalog_projection;
+  if (mapped.reference_command.empty()) {
+    mapped.operation = IndexCanonicalOperation::unsupported_reference_feature;
+  } else if (mapped.reference_command.find("show") != std::string::npos ||
+             mapped.reference_command.find("catalog") != std::string::npos) {
+    mapped.operation = IndexCanonicalOperation::reference_catalog_projection;
   } else {
     mapped.operation = envelope.operation;
   }

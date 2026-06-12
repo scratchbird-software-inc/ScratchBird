@@ -55,7 +55,7 @@ struct MaterializedSummaryRewriteInput {
   bool summary_descriptor_compatible = true;
   bool base_row_mga_recheck_planned = true;
   bool base_row_security_recheck_planned = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool mga_compatible = true;
   bool unsafe_state = false;
   std::uint64_t estimated_base_cost = 0;
@@ -66,7 +66,7 @@ struct MaterializedSummaryRewriteInput {
 struct CommonSubexpressionReuseInput {
   std::string equivalence_proof_digest;
   bool equivalence_proven = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool mga_compatible = true;
   bool unsafe_state = false;
   bool base_row_mga_recheck_planned = true;

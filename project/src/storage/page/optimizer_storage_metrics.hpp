@@ -20,13 +20,13 @@ namespace scratchbird::storage::page {
 // SEARCH_KEY: OEIC_STORAGE_IO_OPTIMIZER_METRICS
 // Storage-owned optimizer metrics. These samples are costing and diagnostics
 // inputs only. They never supply transaction finality, visibility, security,
-// recovery, parser, donor, or benchmark authority.
+// recovery, parser, reference, or benchmark authority.
 
 struct OptimizerStorageMetricAuthority {
   bool storage_page_manager_authoritative = false;
   bool filespace_identity_authoritative = false;
   bool engine_scope_bound = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool metric_visibility_or_finality_authority = false;
   bool metric_recovery_authority = false;

@@ -12,7 +12,7 @@
 // SEARCH_KEY: ARHC_TYPED_POLICY_SCHEMAS_DEFAULTS
 // Typed policy schema substrate for agent runtime policy defaults and
 // validation. Policy config values are engine-owned policy evidence; they are
-// not parser, client, donor, transaction, visibility, recovery, or security
+// not parser, client, reference, transaction, visibility, recovery, or security
 // authority.
 
 #include "agent_runtime.hpp"

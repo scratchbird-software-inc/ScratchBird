@@ -6,7 +6,7 @@ Gate: `DBLC_P18_FINAL_CLEAN`
 
 ## Summary
 
-The full database lifecycle execution_plan is closed through DBLC-018. The implementation includes lifecycle contract reconciliation, create/open/recovery/shutdown/drop behavior, manager/listener/parser/server lifecycle integration, filespace lifecycle coupling, default policy bootstrap, system catalog and information projection gates, parser and donor mapping, exhaustive regression coverage, and final hardening gates.
+The full database lifecycle execution_plan is closed through DBLC-018. The implementation includes lifecycle contract reconciliation, create/open/recovery/shutdown/drop behavior, manager/listener/parser/server lifecycle integration, filespace lifecycle coupling, default policy bootstrap, system catalog and information projection gates, parser and reference mapping, exhaustive regression coverage, and final hardening gates.
 
 ## Final Evidence
 
@@ -23,4 +23,4 @@ The full database lifecycle execution_plan is closed through DBLC-018. The imple
 
 ## Invariants Preserved
 
-MGA remains the only transaction and recovery authority. The engine executes SBLR and internal procedures only. Parser dialects map SQL to UUID-resolved SBLR and do not execute SQL or own finality. Donor emulation layers do not execute donor SQL or create donor file effects. Standalone execution fails closed before cluster paths until cluster mapping is implemented.
+MGA remains the only transaction and recovery authority. The engine executes SBLR and internal procedures only. Parser dialects map SQL to UUID-resolved SBLR and do not execute SQL or own finality. Reference emulation layers do not execute reference SQL or create reference file effects. Standalone execution fails closed before cluster paths until cluster mapping is implemented.

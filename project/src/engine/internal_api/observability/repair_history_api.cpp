@@ -180,7 +180,7 @@ EngineInspectRepairHistoryResult EngineInspectRepairHistory(
                          "repair_evidence_transaction_authority",
                          "false");
   AddApiBehaviorEvidence(&result,
-                         "parser_or_donor_authority",
+                         "parser_or_reference_authority",
                          "false");
   return result;
 }

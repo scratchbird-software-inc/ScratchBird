@@ -89,7 +89,7 @@ IndexHealthManagerResult EvaluateIndexHealthManager(
                   "policy and index identity are required", true);
   }
   if (!snapshot.index_metrics_authoritative || snapshot.parser_authority ||
-      snapshot.donor_authority || !snapshot.index_visible) {
+      snapshot.reference_authority || !snapshot.index_visible) {
     return Finish(IndexHealthManagerDecisionKind::refused, ErrorStatus(),
                   "SB_AGENT_INDEX_HEALTH_AUTHORITY_UNTRUSTED",
                   "agents.index_health.untrusted_authority",

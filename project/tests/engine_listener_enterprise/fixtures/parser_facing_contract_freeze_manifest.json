@@ -14,7 +14,7 @@
     "sblr_opcode_bindings",
     "server_admission_rules",
     "server_dispatch_routes",
-    "donor_route_classifications",
+    "reference_route_classifications",
     "unsupported_surface_vectors",
     "sbsql_sync_status",
     "compatibility_version"
@@ -46,42 +46,42 @@
       "sha256": "f19e3cbd5ef99551caf9077a9eebcd7e2ebc288adc031c89405a51a5226dfca7"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
       "resource_kind": "parser_facing_sblr_family_snapshot",
       "sha256": "8cb2d700649912b90830689df57e196b68c35616920bf601bf2a18c9a03aed4b"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
       "resource_kind": "parser_facing_sbsql_sync_requirements",
       "sha256": "f123ec8ab90d86144a5077a8701ab09df45928cb0be43ff44801087940f8e4b7"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/SERVER_AUTHORITY_SURFACE_MATRIX.csv",
-      "resource_kind": "donor_route_classification_matrix",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/SERVER_AUTHORITY_SURFACE_MATRIX.csv",
+      "resource_kind": "reference_route_classification_matrix",
       "sha256": "5242c494b7ddc1e17fb82f9167b8485144a73eb1fd54fe600315f896637a2d5f"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv",
-      "resource_kind": "donor_function_route_matrix",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv",
+      "resource_kind": "reference_function_route_matrix",
       "sha256": "14afe158676607f1842430abdbc6b7a1510ca3383b4321c239597b77b7605114"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv",
       "resource_kind": "unsupported_surface_vector_matrix",
       "sha256": "91a26f084a7ab1148d41f927ad1ba3d596976a168617f16d02677bdeb9f4237b"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/SBSQL_SBLR_FAMILY_RECONCILIATION_MATRIX.csv",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/SBSQL_SBLR_FAMILY_RECONCILIATION_MATRIX.csv",
       "resource_kind": "sbsql_family_reconciliation_matrix",
       "sha256": "9f8b77110171084f38634a363b55fe46da89401abb92cc891622f40973e2271a"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/DONOR_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
-      "resource_kind": "donor_private_opcode_cleanup_matrix",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/REFERENCE_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
+      "resource_kind": "reference_private_opcode_cleanup_matrix",
       "sha256": "52af1d4992b936d4306677c1ca3d821f48b602be4c711f11853bc5d2c281f879"
     },
     {
-      "path": "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/SBLR_STALE_DEFERRED_ALIAS_CLEANUP_MATRIX.csv",
+      "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/SBLR_STALE_DEFERRED_ALIAS_CLEANUP_MATRIX.csv",
       "resource_kind": "sblr_stale_alias_cleanup_matrix",
       "sha256": "55891a11cc6a234970645e8980f8b659e2b0909c7472c21dc11fbf915ad7d3a3"
     }
@@ -108,8 +108,8 @@
       "minimum_rows": 1
     },
     {
-      "section": "donor_route_classifications",
-      "source_resource_kind": "donor_route_classification_matrix",
+      "section": "reference_route_classifications",
+      "source_resource_kind": "reference_route_classification_matrix",
       "minimum_rows": 318
     },
     {

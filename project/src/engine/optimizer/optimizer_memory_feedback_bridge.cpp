@@ -25,7 +25,7 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityBoundary =
-    "optimizer_memory_feedback.authority_scope=advisory_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_provider_cluster_or_agent_authority";
+    "optimizer_memory_feedback.authority_scope=advisory_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_provider_cluster_or_agent_authority";
 constexpr const char* kSchemaId = "sb.optimizer.memory_feedback_evidence.v1";
 constexpr const char* kLedgerSource = "resource_governance_reservation_ledger";
 constexpr const char* kSupportSnapshotSource =
@@ -68,7 +68,7 @@ OptimizerMemoryFeedbackBridgeResult Block(
        DiagnosticArgument{"reason", reason},
        DiagnosticArgument{"authority_scope", kAuthorityBoundary}},
       {}, "optimizer_memory_feedback_bridge",
-      "Use only trusted governed runtime memory feedback; never use parser, donor, WAL, recovery, or benchmark evidence as optimizer authority.");
+      "Use only trusted governed runtime memory feedback; never use parser, reference, WAL, recovery, or benchmark evidence as optimizer authority.");
   return result;
 }
 
@@ -153,9 +153,9 @@ bool AuthorityBoundaryDrift(const OptimizerMemoryFeedbackEvidence& feedback) {
          feedback.recovery_authority ||
          feedback.parser_authority ||
          feedback.client_authority ||
-         feedback.donor_authority ||
+         feedback.reference_authority ||
          feedback.wal_authority ||
-         feedback.parser_client_or_donor_authority ||
+         feedback.parser_client_or_reference_authority ||
          feedback.recovery_or_wal_authority ||
          feedback.benchmark_authority ||
          feedback.optimizer_plan_authority ||
@@ -338,7 +338,7 @@ OptimizerMemoryFeedbackBridgeResult BuildOptimizerMemoryFeedbackForPlanner(
   result.runtime_feedback.policy_allowed = true;
   result.runtime_feedback.advisory_only = true;
   result.runtime_feedback.mga_visibility_recheck_preserved = true;
-  result.runtime_feedback.parser_or_donor_authority = false;
+  result.runtime_feedback.parser_or_reference_authority = false;
   result.runtime_feedback.transaction_finality_authority =
       "engine_transaction_inventory";
   result.diagnostic = MakeDiagnostic(

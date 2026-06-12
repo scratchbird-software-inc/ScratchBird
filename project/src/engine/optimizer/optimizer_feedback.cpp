@@ -70,7 +70,7 @@ std::string ProfileIdFor(const OptimizerRuntimeFeedback& feedback) {
 bool UnsafeAuthority(const OptimizerRuntimeFeedback& feedback) {
   return !feedback.advisory_only ||
          !feedback.mga_visibility_recheck_preserved ||
-         feedback.parser_or_donor_authority ||
+         feedback.parser_or_reference_authority ||
          feedback.transaction_finality_authority != "engine_transaction_inventory";
 }
 
@@ -287,7 +287,7 @@ OptimizerFeedbackStatus OptimizerRuntimeFeedbackStore::Record(
   record.evidence.push_back("runtime_feedback_persistence.peak_memory_bytes=" +
                             std::to_string(record.feedback.peak_memory_bytes));
   record.evidence.push_back(
-      "runtime_feedback_persistence.authority_scope=advisory_only_not_transaction_finality_visibility_security_recovery_parser_or_donor_authority");
+      "runtime_feedback_persistence.authority_scope=advisory_only_not_transaction_finality_visibility_security_recovery_parser_or_reference_authority");
   {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = std::find_if(records_.begin(), records_.end(), [&](const auto& existing) {
@@ -302,7 +302,7 @@ OptimizerFeedbackStatus OptimizerRuntimeFeedbackStore::Record(
   status.evidence.push_back("runtime_feedback_persistence.recorded=true");
   status.evidence.push_back("runtime_feedback_persistence.invalidatable=true");
   status.evidence.push_back(
-      "runtime_feedback_persistence.authority_scope=advisory_only_not_transaction_finality_visibility_security_recovery_parser_or_donor_authority");
+      "runtime_feedback_persistence.authority_scope=advisory_only_not_transaction_finality_visibility_security_recovery_parser_or_reference_authority");
   return status;
 }
 

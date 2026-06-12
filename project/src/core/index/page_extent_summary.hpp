@@ -138,7 +138,7 @@ struct PageExtentSummaryMetadata {
   bool persisted_record_present = false;
   bool checksum_valid = true;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
 };
 
@@ -179,7 +179,7 @@ struct PageExtentSummaryRowEvidence {
   bool value_is_null = false;
   bool engine_mga_visible = true;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
 };
 
@@ -195,7 +195,7 @@ struct PageExtentSummaryMaintenanceEvent {
   std::vector<PageExtentSummaryRowEvidence> base_page_rows;
   bool caller_allows_transient_rebuild = true;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
 };
 

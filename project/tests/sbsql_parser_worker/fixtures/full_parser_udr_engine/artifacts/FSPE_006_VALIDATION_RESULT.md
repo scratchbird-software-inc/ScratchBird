@@ -49,4 +49,4 @@ FSPE-006 closes only the parser binder boundary. Closure means syntax-only AST f
 
 FSPE-006 does not make the engine a SQL parser, does not execute SQL text, does not perform verifier-admitted SBLR lowering, does not execute engine behavior, and does not grant parser-side security authority. Names remain user/parser-layer syntax until resolved through public server/engine authority; UUID/name authority is server/engine-owned. The binder must not infer hidden-vs-missing object existence beyond safe public diagnostics/message vectors.
 
-ScratchBird MGA remains the controlling transaction, visibility, versioning, recovery, cleanup, retention, archive, and cluster reconciliation model. No WAL or donor recovery authority is introduced by this binder slice.
+ScratchBird MGA remains the controlling transaction, visibility, versioning, recovery, cleanup, retention, archive, and cluster reconciliation model. No WAL or reference recovery authority is introduced by this binder slice.

@@ -75,7 +75,7 @@ struct PhysicalBloomEncodedKeyEvidence {
   bool authoritative_encoded_key_evidence = true;
   bool engine_mga_visible = true;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
 };
@@ -109,7 +109,7 @@ struct PhysicalBloomFilterPage {
   bool exact_recheck_required_for_maybe_present = true;
   bool visibility_finality_authority = false;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
   std::vector<byte> bitset;

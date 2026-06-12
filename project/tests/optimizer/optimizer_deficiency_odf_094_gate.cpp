@@ -315,7 +315,7 @@ void FailClosedDiagnostics() {
 
   {
     auto unsafe = Context();
-    unsafe.parser_or_donor_finality_or_visibility_authority = true;
+    unsafe.parser_or_reference_finality_or_visibility_authority = true;
     mem::QueryMemoryArena arena(unsafe, Limits(), &allocator, &temp);
     mem::QueryMemoryGrantRequest request;
     request.family = mem::QueryMemoryFamily::vector;

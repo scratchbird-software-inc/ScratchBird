@@ -57,7 +57,7 @@ void RequireFrameEvidence(const std::vector<std::string>& evidence) {
           "CEIC-019 deterministic shard merge evidence missing");
   Require(EvidenceHas(
               evidence,
-              "page_cache.enterprise_frame_authority_scope=evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"),
+              "page_cache.enterprise_frame_authority_scope=evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"),
           "CEIC-019 enterprise authority-boundary evidence missing");
   Require(EvidenceHas(evidence,
                       "page_cache.cluster_scope=external_cluster_provider_only_no_local_cluster_page_cache_authority"),
@@ -305,7 +305,7 @@ void ClusterPageCacheFailsClosedLocally() {
 
 int main() {
   std::cout << "CEIC-019 authority_note=page_cache_frame_ownership_and_sharded_buffer_pool;"
-               "not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"
+               "not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"
             << '\n';
   ShardedFrameSnapshotMergesDeterministically();
   EvictionReleasesShardedFrames();

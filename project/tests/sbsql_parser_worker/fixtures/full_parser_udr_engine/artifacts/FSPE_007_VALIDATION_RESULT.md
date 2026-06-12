@@ -45,7 +45,7 @@ Results:
 
 FSPE-007 closes only BoundAST-to-SBLR lowering, parser-side envelope evidence emission, parser-side verifier-admitted positive fixtures, deterministic negative verifier fixtures, and source/reverse-render artifact preservation. It does not execute through `sb_server` or `sb_engine`, does not prove server admission/runtime behavior, and does not close engine gaps.
 
-ScratchBird engine execution remains SBLR/internal-procedure only; no SQL text, donor text, meta-command text, AST, or parser authorization decision becomes engine authority. Parser-side names and source artifacts are diagnostic/rendering evidence only; UUID, descriptor, security, transaction, policy, capability, and MGA authority remain server/engine-owned.
+ScratchBird engine execution remains SBLR/internal-procedure only; no SQL text, reference text, meta-command text, AST, or parser authorization decision becomes engine authority. Parser-side names and source artifacts are diagnostic/rendering evidence only; UUID, descriptor, security, transaction, policy, capability, and MGA authority remain server/engine-owned.
 
 The current parser-worker envelope is JSON evidence for the worker route and conformance gates. Final engine binary `SBLRExecutionEnvelopeV1` admission, opcode validation, execution dispatch, result-envelope behavior, and full route execution remain owned by later server/engine slices.
 

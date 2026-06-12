@@ -93,7 +93,7 @@ const char* PageFinalityProvenanceName(PageFinalityProvenance provenance) {
     case PageFinalityProvenance::engine_mga_cleanup_horizon:
       return "engine_mga_cleanup_horizon";
     case PageFinalityProvenance::parser_claim: return "parser_claim";
-    case PageFinalityProvenance::donor_claim: return "donor_claim";
+    case PageFinalityProvenance::reference_claim: return "reference_claim";
     case PageFinalityProvenance::timestamp_claim: return "timestamp_claim";
     case PageFinalityProvenance::uuid_order_claim: return "uuid_order_claim";
     case PageFinalityProvenance::external_log_claim: return "external_log_claim";

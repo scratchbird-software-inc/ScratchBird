@@ -142,9 +142,9 @@ bool UnsafeControlSurfacesFailClosed() {
   cluster.authority.cluster_authority = true;
   const auto cluster_result = opt::BuildEnterpriseJoinSearchPolicy(cluster);
 
-  auto donor = Request("join_search:bounded_dp");
-  donor.policy_metadata.donor_or_legacy_policy_authority_claimed = true;
-  const auto donor_result = opt::BuildEnterpriseJoinSearchPolicy(donor);
+  auto reference = Request("join_search:bounded_dp");
+  reference.policy_metadata.reference_or_legacy_policy_authority_claimed = true;
+  const auto reference_result = opt::BuildEnterpriseJoinSearchPolicy(reference);
 
   auto unknown = Request("join_search:random_walk");
   const auto unknown_result = opt::BuildEnterpriseJoinSearchPolicy(unknown);
@@ -158,9 +158,9 @@ bool UnsafeControlSurfacesFailClosed() {
          Require(!cluster_result.ok &&
                      cluster_result.refusal_diagnostic == "SB_OPT_JOIN_CONTROL_UNSAFE_AUTHORITY",
                  "cluster authority was not refused") &&
-         Require(!donor_result.ok &&
-                     donor_result.refusal_diagnostic == "SB_OPT_JOIN_CONTROL_POLICY_AUTHORITY_INVALID",
-                 "donor/legacy policy authority was not refused") &&
+         Require(!reference_result.ok &&
+                     reference_result.refusal_diagnostic == "SB_OPT_JOIN_CONTROL_POLICY_AUTHORITY_INVALID",
+                 "reference/legacy policy authority was not refused") &&
          Require(!unknown_result.ok &&
                      unknown_result.refusal_diagnostic == "SB_OPT_JOIN_CONTROL_UNKNOWN_STRATEGY",
                  "unknown join strategy was not refused");

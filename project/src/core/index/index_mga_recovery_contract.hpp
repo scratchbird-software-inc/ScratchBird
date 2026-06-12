@@ -53,7 +53,7 @@ enum class IndexMGARecoveryContractStatus : u32 {
   admitted_contract_evidence = 1,
   unsupported_family = 2,
   non_persistent_family = 3,
-  donor_policy_local_route_blocked = 4,
+  reference_policy_local_route_blocked = 4,
   cluster_external_provider_only = 5,
   missing_provider_evidence = 6,
   missing_mga_inventory = 7,
@@ -74,7 +74,7 @@ struct IndexMGARecoveryAuthorityBoundary {
   bool security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -90,7 +90,7 @@ struct IndexMGARouteFamilyIdentity {
   std::string provider_id;
   std::string provider_contract_version;
   bool persistent_provider = false;
-  bool donor_route_requested = false;
+  bool reference_route_requested = false;
   bool policy_route_requested = false;
   bool cluster_path_requested = false;
   bool external_cluster_provider_only = true;

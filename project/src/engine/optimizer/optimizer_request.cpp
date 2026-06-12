@@ -98,7 +98,7 @@ void ValidateOptimizerPolicyMetadata(
   if (policy.raw_sql_text_present ||
       policy.parser_execution_authority_claimed ||
       policy.parser_session_directives_unbound ||
-      policy.donor_or_legacy_policy_authority_claimed) {
+      policy.reference_or_legacy_policy_authority_claimed) {
     facts->push_back(MakeAuthorityFact(
         "optimizer_policy_metadata",
         OptimizerAuthorityStatus::kRejected,
@@ -116,9 +116,9 @@ void ValidateOptimizerPolicyMetadata(
       diagnostics->push_back(
           "SB_OPT_AUTHORITY_REJECTED.optimizer_policy_unbound_parser_directive");
     }
-    if (policy.donor_or_legacy_policy_authority_claimed) {
+    if (policy.reference_or_legacy_policy_authority_claimed) {
       diagnostics->push_back(
-          "SB_OPT_AUTHORITY_REJECTED.optimizer_policy_donor_or_legacy_authority");
+          "SB_OPT_AUTHORITY_REJECTED.optimizer_policy_reference_or_legacy_authority");
     }
     return;
   }

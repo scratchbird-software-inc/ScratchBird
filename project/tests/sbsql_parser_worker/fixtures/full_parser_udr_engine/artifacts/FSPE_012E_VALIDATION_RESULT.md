@@ -7,7 +7,7 @@ Owning slice: `FSPE-012E`
 
 ## Scope
 
-FSPE-012E added the locale, charset, collation, and timezone regression gate for parser, engine name registry, resource seed-pack, donor temporal wire, and SBLR runtime behavior.
+FSPE-012E added the locale, charset, collation, and timezone regression gate for parser, engine name registry, resource seed-pack, reference temporal wire, and SBLR runtime behavior.
 
 ## Implementation Evidence
 

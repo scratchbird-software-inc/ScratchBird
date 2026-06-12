@@ -25,7 +25,7 @@ std::string BoolText(bool value) {
 
 bool UnsafeAuthority(const AgentOptimizerRecommendationEvidence& input) {
   return input.parser_authority || input.client_authority ||
-         input.donor_authority || input.sidecar_authority ||
+         input.reference_authority || input.sidecar_authority ||
          input.wal_authority || input.benchmark_authority ||
          input.transaction_authority || input.visibility_authority ||
          input.finality_authority || input.recovery_authority ||
@@ -36,20 +36,20 @@ bool UnsafeAuthority(const AgentOptimizerRecommendationEvidence& input) {
 }
 
 bool UnsafeAuthority(const AgentIndexReadinessEvidence& input) {
-  return input.parser_authority || input.donor_authority ||
+  return input.parser_authority || input.reference_authority ||
          input.wal_authority || input.benchmark_authority ||
          input.transaction_authority || input.visibility_authority ||
          input.finality_authority || input.recovery_authority ||
          input.security_authority || input.optimizer_plan_authority ||
          input.index_finality_authority || input.provider_finality_authority ||
          input.cluster_authority || input.agent_action_authority ||
-         input.donor_runtime_claim || input.policy_blocked_runtime_claim ||
+         input.reference_runtime_claim || input.policy_blocked_runtime_claim ||
          input.all_index_readiness_claimed ||
          input.enterprise_readiness_claimed;
 }
 
 bool UnsafeAuthority(const AgentOptimizerReadinessEvidence& input) {
-  return input.parser_authority || input.donor_authority ||
+  return input.parser_authority || input.reference_authority ||
          input.wal_authority || input.benchmark_authority ||
          input.benchmark_dominance_claimed ||
          input.transaction_authority || input.visibility_authority ||
@@ -65,7 +65,7 @@ bool UnsafeAuthority(const AgentIndexOptimizerBoundaryRequest& request) {
          request.index_finality_authority || request.row_visibility_authority ||
          request.security_authority ||
          request.transaction_finality_authority || request.recovery_authority ||
-         request.parser_authority || request.donor_authority ||
+         request.parser_authority || request.reference_authority ||
          request.wal_authority || request.benchmark_authority ||
          request.provider_finality_authority || request.cluster_authority ||
          request.memory_authority || request.agent_action_authority ||
@@ -87,7 +87,7 @@ bool RecommendationKindClaimsAuthority(std::string value) {
       "optimizer_selected", "selected_plan", "plan_authority",
       "optimizer_plan_truth", "index_finality", "row_visibility",
       "security_authority", "transaction_finality", "finality_authority",
-      "recovery_authority", "parser_authority", "donor_authority",
+      "recovery_authority", "parser_authority", "reference_authority",
       "benchmark_authority", "provider_finality", "cluster_authority",
       "memory_authority", "agent_action_authority", "wal_authority"};
   for (const char* token : forbidden) {
@@ -142,7 +142,7 @@ bool OptimizerReadinessMissing(const AgentOptimizerReadinessEvidence& input) {
          !input.transformation_memo_complete ||
          !input.workload_regression_complete ||
          !input.driver_explain_complete ||
-         !input.donor_comparison_complete ||
+         !input.reference_comparison_complete ||
          !input.memory_feedback_complete ||
          !input.index_readiness_coupling_complete ||
          !input.llvm_memory_accounting_complete;
@@ -199,7 +199,7 @@ AgentOptimizerRecommendationValidation Finish(
           BoolText(result.protected_material_suppressed));
   Add(&result.evidence, "agent_optimizer_recommendation.parser_authority=false");
   Add(&result.evidence, "agent_optimizer_recommendation.client_authority=false");
-  Add(&result.evidence, "agent_optimizer_recommendation.donor_authority=false");
+  Add(&result.evidence, "agent_optimizer_recommendation.reference_authority=false");
   Add(&result.evidence, "agent_optimizer_recommendation.sidecar_authority=false");
   Add(&result.evidence, "agent_optimizer_recommendation.wal_authority=false");
   Add(&result.evidence, "agent_optimizer_recommendation.benchmark_authority=false");
@@ -295,7 +295,7 @@ AgentIndexOptimizerBoundaryResult FinishBoundary(
   Add(&result.evidence,
       "agent_index_optimizer_boundary.parser_authority=false");
   Add(&result.evidence,
-      "agent_index_optimizer_boundary.donor_authority=false");
+      "agent_index_optimizer_boundary.reference_authority=false");
   Add(&result.evidence,
       "agent_index_optimizer_boundary.wal_authority=false");
   Add(&result.evidence,

@@ -21,7 +21,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: OEIC_ADAPTIVE_CARDINALITY_FEEDBACK_ENTERPRISE
 // Enterprise adaptive feedback stores scoped advisory records with aging,
 // invalidation, bind-profile evidence, and quarantine state. It is never row
-// truth, finality, visibility, parser, donor, benchmark, or recovery authority.
+// truth, finality, visibility, parser, reference, benchmark, or recovery authority.
 struct EnterpriseAdaptiveFeedbackApplyRequest {
   std::string feedback_uuid;
   std::string scope_uuid;

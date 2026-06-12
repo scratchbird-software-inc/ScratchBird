@@ -17,7 +17,7 @@ reconciliation scope created from:
 Closure covers all P0 through P5 slices, including canonical contract
 authority, implementation reconciliation, driver/adaptor/tool lane manifests,
 full-route evidence, server-verification packets, performance budgets,
-documentation/sample-app evidence, donor-driver route evidence, and the
+documentation/sample-app evidence, reference-driver route evidence, and the
 machine-readable release declaration.
 
 ## Final State
@@ -36,7 +36,7 @@ machine-readable release declaration.
 - `artifacts/FULL_ROUTE_BENCHMARK_EVIDENCE.json`
 - `artifacts/PERFORMANCE_BUDGETS.json`
 - `artifacts/DSR_044_DOCUMENTATION_SAMPLE_APP_EVIDENCE.json`
-- `artifacts/DSR_045_DONOR_DRIVER_COMPATIBILITY_ROUTE_EVIDENCE.json`
+- `artifacts/DSR_045_REFERENCE_DRIVER_COMPATIBILITY_ROUTE_EVIDENCE.json`
 
 ## Closure Rule
 

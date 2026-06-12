@@ -119,7 +119,7 @@ EngineApiRequest DocumentRequest() {
   EngineRowValue row;
   row.fields.push_back({"value", {Descriptor("document"), "{\"b\":2,\"a\":1}", false}});
   request.rows.push_back(row);
-  request.option_envelopes.push_back("document_donor_profile:native_json");
+  request.option_envelopes.push_back("document_reference_profile:native_json");
   return request;
 }
 

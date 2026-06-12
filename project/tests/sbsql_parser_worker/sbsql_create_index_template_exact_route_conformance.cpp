@@ -212,8 +212,8 @@ void RequireCreateLowering(const PipelineArtifacts& artifacts) {
               !Contains(artifacts.envelope.payload, "replay-*") &&
               !Contains(artifacts.envelope.payload, std::string(kCreateSql)),
           "CREATE INDEX TEMPLATE payload embedded SQL text, template text, or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "CREATE INDEX TEMPLATE payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "CREATE INDEX TEMPLATE payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

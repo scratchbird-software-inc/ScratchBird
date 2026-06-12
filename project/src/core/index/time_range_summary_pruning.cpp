@@ -216,7 +216,7 @@ bool TimeRangeSummaryDescriptorAuthorityClean(
          !descriptor.timestamp_finality_authority_claimed &&
          !descriptor.uuid_ordering_finality_authority_claimed &&
          !descriptor.event_stream_finality_authority_claimed &&
-         !descriptor.donor_finality_authority_claimed &&
+         !descriptor.reference_finality_authority_claimed &&
          !descriptor.write_ahead_log_finality_authority_claimed;
 }
 

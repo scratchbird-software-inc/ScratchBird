@@ -451,7 +451,7 @@ entries:
     executor_readiness_status: mapped_ready
     notes:
       - SBLR import envelopes must carry source kind, format family, target UUID, column descriptor mappings, and import policy envelope.
-      - Parser-owned byte decoding and donor syntax shaping remain outside the engine.
+      - Parser-owned byte decoding and reference syntax shaping remain outside the engine.
 
   - sblr_operation: SBLR_DDL_CREATE_DATABASE
     opcode_status: opcode_registered

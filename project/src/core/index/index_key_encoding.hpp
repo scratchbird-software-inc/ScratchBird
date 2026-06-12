@@ -30,7 +30,7 @@ enum class IndexKeyComponentKind : u32 {
   vector_element = 5,
   spatial_token = 6,
   text_token = 7,
-  donor_raw = 8,
+  reference_raw = 8,
   uuid_v7 = 9
 };
 
@@ -42,12 +42,12 @@ enum class IndexKeySortDirection : u16 {
 enum class IndexKeyNullPlacement : u16 {
   nulls_first = 1,
   nulls_last = 2,
-  donor_profile_default = 3
+  reference_profile_default = 3
 };
 
 struct IndexKeySemanticProfile {
   std::string profile_id = "sb_native_default";
-  bool donor_visible_tiebreak = false;
+  bool reference_visible_tiebreak = false;
   bool bytewise_stable = true;
   bool requires_recheck = false;
 };

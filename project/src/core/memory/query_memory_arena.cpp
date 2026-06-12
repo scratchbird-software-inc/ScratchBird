@@ -596,7 +596,7 @@ bool QueryMemoryArena::ContextMissing() const {
 
 bool QueryMemoryArena::UnsafeAuthority() const {
   return !context_.engine_mga_authoritative ||
-         context_.parser_or_donor_finality_or_visibility_authority ||
+         context_.parser_or_reference_finality_or_visibility_authority ||
          context_.client_finality_or_visibility_authority ||
          context_.provider_finality_or_visibility_authority ||
          context_.wal_recovery_or_finality_authority;
@@ -896,7 +896,7 @@ UnifiedMemorySpillBudgetResult QueryMemoryArena::ReserveUnifiedBudget(
   result.evidence.push_back("unified_memory_spill.bound=" +
                             BoolText(unified_budget_ != nullptr));
   result.evidence.push_back(
-      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
   if (unified_budget_ == nullptr) {
     return result;
   }
@@ -1042,7 +1042,7 @@ UnifiedMemorySpillBudgetResult UnifiedMemorySpillBudgetLedger::Reserve(
   result.evidence.push_back("unified_memory_spill.requested_bytes=" +
                             std::to_string(request.bytes));
   result.evidence.push_back(
-      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   std::lock_guard<std::mutex> lock(mutex_);
   if (limit_bytes_ == 0 || request.operation_id.empty() ||
@@ -1114,7 +1114,7 @@ UnifiedMemorySpillBudgetResult UnifiedMemorySpillBudgetLedger::Release(
   result.evidence.push_back("unified_memory_spill.ledger_id=" + ledger_id_);
   result.evidence.push_back("unified_memory_spill.reservation_id=" + reservation_id);
   result.evidence.push_back(
-      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   std::lock_guard<std::mutex> lock(mutex_);
   auto it = active_.find(reservation_id);
@@ -1161,7 +1161,7 @@ UnifiedMemorySpillBudgetLedger::ReleaseOwnerReservations(
   result.evidence.push_back("unified_memory_spill.ledger_id=" + ledger_id_);
   result.evidence.push_back("unified_memory_spill.owner_scope=" + owner_scope);
   result.evidence.push_back(
-      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "unified_memory_spill.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
 
   std::vector<std::string> reservations;
   {
@@ -1203,7 +1203,7 @@ DiagnosticRecord UnifiedMemorySpillBudgetLedger::MakeDiagnostic(
   arguments.push_back({"heap_bytes", std::to_string(heap_bytes_)});
   arguments.push_back({"spill_bytes", std::to_string(spill_bytes_)});
   arguments.push_back({"authority_scope",
-                       "evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"});
+                       "evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"});
   return scratchbird::core::platform::MakeDiagnostic(
       status.code,
       status.severity,

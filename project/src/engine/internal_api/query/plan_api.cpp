@@ -861,7 +861,7 @@ std::optional<CrudIndexRecord> UsableCrudIndexForPredicate(const EnginePlanOpera
                                                       request.context.local_transaction_id)) {
     const std::string family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
     if (family != kCrudIndexFamilyBtree && family != kCrudIndexFamilyCovering &&
-        family != kCrudIndexFamilyInMemory && family != kCrudIndexFamilyDonorEmulated) {
+        family != kCrudIndexFamilyInMemory && family != kCrudIndexFamilyReferenceEmulated) {
       continue;
     }
     if (!CrudIndexSupportsPredicate(index, predicate)) continue;

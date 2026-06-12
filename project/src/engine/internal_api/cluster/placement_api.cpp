@@ -168,7 +168,7 @@ EngineShardPlacementOperationResult EnginePlanShardPlacementOperation(
                      {"parser_storage_authority", "false"},
                      {"transaction_finality_authority", "false"},
                      {"recovery_authority", "false"},
-                     {"donor_wal_recovery_authority", "false"},
+                     {"reference_wal_recovery_authority", "false"},
                      {"private_cluster_execution", "false"},
                      {"cluster_provider_dispatch", "false"}});
   AddApiBehaviorEvidence(&result, "shard_placement_operation", request.placement_operation);
@@ -180,7 +180,7 @@ EngineShardPlacementOperationResult EnginePlanShardPlacementOperation(
   AddApiBehaviorEvidence(&result, "parser_storage_authority", "false");
   AddApiBehaviorEvidence(&result, "transaction_finality_authority", "false");
   AddApiBehaviorEvidence(&result, "recovery_authority", "false");
-  AddApiBehaviorEvidence(&result, "donor_wal_recovery_authority", "false");
+  AddApiBehaviorEvidence(&result, "reference_wal_recovery_authority", "false");
   AddApiBehaviorEvidence(&result, "private_cluster_execution", "false");
   AddApiBehaviorEvidence(&result, "cluster_provider_dispatch", "false");
   AddApiBehaviorEvidence(&result, "mga_visibility_authority", "durable_transaction_inventory");

@@ -1,0 +1,2 @@
+reference_id,evidence_family,required_artifact,authority_rule,status
+tikv,policy_overlay,policy_overlay_manifest.csv,generated manifest only; accepted proof requires regenerated project test execution,policy_overlay_manifest_generated_pending_fixture_execution

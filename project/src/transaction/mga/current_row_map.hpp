@@ -29,7 +29,7 @@ enum class CurrentRowMapProvenance : u16 {
   engine_authoritative_base_rows,
   parser_claim,
   client_claim,
-  donor_claim,
+  reference_claim,
   index_or_cache_claim,
   unknown
 };
@@ -68,7 +68,7 @@ struct CurrentRowMapObservedFacts {
   bool transaction_horizon_authoritative = false;
   bool normal_mga_visibility_authority_available = false;
   bool security_recheck_planned = false;
-  bool parser_client_or_donor_authority = false;
+  bool parser_client_or_reference_authority = false;
 };
 
 struct CurrentRowMapEvidenceField {

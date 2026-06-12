@@ -98,7 +98,7 @@ DeleteIndexMaintenanceAction ActionForIndex(const CrudIndexRecord& index, const 
       index.family == kCrudIndexFamilyVectorIvf || index.family == kCrudIndexFamilyColumnarZone ||
       index.family == kCrudIndexFamilyGraphAdjacency || index.family == kCrudIndexFamilyExpression ||
       index.family == kCrudIndexFamilyPartial || index.family == kCrudIndexFamilyCovering ||
-      index.family == kCrudIndexFamilyInMemory || index.family == kCrudIndexFamilyDonorEmulated ||
+      index.family == kCrudIndexFamilyInMemory || index.family == kCrudIndexFamilyReferenceEmulated ||
       index.family.empty()) {
     return DeleteIndexMaintenanceAction::visibility_recheck_only;
   }
@@ -143,7 +143,7 @@ const char* DeleteBatchModeName(DeleteBatchMode mode) {
     case DeleteBatchMode::singleton_row_uuid: return "singleton_row_uuid";
     case DeleteBatchMode::predicate_scan: return "predicate_scan";
     case DeleteBatchMode::indexed_predicate: return "indexed_predicate";
-    case DeleteBatchMode::donor_bulk: return "donor_bulk";
+    case DeleteBatchMode::reference_bulk: return "reference_bulk";
     case DeleteBatchMode::native_bulk: return "native_bulk";
   }
   return "unknown";
@@ -177,8 +177,8 @@ DeleteBatchMode ResolveDeleteBatchMode(const EngineDeleteRowsRequest& request,
   if (request.delete_predicate.predicate_kind == "row_uuid_match") {
     return DeleteBatchMode::singleton_row_uuid;
   }
-  if (request.delete_predicate.predicate_kind == "donor_bulk") {
-    return DeleteBatchMode::donor_bulk;
+  if (request.delete_predicate.predicate_kind == "reference_bulk") {
+    return DeleteBatchMode::reference_bulk;
   }
   if (request.delete_predicate.predicate_kind == "native_bulk") {
     return DeleteBatchMode::native_bulk;

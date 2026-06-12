@@ -11,7 +11,7 @@
 // SEARCH_KEY: SB_METRICS_ADAPTIVE_TUNING_EVIDENCE_ODF_101
 // Benchmark-clean observability evidence for adaptive resource tuning. This
 // model is serialized for diagnostics only and does not change persisted metric
-// formats or grant transaction, parser, donor, provider, client, or recovery
+// formats or grant transaction, parser, reference, provider, client, or recovery
 // authority.
 
 #include "metric_registry.hpp"
@@ -44,7 +44,7 @@ struct AdaptiveTuningMetricEvidence {
   bool evidence_authoritative = false;
   bool benchmark_clean = false;
   bool hard_backlog_refusal = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool provider_transaction_finality_authority = false;
   bool provider_visibility_authority = false;
   bool client_autocommit_authority = false;
@@ -71,7 +71,7 @@ struct AdaptiveTuningMetricEvidenceRequest {
   bool evidence_authoritative = true;
   bool benchmark_clean = true;
   bool hard_backlog_refusal = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool provider_transaction_finality_authority = false;
   bool provider_visibility_authority = false;
   bool client_autocommit_authority = false;

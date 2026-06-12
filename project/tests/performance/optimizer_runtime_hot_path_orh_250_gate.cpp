@@ -400,16 +400,16 @@ void TestCancellationAndAuthorityRefusals() {
                   "parallel_pipeline_mga_snapshot_required",
           "missing MGA snapshot proof was not refused");
 
-  auto parser_donor =
+  auto parser_reference =
       Request(exec::ParallelPhysicalPipelineFamily::kPageScan,
-              "orh250.negative.parser_donor");
-  parser_donor.worker_lanes[0].parser_or_donor_finality_or_visibility_authority =
+              "orh250.negative.parser_reference");
+  parser_reference.worker_lanes[0].parser_or_reference_finality_or_visibility_authority =
       true;
-  result = exec::ExecuteParallelPhysicalPipeline(parser_donor);
+  result = exec::ExecuteParallelPhysicalPipeline(parser_reference);
   Require(!result.ok() &&
               result.diagnostic.diagnostic_code ==
                   "parallel_pipeline_worker_forbidden_authority",
-          "parser/donor worker authority was not refused");
+          "parser/reference worker authority was not refused");
 
   auto client_authority =
       Request(exec::ParallelPhysicalPipelineFamily::kPageScan,

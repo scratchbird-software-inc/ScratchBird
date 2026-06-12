@@ -252,8 +252,8 @@ const char* IndexProviderAdmissionStatusName(
       return "UNSUPPORTED_FAMILY";
     case IndexProviderAdmissionStatus::non_persistent_family:
       return "NON_PERSISTENT_FAMILY";
-    case IndexProviderAdmissionStatus::donor_emulated_non_runtime:
-      return "DONOR_EMULATED_NON_RUNTIME";
+    case IndexProviderAdmissionStatus::reference_emulated_non_runtime:
+      return "REFERENCE_EMULATED_NON_RUNTIME";
     case IndexProviderAdmissionStatus::policy_blocked_non_runtime:
       return "POLICY_BLOCKED_NON_RUNTIME";
     case IndexProviderAdmissionStatus::route_capability_required:
@@ -286,7 +286,7 @@ bool IndexProviderAuthorityBoundaryClear(
          !boundary.security_authority &&
          !boundary.recovery_authority &&
          !boundary.parser_authority &&
-         !boundary.donor_authority &&
+         !boundary.reference_authority &&
          !boundary.wal_authority &&
          !boundary.benchmark_authority &&
          !boundary.optimizer_plan_authority &&
@@ -325,12 +325,12 @@ IndexProviderAdmissionResult AdmitIndexProviderAccessMethod(
         IndexProviderAdmissionStatus::unsupported_family,
         "family is not registered as a built-in index family");
   }
-  if (contract.family == IndexFamily::donor_emulated ||
-      descriptor->persistence == IndexPersistenceClass::donor_emulated) {
+  if (contract.family == IndexFamily::reference_emulated ||
+      descriptor->persistence == IndexPersistenceClass::reference_emulated) {
     return RefuseProviderContract(
         contract,
-        IndexProviderAdmissionStatus::donor_emulated_non_runtime,
-        "donor-emulated index mappings are non-runtime non-authority");
+        IndexProviderAdmissionStatus::reference_emulated_non_runtime,
+        "reference-emulated index mappings are non-runtime non-authority");
   }
   if (contract.family == IndexFamily::policy_blocked ||
       descriptor->persistence == IndexPersistenceClass::policy_blocked) {
@@ -357,7 +357,7 @@ IndexProviderAdmissionResult AdmitIndexProviderAccessMethod(
     return RefuseProviderContract(
         contract,
         IndexProviderAdmissionStatus::authority_boundary_refused,
-        "provider evidence must not claim transaction visibility security recovery parser donor WAL benchmark optimizer plan index finality cluster or agent-action authority");
+        "provider evidence must not claim transaction visibility security recovery parser reference WAL benchmark optimizer plan index finality cluster or agent-action authority");
   }
   if (!contract.provider.provider_backed ||
       !contract.provider.persistent_access_method ||

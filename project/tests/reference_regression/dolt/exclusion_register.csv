@@ -1,0 +1,2 @@
+reference_id,exclusion_id,scope,reason_code,owner,acceptance_rule,status
+dolt,DOLT-EXCLUSION-POLICY,all_discovered_upstream_tests,mandatory_reason_code_required_for_any_non_imported_test,reference parser implementation agent,no silent skip; every excluded test row must name support_udr engine_listener physical_engine_only license_excluded or non_applicable,manifest_generated_no_exclusions_accepted_yet

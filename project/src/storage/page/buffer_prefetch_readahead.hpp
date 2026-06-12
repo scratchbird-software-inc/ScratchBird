@@ -38,7 +38,7 @@ struct BufferPrefetchAuthorityContext {
   bool engine_mga_snapshot_bound = false;
   bool transaction_inventory_authoritative = false;
   bool security_recheck_required = false;
-  bool parser_client_or_donor_authority = false;
+  bool parser_client_or_reference_authority = false;
   bool prefetch_visibility_or_finality_authority = false;
   bool prefetch_recovery_authority = false;
   bool prefetch_security_authority = false;

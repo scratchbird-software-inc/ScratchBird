@@ -37,7 +37,7 @@ struct AllocatorHotPathAuthorityContext {
   bool engine_mga_snapshot_bound = false;
   bool transaction_inventory_authoritative = false;
   bool security_recheck_required = false;
-  bool parser_client_or_donor_allocator_authority = false;
+  bool parser_client_or_reference_allocator_authority = false;
   bool allocator_visibility_or_finality_authority = false;
   bool allocator_recovery_authority = false;
   bool allocator_authorization_authority = false;

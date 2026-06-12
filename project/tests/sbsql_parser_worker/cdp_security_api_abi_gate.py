@@ -47,7 +47,7 @@ SHOW_MANAGEMENT_FIELDS = (
     "agent_worker_status",
     "resource_governor_state",
     "parser_finality_authority",
-    "donor_finality_authority",
+    "reference_finality_authority",
 )
 
 
@@ -376,7 +376,7 @@ def parse_show_management(stdout: str) -> dict[str, str]:
                 "agent_worker_status": values[17],
                 "resource_governor_state": values[26],
                 "parser_finality_authority": values[35],
-                "donor_finality_authority": values[36],
+                "reference_finality_authority": values[36],
             }
             candidates.append(fields)
     if len(candidates) != 1:
@@ -388,7 +388,7 @@ def parse_show_management(stdout: str) -> dict[str, str]:
         "plan_cache_enabled": "true",
         "descriptor_metadata_cache_enabled": "true",
         "parser_finality_authority": "false",
-        "donor_finality_authority": "false",
+        "reference_finality_authority": "false",
     }
     for key, value in expected.items():
         if fields.get(key) != value:
@@ -622,7 +622,7 @@ def run_gate(args: argparse.Namespace, work: Path) -> dict[str, Any]:
         "exact_refusal_vectors": exact_vectors,
         "authority_boundary": {
             "parser_finality_authority": False,
-            "donor_finality_authority": False,
+            "reference_finality_authority": False,
             "finality_visibility_authority": "engine_mga",
         },
         "performance_claim_policy": "no_driver_speed_as_database_speed_claim",

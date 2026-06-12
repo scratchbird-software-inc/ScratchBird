@@ -310,8 +310,8 @@ void TestSblrAndManifestBoundary() {
     manifest_text += line;
     manifest_text.push_back('\n');
   }
-  Require(Contains(manifest_text, "registries/donor-parser-feature-gates.yaml"),
-          "donor parser feature-gate registry is not manifest-authoritative");
+  Require(Contains(manifest_text, "registries/reference-parser-feature-gates.yaml"),
+          "reference parser feature-gate registry is not manifest-authoritative");
   Require(Contains(manifest_text, "registries/builtin-library-feature-gates.yaml"),
           "built-in library feature-gate registry is not manifest-authoritative");
 }

@@ -221,7 +221,7 @@ std::vector<std::string> CanarySet() {
       "secret-canary-eler088-tls-key",
       "secret-canary-eler088-env-config",
       "secret-canary-eler088-parser-handoff",
-      "secret-canary-eler088-donor-connector",
+      "secret-canary-eler088-reference-connector",
       "secret_canary_eler088_listener_metric",
       "secret-canary-eler088-memory",
   };
@@ -307,16 +307,16 @@ void ListenerSupportBundleCanaryProof(const std::vector<std::string>& canaries) 
 
 api::EngineSupportBundleAgentEvidenceSource AgentCanaryEvidence() {
   api::EngineSupportBundleAgentEvidenceSource source;
-  source.agent_type_id = "donor_connector_supportability_probe";
+  source.agent_type_id = "reference_connector_supportability_probe";
   source.agent_uuid = MakeUuid(UuidKind::object, 20);
   source.filespace_uuid = MakeUuid(UuidKind::filespace, 21);
   source.policy_uuid = MakeUuid(UuidKind::object, 22);
   source.evidence_uuid = MakeUuid(UuidKind::object, 23);
   source.evidence_kind =
-      "agent_runtime_evidence secret-canary-eler088-donor-connector";
+      "agent_runtime_evidence secret-canary-eler088-reference-connector";
   source.result_state = "success";
   source.diagnostic_code =
-      "AGENT.SECRET-CANARY-ELER088-DONOR-CONNECTOR";
+      "AGENT.SECRET-CANARY-ELER088-REFERENCE-CONNECTOR";
   source.payload_digest =
       "sha256:secret-canary-eler088-protected-material";
   source.retention_class =
@@ -326,7 +326,7 @@ api::EngineSupportBundleAgentEvidenceSource AgentCanaryEvidence() {
   source.retention_deadline =
       "deadline secret-canary-eler088-protected-material";
   source.physical_path =
-      "/tmp/secret-canary-eler088-donor-connector/runtime.sbdb";
+      "/tmp/secret-canary-eler088-reference-connector/runtime.sbdb";
   source.unsafe_payload =
       "password=secret-canary-eler088-auth-token "
       "protected_reference=secret-canary-eler088-protected-material";
@@ -342,7 +342,7 @@ api::PerformanceOptimizationSurfaceSnapshot PerformanceCanarySnapshot() {
       "password secret-canary-eler088-protected-material";
   snapshot.cleanup_horizon_authority_status = "not_reported";
   snapshot.last_agent_decision =
-      "credential secret-canary-eler088-donor-connector";
+      "credential secret-canary-eler088-reference-connector";
   snapshot.last_agent_diagnostic_code = "AGENT.CANARY.REDACTED";
   snapshot.secondary_index_state =
       "private_key secret-canary-eler088-tls-key";
@@ -407,7 +407,7 @@ void EngineSupportBundleCanaryProof(const std::vector<std::string>& canaries) {
                   "ELER-088 performance support bundle JSON marker missing");
   AddRow("engine_management",
          "agent_performance_config_canaries",
-         "auth_protected_material_env_donor_connector",
+         "auth_protected_material_env_reference_connector",
          "agent_runtime_evidence;performance_snapshot;config_override",
          "<redacted>;[redacted:security]",
          "EnginePrepareSupportBundle rows JSON diagnostics and evidence contain no canary");
@@ -544,7 +544,7 @@ api::ClusterSupportBundleProjectionSource ClusterProjection(
   api::ClusterSupportBundleProjectionSource source;
   source.sensitivity = sensitivity;
   source.projection_id = "eler088-cluster-projection";
-  source.projection_source = "donor_connector_supportability_projection";
+  source.projection_source = "reference_connector_supportability_projection";
   source.target_uuid = MakeUuid(UuidKind::object, 80);
   source.retention_policy_ref = "support.cluster.retention.redacted";
   source.support_bundle_policy_ref = "support.cluster.bundle.redacted";
@@ -562,7 +562,7 @@ void ClusterSupportBundleCanaryProof(const std::vector<std::string>& canaries) {
   request.capture_generation = "generation:88";
   request.projections.push_back(ClusterProjection(
       api::ClusterProjectionRedactionSensitivity::security,
-      "secret-canary-eler088-donor-connector"));
+      "secret-canary-eler088-reference-connector"));
   request.projections.push_back(ClusterProjection(
       api::ClusterProjectionRedactionSensitivity::route,
       "secret-canary-eler088-parser-handoff"));
@@ -583,8 +583,8 @@ void ClusterSupportBundleCanaryProof(const std::vector<std::string>& canaries) {
                   "[redacted:route]",
                   "ELER-088 cluster route redaction marker missing");
   AddRow("cluster_projection",
-         "donor_connector_projection_canaries",
-         "donor_connector_parser_handoff",
+         "reference_connector_projection_canaries",
+         "reference_connector_parser_handoff",
          "cluster_projection_sensitive_fields",
          "[redacted:security];[redacted:route]",
          "cluster support-bundle projection is evidence-only and contains no canary");

@@ -64,8 +64,8 @@ bool HasForbiddenAuthorityClaim(const std::vector<std::string>& claims) {
   static const char* kForbidden[] = {
       "transaction_finality", "transaction_authority", "visibility_authority",
       "security_authority", "authorization_authority", "recovery_authority",
-      "parser_authority", "parser_execution_authority", "donor_authority",
-      "donor_finality", "wal_authority", "benchmark_authority",
+      "parser_authority", "parser_execution_authority", "reference_authority",
+      "reference_finality", "wal_authority", "benchmark_authority",
       "cluster_authority", "provider_finality", "action_authority",
       "metric_authority", "memory_authority", "optimizer_plan_authority",
       "index_finality"};
@@ -92,7 +92,7 @@ AgentActionSafetyEnvelope AgentActionSafetyEnvelopeFromInputs(
     bool contract_manual_approval_required,
     bool authority_parser_claim,
     bool authority_client_claim,
-    bool authority_donor_claim,
+    bool authority_reference_claim,
     bool authority_sidecar_claim) {
   AgentActionSafetyEnvelope envelope;
   envelope.action_uuid = action.action_uuid;
@@ -171,7 +171,7 @@ AgentActionSafetyEnvelope AgentActionSafetyEnvelopeFromInputs(
                                    input_claims.end());
   if (authority_parser_claim) { envelope.authority_claims.push_back("parser_authority"); }
   if (authority_client_claim) { envelope.authority_claims.push_back("client_authority"); }
-  if (authority_donor_claim) { envelope.authority_claims.push_back("donor_authority"); }
+  if (authority_reference_claim) { envelope.authority_claims.push_back("reference_authority"); }
   if (authority_sidecar_claim) { envelope.authority_claims.push_back("sidecar_authority"); }
   return envelope;
 }

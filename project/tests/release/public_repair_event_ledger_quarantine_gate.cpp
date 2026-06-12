@@ -253,16 +253,16 @@ bool LedgerRefusalProof(const std::filesystem::path& ledger_path,
                   "SB-REPAIR-EVENT-AUTHORITY-REFUSED",
               "finality authority refusal diagnostic should be stable") && ok;
 
-  auto donor_authority = EventFor(fixture,
+  auto reference_authority = EventFor(fixture,
                                   db::RepairEventPhase::scan_admission,
                                   loaded.ledger.last_sequence + 1,
                                   loaded.ledger.last_event_digest,
-                                  "donor_flag_refused");
-  donor_authority.authority.parser_or_donor_authority = true;
-  const auto donor_result =
-      db::AppendRepairEventToLedger(ledger_path.string(), donor_authority);
-  ok = Expect(!donor_result.ok(),
-              "repair event should reject parser or donor authority") && ok;
+                                  "reference_flag_refused");
+  reference_authority.authority.parser_or_reference_authority = true;
+  const auto reference_result =
+      db::AppendRepairEventToLedger(ledger_path.string(), reference_authority);
+  ok = Expect(!reference_result.ok(),
+              "repair event should reject parser or reference authority") && ok;
 
   const auto still_loaded = db::LoadRepairEventLedger(ledger_path.string());
   ok = Expect(still_loaded.ok(),

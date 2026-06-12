@@ -542,7 +542,7 @@ EngineFilespacePackageResult FilespacePackageFailure(
                      {"parser_storage_authority", "false"},
                      {"transaction_finality_authority", "false"},
                      {"recovery_authority", "false"},
-                     {"donor_wal_recovery_authority", "false"},
+                     {"reference_wal_recovery_authority", "false"},
                      {"private_provider_dispatch", "false"}});
   return result;
 }
@@ -1086,7 +1086,7 @@ EngineFilespaceDiscoveryResult EngineDiscoverFilespaceAnomalies(
   }
   if (request.parser_filesystem_authority || request.parser_storage_authority ||
       request.transaction_finality_authority || request.recovery_authority ||
-      request.donor_or_wal_recovery_authority) {
+      request.reference_or_wal_recovery_authority) {
     return FilespaceDiscoveryFailure(
         request,
         MakeEngineApiDiagnostic("FILESPACE_DISCOVERY.AUTHORITY_REFUSED",
@@ -1259,7 +1259,7 @@ EngineFilespaceDiscoveryResult EngineDiscoverFilespaceAnomalies(
                      {"parser_storage_authority", "false"},
                      {"transaction_finality_authority", "false"},
                      {"recovery_authority", "false"},
-                     {"donor_wal_recovery_authority", "false"},
+                     {"reference_wal_recovery_authority", "false"},
                      {"private_provider_dispatch", "false"},
                      {"mga_visibility_authority", "durable_transaction_inventory"}});
   for (const auto& row : storage_result.rows) {
@@ -1314,7 +1314,7 @@ EngineFilespaceDiscoveryResult EngineDiscoverFilespaceAnomalies(
   AddApiBehaviorEvidence(&result, "parser_storage_authority", "false");
   AddApiBehaviorEvidence(&result, "transaction_finality_authority", "false");
   AddApiBehaviorEvidence(&result, "recovery_authority", "false");
-  AddApiBehaviorEvidence(&result, "donor_wal_recovery_authority", "false");
+  AddApiBehaviorEvidence(&result, "reference_wal_recovery_authority", "false");
   AddApiBehaviorEvidence(&result, "private_provider_dispatch", "false");
   AddApiBehaviorEvidence(&result,
                          "mga_visibility_authority",
@@ -1364,7 +1364,7 @@ EngineFilespacePackageResult EngineFilespacePackageOperation(
   }
   if (request.parser_file_io_authority || request.parser_storage_authority ||
       request.transaction_finality_authority || request.recovery_authority ||
-      request.donor_or_wal_recovery_authority ||
+      request.reference_or_wal_recovery_authority ||
       request.private_provider_dispatch_requested) {
     return FilespacePackageFailure(
         request,
@@ -1503,7 +1503,7 @@ EngineFilespacePackageResult EngineFilespacePackageOperation(
   result.parser_storage_authority = false;
   result.transaction_finality_authority = false;
   result.recovery_authority = false;
-  result.donor_or_wal_recovery_authority = false;
+  result.reference_or_wal_recovery_authority = false;
   result.private_provider_dispatch = false;
   result.result_shape.result_kind = "rs.filespace.package_report.v1";
 
@@ -1532,7 +1532,7 @@ EngineFilespacePackageResult EngineFilespacePackageOperation(
                      {"parser_storage_authority", "false"},
                      {"transaction_finality_authority", "false"},
                      {"recovery_authority", "false"},
-                     {"donor_wal_recovery_authority", "false"},
+                     {"reference_wal_recovery_authority", "false"},
                      {"private_provider_dispatch", "false"},
                      {"mga_visibility_authority", "durable_transaction_inventory"}});
   for (const auto& event : storage_result.events) {
@@ -1573,7 +1573,7 @@ EngineFilespacePackageResult EngineFilespacePackageOperation(
   AddApiBehaviorEvidence(&result, "parser_storage_authority", "false");
   AddApiBehaviorEvidence(&result, "transaction_finality_authority", "false");
   AddApiBehaviorEvidence(&result, "recovery_authority", "false");
-  AddApiBehaviorEvidence(&result, "donor_wal_recovery_authority", "false");
+  AddApiBehaviorEvidence(&result, "reference_wal_recovery_authority", "false");
   AddApiBehaviorEvidence(&result, "private_provider_dispatch", "false");
   AddApiBehaviorEvidence(&result,
                          "mga_visibility_authority",

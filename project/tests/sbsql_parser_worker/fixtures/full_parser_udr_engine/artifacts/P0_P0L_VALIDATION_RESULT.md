@@ -28,7 +28,7 @@ Generated: 2026-05-07 20:36:49 EDT
 - Batch membership rows: 2617.
 - Semantic oracle rows: 2617.
 - Engine gap backlog rows: 932.
-- Donor alias backlog rows: 312.
+- Reference alias backlog rows: 312.
 - Message-vector seed rows: 41.
 - Validation command registry rows: 65.
 - Slice queue rows: 51.
