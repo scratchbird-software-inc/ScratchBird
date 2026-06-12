@@ -2189,7 +2189,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
     COMMAND sbsql_temporary_table_proof_closure_conformance
   )
   set_tests_properties(sbsql_temporary_table_proof_closure_conformance PROPERTIES
-    LABELS "sbsql_temporary_table_proof_closure_conformance;SBSQL-TEMPORARY-TABLE-PROOF-CLOSURE;TEMP-TABLE-GATE-001;TEMP-TABLE-GATE-002;TEMP-TABLE-GATE-003;TEMP-TABLE-GATE-004;TEMP-TABLE-GATE-005;TEMP-TABLE-GATE-006;TEMP-TABLE-GATE-007;TEMP-TABLE-GATE-008;TEMP-TABLE-GATE-009;TEMP-TABLE-GATE-010;TEMP-TABLE-GATE-011;TEMP-TABLE-GATE-012;TEMP-TABLE-GATE-013;TEMP-TABLE-GATE-014;TEMP-TABLE-GATE-016;sblr_operation_matrix_gate;mga_transaction_regression;sbsql_parser_worker;sbsql_e2e_passed"
+    LABELS "sbsql_temporary_table_proof_closure_conformance;SBSQL-TEMPORARY-TABLE-PROOF-CLOSURE;TEMP-TABLE-GATE-001;TEMP-TABLE-GATE-002;TEMP-TABLE-GATE-003;TEMP-TABLE-GATE-004;TEMP-TABLE-GATE-005;TEMP-TABLE-GATE-006;TEMP-TABLE-GATE-007;TEMP-TABLE-GATE-008;TEMP-TABLE-GATE-009;TEMP-TABLE-GATE-010;TEMP-TABLE-GATE-011;TEMP-TABLE-GATE-012;TEMP-TABLE-GATE-013;TEMP-TABLE-GATE-014;TEMP-TABLE-GATE-015;TEMP-TABLE-GATE-016;TEMP-TABLE-GATE-017;sblr_operation_matrix_gate;mga_transaction_regression;sbsql_parser_worker;sbsql_e2e_passed"
   )
 
   add_executable(

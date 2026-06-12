@@ -2610,7 +2610,7 @@ add_test(
   COMMAND database_lifecycle_execution_donor_type_capability_conformance
 )
 set_tests_properties(database_lifecycle_execution_donor_type_capability_conformance PROPERTIES
-  LABELS "EDR-037;EDR-GATE-037;execution_donor_type_capability;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+  LABELS "EDR-037;EDR-GATE-037;DTC-DONOR-TYPE-COVERAGE;DTC-DONOR-UDR-DOMAIN-INSTALL;DTC-LLVM-DOMAIN-ACCELERATION;DTC-LITERAL-BIND-TYPING;DTC-TYPE-INFERENCE-OVERLOAD;DTC-LOCATOR-PSEUDOTYPE-SAFETY;DTC-OPAQUE-TYPE-LIFECYCLE;DTC-TYPE-MIGRATION;DTC-DONOR-SUPERIORITY;DTC-GATE-001;DTC-GATE-002;DTC-GATE-003;DTC-GATE-004;DTC-GATE-005;DTC-GATE-006;DTC-GATE-007;DTC-GATE-008;DTC-GATE-009;DTC-GATE-010;DTC-GATE-011;DTC-GATE-012;execution_donor_type_capability;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
 )
 
 add_executable(database_lifecycle_type_operation_registry_conformance
@@ -3317,7 +3317,7 @@ if(TARGET sb_core_memory)
       COMMAND database_lifecycle_memory_management_descriptor_conformance
     )
     set_tests_properties(database_lifecycle_memory_management_descriptor_conformance PROPERTIES
-      LABELS "database_lifecycle_memory_management_descriptor_conformance;MEMORY-MANAGEMENT-DESCRIPTOR-PLANNER-IMPLEMENTED;MEMORY-GOVERNANCE-DIRECT-EXECUTOR-IMPLEMENTED;MEMORY-AUTOMATION-REPORT-CATALOG-IMPLEMENTED;MEMORY-AUTOMATION-SAFE-EXECUTOR-IMPLEMENTED;MEMORY-OBJECT-RESIDENCY-DURABLE-CATALOG-IMPLEMENTED;MEMORY-RATE-LIMIT-DURABLE-CATALOG-IMPLEMENTED;MEMORY-RATE-LIMIT-LIVE-EXECUTOR-IMPLEMENTED;MEMORY-POLICY-MIGRATION-DURABLE-CATALOG-IMPLEMENTED;memory_governance;memory_automation;memory_object_residency;memory_rate_limit;memory_policy_migration;database_lifecycle;memory;mga_transaction_regression"
+      LABELS "database_lifecycle_memory_management_descriptor_conformance;MEMORY-MANAGEMENT-DESCRIPTOR-PLANNER-IMPLEMENTED;MEMORY-GOVERNANCE-DIRECT-EXECUTOR-IMPLEMENTED;MEMORY-AUTOMATION-REPORT-CATALOG-IMPLEMENTED;MEMORY-AUTOMATION-SAFE-EXECUTOR-IMPLEMENTED;MEMORY-OBJECT-RESIDENCY-DURABLE-CATALOG-IMPLEMENTED;MEMORY-RATE-LIMIT-DURABLE-CATALOG-IMPLEMENTED;MEMORY-RATE-LIMIT-LIVE-EXECUTOR-IMPLEMENTED;MEMORY-POLICY-MIGRATION-DURABLE-CATALOG-IMPLEMENTED;MM-MEMORY-MANAGEMENT-CORRECTIVE-CLOSURE;MM-GATE-001;MM-GATE-002;MM-GATE-003;MM-GATE-004;MM-GATE-005;MM-GATE-006;MM-GATE-007;MM-GATE-008;MM-GATE-009;MM-GATE-010;MM-GATE-011;MM-GATE-012;MM-GATE-013;MM-GATE-014;MM-GATE-015;MM-GATE-016;MM-GATE-017;MM-GATE-018;MM-GATE-019;MM-GATE-020;MM-GATE-021;MM-GATE-022;MM-GATE-023;MM-GATE-024;memory_governance;memory_automation;memory_object_residency;memory_rate_limit;memory_policy_migration;database_lifecycle;memory;mga_transaction_regression"
     )
   endif()
 
@@ -3531,6 +3531,27 @@ set_tests_properties(dpc_negative_rejected_technique_drift_gate PROPERTIES
 
 set(SB_DPC_EVIDENCE_PROVENANCE_RETENTION_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/dpc_evidence_provenance_retention_gate.py"
+)
+
+set(SB_MIGRATION_DEFERRED_OPERATIONS_CLOSURE_GATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/migration_deferred_operations_closure_gate.py"
+)
+
+add_custom_target(migration_deferred_operations_closure_gate_check
+  COMMAND "${Python3_EXECUTABLE}" "${SB_MIGRATION_DEFERRED_OPERATIONS_CLOSURE_GATE}"
+          --repo-root "${SB_PRIVATE_REPO_ROOT}"
+          --build-root "${CMAKE_BINARY_DIR}"
+  COMMENT "Validating migration deferred operations implementation closure"
+)
+
+add_test(
+  NAME migration_deferred_operations_closure_gate
+  COMMAND "${Python3_EXECUTABLE}" "${SB_MIGRATION_DEFERRED_OPERATIONS_CLOSURE_GATE}"
+          --repo-root "${SB_PRIVATE_REPO_ROOT}"
+          --build-root "${CMAKE_BINARY_DIR}"
+)
+set_tests_properties(migration_deferred_operations_closure_gate PROPERTIES
+  LABELS "migration_deferred_operations_closure_gate;MIGRATION-DEFERRED-OPERATIONS-CLOSURE;MIGRATION-DIRECTORY-IMPLEMENTATION-CLOSURE;DEFERRED-MIGRATION-IMPLEMENTATION-CLOSURE;TEMP-TABLE-GATE-017;database_lifecycle;mga_transaction_regression"
 )
 
 set(SB_DPC_EVIDENCE_PROVENANCE_RETENTION_MANIFEST
