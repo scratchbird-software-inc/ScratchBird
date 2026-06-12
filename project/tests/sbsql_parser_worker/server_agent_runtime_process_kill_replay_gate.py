@@ -47,7 +47,7 @@ def read_status(path: Path) -> dict[str, Any]:
 def wait_for_status(path: Path,
                     predicate: Callable[[dict[str, Any]], bool],
                     reason: str,
-                    timeout: float = 12.0) -> dict[str, Any]:
+                    timeout: float = 20.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last: dict[str, Any] = {}
     while time.monotonic() < deadline:
@@ -89,10 +89,7 @@ def main() -> int:
     server2: subprocess.Popen[bytes] | None = None
     try:
         database = parsed.work / "agent-runtime-kill-replay.sbdb"
-        Path(str(database) + ".sb.local_password_auth").write_text(
-            f"sysdba\tlocal_password\t{live.VERIFIER}\n",
-            encoding="utf-8",
-        )
+        live.write_live_auth_fixture(database)
 
         endpoint1 = parsed.work / "sc1" / "s.sock"
         server1 = live.start_server(

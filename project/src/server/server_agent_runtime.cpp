@@ -52,6 +52,22 @@ std::uint64_t CurrentMonotonicNs() {
       std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 }
 
+constexpr auto kInitialAgentSchedulerDelay = std::chrono::milliseconds(750);
+constexpr auto kWarmAgentSchedulerInterval = std::chrono::seconds(1);
+constexpr auto kIdleAgentSchedulerInterval = std::chrono::seconds(5);
+constexpr std::uint64_t kWorkerLeaseDurationMicroseconds = 300000000;
+constexpr std::uint64_t kHeartbeatEveryGenerations = 10;
+constexpr std::uint64_t kActionEveryWorkerTicks = 20;
+
+bool WorkerRunsGeneration(std::size_t worker_index,
+                          std::size_t worker_count,
+                          std::uint64_t generation) {
+  if (worker_count == 0 || generation == 0) {
+    return false;
+  }
+  return worker_index == ((generation - 1) % worker_count);
+}
+
 std::string JsonEscape(const std::string& value) {
   std::ostringstream out;
   for (const unsigned char ch : value) {
@@ -520,8 +536,15 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       capacity_config,
       CapacityPlanningContext(database->database_uuid),
       agents::DefaultDmlPreworkAgentWorkerCandidates(1));
-  const std::uint32_t worker_count = std::max<std::uint32_t>(
+  const std::uint32_t planned_worker_count = std::max<std::uint32_t>(
       2, static_cast<std::uint32_t>(capacity.background_worker_slots));
+  const std::uint32_t assignment_worker_count =
+      assignments.empty() ? planned_worker_count
+                          : static_cast<std::uint32_t>(assignments.size());
+  const std::uint32_t worker_count =
+      std::max<std::uint32_t>(1,
+                              std::min(planned_worker_count,
+                                       assignment_worker_count));
   const std::uint32_t bounded_worker_count = std::min<std::uint32_t>(worker_count, 31);
 
   {
@@ -542,7 +565,7 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
     foreground_reserved_capacity_ =
         static_cast<std::uint32_t>(capacity.foreground_reserved_capacity);
     background_worker_slots_ = bounded_worker_count;
-    worker_wake_policy_ = "all_workers_per_scheduler_tick";
+    worker_wake_policy_ = "staggered_worker_per_scheduler_tick";
     selected_agents_ = std::move(assignments);
     {
       std::lock_guard<std::mutex> schedule_guard(schedule_mutex_);
@@ -938,7 +961,7 @@ void ServerAgentRuntime::SchedulerLoop() {
   }
   {
     std::unique_lock<std::mutex> lock(schedule_mutex_);
-    if (schedule_cv_.wait_for(lock, std::chrono::milliseconds(750), [&] {
+    if (schedule_cv_.wait_for(lock, kInitialAgentSchedulerDelay, [&] {
           return stopping_.load();
         })) {
       return;
@@ -948,7 +971,11 @@ void ServerAgentRuntime::SchedulerLoop() {
     std::uint64_t generation = 0;
     {
       std::unique_lock<std::mutex> lock(schedule_mutex_);
-      if (schedule_cv_.wait_for(lock, std::chrono::milliseconds(100), [&] {
+      const auto interval =
+          scheduled_generation_ < worker_completed_generations_.size()
+              ? kWarmAgentSchedulerInterval
+              : kIdleAgentSchedulerInterval;
+      if (schedule_cv_.wait_for(lock, interval, [&] {
             return stopping_.load();
           })) {
         break;
@@ -1006,7 +1033,9 @@ void ServerAgentRuntime::WorkerLoop(std::size_t worker_index) {
       generation = scheduled_generation_;
       observed_generation = generation;
     }
-    RunWorkerTick(worker_index, generation);
+    if (WorkerRunsGeneration(worker_index, worker_count, generation)) {
+      RunWorkerTick(worker_index, generation);
+    }
     {
       std::lock_guard<std::mutex> lock(schedule_mutex_);
       if (worker_index < worker_completed_generations_.size()) {
@@ -1028,6 +1057,7 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
   std::string lease_owner_uuid;
   bool durable_lease_acquired = false;
   std::uint64_t last_lease_heartbeat_generation = 0;
+  std::uint64_t worker_ticks_so_far = 0;
   ServerAgentAuthorityEpochs authority_epochs;
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
@@ -1044,6 +1074,7 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     durable_lease_acquired = worker_evidence_[worker_index].durable_lease_acquired;
     last_lease_heartbeat_generation =
         worker_evidence_[worker_index].last_lease_heartbeat_generation;
+    worker_ticks_so_far = worker_evidence_[worker_index].ticks;
     authority_epochs.catalog_generation_id = catalog_generation_id_;
     authority_epochs.security_epoch = security_epoch_;
     authority_epochs.resource_epoch = resource_epoch_;
@@ -1060,7 +1091,7 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
   lease.instance_uuid = instance_uuid;
   lease.owner_uuid = lease_owner_uuid;
   lease.now_microseconds = CurrentUnixMillis() * 1000;
-  lease.lease_duration_microseconds = 5000000;
+  lease.lease_duration_microseconds = kWorkerLeaseDurationMicroseconds;
   lease.evidence_uuid = ServerAgentRuntimeUuid(
       database_uuid,
       "worker_lease|" + std::to_string(worker_index) + "|" +
@@ -1080,7 +1111,6 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
                        true,
                        false,
                        lease_tx.diagnostic_code);
-      WriteStatusSnapshot();
       return;
     }
     std::lock_guard<std::mutex> service_guard(runtime_service_mutex_);
@@ -1102,7 +1132,6 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
                        true,
                        false,
                        lease_result.status.diagnostic_code);
-      WriteStatusSnapshot();
       return;
     }
     std::string tx_diagnostic;
@@ -1115,15 +1144,15 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
                        true,
                        false,
                        tx_diagnostic);
-      WriteStatusSnapshot();
       return;
     }
     durable_lease_acquired = true;
     last_lease_heartbeat_generation = generation;
   }
 
-  const bool action_cycle = generation <= worker_evidence_.size() ||
-                            generation % std::max<std::size_t>(20, worker_evidence_.size() * 20) == 0;
+  const bool action_cycle =
+      worker_ticks_so_far == 0 ||
+      ((worker_ticks_so_far + 1) % kActionEveryWorkerTicks == 0);
   if (action_cycle && IsPrimaryWorkerForAgent(worker_index, "page_allocation_manager") &&
       agent_type == "page_allocation_manager") {
     action_attempted = true;
@@ -1217,7 +1246,6 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     }
   }
 
-  constexpr std::uint64_t kHeartbeatEveryGenerations = 5;
   const bool heartbeat_due =
       !durable_lease_acquired ||
       last_lease_heartbeat_generation == 0 ||
@@ -1256,6 +1284,13 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
       if (!heartbeat.status.ok && diagnostic == "SB_AGENT_THREAD_TICK_OK") {
         RollbackServerAgentTransaction(heartbeat_tx.context);
         diagnostic = heartbeat.status.diagnostic_code;
+        if (heartbeat.status.diagnostic_code == "SB_AGENT_LEASE.EXPIRED") {
+          std::lock_guard<std::mutex> guard(state_mutex_);
+          if (worker_index < worker_evidence_.size()) {
+            worker_evidence_[worker_index].durable_lease_acquired = false;
+            worker_evidence_[worker_index].last_lease_heartbeat_generation = 0;
+          }
+        }
       } else if (heartbeat.status.ok) {
         std::string tx_diagnostic;
         std::string tx_detail;
@@ -1274,7 +1309,6 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
                    action_attempted,
                    action_accepted,
                    std::move(diagnostic));
-  WriteStatusSnapshot();
 }
 
 void ServerAgentRuntime::RecordWorkerTick(std::size_t worker_index,
