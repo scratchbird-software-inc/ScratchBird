@@ -33,6 +33,7 @@ namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
 
 constexpr std::string_view kFamily = "sblr.management.runtime_operation.v3";
+constexpr std::string_view kAdmissionFamily = "sblr.database.management.v3";
 constexpr std::string_view kAttachOperation = "lifecycle.attach_database";
 constexpr std::string_view kAttachOpcode = "SBLR_LIFECYCLE_ATTACH_DATABASE";
 constexpr std::string_view kCreateOperation = "lifecycle.create_database";
@@ -337,7 +338,7 @@ void RequireParserLoweringAndAdmission(const LifecycleRouteCase& route) {
           "server admission did not require public ABI dispatch for lifecycle route");
   Require(admission.operation_id == route.operation_id,
           "server admission lifecycle operation id mismatch");
-  Require(admission.operation_family == kFamily,
+  Require(admission.operation_family == kAdmissionFamily,
           "server admission lifecycle family mismatch");
 }
 

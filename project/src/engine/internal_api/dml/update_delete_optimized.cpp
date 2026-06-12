@@ -1664,6 +1664,13 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
         "dml.update_rows",
         MakeInvalidRequestDiagnostic("dml.update_rows", "target_table_not_visible"));
   }
+  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+    return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+        request.context,
+        "dml.update_rows",
+        MakeInvalidRequestDiagnostic("dml.update_rows",
+                                     "temporary_table_requires_session_uuid"));
+  }
   if (CrudPredicateTouchesOpaqueColumn(*table, request.update_predicate)) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
         request.context,
@@ -1828,7 +1835,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
                                                               request.target_table.uuid.canonical,
                                                               row.row_uuid,
                                                               values,
-                                                              request.context.local_transaction_id);
+                                                              request.context);
     if (unique_check.error) { return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", unique_check); }
 
     const std::string version_uuid = GenerateCrudEngineUuid("row");
@@ -1837,6 +1844,8 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     row_record.table_uuid = request.target_table.uuid.canonical;
     row_record.row_uuid = row.row_uuid;
     row_record.version_uuid = version_uuid;
+    row_record.temporary_session_uuid =
+        table->temporary ? request.context.session_uuid.canonical : "";
     row_record.previous_version_uuid = row.version_uuid;
     row_record.previous_sequence = row.sequence;
     row_record.deleted = false;
@@ -2123,6 +2132,13 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
         "dml.delete_rows",
         MakeInvalidRequestDiagnostic("dml.delete_rows", "target_table_not_visible"));
   }
+  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+    return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
+        request.context,
+        "dml.delete_rows",
+        MakeInvalidRequestDiagnostic("dml.delete_rows",
+                                     "temporary_table_requires_session_uuid"));
+  }
   if (CrudPredicateTouchesOpaqueColumn(*table, request.delete_predicate)) {
     return MakeCrudDiagnosticResult<EngineDeleteRowsResult>(
         request.context,
@@ -2221,6 +2237,8 @@ EngineDeleteRowsResult ExecuteOptimizedDeleteRows(const EngineDeleteRowsRequest&
     row_record.table_uuid = request.target_table.uuid.canonical;
     row_record.row_uuid = row.row_uuid;
     row_record.version_uuid = GenerateCrudEngineUuid("row");
+    row_record.temporary_session_uuid =
+        table->temporary ? request.context.session_uuid.canonical : "";
     row_record.previous_version_uuid = row.version_uuid;
     row_record.previous_sequence = row.sequence;
     row_record.deleted = true;

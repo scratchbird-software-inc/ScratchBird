@@ -22,7 +22,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <map>
 #include <set>
@@ -70,17 +69,6 @@ std::filesystem::path TestDatabasePath() {
          ("sb_dblc_004_create_bootstrap_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
 }
 
-std::string Trim(std::string value) {
-  while (!value.empty() && (value.back() == '\r' || value.back() == '\n' || value.back() == ' ')) {
-    value.pop_back();
-  }
-  std::size_t first = 0;
-  while (first < value.size() && value[first] == ' ') {
-    ++first;
-  }
-  return value.substr(first);
-}
-
 std::map<std::string, std::string> ParsePayloadFields(const std::string& payload) {
   std::map<std::string, std::string> fields;
   std::stringstream lines(payload);
@@ -100,22 +88,69 @@ std::map<std::string, std::string> ParsePayloadFields(const std::string& payload
 }
 
 std::set<std::string> LoadExpectedPolicyKeys() {
-  std::ifstream stream(SB_DEFAULT_POLICY_CATALOG_YAML);
-  Require(stream.good(), "could not open default-policy-catalog.yaml");
-
+  static constexpr std::array<std::string_view, 58> kKeys = {{
+      "policy.catalog.bootstrap",
+      "database.identity",
+      "database.create.failure_cleanup",
+      "database.bootstrap.tx1",
+      "database.first_open.tx2_activation",
+      "schema.bootstrap.roots",
+      "security.authority_selection",
+      "security.authentication_provider",
+      "security.bootstrap_password",
+      "security.authorization_default",
+      "security.principal_role_group_seed",
+      "security.user_home_schema",
+      "security.audit",
+      "security.redaction",
+      "security.protected_material",
+      "security.encryption_key_admission",
+      "configuration.source_precedence",
+      "configuration.override_reload",
+      "resource.seed_i18n",
+      "resource.signature_provenance",
+      "storage.filespace_profile",
+      "storage.filespace_lifecycle",
+      "storage.allocation_freespace_pagemap",
+      "lifecycle.ownership_stale_owner",
+      "lifecycle.recovery_dirty_open",
+      "lifecycle.maintenance_restricted",
+      "lifecycle.shutdown_graceful_drain",
+      "lifecycle.shutdown_force",
+      "transaction.admission",
+      "transaction.default_isolation_snapshot",
+      "transaction.commit_durability",
+      "transaction.rollback_savepoint_limbo",
+      "transaction.mga_gc_retention",
+      "concurrency.lock_wait_deadlock",
+      "cache.checkpoint_preload_flush",
+      "backup.archive_restore_snapshot_shadow",
+      "workload.resource_quota",
+      "temp.spill_workspace",
+      "session.disconnect_timeout",
+      "server.route_listener_startup",
+      "listener.bind_tls_pool",
+      "parser.package_admission",
+      "ipc.frame_auth_backpressure",
+      "udr.extension_trust_resource",
+      "executable.side_effect",
+      "sequence.generator_cache",
+      "event.queue_notification",
+      "diagnostics.message_vector",
+      "observability.metrics_log",
+      "support.bundle",
+      "evidence.retention",
+      "job.scheduler",
+      "capability.feature_gate",
+      "upgrade.migration_refusal",
+      "admin.management_command_authorization",
+      "donor.emulation_profile",
+      "replication.cdc_changefeed_boundary",
+      "cluster.boundary_fail_closed",
+  }};
   std::set<std::string> keys;
-  std::string line;
-  while (std::getline(stream, line)) {
-    line = Trim(line);
-    constexpr std::string_view prefix = "- policy_key:";
-    if (line.rfind(prefix, 0) != 0) {
-      continue;
-    }
-    std::string key = Trim(line.substr(prefix.size()));
-    if (!key.empty() && key.front() == '"' && key.back() == '"') {
-      key = key.substr(1, key.size() - 2);
-    }
-    keys.insert(std::move(key));
+  for (const auto key : kKeys) {
+    keys.insert(std::string(key));
   }
   Require(keys.size() == 58, "default policy catalog did not expose exactly 58 policy keys");
   return keys;

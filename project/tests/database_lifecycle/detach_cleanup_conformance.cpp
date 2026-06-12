@@ -342,7 +342,8 @@ scratchbird::server::ParserServerEventSession EventSessionFor(
   event_session.engine_context.security_epoch = session.security_epoch;
   event_session.engine_context.resource_epoch = session.resource_epoch;
   event_session.engine_context.name_resolution_epoch = session.name_resolution_epoch;
-  event_session.engine_context.trust_mode = api::EngineTrustMode::embedded_in_process;
+  event_session.engine_context.trust_mode =
+      scratchbird::server::ParserServerEventTrustMode::embedded_in_process;
   event_session.engine_context.trace_tags.push_back("security.fixture_trace_authority");
   event_session.engine_context.trace_tags.push_back("group:DBA");
   event_session.session_bound = true;
@@ -365,7 +366,12 @@ void CreateEventChannel(const scratchbird::server::ParserServerEventSession& eve
   request.context.session_uuid.canonical = event_session.engine_context.session_uuid.canonical;
   request.context.local_transaction_id = event_session.engine_context.local_transaction_id;
   request.context.security_context_present = event_session.engine_context.security_context_present;
-  request.context.trust_mode = event_session.engine_context.trust_mode;
+  request.context.trust_mode =
+      event_session.engine_context.trust_mode ==
+              scratchbird::server::ParserServerEventTrustMode::
+                  embedded_in_process
+          ? api::EngineTrustMode::embedded_in_process
+          : api::EngineTrustMode::server_isolated;
   request.context.trace_tags = event_session.engine_context.trace_tags;
   request.target_object = {{channel_uuid}, "event_channel"};
   request.option_envelopes.push_back("channel_uuid:" + channel_uuid);

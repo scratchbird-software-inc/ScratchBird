@@ -225,6 +225,7 @@ bool IsPublicExactAccelerationStatement(const CstDocument& cst) {
 
 bool IsPublicExactManagementStatement(const CstDocument& cst) {
   const auto words = AllMeaningfulTokenWords(cst);
+  if (!words.empty() && words[0] == "MEMORY") return true;
   if (words.size() >= 2 && words[0] == "ALTER" && words[1] == "MANAGEMENT") return true;
   if (words.size() >= 2 && words[0] == "CONFIG" && words[1] == "RELOAD") return true;
   if (words.size() >= 2 && words[0] == "SUPPORT" && words[1] == "BUNDLE") return true;
@@ -382,7 +383,7 @@ bool IsDatabaseLifecycleStatement(const CstDocument& cst) {
   const auto words = AllMeaningfulTokenWords(cst);
   if (words.empty()) return false;
   if (words[0] == "ATTACH") {
-    return words.size() < 2 || words[1] != "POLICY";
+    return words.size() < 2 || (words[1] != "POLICY" && words[1] != "FILESPACE");
   }
   if (words[0] == "USE") return true;
   if (words.size() >= 2 &&
@@ -542,9 +543,28 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "SEARCH") canonical_name = "vector_search_query";
   else if (keyword == "INSERT") canonical_name = "insert";
   else if (keyword == "UPDATE") canonical_name = "update";
+  else if (keyword == "DELETE" && second == "STORAGE" && third == "FILESPACE") {
+    canonical_name = "delete_storage_filespace_stmt";
+  }
   else if (keyword == "DELETE") canonical_name = "delete";
+  else if (keyword == "MERGE" && second == "FILESPACE") canonical_name = "merge_filespace_stmt";
   else if (keyword == "MERGE") canonical_name = "merge";
+  else if (keyword == "REPAIR" && second == "FILESPACE") canonical_name = "repair_filespace_stmt";
+  else if (keyword == "REBUILD" && second == "FILESPACE") canonical_name = "rebuild_filespace_stmt";
+  else if (keyword == "SALVAGE" && second == "FILESPACE") canonical_name = "salvage_filespace_stmt";
   else if (keyword == "UPSERT") canonical_name = "upsert";
+  else if ((keyword == "CREATE" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "ADD" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "ROTATE" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "RESOLVE" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "RELEASE" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "PURGE" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "EXPORT" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "IMPORT" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "SHOW" && second == "PROTECTED" && third == "MATERIAL" &&
+            (fourth == "CATALOG" || fourth == "AUDIT"))) {
+    canonical_name = "public_exact_protected_material";
+  }
   else if (keyword == "CREATE" && second == "DATABASE") canonical_name = "create_database_stmt";
   else if (keyword == "CREATE" && second == "RESOURCE" && third == "GROUP") canonical_name = "create_resource_group_stmt";
   else if (keyword == "CREATE" && second == "JOB") canonical_name = "create_job_stmt";
@@ -573,9 +593,35 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "ALTER" && second == "GPU") canonical_name = "public_exact_alter_gpu";
   else if (keyword == "ALTER" && second == "NATIVE" && third == "COMPILE") canonical_name = "public_exact_alter_native_compile";
   else if (keyword == "ALTER" && second == "MANAGEMENT") canonical_name = "public_exact_alter_management";
+  else if (keyword == "ALTER" && second == "FILESPACE" && third == "ENCRYPTION") {
+    canonical_name = "public_exact_encryption_maintenance";
+  }
   else if (keyword == "ALTER") canonical_name = "alter_object";
   else if (keyword == "CONFIG" && second == "RELOAD") canonical_name = "public_exact_config_reload";
   else if (keyword == "SUPPORT" && second == "BUNDLE") canonical_name = "public_exact_support_bundle_create";
+  else if (keyword == "MEMORY") canonical_name = "public_exact_memory_management";
+  else if (keyword == "DISCOVER" &&
+           (second == "FILESPACE" || second == "ORPHAN" || second == "STALE")) {
+    canonical_name = "public_exact_filespace_discovery";
+  }
+  else if ((keyword == "EXPORT" || keyword == "INSPECT" || keyword == "IMPORT" ||
+            keyword == "ADMIT" || keyword == "REJECT") &&
+           second == "FILESPACE" && third == "PACKAGE") {
+    canonical_name = "public_exact_filespace_package";
+  }
+  else if (keyword == "SHARD" && second == "PLACEMENT") {
+    canonical_name = "public_exact_shard_placement";
+  }
+  else if ((keyword == "ADMIT" && second == "ENCRYPTION" && third == "KEY") ||
+           (keyword == "REKEY" && second == "FILESPACE") ||
+           (keyword == "SHOW" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "PURGE" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "SHUTDOWN" && second == "PROTECTED" && third == "MATERIAL") ||
+           (keyword == "OPEN" && second == "ENCRYPTED" && third == "FILESPACE") ||
+           (keyword == "REQUEST" && second == "KEY" && third == "RELEASE") ||
+           (keyword == "CRYPTOGRAPHIC" && second == "ERASE" && third == "FILESPACE")) {
+    canonical_name = "public_exact_encryption_maintenance";
+  }
   else if (keyword == "DROP" && second == "JOB") canonical_name = "drop_job_stmt";
   else if (keyword == "DROP") canonical_name = "drop_object";
   else if (keyword == "RENAME") canonical_name = "rename_object_stmt";
@@ -885,6 +931,32 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "STATEMENT" && second == "EXTENSION") canonical_name = "statement_extension";
   else if (keyword == "STATEMENT") canonical_name = "statement";
   else if (keyword == "TRUNCATE" && second == "STATEMENT") canonical_name = "truncate_statement";
+  else if (keyword == "GROW" && second == "FILESPACE") canonical_name = "grow_filespace_stmt";
+  else if (keyword == "RESIZE" && second == "FILESPACE") canonical_name = "resize_filespace_stmt";
+  else if (keyword == "SHRINK" && second == "FILESPACE") canonical_name = "shrink_filespace_stmt";
+  else if (keyword == "MOVE" && second == "FILESPACE") canonical_name = "move_filespace_stmt";
+  else if (keyword == "MERGE" && second == "FILESPACE") canonical_name = "merge_filespace_stmt";
+  else if (keyword == "VERIFY" && second == "FILESPACE") canonical_name = "verify_filespace_stmt";
+  else if (keyword == "COMPACT" && second == "FILESPACE") canonical_name = "compact_filespace_stmt";
+  else if (keyword == "FENCE" && second == "FILESPACE") canonical_name = "fence_filespace_stmt";
+  else if (keyword == "RELEASE" && second == "FILESPACE") canonical_name = "release_filespace_stmt";
+  else if (keyword == "ARCHIVE" && second == "FILESPACE") canonical_name = "archive_filespace_stmt";
+  else if (keyword == "QUARANTINE" && second == "FILESPACE") canonical_name = "quarantine_filespace_stmt";
+  else if (keyword == "REPAIR" && second == "FILESPACE") canonical_name = "repair_filespace_stmt";
+  else if (keyword == "REBUILD" && second == "FILESPACE") canonical_name = "rebuild_filespace_stmt";
+  else if (keyword == "SALVAGE" && second == "FILESPACE") canonical_name = "salvage_filespace_stmt";
+  else if (keyword == "CREATE" && second == "SNAPSHOT" && third == "FILESPACE") canonical_name = "create_snapshot_filespace_stmt";
+  else if (keyword == "REFRESH" && second == "SNAPSHOT" && third == "FILESPACE") canonical_name = "refresh_snapshot_filespace_stmt";
+  else if (keyword == "VALIDATE" && second == "SNAPSHOT" && third == "FILESPACE") canonical_name = "validate_snapshot_filespace_stmt";
+  else if (keyword == "RETIRE" && second == "SNAPSHOT" && third == "FILESPACE") canonical_name = "retire_snapshot_filespace_stmt";
+  else if (keyword == "CREATE" && second == "SHADOW" && third == "FILESPACE") canonical_name = "create_shadow_filespace_stmt";
+  else if (keyword == "REFRESH" && second == "SHADOW" && third == "FILESPACE") canonical_name = "refresh_shadow_filespace_stmt";
+  else if (keyword == "VALIDATE" && second == "SHADOW" && third == "FILESPACE") canonical_name = "validate_shadow_filespace_stmt";
+  else if (keyword == "ALTER" && second == "SHADOW") canonical_name = "promote_shadow_filespace_stmt";
+  else if (keyword == "DISCONNECT" && second == "FILESPACE") canonical_name = "disconnect_filespace_stmt";
+  else if (keyword == "ATTACH" && second == "FILESPACE") canonical_name = "attach_filespace_stmt";
+  else if (keyword == "DETACH" && second == "FILESPACE") canonical_name = "detach_filespace_stmt";
+  else if (keyword == "PROMOTE" && second == "FILESPACE") canonical_name = "promote_filespace_stmt";
   else if (keyword == "OPENSEARCH") canonical_name = "opensearch_mapping_clause";
   else if (keyword == "CHANGE" && second == "STREAM") canonical_name = "change_stream_stmt";
   else if (keyword == "ACTIVATE" && second == "POLICY") canonical_name = "activate_policy_stmt";
@@ -1708,10 +1780,60 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.operation_family = "sblr.observability.inspect.v3";
     ast.requires_name_resolution = false;
     ast.produces_sblr = true;
-  } else if (keyword == "STORAGE") {
+  } else if (keyword == "STORAGE" ||
+             (keyword == "DISCOVER" &&
+              (second == "FILESPACE" || second == "ORPHAN" || second == "STALE")) ||
+             ((keyword == "EXPORT" || keyword == "INSPECT" || keyword == "IMPORT" ||
+               keyword == "ADMIT" || keyword == "REJECT") &&
+              second == "FILESPACE" && third == "PACKAGE") ||
+             (keyword == "SHARD" && second == "PLACEMENT") ||
+             (keyword == "DELETE" && second == "STORAGE" && third == "FILESPACE") ||
+             ((keyword == "ATTACH" || keyword == "DETACH" || keyword == "PROMOTE" ||
+               keyword == "MOVE" || keyword == "MERGE" ||
+               keyword == "GROW" || keyword == "RESIZE" || keyword == "SHRINK" ||
+               keyword == "VERIFY" || keyword == "COMPACT" || keyword == "FENCE" ||
+               keyword == "RELEASE" || keyword == "ARCHIVE" ||
+               keyword == "QUARANTINE" || keyword == "REPAIR" ||
+               keyword == "REBUILD" || keyword == "SALVAGE" ||
+               keyword == "DISCONNECT") &&
+              second == "FILESPACE") ||
+             ((keyword == "CREATE" || keyword == "REFRESH" || keyword == "VALIDATE" ||
+               keyword == "RETIRE") &&
+              second == "SNAPSHOT" && third == "FILESPACE") ||
+             ((keyword == "CREATE" || keyword == "REFRESH" || keyword == "VALIDATE") &&
+              second == "SHADOW" && third == "FILESPACE") ||
+             (keyword == "ALTER" && second == "SHADOW")) {
     ast.family = StatementFamily::kStorageManagement;
     ast.registry_family = "sbsql.storage.management_operation.v3";
     ast.operation_family = "sblr.storage.management_operation.v3";
+    ast.produces_sblr = true;
+  } else if ((keyword == "CREATE" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "ADD" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "ROTATE" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "RESOLVE" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "RELEASE" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "PURGE" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "EXPORT" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "IMPORT" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "SHOW" && second == "PROTECTED" && third == "MATERIAL" &&
+              (fourth == "CATALOG" || fourth == "AUDIT"))) {
+    ast.family = StatementFamily::kSecurity;
+    ast.registry_family = "sbsql.security.v3";
+    ast.operation_family = "sblr.security.mutation_or_inspect.v3";
+    ast.requires_name_resolution = false;
+    ast.produces_sblr = true;
+  } else if ((keyword == "ADMIT" && second == "ENCRYPTION" && third == "KEY") ||
+             (keyword == "REKEY" && second == "FILESPACE") ||
+             (keyword == "ALTER" && second == "FILESPACE" && third == "ENCRYPTION") ||
+             (keyword == "SHOW" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "PURGE" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "SHUTDOWN" && second == "PROTECTED" && third == "MATERIAL") ||
+             (keyword == "OPEN" && second == "ENCRYPTED" && third == "FILESPACE") ||
+             (keyword == "REQUEST" && second == "KEY" && third == "RELEASE") ||
+             (keyword == "CRYPTOGRAPHIC" && second == "ERASE" && third == "FILESPACE")) {
+    ast.family = StatementFamily::kSecurity;
+    ast.registry_family = "sbsql.security.v3";
+    ast.operation_family = "sblr.security.mutation_or_inspect.v3";
     ast.produces_sblr = true;
   } else if ((keyword == "CYPHER" &&
               (second == "DELETE" || second == "MERGE" || second == "LOAD")) ||

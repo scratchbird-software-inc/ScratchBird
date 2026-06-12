@@ -247,7 +247,7 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
           "SBSFC-084 server admission did not require public ABI dispatch");
   Require(admission.operation_id == "query.plan_operation",
           "SBSFC-084 server admission operation id mismatch");
-  Require(admission.operation_family == "sblr.query.values.v3",
+  Require(admission.operation_family == "sblr.optimizer.plan.v3",
           "SBSFC-084 server admission operation family mismatch");
 
   const auto* opcode = sblr::LookupSblrOperation("query.plan_operation");

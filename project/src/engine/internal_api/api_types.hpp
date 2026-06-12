@@ -102,10 +102,61 @@ struct EngineDescriptor {
   std::string encoded_descriptor;
 };
 
+// SEARCH_KEY: EDR_ENGINE_VALUE_STATE
+enum class EngineValueState : std::uint8_t {
+  value = 0,
+  sql_null = 1,
+  missing = 2,
+  default_requested = 3,
+  unknown = 4,
+  error = 5,
+  lob_handle = 6,
+  protected_value = 7
+};
+
+constexpr bool EngineValueStateIsSqlNull(EngineValueState state) noexcept {
+  return state == EngineValueState::sql_null;
+}
+
+constexpr bool EngineValueStateHasPayload(EngineValueState state) noexcept {
+  switch (state) {
+    case EngineValueState::value:
+    case EngineValueState::error:
+    case EngineValueState::lob_handle:
+    case EngineValueState::protected_value:
+      return true;
+    case EngineValueState::sql_null:
+    case EngineValueState::missing:
+    case EngineValueState::default_requested:
+    case EngineValueState::unknown:
+      return false;
+  }
+  return false;
+}
+
 struct EngineTypedValue {
   EngineDescriptor descriptor;
   std::string encoded_value;
   bool is_null = false;
+  EngineValueState state = EngineValueState::value;
+
+  bool isSqlNull() const noexcept {
+    return EngineValueStateIsSqlNull(state) ||
+           (state == EngineValueState::value && is_null);
+  }
+
+  bool isNull() const noexcept {
+    return isSqlNull();
+  }
+
+  bool hasPayload() const noexcept {
+    return EngineValueStateHasPayload(state) && !isSqlNull();
+  }
+
+  void setState(EngineValueState new_state) noexcept {
+    state = new_state;
+    is_null = EngineValueStateIsSqlNull(new_state);
+  }
 };
 
 struct EngineColumnDefinition {

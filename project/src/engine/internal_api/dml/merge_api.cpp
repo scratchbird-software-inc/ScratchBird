@@ -616,6 +616,13 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   if (!table) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "target_table_not_visible"));
   }
+  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+    return MakeCrudDiagnosticResult<EngineMergeRowsResult>(
+        request.context,
+        "dml.merge_rows",
+        MakeInvalidRequestDiagnostic("dml.merge_rows",
+                                     "temporary_table_requires_session_uuid"));
+  }
   auto result = MakeCrudSuccessResult<EngineMergeRowsResult>(request.context, "dml.merge_rows");
   AddMutationOptimizerEvidence("merge", request.context.local_transaction_id != 0, true, &result.evidence);
   const auto visible_indexes =

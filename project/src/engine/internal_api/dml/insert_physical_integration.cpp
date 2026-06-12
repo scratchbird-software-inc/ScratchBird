@@ -2580,6 +2580,13 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                      "target_table_not_visible"),
         "target_table_not_visible");
   }
+  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+    return DirectBulkFailure(
+        request,
+        MakeInvalidRequestDiagnostic("dml.direct_physical_bulk_append",
+                                     "temporary_table_requires_session_uuid"),
+        "temporary_table_requires_session_uuid");
+  }
   if (CrudRowsTouchOpaqueColumn(*table, request.borrowed_input_rows)) {
     return DirectBulkFailure(
         request,
@@ -2783,6 +2790,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     row_record.table_uuid = request.target_table.uuid.canonical;
     row_record.row_uuid = prepared.row_uuid;
     row_record.version_uuid = uuid_batch.version_uuids[row_ordinal];
+    row_record.temporary_session_uuid =
+        table->temporary ? request.context.session_uuid.canonical : "";
     row_record.deleted = false;
     row_record.values = prepared.values;
     AddInsertTrace(&batch_context,

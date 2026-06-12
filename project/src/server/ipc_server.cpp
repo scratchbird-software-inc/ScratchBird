@@ -25,6 +25,7 @@
 
 #include "catalog/name_registry.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -502,6 +503,9 @@ ParserServerEventEngineContext EventEngineContextFromSession(
     const HostedEngineState& engine_state,
     const sbps::Frame& request) {
   ParserServerEventEngineContext context;
+  context.trust_mode = session.embedded_in_process
+                           ? ParserServerEventTrustMode::embedded_in_process
+                           : ParserServerEventTrustMode::server_isolated;
   context.request_id = UuidBytesToText(request.header.request_uuid);
   context.database_path = session.database_path;
   context.database_uuid.canonical = session.database_uuid;
@@ -953,6 +957,20 @@ std::optional<engine_api::NameRegistryEntry> PsNameResolveUniqueRegistryLeaf(
   return match;
 }
 
+bool PsNameRegistryMatchVisibleForSession(
+    const engine_api::EngineRequestContext& context,
+    const engine_api::NameRegistryEntry& match) {
+  if (match.object_class != "table" && match.object_class != "relation") {
+    return true;
+  }
+  const auto visibility =
+      engine_api::CheckMgaTemporaryTableVisibility(context, match.object_uuid);
+  if (!visibility.ok) return false;
+  if (visibility.hidden_by_temporary_visibility) return false;
+  if (visibility.known_temporary && !visibility.visible_to_session) return false;
+  return true;
+}
+
 bool PsNameSessionBound(const ServerSessionRegistry* registry,
                         const std::array<std::uint8_t, 16>& session_uuid) {
   if (registry == nullptr || sbps::IsZeroUuid(session_uuid)) return false;
@@ -1096,7 +1114,9 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
       }
     }
     if (const auto registry_match = PsNameResolveUniqueRegistryLeaf(
-            request.context, parts->back(), decoded->object_class, identifier_profile)) {
+            request.context, parts->back(), decoded->object_class, identifier_profile);
+        registry_match &&
+        PsNameRegistryMatchVisibleForSession(request.context, *registry_match)) {
       const auto object_uuid = PsNameUuidFromText(registry_match->object_uuid);
       if (object_uuid) {
         return PsNameResponseFrame(

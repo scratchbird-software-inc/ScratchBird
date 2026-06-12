@@ -41,7 +41,7 @@ struct GeneratedSurfaceRegistryRow {
   std::string_view closure_action;
 };
 
-inline constexpr std::size_t kGeneratedSurfaceRegistryRowCount = 2617;
+inline constexpr std::size_t kGeneratedSurfaceRegistryRowCount = 2645;
 
 std::span<const GeneratedSurfaceRegistryRow> GeneratedSurfaceRegistryRows();
 const GeneratedSurfaceRegistryRow* FindGeneratedSurfaceRegistryRowById(

@@ -268,6 +268,44 @@ bool AttachSha256Digest(std::vector<byte>* encoded,
   return true;
 }
 
+std::string HexEncodeBytes(const std::vector<byte>& bytes) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(bytes.size() * 2);
+  for (const auto value : bytes) {
+    const auto v = static_cast<unsigned char>(value);
+    out.push_back(kHex[(v >> 4) & 0x0f]);
+    out.push_back(kHex[v & 0x0f]);
+  }
+  return out;
+}
+
+int HexValue(char value) {
+  if (value >= '0' && value <= '9') { return value - '0'; }
+  if (value >= 'a' && value <= 'f') { return value - 'a' + 10; }
+  if (value >= 'A' && value <= 'F') { return value - 'A' + 10; }
+  return -1;
+}
+
+bool HexDecodeBytes(const std::string& text, std::vector<byte>* bytes) {
+  if ((text.size() % 2) != 0) { return false; }
+  bytes->clear();
+  bytes->reserve(text.size() / 2);
+  for (std::size_t index = 0; index < text.size(); index += 2) {
+    const int hi = HexValue(text[index]);
+    const int lo = HexValue(text[index + 1]);
+    if (hi < 0 || lo < 0) { return false; }
+    bytes->push_back(static_cast<byte>((hi << 4) | lo));
+  }
+  return true;
+}
+
+std::string DigestEncodedPackage(const std::vector<byte>& encoded) {
+  const std::string payload(reinterpret_cast<const char*>(encoded.data()),
+                            encoded.size());
+  return "sha256:" + SecuritySha256Hex(payload);
+}
+
 EngineApiDiagnostic ProtectedMaterialCatalogDiagnostic(const std::string& detail) {
   return MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.DURABLE_CATALOG_INVALID", detail);
 }
@@ -654,26 +692,9 @@ std::vector<byte> EncodeProtectedMaterialCatalog(ProtectedMaterialCatalogImage i
   return encoded;
 }
 
-ProtectedMaterialCatalogLoadResult LoadProtectedMaterialCatalogFile(
-    const EngineRequestContext& context,
+ProtectedMaterialCatalogLoadResult DecodeProtectedMaterialCatalogBytes(
+    const std::vector<byte>& encoded,
     const std::string& expected_database_uuid) {
-  const auto path_status = ValidateProtectedMaterialCatalogPath(context);
-  if (path_status.error) { return ProtectedMaterialCatalogError(path_status.detail); }
-  const std::string path = ProtectedMaterialCatalogPath(context);
-  std::error_code ec;
-  const bool present = std::filesystem::exists(path, ec);
-  if (ec) {
-    return ProtectedMaterialCatalogError("protected_material_catalog_stat_failed:" + ec.message());
-  }
-  if (!present) { return ProtectedMaterialCatalogAbsent(); }
-
-  std::ifstream in(path, std::ios::binary);
-  if (!in) { return ProtectedMaterialCatalogError("protected_material_catalog_open_failed"); }
-  std::vector<byte> encoded((std::istreambuf_iterator<char>(in)),
-                            std::istreambuf_iterator<char>());
-  if (!in.eof() && in.bad()) {
-    return ProtectedMaterialCatalogError("protected_material_catalog_read_failed");
-  }
   if (encoded.size() < kProtectedMaterialCatalogHeaderBytes ||
       !MagicEquals(encoded, 0, kProtectedMaterialCatalogMagic)) {
     return ProtectedMaterialCatalogError("protected_material_catalog_header_invalid");
@@ -730,6 +751,29 @@ ProtectedMaterialCatalogLoadResult LoadProtectedMaterialCatalogFile(
   return result;
 }
 
+ProtectedMaterialCatalogLoadResult LoadProtectedMaterialCatalogFile(
+    const EngineRequestContext& context,
+    const std::string& expected_database_uuid) {
+  const auto path_status = ValidateProtectedMaterialCatalogPath(context);
+  if (path_status.error) { return ProtectedMaterialCatalogError(path_status.detail); }
+  const std::string path = ProtectedMaterialCatalogPath(context);
+  std::error_code ec;
+  const bool present = std::filesystem::exists(path, ec);
+  if (ec) {
+    return ProtectedMaterialCatalogError("protected_material_catalog_stat_failed:" + ec.message());
+  }
+  if (!present) { return ProtectedMaterialCatalogAbsent(); }
+
+  std::ifstream in(path, std::ios::binary);
+  if (!in) { return ProtectedMaterialCatalogError("protected_material_catalog_open_failed"); }
+  std::vector<byte> encoded((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+  if (!in.eof() && in.bad()) {
+    return ProtectedMaterialCatalogError("protected_material_catalog_read_failed");
+  }
+  return DecodeProtectedMaterialCatalogBytes(encoded, expected_database_uuid);
+}
+
 bool ReplaceProtectedMaterialCatalogAtomically(const std::filesystem::path& temp_path,
                                                const std::filesystem::path& target_path,
                                                std::string* detail) {
@@ -748,6 +792,99 @@ bool ReplaceProtectedMaterialCatalogAtomically(const std::filesystem::path& temp
   if (detail != nullptr) { *detail = ec.message(); }
   return false;
 #endif
+}
+
+bool PhysicallyEraseProtectedMaterialPath(const std::filesystem::path& path,
+                                          EngineApiU64* byte_count,
+                                          std::string* detail) {
+  if (byte_count != nullptr) { *byte_count = 0; }
+  std::error_code ec;
+  const auto status = std::filesystem::symlink_status(path, ec);
+  if (ec || !std::filesystem::exists(status) ||
+      !std::filesystem::is_regular_file(status)) {
+    if (detail != nullptr) {
+      *detail = ec ? ec.message() : "physical_erase_target_not_regular_file";
+    }
+    return false;
+  }
+
+  const auto size = std::filesystem::file_size(path, ec);
+  if (ec) {
+    if (detail != nullptr) { *detail = "physical_erase_file_size_failed:" + ec.message(); }
+    return false;
+  }
+
+  {
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+    if (!file) {
+      if (detail != nullptr) { *detail = "physical_erase_open_failed"; }
+      return false;
+    }
+    std::array<char, 8192> zeros{};
+    std::uintmax_t remaining = size;
+    while (remaining > 0) {
+      const auto chunk = static_cast<std::streamsize>(
+          std::min<std::uintmax_t>(remaining, zeros.size()));
+      file.write(zeros.data(), chunk);
+      if (!file) {
+        if (detail != nullptr) { *detail = "physical_erase_write_failed"; }
+        return false;
+      }
+      remaining -= static_cast<std::uintmax_t>(chunk);
+    }
+    file.flush();
+    if (!file) {
+      if (detail != nullptr) { *detail = "physical_erase_flush_failed"; }
+      return false;
+    }
+    file.close();
+    if (!file) {
+      if (detail != nullptr) { *detail = "physical_erase_close_failed"; }
+      return false;
+    }
+  }
+
+  const auto file_sync = disk::SyncFilesystemPath(path.string(), true);
+  if (!file_sync.ok()) {
+    if (detail != nullptr) {
+      *detail = "physical_erase_file_sync_failed:" +
+                file_sync.diagnostic.diagnostic_code;
+    }
+    return false;
+  }
+  const auto parent_sync = disk::SyncParentDirectoryPath(path.string());
+  if (!parent_sync.ok()) {
+    if (detail != nullptr) {
+      *detail = "physical_erase_parent_sync_failed:" +
+                parent_sync.diagnostic.diagnostic_code;
+    }
+    return false;
+  }
+
+  std::ifstream verify(path, std::ios::binary);
+  if (!verify) {
+    if (detail != nullptr) { *detail = "physical_erase_verify_open_failed"; }
+    return false;
+  }
+  std::array<char, 8192> buffer{};
+  while (verify) {
+    verify.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    const auto read_count = verify.gcount();
+    for (std::streamsize index = 0; index < read_count; ++index) {
+      if (buffer[static_cast<std::size_t>(index)] != '\0') {
+        if (detail != nullptr) { *detail = "physical_erase_verify_nonzero_byte"; }
+        return false;
+      }
+    }
+  }
+  if (!verify.eof()) {
+    if (detail != nullptr) { *detail = "physical_erase_verify_read_failed"; }
+    return false;
+  }
+  if (byte_count != nullptr) {
+    *byte_count = static_cast<EngineApiU64>(size);
+  }
+  return true;
 }
 
 EngineApiDiagnostic PersistProtectedMaterialCatalogFile(
@@ -2344,6 +2481,9 @@ EnginePurgeProtectedMaterialVersionResult EnginePurgeProtectedMaterialVersion(
   EngineProtectedMaterialCatalogEntry material_snapshot;
   EngineProtectedMaterialVersionCatalogEntry version_snapshot;
   EngineProtectedMaterialAuditEvent audit_event;
+  bool physical_erase_executed = false;
+  bool physical_erase_verified = false;
+  EngineApiU64 physical_erase_bytes = 0;
   {
     std::lock_guard<std::mutex> lock(CacheMutex());
     status = LoadProtectedMaterialCatalogForDatabaseLocked(request.context, database_uuid);
@@ -2399,6 +2539,75 @@ EnginePurgeProtectedMaterialVersionResult EnginePurgeProtectedMaterialVersion(
       return failure;
     }
 
+    auto physical_erase_failure =
+        [&](const std::string& diagnostic_code,
+            const std::string& detail)
+            -> EnginePurgeProtectedMaterialVersionResult {
+      audit_event = AppendMaterialAuditLocked(request.context,
+                                             database_uuid,
+                                             request.protected_material_uuid,
+                                             request.protected_material_version_uuid,
+                                             "purge",
+                                             "deny",
+                                             diagnostic_code,
+                                             request.purge_reason,
+                                             generation);
+      status = PersistProtectedMaterialCatalogMutationLocked(request.context,
+                                                            database_uuid,
+                                                            before_mutation);
+      if (status.error) {
+        return SecurityFailure<EnginePurgeProtectedMaterialVersionResult>(
+            request.context, operation_id, status);
+      }
+      auto failure = SecurityFailure<EnginePurgeProtectedMaterialVersionResult>(
+          request.context,
+          operation_id,
+          MakeSecurityDiagnostic(diagnostic_code, detail));
+      failure.audit_preserved = true;
+      failure.protected_reference_reachable = !version->protected_reference.empty() ||
+                                             !version->envelope_reference.empty();
+      failure.protected_material_uuid = request.protected_material_uuid;
+      failure.protected_material_version_uuid = request.protected_material_version_uuid;
+      failure.audit_event_uuid = audit_event.audit_event_uuid;
+      AddMaterialAuditEvidence(&failure, audit_event);
+      AddAuditCatalogResultRow(&failure, audit_event);
+      return failure;
+    };
+
+    if (request.physical_erase_requested) {
+      if (!request.physical_erase_authorized) {
+        return physical_erase_failure(
+            "SECURITY.PROTECTED_MATERIAL.PHYSICAL_ERASE_AUTHORITY_REQUIRED",
+            "physical_erase_requires_engine_authority");
+      }
+      if (!request.physical_erase_retention_satisfied) {
+        return physical_erase_failure(
+            "SECURITY.PROTECTED_MATERIAL.PHYSICAL_ERASE_RETENTION_PROOF_REQUIRED",
+            "physical_erase_requires_retention_satisfied");
+      }
+      if (!request.physical_erase_legal_hold_clear) {
+        return physical_erase_failure(
+            "SECURITY.PROTECTED_MATERIAL.PHYSICAL_ERASE_LEGAL_HOLD_PROOF_REQUIRED",
+            "physical_erase_requires_legal_hold_clear");
+      }
+      if (request.physical_erase_path.empty()) {
+        return physical_erase_failure(
+            "SECURITY.PROTECTED_MATERIAL.PHYSICAL_ERASE_PATH_REQUIRED",
+            "physical_erase_path_required");
+      }
+
+      std::string erase_detail;
+      if (!PhysicallyEraseProtectedMaterialPath(request.physical_erase_path,
+                                                &physical_erase_bytes,
+                                                &erase_detail)) {
+        return physical_erase_failure(
+            "SECURITY.PROTECTED_MATERIAL.PHYSICAL_ERASE_FAILED",
+            erase_detail.empty() ? "physical_erase_failed" : erase_detail);
+      }
+      physical_erase_executed = true;
+      physical_erase_verified = true;
+    }
+
     const std::uint64_t tx = MutationTransactionId(request.context);
     version->protected_reference.clear();
     version->envelope_reference.clear();
@@ -2450,10 +2659,21 @@ EnginePurgeProtectedMaterialVersionResult EnginePurgeProtectedMaterialVersion(
   result.refused_by_retention = false;
   result.audit_preserved = true;
   result.protected_reference_reachable = false;
+  result.physical_erase_executed = physical_erase_executed;
+  result.physical_erase_verified = physical_erase_verified;
+  result.physical_erase_bytes = physical_erase_bytes;
   result.protected_material_uuid = material_snapshot.protected_material_uuid;
   result.protected_material_version_uuid = version_snapshot.protected_material_version_uuid;
   result.audit_event_uuid = audit_event.audit_event_uuid;
   AddSecurityEvidence(&result, "protected_material_purge", version_snapshot.protected_material_version_uuid);
+  if (physical_erase_executed) {
+    AddSecurityEvidence(&result,
+                        "protected_material_physical_erase",
+                        std::to_string(physical_erase_bytes));
+    AddSecurityEvidence(&result,
+                        "protected_material_physical_erase_verified",
+                        version_snapshot.protected_material_version_uuid);
+  }
   AddMaterialAuditEvidence(&result, audit_event);
   AddMaterialCatalogResultRow(&result, material_snapshot, "purge");
   AddVersionCatalogResultRow(&result, version_snapshot, "purge");
@@ -2518,6 +2738,288 @@ EngineInspectProtectedMaterialCatalogResult EngineInspectProtectedMaterialCatalo
   }
   AddSecurityEvidence(&result, "protected_material_catalog_inspect",
                       std::to_string(result.materials.size()));
+  return result;
+}
+
+EngineExportProtectedMaterialPackageResult EngineExportProtectedMaterialPackage(
+    const EngineExportProtectedMaterialPackageRequest& request) {
+  const std::string operation_id = "security.protected_material.package.export";
+  auto status = RequireSpecificRight(request, operation_id, "PROTECTED_MATERIAL_RELEASE");
+  if (status.error) {
+    return SecurityFailure<EngineExportProtectedMaterialPackageResult>(request.context, operation_id, status);
+  }
+  const std::string database_uuid = DatabaseUuidFromRequest(request);
+  if (database_uuid.empty() || !IsUuidText(request.protected_material_uuid)) {
+    return SecurityFailure<EngineExportProtectedMaterialPackageResult>(
+        request.context,
+        operation_id,
+        MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PACKAGE_INVALID",
+                               "database_uuid_and_material_uuid_required"));
+  }
+
+  ProtectedMaterialCatalogImage package;
+  {
+    std::lock_guard<std::mutex> lock(CacheMutex());
+    status = LoadProtectedMaterialCatalogForDatabaseLocked(request.context, database_uuid);
+    if (status.error) {
+      return SecurityFailure<EngineExportProtectedMaterialPackageResult>(request.context, operation_id, status);
+    }
+    const auto* material = FindMaterialLocked(database_uuid, request.protected_material_uuid);
+    if (material == nullptr) {
+      return SecurityFailure<EngineExportProtectedMaterialPackageResult>(
+          request.context,
+          operation_id,
+          MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.NOT_FOUND",
+                                 "protected_material_not_found"));
+    }
+    package.materials.push_back(*material);
+    if (request.include_versions) {
+      for (const auto& version : MaterialVersions()) {
+        if (version.database_uuid != database_uuid ||
+            version.protected_material_uuid != request.protected_material_uuid) {
+          continue;
+        }
+        if (version.purged && !request.include_purged_versions) { continue; }
+        package.versions.push_back(version);
+      }
+    }
+    if (request.include_audit) {
+      for (const auto& event : MaterialAuditEvents()) {
+        if (event.database_uuid == database_uuid &&
+            event.protected_material_uuid == request.protected_material_uuid) {
+          package.audit_events.push_back(event);
+        }
+      }
+    }
+  }
+
+  const auto encoded = EncodeProtectedMaterialCatalog(package);
+  if (encoded.empty()) {
+    return SecurityFailure<EngineExportProtectedMaterialPackageResult>(
+        request.context,
+        operation_id,
+        ProtectedMaterialCatalogDiagnostic("protected_material_package_encode_failed"));
+  }
+  const std::string digest = DigestEncodedPackage(encoded);
+  auto result = SecuritySuccess<EngineExportProtectedMaterialPackageResult>(request.context, operation_id);
+  result.exported = true;
+  result.protected_material_redacted = true;
+  result.plaintext_material_returned = false;
+  result.package_digest = digest;
+  result.encoded_package = HexEncodeBytes(encoded);
+  result.source_database_uuid = database_uuid;
+  result.protected_material_uuid = request.protected_material_uuid;
+  result.material_count = static_cast<EngineApiU64>(package.materials.size());
+  result.version_count = static_cast<EngineApiU64>(package.versions.size());
+  result.audit_event_count = static_cast<EngineApiU64>(package.audit_events.size());
+  AddSecurityEvidence(&result, "protected_material_package_export", digest);
+  AddProtectedMaterialRow(&result,
+                          {{"row_class", "protected_material_package"},
+                           {"action", "export"},
+                           {"database_uuid", database_uuid},
+                           {"protected_material_uuid", request.protected_material_uuid},
+                           {"package_digest", digest},
+                           {"material_count", std::to_string(result.material_count)},
+                           {"version_count", std::to_string(result.version_count)},
+                           {"audit_event_count", std::to_string(result.audit_event_count)},
+                           {"protected_material", "<protected-material-redacted>"},
+                           {"plaintext_material_returned", "false"}});
+  return result;
+}
+
+EngineImportProtectedMaterialPackageResult EngineImportProtectedMaterialPackage(
+    const EngineImportProtectedMaterialPackageRequest& request) {
+  const std::string operation_id = "security.protected_material.package.import";
+  auto status = RequireSpecificRight(request, operation_id, "KEY_RELEASE_APPROVE");
+  if (status.error) {
+    return SecurityFailure<EngineImportProtectedMaterialPackageResult>(request.context, operation_id, status);
+  }
+  status = ValidateMutationContext(request, operation_id);
+  if (status.error) {
+    return SecurityFailure<EngineImportProtectedMaterialPackageResult>(request.context, operation_id, status);
+  }
+  const std::string database_uuid = DatabaseUuidFromRequest(request);
+  if (database_uuid.empty() || request.encoded_package.empty()) {
+    return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
+        request.context,
+        operation_id,
+        MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PACKAGE_INVALID",
+                               "database_uuid_and_encoded_package_required"));
+  }
+  if (!request.import_authorized) {
+    return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
+        request.context,
+        operation_id,
+        MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PACKAGE_IMPORT_AUTHORITY_REQUIRED",
+                               "protected_material_package_import_requires_authority"));
+  }
+
+  std::vector<byte> encoded;
+  if (!HexDecodeBytes(request.encoded_package, &encoded)) {
+    return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
+        request.context,
+        operation_id,
+        MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PACKAGE_INVALID",
+                               "protected_material_package_hex_invalid"));
+  }
+  const std::string digest = DigestEncodedPackage(encoded);
+  if (!request.expected_package_digest.empty() &&
+      request.expected_package_digest != digest) {
+    return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
+        request.context,
+        operation_id,
+        MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PACKAGE_DIGEST_MISMATCH",
+                               "protected_material_package_digest_mismatch"));
+  }
+  auto decoded = DecodeProtectedMaterialCatalogBytes(encoded, {});
+  if (!decoded.ok) {
+    return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
+        request.context,
+        operation_id,
+        decoded.diagnostic);
+  }
+  if (decoded.image.materials.empty()) {
+    return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
+        request.context,
+        operation_id,
+        MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PACKAGE_INVALID",
+                               "protected_material_package_material_required"));
+  }
+  for (const auto& material : decoded.image.materials) {
+    if (!IsUuidText(material.protected_material_uuid) ||
+        !IsKnownPurposeClass(material.purpose_class) ||
+        !IsKnownStorageClass(material.storage_class) ||
+        !PolicySetComplete(material.policy)) {
+      return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
+          request.context,
+          operation_id,
+          MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PACKAGE_INVALID",
+                                 "protected_material_package_material_invalid"));
+    }
+  }
+  for (const auto& version : decoded.image.versions) {
+    if (!IsUuidText(version.protected_material_uuid) ||
+        !IsUuidText(version.protected_material_version_uuid) ||
+        !IsKnownStorageClass(version.storage_class) ||
+        !PolicySetComplete(version.policy)) {
+      return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
+          request.context,
+          operation_id,
+          MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PACKAGE_INVALID",
+                                 "protected_material_package_version_invalid"));
+    }
+    if (ProtectedPayloadInputRefused(version.protected_reference,
+                                     version.envelope_reference,
+                                     version.payload_hash)) {
+      return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
+          request.context,
+          operation_id,
+          MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PLAINTEXT_REFUSED",
+                                 "plaintext_secret_material_is_never_imported"));
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(CacheMutex());
+    status = LoadProtectedMaterialCatalogForDatabaseLocked(request.context, database_uuid);
+    if (status.error) {
+      return SecurityFailure<EngineImportProtectedMaterialPackageResult>(request.context, operation_id, status);
+    }
+    const auto before_mutation = CaptureProtectedMaterialCatalogImageLocked(database_uuid);
+    auto package_contains_material = [&](const std::string& uuid) {
+      for (const auto& material : decoded.image.materials) {
+        if (material.protected_material_uuid == uuid) { return true; }
+      }
+      return false;
+    };
+    for (const auto& material : decoded.image.materials) {
+      if (FindMaterialLocked(database_uuid, material.protected_material_uuid) != nullptr &&
+          !request.allow_uuid_conflict_replace) {
+        return SecurityFailure<EngineImportProtectedMaterialPackageResult>(
+            request.context,
+            operation_id,
+            MakeSecurityDiagnostic("SECURITY.PROTECTED_MATERIAL.PACKAGE_UUID_CONFLICT",
+                                   "protected_material_package_uuid_conflict"));
+      }
+    }
+    if (request.allow_uuid_conflict_replace) {
+      MaterialCatalog().erase(
+          std::remove_if(MaterialCatalog().begin(),
+                         MaterialCatalog().end(),
+                         [&](const EngineProtectedMaterialCatalogEntry& material) {
+                           return material.database_uuid == database_uuid &&
+                                  package_contains_material(material.protected_material_uuid);
+                         }),
+          MaterialCatalog().end());
+      MaterialVersions().erase(
+          std::remove_if(MaterialVersions().begin(),
+                         MaterialVersions().end(),
+                         [&](const EngineProtectedMaterialVersionCatalogEntry& version) {
+                           return version.database_uuid == database_uuid &&
+                                  package_contains_material(version.protected_material_uuid);
+                         }),
+          MaterialVersions().end());
+      MaterialAuditEvents().erase(
+          std::remove_if(MaterialAuditEvents().begin(),
+                         MaterialAuditEvents().end(),
+                         [&](const EngineProtectedMaterialAuditEvent& event) {
+                           return event.database_uuid == database_uuid &&
+                                  package_contains_material(event.protected_material_uuid);
+                         }),
+          MaterialAuditEvents().end());
+    }
+
+    const std::uint64_t generation = ++MaterialCatalogGenerationCounter();
+    const std::uint64_t tx = MutationTransactionId(request.context);
+    for (auto material : decoded.image.materials) {
+      material.database_uuid = database_uuid;
+      material.catalog_generation_id = generation;
+      material.created_local_transaction_id = tx;
+      material.updated_local_transaction_id = tx;
+      MaterialCatalog().push_back(std::move(material));
+    }
+    for (auto version : decoded.image.versions) {
+      version.database_uuid = database_uuid;
+      version.catalog_generation_id = generation;
+      version.valid_from_local_transaction_id = tx;
+      if (version.purged && version.valid_until_local_transaction_id == 0) {
+        version.valid_until_local_transaction_id = tx;
+      }
+      MaterialVersions().push_back(std::move(version));
+    }
+    for (auto event : decoded.image.audit_events) {
+      event.database_uuid = database_uuid;
+      event.catalog_generation_id = generation;
+      event.local_transaction_id = tx;
+      MaterialAuditEvents().push_back(std::move(event));
+    }
+    status = PersistProtectedMaterialCatalogMutationLocked(request.context,
+                                                          database_uuid,
+                                                          before_mutation);
+    if (status.error) {
+      return SecurityFailure<EngineImportProtectedMaterialPackageResult>(request.context, operation_id, status);
+    }
+  }
+
+  auto result = SecuritySuccess<EngineImportProtectedMaterialPackageResult>(request.context, operation_id);
+  result.imported = true;
+  result.protected_material_redacted = true;
+  result.plaintext_material_returned = false;
+  result.package_digest = digest;
+  result.material_count = static_cast<EngineApiU64>(decoded.image.materials.size());
+  result.version_count = static_cast<EngineApiU64>(decoded.image.versions.size());
+  result.audit_event_count = static_cast<EngineApiU64>(decoded.image.audit_events.size());
+  AddSecurityEvidence(&result, "protected_material_package_import", digest);
+  AddProtectedMaterialRow(&result,
+                          {{"row_class", "protected_material_package"},
+                           {"action", "import"},
+                           {"database_uuid", database_uuid},
+                           {"package_digest", digest},
+                           {"material_count", std::to_string(result.material_count)},
+                           {"version_count", std::to_string(result.version_count)},
+                           {"audit_event_count", std::to_string(result.audit_event_count)},
+                           {"protected_material", "<protected-material-redacted>"},
+                           {"plaintext_material_returned", "false"}});
   return result;
 }
 

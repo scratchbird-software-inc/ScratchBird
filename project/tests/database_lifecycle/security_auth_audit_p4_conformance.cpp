@@ -12,6 +12,8 @@
 #include "security/authentication_api.hpp"
 #include "security/policy_api.hpp"
 #include "security/protected_material_api.hpp"
+#include "security/security_crypto_policy.hpp"
+#include "security/security_principal_lifecycle.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -29,6 +31,10 @@ namespace api = scratchbird::engine::internal_api;
 
 constexpr std::string_view kDatabaseUuid = "019e1d7e-7000-7000-8000-0000000000a4";
 constexpr std::string_view kFilespaceUuid = "019e1d7e-7001-7000-8000-0000000000b4";
+constexpr std::string_view kAdminPrincipalUuid =
+    "019e1d7e-7002-7000-8000-0000000000a4";
+constexpr std::string_view kAlicePrincipalUuid =
+    "019e1d7e-7003-7000-8000-0000000000a4";
 constexpr std::string_view kVerifier =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 constexpr std::string_view kWrongVerifier =
@@ -69,13 +75,35 @@ api::EngineRequestContext Context(const std::filesystem::path& database_path, bo
   context.catalog_generation_id = 1;
   context.security_epoch = 2;
   if (admin) {
+    context.principal_uuid.canonical = std::string(kAdminPrincipalUuid);
     context.trace_tags.push_back("security.bootstrap");
     context.trace_tags.push_back("group:SEC");
     context.trace_tags.push_back("group:AUD");
+    context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
   }
+  if (!admin) { context.principal_uuid.canonical = std::string(kAlicePrincipalUuid); }
   std::ofstream touch(database_path, std::ios::app);
   Require(static_cast<bool>(touch), "P4 database fixture create failed");
   return context;
+}
+
+std::string LocalPasswordCredentialFingerprint(std::string_view verifier) {
+  return "local-password-verifier:v1:sha256:" + api::SecuritySha256Hex(verifier);
+}
+
+std::string TemporaryTokenCredentialFingerprint(std::string_view token,
+                                                std::string_view state,
+                                                std::string_view expires_at_ms) {
+  const std::string digest = api::SecuritySha256Hex(token);
+  std::string payload;
+  payload.reserve(digest.size() + state.size() + expires_at_ms.size() + 2);
+  payload += digest;
+  payload += '|';
+  payload += state.empty() ? "active" : state;
+  payload += '|';
+  payload += expires_at_ms.empty() ? "0" : expires_at_ms;
+  return "security-temporary-token:v1:hmac-sha256:" +
+         api::SecurityHmacSha256Hex(token, payload);
 }
 
 bool HasDiagnostic(const api::EngineApiResult& result, std::string_view code) {
@@ -127,9 +155,20 @@ void RequireNoLeak(const api::EngineApiResult& result, std::string_view secret) 
 }
 
 void WriteAuthStore(const std::filesystem::path& database_path) {
-  std::ofstream out(database_path.string() + ".sb.local_password_auth", std::ios::trunc);
-  out << "alice\tlocal_password\t" << kVerifier << '\n';
-  Require(static_cast<bool>(out), "P4 local password verifier store write failed");
+  api::EngineSecurityCreatePrincipalRequest request;
+  request.context = Context(database_path);
+  request.target_object.uuid.canonical = std::string(kAlicePrincipalUuid);
+  request.target_object.object_kind = "security_principal";
+  request.principal_uuid = std::string(kAlicePrincipalUuid);
+  request.principal_name = "alice";
+  request.credential_fingerprint = LocalPasswordCredentialFingerprint(kVerifier);
+  request.option_envelopes.push_back("principal_authority:engine");
+  const auto created = api::EngineSecurityCreatePrincipal(request);
+  for (const auto& diagnostic : created.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(created.ok && created.principal_created,
+          "P4 local password durable verifier store write failed");
 }
 
 void WriteTemporaryTokenStore(const std::filesystem::path& database_path,
@@ -137,9 +176,23 @@ void WriteTemporaryTokenStore(const std::filesystem::path& database_path,
                               std::string_view principal,
                               std::uint64_t expires_at_ms,
                               std::string_view state = "active") {
-  std::ofstream out(database_path.string() + ".sb.temporary_auth_tokens", std::ios::trunc);
-  out << token << '\t' << principal << '\t' << expires_at_ms << '\t' << state << '\n';
-  Require(static_cast<bool>(out), "P4 temporary auth token store write failed");
+  api::EngineSecurityAlterPrincipalRequest request;
+  request.context = Context(database_path);
+  request.target_object.uuid.canonical = std::string(kAlicePrincipalUuid);
+  request.target_object.object_kind = "security_principal";
+  request.principal_uuid = std::string(kAlicePrincipalUuid);
+  request.principal_name = std::string(principal);
+  request.credential_fingerprint =
+      TemporaryTokenCredentialFingerprint(token,
+                                          state.empty() ? "active" : state,
+                                          std::to_string(expires_at_ms));
+  request.option_envelopes.push_back("principal_authority:engine");
+  const auto altered = api::EngineSecurityAlterPrincipal(request);
+  for (const auto& diagnostic : altered.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(altered.ok && altered.principal_altered,
+          "P4 temporary auth token durable verifier store write failed");
 }
 
 api::EngineAuthenticateRequest AuthRequest(const std::filesystem::path& database_path,
@@ -149,7 +202,9 @@ api::EngineAuthenticateRequest AuthRequest(const std::filesystem::path& database
   request.provider_family = "local_password";
   request.principal_claim = "alice";
   request.credential_evidence = std::string("scheme=local_password_v1;principal=alice;verifier=") +
-                                std::string(verifier);
+                                std::string(verifier) +
+                                ";principal_uuid=" + std::string(kAlicePrincipalUuid) +
+                                ";storage_authority=durable_security_catalog";
   request.credential_evidence_present = true;
   request.target_database.uuid.canonical = std::string(kDatabaseUuid);
   request.option_envelopes.push_back("auth_authority:engine");
@@ -161,6 +216,8 @@ api::EngineAuthenticateRequest AuthRequest(const std::filesystem::path& database
   request.option_envelopes.push_back("provider_generation_observed:2");
   request.option_envelopes.push_back("provider_lifecycle_state:healthy");
   request.option_envelopes.push_back("default_policy_installed:true");
+  request.option_envelopes.push_back("durable_principal_uuid:" +
+                                     std::string(kAlicePrincipalUuid));
   return request;
 }
 
@@ -172,9 +229,14 @@ api::EngineAuthenticateRequest TemporaryTokenAuthRequest(
   request.context = Context(database_path);
   request.provider_family = "security_database_temporary_token";
   request.principal_claim = std::string(principal);
+  const std::string token_digest = api::SecuritySha256Hex(token);
   request.credential_evidence =
       std::string("scheme=security_database_temporary_token_v1;principal=") +
-      std::string(principal) + ";token=" + std::string(token) + ";issuer=manager";
+      std::string(principal) + ";principal_uuid=" +
+      std::string(kAlicePrincipalUuid) +
+      ";storage_authority=durable_security_catalog;token_handle=" +
+      std::string(token) + ";token_digest=" + token_digest + ";state=active" +
+      ";expires_at_ms=0;token=" + std::string(token) + ";issuer=manager";
   request.credential_evidence_present = true;
   request.target_database.uuid.canonical = std::string(kDatabaseUuid);
   request.option_envelopes.push_back("auth_authority:engine");
@@ -186,6 +248,9 @@ api::EngineAuthenticateRequest TemporaryTokenAuthRequest(
   request.option_envelopes.push_back("provider_generation_observed:2");
   request.option_envelopes.push_back("provider_lifecycle_state:healthy");
   request.option_envelopes.push_back("default_policy_installed:true");
+  request.option_envelopes.push_back("durable_principal_uuid:" +
+                                     std::string(kAlicePrincipalUuid));
+  request.option_envelopes.push_back("durable_token_handle:" + std::string(token));
   return request;
 }
 
