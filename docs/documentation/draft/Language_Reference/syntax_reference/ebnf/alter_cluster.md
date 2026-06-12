@@ -9,7 +9,7 @@ Parent reference: [Cluster-Gated Statements](../cluster_gated_statements.md)
 ## Production
 
 ```ebnf
-alter_cluster ::=
+alter_cluster_stmt ::=
     ALTER CLUSTER cluster_ref cluster_action cluster_option_list? ;
 
 cluster_action ::=
@@ -35,7 +35,7 @@ cluster_option_list ::=
 
 ## Meaning
 
-`alter_cluster` recognizes cluster mutation, control, validation, and administrative syntax. The public parser can classify these operations, but public builds must not execute production cluster behavior through local core code.
+`alter_cluster_stmt` recognizes cluster mutation, control, validation, and administrative syntax. The public parser can classify these operations, but public builds must not execute production cluster behavior through local core code.
 
 ## Binding Requirements
 

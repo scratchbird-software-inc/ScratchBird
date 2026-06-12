@@ -69,7 +69,7 @@ After parsing, the binder must resolve:
 
 | Parent production | Purpose |
 | --- | --- |
-| `dml_statement` | Places `INSERT` in the data manipulation statement family. |
+| `dml` (statement family) | Places `INSERT` in the data manipulation statement family. |
 | `script_statement` | Allows `INSERT` in scripts and statement blocks where DML is admitted. |
 
 ## Child Productions

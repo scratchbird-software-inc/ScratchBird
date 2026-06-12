@@ -48,7 +48,7 @@ end;
 | --- | --- | --- |
 | Parameter | Input, output, or input/output routine argument | `p_order_id uuid` |
 | Return field | Named output column for selectable procedures | `returns (order_id uuid, status text)` |
-| Local variable | Descriptor-bound local storage | `declare variable v_count int64 default 0;` |
+| Local variable | Descriptor-bound local storage | `declare variable v_count bigint default 0;` |
 | Cursor | Named row stream over a query | `declare cursor c_orders for select ...;` |
 | Condition | Named diagnostic condition | `declare condition duplicate_order sqlstate '23505';` |
 | Exception handler | Handles a diagnostic class inside a block | `when sqlstate '23505' do begin ... end` |
@@ -88,7 +88,7 @@ Functions have one return descriptor. Selectable procedures have a result row de
 create procedure app.open_orders(p_customer_id uuid)
 returns (
   order_id uuid,
-  submitted_at timestamp with time zone,
+  submitted_at timestamptz,
   order_total decimal(18,2)
 )
 as
@@ -111,9 +111,9 @@ end;
 ## Local Variables
 
 ```sql
-declare variable v_attempts int32 default 0;
+declare variable v_attempts int default 0;
 declare variable v_status varchar(30) not null default 'pending';
-declare variable v_started_at timestamp with time zone default current_timestamp;
+declare variable v_started_at timestamptz default current_timestamp;
 ```
 
 | Rule | Behavior |
@@ -161,10 +161,10 @@ Nested blocks isolate declarations and handlers.
 
 ```sql
 begin
-  declare variable v_outer int64 default 1;
+  declare variable v_outer bigint default 1;
 
   begin
-    declare variable v_inner int64 default v_outer + 1;
+    declare variable v_inner bigint default v_outer + 1;
     insert into app.audit_event(event_text) values ('inner=' || cast(v_inner as text));
   end
 end;

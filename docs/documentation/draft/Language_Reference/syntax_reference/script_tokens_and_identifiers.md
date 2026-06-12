@@ -203,6 +203,12 @@ comment on schema app is 'Application root';
 
 When a statement admits localized labels, binding must carry language tag, fallback behavior, exact-text flag, and catalog identity evidence. The default language is `en`; `und` may be used for language-independent metadata where admitted.
 
+Localized labels are different from an SBsql language profile. A label is
+catalog metadata for a durable object. A language profile is a parser resource
+that can change source spelling, phrase order, diagnostic text, completion
+hints, or rendering templates before UUID binding. Neither form bypasses
+authorization or makes display text durable identity.
+
 ## Qualified Names
 
 ```ebnf

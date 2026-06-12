@@ -34,12 +34,12 @@ parameter_default ::=
 
 | Parent Production |
 | --- |
-| create_function |
-| alter_function |
+| create_function_stmt |
+| alter_routine_stmt |
 | recreate_function |
-| drop_function |
-| describe_statement |
-| show_statement |
+| drop_routine_stmt |
+| describe_stmt |
+| show_stmt |
 
 ## Child Productions
 

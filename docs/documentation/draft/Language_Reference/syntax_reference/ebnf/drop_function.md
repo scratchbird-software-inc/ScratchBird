@@ -7,7 +7,7 @@ Generation task: `ebnf_drop_function`
 ## Production
 
 ```ebnf
-drop_function ::=
+drop_routine_stmt ::=
     "DROP" "FUNCTION" function_ref drop_behavior? ;
 
 drop_behavior ::=
@@ -17,7 +17,7 @@ drop_behavior ::=
 
 ## Meaning
 
-`drop_function` removes the visible function binding only after overload resolution, privilege checks, dependency checks, transaction checks, and recovery checks pass.
+`drop_routine_stmt` removes the visible function binding only after overload resolution, privilege checks, dependency checks, transaction checks, and recovery checks pass.
 
 ## Used By
 

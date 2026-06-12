@@ -2,7 +2,7 @@
 
 Generation task: `sb_range`
 
-Package namespace: `sb.range`
+Package namespace: `sb.scalar` (range functions register under `sb.scalar.range_*`)
 
 Range-boundary and containment helpers for descriptor-backed range values.
 

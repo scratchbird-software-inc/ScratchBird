@@ -8,14 +8,14 @@ Generation task: `ebnf_function_lifecycle_statement`
 
 ```ebnf
 function_lifecycle_statement ::=
-      create_function
-    | alter_function
+      create_function_stmt
+    | alter_routine_stmt
     | recreate_function
-    | rename_statement
-    | comment_statement
-    | show_statement
-    | describe_statement
-    | drop_function ;
+    | rename_object_stmt
+    | comment_on_stmt
+    | show_stmt
+    | describe_stmt
+    | drop_routine_stmt ;
 ```
 
 ## Meaning
@@ -26,24 +26,23 @@ function_lifecycle_statement ::=
 
 | Parent Production |
 | --- |
-| ddl_statement |
-| create_statement |
-| alter_statement |
-| recreate_statement |
-| drop_statement |
+| ddl_catalog (statement family) |
+| create_object |
+| alter_object_stmt |
+| drop_object_stmt |
 
 ## Child Productions
 
 | Child Production |
 | --- |
-| create_function |
-| alter_function |
+| create_function_stmt |
+| alter_routine_stmt |
 | recreate_function |
-| rename_statement |
-| comment_statement |
-| show_statement |
-| describe_statement |
-| drop_function |
+| rename_object_stmt |
+| comment_on_stmt |
+| show_stmt |
+| describe_stmt |
+| drop_routine_stmt |
 
 ## Binding Contract
 

@@ -8,12 +8,12 @@ Generation task: `ebnf_dml_statement`
 ## Production
 
 ```ebnf
-dml_statement           ::= insert_statement | update_statement | delete_statement | merge_statement | upsert_statement | copy_statement ;
+dml                     ::= insert_statement | update_statement | delete_statement | merge_statement | upsert_statement | copy_statement ;
 ```
 
 ## Meaning
 
-`dml_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`dml` is an SBsql grammar production (registry canonical name `dml`). It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 
@@ -31,6 +31,8 @@ dml_statement           ::= insert_statement | update_statement | delete_stateme
 | copy_statement |
 | update_statement |
 | upsert_statement |
+
+Note: `delete_statement`, `insert_statement`, `update_statement`, `merge_statement`, `upsert_statement`, and `copy_statement` are the registry canonical names for these productions.
 
 ## Practical Notes
 

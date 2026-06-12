@@ -38,7 +38,7 @@ Every operation entry includes:
 
 **Call Forms:**
 
-- `xml_attrs(...)`
+- `xml.attrs(...)`
 - Syntax category: `function_call`
 
 **Parameters:**
@@ -68,7 +68,7 @@ invalid arity, unsafe XML name/content/entity, malformed XML document text, DTD/
 **Example:**
 
 ```sql
-select xml_attrs(value_1) as result_value from app.sample_values;
+select xml.attrs(value_1) as result_value from app.sample_values;
 ```
 
 **Technical Details:**
@@ -95,7 +95,7 @@ Conformance evidence: `SBSFC039-xml-attrs;SBSFC039-xmldocument-invalid;SBSFC039-
 
 **Call Forms:**
 
-- `xml_ns(...)`
+- `xml.ns(...)`
 - Syntax category: `function_call`
 
 **Parameters:**
@@ -125,7 +125,7 @@ invalid arity, unsafe XML name/content/entity, malformed XML document text, DTD/
 **Example:**
 
 ```sql
-select xml_ns(value_1) as result_value from app.sample_values;
+select xml.ns(value_1) as result_value from app.sample_values;
 ```
 
 **Technical Details:**

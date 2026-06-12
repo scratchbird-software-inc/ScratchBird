@@ -7,7 +7,7 @@ Generation task: `ebnf_support_bundle_statement`
 ## Production
 
 ```ebnf
-support_bundle_statement ::=
+support_stmt ::=
     "SUPPORT" "BUNDLE" support_bundle_action support_bundle_target? support_bundle_option_list? ;
 
 support_bundle_action ::=
@@ -37,7 +37,7 @@ support_bundle_option ::=
 
 ## Meaning
 
-`support_bundle_statement` creates, inspects, verifies, exports, and drops authorized diagnostic bundles. Bundle content is manifest-driven and redacted.
+`support_stmt` creates, inspects, verifies, exports, and drops authorized diagnostic bundles. Bundle content is manifest-driven and redacted.
 
 ## Used By
 

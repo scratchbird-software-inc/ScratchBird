@@ -169,5 +169,5 @@ Always check the parser documentation, build output, tests, and release notes fo
 - [Recursive Schema Tree](recursive_schema_tree.md)
 - [Identity, Authentication, And Authorization](identity_authentication_and_authorization.md)
 - [Storage, Transactions, And Recovery](storage_transactions_and_recovery.md)
-- [Donor Database Compatibility](../using_scratchbird/donor_database_compatibility.md)
+- [Reference-System Compatibility](../using_scratchbird/reference_system_compatibility.md)
 - [Parser To SBLR Pipeline](../../Language_Reference/core_paradigms/parser_to_sblr_pipeline.md)

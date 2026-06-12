@@ -8,8 +8,8 @@ Generation task: `ebnf_observability_statement`
 
 ```ebnf
 observability_statement ::=
-      show_statement
-    | explain_statement ;
+      show_stmt
+    | explain_stmt ;
 ```
 
 ## Meaning
@@ -27,8 +27,8 @@ observability_statement ::=
 
 | Child Production |
 | --- |
-| show_statement |
-| explain_statement |
+| show_stmt |
+| explain_stmt |
 
 ## Binding Contract
 

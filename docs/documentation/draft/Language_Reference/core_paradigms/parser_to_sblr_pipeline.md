@@ -63,6 +63,11 @@ large global reserved-word list. This lets identifiers use ordinary business
 terms while still allowing command clauses to be recognized where the grammar
 expects them.
 
+When an SBsql language profile is selected, profile-specific spelling,
+topology, and diagnostic resources are normalized here into the canonical
+element stream. UUID binding still happens after that normalization step; the
+localized words themselves are not engine authority.
+
 Tokenization preserves:
 
 - source spans for diagnostics and support bundles;
@@ -303,7 +308,7 @@ the active transaction and authorization context, and returns a rowset envelope.
 create table app.invoice_line (
     invoice_line_id uuid primary key,
     invoice_id uuid not null,
-    line_no uint32 not null,
+    line_no int not null,
     amount decimal(18,2) not null
 );
 ```
@@ -440,6 +445,7 @@ statement family:
 ## Related Reference Pages
 
 - [Intro And MGA](intro_and_mga.md)
+- [SBsql Language Profiles](sbsql_language_profiles.md)
 - [UUID Catalog Identity](uuid_catalog_identity.md)
 - [Transactions And Recovery](transactions_and_recovery.md)
 - [Security And Sandboxing](security_and_sandboxing.md)

@@ -8,12 +8,12 @@ Generation task: `ebnf_nosql_statement`
 
 ```ebnf
 nosql_statement ::=
-      document_statement
-    | kv_statement
-    | graph_statement
-    | vector_statement
-    | search_statement
-    | timeseries_statement ;
+      document_op_stmt
+    | keyvalue_op_stmt
+    | graph_op_stmt
+    | vector_op_stmt
+    | fulltext_search_query
+    | time_series_op_stmt ;
 ```
 
 ## Meaning
@@ -31,12 +31,12 @@ nosql_statement ::=
 
 | Child Production |
 | --- |
-| document_statement |
-| kv_statement |
-| graph_statement |
-| vector_statement |
-| search_statement |
-| timeseries_statement |
+| document_op_stmt |
+| keyvalue_op_stmt |
+| graph_op_stmt |
+| vector_op_stmt |
+| fulltext_search_query |
+| time_series_op_stmt |
 
 ## Binding Contract
 

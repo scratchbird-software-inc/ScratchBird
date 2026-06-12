@@ -1,19 +1,19 @@
-# sys.catalog.protected_material_version Catalog Reference
+# sys.security.protected_material_version Catalog Reference
 
 This page documents the authorized catalog surface that records versioned
 protected-material references. A version row represents a rotated, replaced,
 derived, or retained protected reference without exposing raw protected values.
 
-Generation task: `catalog_sys_catalog_protected_material_version`
+Generation task: `catalog_sys_security_protected_material_version`
 
-Related pages: [sys.catalog.protected_material](sys_catalog_protected_material.md),
-[sys.catalog.protected_material_policy_binding](sys_catalog_protected_material_policy_binding.md),
-[sys.security.catalog.protected_material_audit_event](sys_security_catalog_protected_material_audit_event.md), and
+Related pages: [sys.security.protected_material_catalog](sys_catalog_protected_material.md),
+[sys.security.protected_material_policy_binding](sys_catalog_protected_material_policy_binding.md),
+[sys.security.protected_material_audit](sys_security_catalog_protected_material_audit_event.md), and
 [Binary, UUID, And Protected Values](../data_types/binary_uuid_and_protected_values.md).
 
 ## Role
 
-`sys.catalog.protected_material_version` gives protected material an MGA-visible
+`sys.security.protected_material_version` gives protected material an MGA-visible
 version history. Rotation, replacement, quarantine, purge, and retention are
 recorded without turning raw secret material into ordinary catalog data.
 
@@ -29,10 +29,10 @@ Unique key: `protected_material_uuid`, `version_number`
 | `protected_material_uuid` | UUID | Owning protected material. |
 | `version_number` | uint64 | Monotonic per protected material. |
 | `protected_reference_hash` | hash/text | Digest of protected reference metadata. Must not reveal sensitive reference text. |
-| `envelope_hash` | hash/text | Digest of wrapped, enveloped, split, or derived metadata. |
+| `protected_envelope_hash` | hash/text | Digest of wrapped, enveloped, split, or derived metadata. |
 | `payload_hash` | hash/text | Integrity hash for referenced payload where policy admits storing it. |
-| `storage_class` | enum | `wrapped`, `split`, `external_reference`, `derived`, `redacted`, or admitted equivalent. |
-| `rotation_state` | enum | `active`, `rotated`, `retained`, `purged`, `quarantined`, or `compromised_restricted`. |
+| `storage_class` | enum | `direct`, `wrapped`, `split`, `external_reference`, `derived`, or `redacted`. |
+| `rotation_state` | enum | `active`, `rotated`, or `purged`. |
 | `valid_from_local_transaction_id` | uint64 | MGA transaction ID that makes the version visible. |
 | `valid_until_local_transaction_id` | nullable uint64 | MGA transaction ID that ends active visibility. |
 | `retention_policy_uuid` | UUID | Version retention policy. |
@@ -55,7 +55,7 @@ MGA snapshot, is not ended for that snapshot, and is admitted by policy.
 protected material
 |
 +-- version 1: rotated
-+-- version 2: retained
++-- version 2: rotated
 +-- version 3: active
 ```
 
@@ -75,8 +75,8 @@ return plaintext through diagnostics.
 ## Visibility And Mutation
 
 Rows are exposed only through authorized projections. Mutation is performed by
-engine-managed protected-material lifecycle operations: add version, rotate,
-quarantine, retain, purge, restore metadata, or policy change.
+engine-managed protected-material lifecycle operations: add version (which
+rotates the previous active version) or purge.
 
 ## Example Inspection
 
@@ -88,7 +88,7 @@ select protected_material_version_uuid,
        valid_from_local_transaction_id,
        valid_until_local_transaction_id,
        purged
-from sys.catalog.protected_material_version
+from sys.security.protected_material_version
 where protected_material_uuid = :protected_material_uuid
 order by version_number;
 ```
@@ -98,10 +98,9 @@ order by version_number;
 | Condition | Required Behavior |
 | --- | --- |
 | Version not visible to snapshot | Return not visible or select an older visible version. |
-| Active version quarantined | Fence release and return diagnostic. |
 | Purged version requested | Return purged-state diagnostic without reference data. |
 | Legal hold active | Refuse purge. |
-| Hash mismatch | Quarantine or fail closed according to policy. |
+| Hash mismatch | Fail closed according to policy. |
 | Version gap detected | Refuse resolution until classified. |
 | Stale security epoch | Reauthorize before release or metadata rendering. |
 

@@ -11,7 +11,7 @@ This guide is intentionally cautious. It describes the architecture and intended
 | core_concepts | Plain-language explanations of databases, Convergent Data Engines, and the ScratchBird architecture. |
 | operating_modes | How ScratchBird is intended to run as an embedded engine, IPC server, standalone server, or managed group deployment. |
 | architecture | End-user architecture topics: parser separation, recursive schema, SBsql/SBLR, Git-oriented workflows, identity, and recovery. |
-| using_scratchbird | First tasks: creating a database, connecting with SBsql, understanding schemas and donor compatibility. |
+| using_scratchbird | First tasks: creating a database, connecting with SBsql, understanding schemas and reference-system compatibility. |
 | administration | Deployment choice, configuration basics, diagnostics, support bundles, backup, restore, and data movement. |
 | reference | Glossary and document map. |
 
@@ -29,7 +29,7 @@ ScratchBird uses several branded component names:
 | SBmgr | The single-node manager front door. |
 | SBsql | The native ScratchBird SQL language and command-line interface. |
 | SBParser | The native SBsql parser package. |
-| Donor parser | A parser package that accepts a donor database protocol or dialect and lowers it to ScratchBird execution requests. |
+| Compatibility parser | A parser package that accepts one reference-system protocol or dialect surface and lowers admitted work to ScratchBird execution requests. |
 
 ## First Reading Path
 

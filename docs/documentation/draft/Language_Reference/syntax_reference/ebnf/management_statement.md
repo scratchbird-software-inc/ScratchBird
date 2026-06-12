@@ -7,17 +7,17 @@ Generation task: `ebnf_management_statement`
 ## Production
 
 ```ebnf
-management_statement ::=
+management_stmt ::=
       show_management
-    | agent_statement
-    | alter_management
-    | config_statement
-    | support_bundle_statement ;
+    | agent_stmt
+    | maintenance_stmt
+    | config_stmt
+    | support_stmt ;
 ```
 
 ## Meaning
 
-`management_statement` dispatches management inspection and control commands. The grammar recognizes the statement family only. Binding must still resolve runtime targets, configuration keys, job identifiers, service identifiers, result descriptors, security context, and an admitted SBLR operation route.
+`management_stmt` dispatches management inspection and control commands. The grammar recognizes the statement family only. Binding must still resolve runtime targets, configuration keys, job identifiers, service identifiers, result descriptors, security context, and an admitted SBLR operation route.
 
 ## Used By
 
@@ -30,11 +30,11 @@ management_statement ::=
 
 | Child Production |
 | --- |
-| agent_statement |
+| agent_stmt |
 | show_management |
-| alter_management |
-| config_statement |
-| support_bundle_statement |
+| maintenance_stmt |
+| config_stmt |
+| support_stmt |
 
 ## Binding Contract
 

@@ -7,7 +7,7 @@ Generation task: `ebnf_alter_management`
 ## Production
 
 ```ebnf
-alter_management ::=
+management_stmt ::=
     "ALTER" "MANAGEMENT" management_target management_subject? management_action management_option_list? ;
 
 management_subject ::=
@@ -35,7 +35,7 @@ management_option_list ::=
 
 ## Meaning
 
-`alter_management` requests an operational control action. The statement can affect runtime admission, cancellation, reloads, package readiness, diagnostics, cache state, or maintenance work where policy admits it.
+`management_stmt` requests an operational control action. The statement can affect runtime admission, cancellation, reloads, package readiness, diagnostics, cache state, or maintenance work where policy admits it.
 
 ## Used By
 

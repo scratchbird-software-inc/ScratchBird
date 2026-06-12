@@ -8,12 +8,12 @@ Generation task: `ebnf_set_transaction`
 ## Production
 
 ```ebnf
-set_transaction         ::= "SET" "TRANSACTION" transaction_option_list ;
+set_transaction_stmt    ::= "SET" "TRANSACTION" transaction_option_list ;
 ```
 
 ## Meaning
 
-`set_transaction` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`set_transaction_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 Full user-facing semantics for transaction access mode, isolation, wait policy, timeout policy, and option refusal are documented in [../transaction_control.md](../transaction_control.md).
 

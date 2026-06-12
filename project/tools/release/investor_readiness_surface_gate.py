@@ -95,6 +95,22 @@ DECLARATION_FIXTURE_ROOTS = (
     "project/tools/sb_public_spec_zero_grey_gate/fixtures/driver_server_reconciliation/artifacts",
 )
 
+PUBLIC_WORKFILE_BLOCKLIST = (
+    "docs/documentation/draft/audit_reports/",
+    "docs/documentation/draft/.claude/",
+)
+
+PUBLIC_WORKFILE_NAMES = {
+    ".generation_state.json",
+    "combined.md",
+    "combined_old.md",
+    "file_listing.txt",
+    "file_listing_2.txt",
+    "MGA.md",
+    "MGA.pdf",
+    "Notes.md",
+}
+
 
 def fail(message: str) -> int:
     print(f"investor_readiness_surface_gate=fail:{message}", file=sys.stderr)
@@ -222,6 +238,22 @@ def validate_reference_payload_boundary(repo_root: Path, paths: list[str], exclu
                 blocked.append(f"stale public text terminology in {rel_path}")
                 break
     return blocked
+
+
+def validate_public_workfile_boundary(paths: list[str], excludes: tuple[str, ...]) -> list[str]:
+    errors: list[str] = []
+    for path in paths:
+        if excluded(path, excludes):
+            continue
+        if any(path.startswith(prefix) for prefix in PUBLIC_WORKFILE_BLOCKLIST):
+            errors.append(f"tracked public draft workfile path: {path}")
+            continue
+        name = Path(path).name
+        if path.startswith("docs/documentation/draft/") and (
+            name in PUBLIC_WORKFILE_NAMES or name.startswith("audit_")
+        ):
+            errors.append(f"tracked public draft workfile path: {path}")
+    return errors
 
 
 def validate_driver_manifest(repo_root: Path) -> tuple[list[str], dict[str, int], dict[str, str]]:
@@ -357,12 +389,13 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
-    excludes = tuple(dict.fromkeys(args.exclude or ["docs/documentation/draft"]))
+    excludes = tuple(dict.fromkeys(args.exclude or []))
     paths = git_paths(repo_root)
 
     errors: list[str] = []
     errors.extend(validate_required_docs(repo_root))
     errors.extend(validate_public_preset(repo_root))
+    errors.extend(validate_public_workfile_boundary(paths, excludes))
     errors.extend(validate_reference_payload_boundary(repo_root, paths, excludes))
     driver_errors, bucket_counts, buckets = validate_driver_manifest(repo_root)
     errors.extend(driver_errors)

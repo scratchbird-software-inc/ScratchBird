@@ -19,9 +19,9 @@ object_ref              ::= uuid_ref | qualified_name ;
 
 | Parent Production |
 | --- |
-| drop_statement |
-| comment_statement |
-| rename_statement |
+| drop_object_stmt |
+| comment_on_stmt |
+| rename_object_stmt |
 | expression_atom |
 
 ## Child Productions

@@ -51,15 +51,15 @@ than allowing implicit best-effort behavior.
 | Boolean | `boolean`, `bool` | Three-valued logic. | 1 byte logical payload plus null marker. |
 | Signed integer | `int8`, `int16`, `int32`, `int64`, `int128`, `smallint`, `int`, `integer`, `bigint` | Exact signed whole numbers. | 1, 2, 4, 8, or 16 bytes. |
 | Unsigned integer | `uint8`, `uint16`, `uint32`, `uint64`, `uint128` | Exact unsigned whole numbers. | 1, 2, 4, 8, or 16 bytes. |
-| Decimal | `decimal(p,s)`, `numeric(p,s)`, `decfloat(16)`, `decfloat(34)`, `money`, `currency` | Exact base-10, decimal floating, and money-like values. | Precision, scale, rounding, and display are descriptor-owned. |
-| Approximate real | `real`, `float4`, `double precision`, `float8`, `float(p)` | Approximate binary floating values. | 4 or 8 byte descriptors in the portable profile. |
+| Decimal | `decimal(p,s)`, `numeric(p,s)`, `money` | Exact base-10, decimal floating, and money-like values. | Precision, scale, rounding, and display are descriptor-owned. |
+| Approximate real | `real`, `double precision`, `float(p)` | Approximate binary floating values. | 4 or 8 byte descriptors in the portable profile. |
 | Text | `char(n)`, `varchar(n)`, `text`, `clob`, `nchar(n)`, `nvarchar(n)`, `nclob` | Character data. | Character count, byte count, charset, collation, and overflow are descriptor-owned. |
 | Binary | `binary(n)`, `varbinary(n)`, `blob`, `bytea` | Byte-oriented values and binary large values. | Byte count, overflow, and stream policy are descriptor-owned. |
 | UUID | `uuid` | Application UUIDs and catalog identity references. | 16 bytes. |
-| Temporal | `date`, `time(p)`, `time(p) with time zone`, `timestamp(p)`, `timestamp(p) with time zone`, `interval` | Calendar, clock, instant, and duration values. | Precision, calendar, timezone, and range are descriptor-owned. |
-| Document | `json`, `jsonb`, `document` | Structured document values and path-addressable data. | Payload and normalization profile are descriptor-owned. |
+| Temporal | `date`, `time(p)`, `timestamp(p)`, `timestamptz`, `interval` | Calendar, clock, instant, and duration values. | Precision, calendar, timezone, and range are descriptor-owned. |
+| Document | `document`, `json_document`, `binary_json_document` | Structured document values and path-addressable data. | Payload and normalization profile are descriptor-owned. |
 | Collection | `array<T>`, `multiset<T>`, `row(...)`, `record(...)` | Structured values, routine arguments, rowsets, and compound domains. | Element descriptors and shape descriptors own bounds. |
-| Vector | `vector<T,n>`, `embedding<T,n>` | Fixed-dimension numerical vectors. | Dimension multiplied by element size plus descriptor metadata. |
+| Vector | `vector` | Fixed-dimension numerical vectors. | Dimension multiplied by element size plus descriptor metadata. |
 | Spatial | `geometry`, `geography` | Spatial values, spatial predicates, and spatial indexes. | Shape, coordinate profile, and exact-recheck policy are descriptor-owned. |
 | Graph | `graph`, `node`, `edge`, `path` | Graph data and traversal payloads. | Node, edge, path, and traversal descriptors own shape. |
 | Search | `search_document`, `lexeme`, search-vector descriptors where admitted | Full-text/search payloads. | Tokenization and index profile are descriptor-owned. |
@@ -82,9 +82,9 @@ create table app.example_types (
     id uuid primary key,
     exact_count uint128,
     label varchar(120),
-    payload jsonb,
-    embedding vector<float32,1536>,
-    created_at timestamp(6) with time zone
+    payload document,
+    embedding vector,
+    created_at timestamptz
 );
 ```
 

@@ -7,8 +7,8 @@ Generation task: `ebnf_kv_statement`
 ## Production
 
 ```ebnf
-kv_statement ::=
-    "KV" kv_action kv_target kv_payload? return_clause? statement_option_list? ;
+keyvalue_op_stmt ::=
+    "KEYVALUE" kv_action kv_target kv_payload? return_clause? statement_option_list? ;
 
 kv_action ::=
       "GET"
@@ -52,13 +52,13 @@ ttl_clause ::=
 
 ## Meaning
 
-`kv_statement` recognizes descriptor-bound key-value commands. Keys, values, versions, expiration policy, and collection behavior are typed surfaces, not raw storage layout.
+`keyvalue_op_stmt` recognizes descriptor-bound key-value commands. Keys, values, versions, expiration policy, and collection behavior are typed surfaces, not raw storage layout.
 
 ## Used By
 
 | Parent Production |
 | --- |
-| nosql_statement |
+| nosql_statement (multi_model family) |
 
 ## Child Productions
 

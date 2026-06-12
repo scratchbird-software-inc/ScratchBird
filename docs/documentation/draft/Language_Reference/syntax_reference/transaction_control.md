@@ -76,8 +76,9 @@ transaction_option ::=
 
 isolation_level ::=
       READ COMMITTED
+    | READ CONSISTENCY
+    | REPEATABLE READ
     | SNAPSHOT
-    | SNAPSHOT TABLE STABILITY
     | SERIALIZABLE ;
 ```
 
@@ -165,8 +166,9 @@ Attempting to begin a second ordinary transaction while one is active must be re
 | `READ ONLY` | Transaction may read but must refuse ordinary data mutation. Administrative and diagnostic actions still require their own policy. |
 | `READ WRITE` | Transaction may request reads and writes subject to privileges, policy, locks, and storage admission. |
 | `ISOLATION LEVEL READ COMMITTED` | Each statement reads committed data according to the read-committed profile. |
+| `ISOLATION LEVEL READ CONSISTENCY` | Oracle-style consistent read behavior where admitted. |
+| `ISOLATION LEVEL REPEATABLE READ` | Each statement reads a stable consistent snapshot for the transaction. |
 | `ISOLATION LEVEL SNAPSHOT` | Transaction reads through a stable snapshot boundary. |
-| `ISOLATION LEVEL SNAPSHOT TABLE STABILITY` | Snapshot isolation plus table-stability semantics where lock and policy admission allow it. |
 | `ISOLATION LEVEL SERIALIZABLE` | Strongest public isolation profile. Conflicts must be detected or refused according to the operation policy. |
 | `WAIT` | Wait for admitted lock/resource conflicts according to timeout policy. |
 | `NO WAIT` | Refuse immediately when a required lock/resource cannot be acquired. |
@@ -303,8 +305,9 @@ ScratchBird isolation is MGA-based.
 | Isolation | User-Facing Rule |
 | --- | --- |
 | `READ COMMITTED` | A statement sees committed versions according to the read-committed snapshot profile. Later statements may see newer committed data. |
+| `READ CONSISTENCY` | Oracle-style consistent read behavior where admitted; each statement sees a consistent state. |
+| `REPEATABLE READ` | All statements in the transaction see a stable snapshot. |
 | `SNAPSHOT` | All statements in the transaction see through the transaction snapshot, plus the transaction's own writes. |
-| `SNAPSHOT TABLE STABILITY` | Uses a transaction snapshot and admitted table-stability locks or equivalent conflict prevention. |
 | `SERIALIZABLE` | Requires conflict detection or prevention sufficient for serializable behavior under the admitted operation set. |
 
 All isolation levels remain subject to:
@@ -343,7 +346,7 @@ DDL is catalog mutation and follows transaction visibility unless a specific adm
 begin transaction;
 create table app.import_batch (
   batch_id uuid primary key,
-  loaded_at timestamp with time zone
+  loaded_at timestamptz
 );
 comment on table app.import_batch is 'Incoming logical import batches';
 commit;

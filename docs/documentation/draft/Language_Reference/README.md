@@ -21,6 +21,7 @@ SBsql text is parser input. ScratchBird execution authority is SBLR, UUID catalo
 | Topic | File |
 | --- | --- |
 | Syntax reference index | [syntax_reference/README.md](syntax_reference/README.md) |
+| SBsql language profiles | [core_paradigms/sbsql_language_profiles.md](core_paradigms/sbsql_language_profiles.md) |
 | Schema tree and name resolution | [syntax_reference/schema_tree_and_name_resolution.md](syntax_reference/schema_tree_and_name_resolution.md) |
 | Procedural SQL overview | [syntax_reference/procedural_sql.md](syntax_reference/procedural_sql.md) |
 | Procedural blocks and declarations | [syntax_reference/procedural_sql_blocks.md](syntax_reference/procedural_sql_blocks.md) |

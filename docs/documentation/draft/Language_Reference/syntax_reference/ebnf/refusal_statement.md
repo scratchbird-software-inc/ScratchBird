@@ -8,12 +8,14 @@ Generation task: `ebnf_refusal_statement`
 ## Production
 
 ```ebnf
-refusal_statement       ::= unsupported_statement | denied_statement | unlicensed_statement ;
+refusal_stmt            ::= unsupported_statement | denied_statement | unlicensed_statement ;
 ```
+
+<!-- Fragment dispatcher: refusal_stmt has no registry id of its own; it is a grammar-level dispatcher for refusal leaf productions. -->
 
 ## Meaning
 
-`refusal_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`refusal_stmt` is an SBsql grammar fragment dispatcher. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

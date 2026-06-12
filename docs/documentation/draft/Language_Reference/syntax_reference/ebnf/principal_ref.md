@@ -19,11 +19,11 @@ principal_ref           ::= uuid_ref | qualified_name ;
 
 | Parent Production |
 | --- |
-| create_identity |
-| alter_identity |
-| drop_identity |
-| grant_statement |
-| revoke_statement |
+| create_principal_stmt |
+| alter_principal_stmt |
+| drop_principal_stmt |
+| grant_stmt |
+| revoke_stmt |
 
 ## Child Productions
 
