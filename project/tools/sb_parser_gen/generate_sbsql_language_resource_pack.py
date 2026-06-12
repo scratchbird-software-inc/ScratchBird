@@ -87,6 +87,16 @@ LANGUAGE_PROFILES = [
         "fallback_parent_uuid": "",
     },
     {
+        "exact_tag": "en-CA",
+        "profile_uuid": "sbsql.language.en-CA.canonical-recovery.v1",
+        "display_name": "English (Canada)",
+        "release_channel": "release_supported",
+        "support_state": "release_supported",
+        "translation_source": "canonical_scratchbird_english_source_canadian_profile",
+        "native_review_state": "source_authority_reviewed",
+        "fallback_parent_uuid": "sbsql.language.en-US.canonical-recovery.v1",
+    },
+    {
         "exact_tag": "fr-FR",
         "profile_uuid": "sbsql.language.fr-FR.machine-beta.v1",
         "display_name": "French (France)",
@@ -95,6 +105,16 @@ LANGUAGE_PROFILES = [
         "translation_source": "deterministic_machine_seed_from_canonical_english",
         "native_review_state": "native_technical_review_required_before_release_support",
         "fallback_parent_uuid": "sbsql.language.en-US.canonical-recovery.v1",
+    },
+    {
+        "exact_tag": "fr-CA",
+        "profile_uuid": "sbsql.language.fr-CA.machine-beta.v1",
+        "display_name": "French (Canada)",
+        "release_channel": "beta",
+        "support_state": "machine_bootstrap_native_review_required",
+        "translation_source": "deterministic_machine_seed_from_canonical_english",
+        "native_review_state": "native_technical_review_required_before_release_support",
+        "fallback_parent_uuid": "sbsql.language.fr-FR.machine-beta.v1",
     },
     {
         "exact_tag": "de-DE",
@@ -127,6 +147,12 @@ LANGUAGE_PROFILES = [
         "fallback_parent_uuid": "sbsql.language.en-US.canonical-recovery.v1",
     },
 ]
+
+SOURCE_AUTHORITY_REVIEWED_PROFILES = {
+    profile["exact_tag"]
+    for profile in LANGUAGE_PROFILES
+    if profile["native_review_state"] == "source_authority_reviewed"
+}
 
 SYSTEM_OBJECT_SOURCES = [
     ("database", "database", "storage_object", "database", "databases", "sys.database", "catalog_root", "Database file and database identity visible to SQL users."),
@@ -205,6 +231,14 @@ SYSTEM_OBJECT_SOURCES = [
 
 SQL_GLOSSARY = {
     "fr-FR": {
+        "select": "selectionner", "from": "depuis", "where": "ou", "insert": "inserer",
+        "update": "mettre a jour", "delete": "supprimer", "create": "creer", "alter": "modifier",
+        "drop": "supprimer", "table": "table", "schema": "schema", "user": "utilisateur",
+        "role": "role", "grant": "autorisation", "function": "fonction", "procedure": "procedure",
+        "statement": "instruction", "temporary": "temporaire", "global": "globale", "private": "privee",
+        "cursor": "curseur", "transaction": "transaction", "diagnostic": "diagnostic",
+    },
+    "fr-CA": {
         "select": "selectionner", "from": "depuis", "where": "ou", "insert": "inserer",
         "update": "mettre a jour", "delete": "supprimer", "create": "creer", "alter": "modifier",
         "drop": "supprimer", "table": "table", "schema": "schema", "user": "utilisateur",
@@ -630,7 +664,7 @@ def build_source_corpus(system_registry: dict[str, Any], dialect: dict[str, Any]
 
 
 def translate_text(text: str, exact_tag: str) -> tuple[str, str]:
-    if exact_tag == "en-US":
+    if exact_tag in SOURCE_AUTHORITY_REVIEWED_PROFILES:
         return text, "canonical_source"
     glossary = SQL_GLOSSARY[exact_tag]
     if text.isupper() and re.fullmatch(r"[A-Z][A-Z0-9_ ]*", text):

@@ -37,7 +37,8 @@ DRIVER_SURFACE_MANIFEST = "project/drivers/language/sbsql_language_surface_manif
 PACK_SCHEMA_VERSION = "sbsql.language_resource_pack.v1"
 MANIFEST_SCHEMA_VERSION = "sbsql.language_resource_pack_manifest.v1"
 SIGNATURE_SCHEMA_VERSION = "sbsql.language_resource_pack_signature.v1"
-EXPECTED_EXACT_PROFILES = ["en-US", "fr-FR", "de-DE", "it-IT", "es-ES"]
+EXPECTED_EXACT_PROFILES = ["en-US", "en-CA", "fr-FR", "fr-CA", "de-DE", "it-IT", "es-ES"]
+SOURCE_AUTHORITY_REVIEWED_PROFILES = {"en-US", "en-CA"}
 EXPECTED_COMMON_RESOURCE_IDENTITY = "sbsql.common_resource_pack.v1"
 EXPECTED_DIALECT_PROFILE_UUID = "sbsql.v3"
 EXPECTED_TOPOLOGY_PROFILE_UUID = "topology.sbsql.canonical.v1"
@@ -154,11 +155,11 @@ def validate_manifest_structure(pack_root: Path, manifest: dict[str, Any]) -> li
             errors.append(f"wildcard exact profile is forbidden: {exact_tag}")
         if profile.get("release_channel") in {"revoked", "removed", "expired"}:
             errors.append(f"{exact_tag}: revoked/removed/expired profile cannot be admitted")
-        if exact_tag == "en-US":
+        if exact_tag in SOURCE_AUTHORITY_REVIEWED_PROFILES:
             if profile.get("release_channel") != "release_supported":
-                errors.append("en-US profile must be release_supported")
+                errors.append(f"{exact_tag} profile must be release_supported")
         elif profile.get("release_channel") != "beta":
-            errors.append(f"{exact_tag}: non-English initial profile must be beta")
+            errors.append(f"{exact_tag}: non-source-authority initial profile must be beta")
         resource_path = profile.get("resource_path")
         if not isinstance(resource_path, str) or not (pack_root / resource_path).is_file():
             errors.append(f"{exact_tag}: profile resource path missing")
@@ -305,11 +306,11 @@ def validate_canonical_resources(pack_root: Path, manifest: dict[str, Any]) -> l
             errors.append(f"{tag}: duplicate translation record_id")
         if set(ids) != set(corpus_ids):
             errors.append(f"{tag}: translation rows do not exactly cover source corpus")
-        if tag == "en-US" and profile.get("release_channel") != "release_supported":
-            errors.append("en-US language profile release channel drifted")
-        if tag != "en-US" and profile.get("release_channel") != "beta":
+        if tag in SOURCE_AUTHORITY_REVIEWED_PROFILES and profile.get("release_channel") != "release_supported":
+            errors.append(f"{tag} language profile release channel drifted")
+        if tag not in SOURCE_AUTHORITY_REVIEWED_PROFILES and profile.get("release_channel") != "beta":
             errors.append(f"{tag}: beta language profile release channel drifted")
-        if tag != "en-US" and profile.get("native_review_state") != "native_technical_review_required_before_release_support":
+        if tag not in SOURCE_AUTHORITY_REVIEWED_PROFILES and profile.get("native_review_state") != "native_technical_review_required_before_release_support":
             errors.append(f"{tag}: native review status must be explicit")
     return errors
 

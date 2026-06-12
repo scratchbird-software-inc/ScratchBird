@@ -77,7 +77,7 @@ EXPECTED_RESOURCE_PACK_PATH = (
     "project/resources/seed-packs/initial-resource-pack/resources/i18n/"
     "sbsql-language-resource-pack"
 )
-EXPECTED_EXACT_PROFILES = ["en-US", "fr-FR", "de-DE", "it-IT", "es-ES"]
+EXPECTED_EXACT_PROFILES = ["en-US", "en-CA", "fr-FR", "fr-CA", "de-DE", "it-IT", "es-ES"]
 
 EXPECTED_FALLBACK_DIAGNOSTICS = [
     "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
