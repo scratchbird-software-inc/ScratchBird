@@ -21,10 +21,20 @@
       "component_id": "sbsql-language-resource-pack",
       "type": "generated-resource-pack",
       "license": "MPL-2.0",
-      "scope": "canonical SBsql language resources, exact language profiles, predictive grammar, renderer templates, diagnostics, resolver policy, and provenance",
+      "scope": "canonical SBsql language resources, exact language profiles, UD-derived topology summaries, predictive grammar, renderer templates, diagnostics, resolver policy, and provenance",
       "tracked_in_public_repository": true,
-      "source": "ScratchBird SBsql generated registry and ScratchBird system-object baseline",
-      "third_party_source_material_included": false
+      "source": "ScratchBird SBsql generated registry, ScratchBird system-object baseline, and derived Universal Dependencies PUD topology metrics",
+      "third_party_source_material_included": false,
+      "third_party_derived_topology_metadata_included": true
+    },
+    {
+      "component_id": "universal-dependencies-pud-topology-reference",
+      "type": "external-reference-derived-metadata",
+      "license": "CC BY-SA 3.0",
+      "scope": "derived dependency-direction and phrase-topology metrics for English, French, German, Italian, and Spanish SBsql language profiles",
+      "tracked_in_public_repository": true,
+      "raw_treebank_material_tracked_in_public_repository": false,
+      "source": "Universal Dependencies PUD treebanks"
     }
   ]
 }

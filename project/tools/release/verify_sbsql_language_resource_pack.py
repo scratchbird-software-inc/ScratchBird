@@ -42,6 +42,7 @@ SOURCE_AUTHORITY_REVIEWED_PROFILES = {"en-US", "en-CA"}
 EXPECTED_COMMON_RESOURCE_IDENTITY = "sbsql.common_resource_pack.v1"
 EXPECTED_DIALECT_PROFILE_UUID = "sbsql.v3"
 EXPECTED_TOPOLOGY_PROFILE_UUID = "topology.sbsql.canonical.v1"
+EXPECTED_HEAD_INITIAL_NOMINAL_PROFILES = {"fr-FR", "fr-CA", "it-IT", "es-ES"}
 EXPECTED_AUTHORITY_FLAGS = (
     "local_sblr_uuid_streams_are_untrusted",
     "server_revalidates_sblr_uuid_descriptor_authorization_policy_and_mga",
@@ -323,6 +324,12 @@ def validate_canonical_resources(pack_root: Path, manifest: dict[str, Any]) -> l
             errors.append(f"{tag}: beta language profile release channel drifted")
         if tag not in SOURCE_AUTHORITY_REVIEWED_PROFILES and profile.get("native_review_state") != "native_technical_review_required_before_release_support":
             errors.append(f"{tag}: native review status must be explicit")
+        topology_counts = profile.get("topology_transform_counts", {})
+        if tag in EXPECTED_HEAD_INITIAL_NOMINAL_PROFILES:
+            if not isinstance(topology_counts, dict):
+                errors.append(f"{tag}: topology_transform_counts missing")
+            elif topology_counts.get("head_initial_nominal_phrase", 0) <= 0:
+                errors.append(f"{tag}: localized profile must include topology-transformed phrase rows")
     return errors
 
 
@@ -346,9 +353,36 @@ def validate_auxiliary_resources(pack_root: Path, manifest: dict[str, Any]) -> l
             break
     if topology.get("normalization_stage") != "stream_analysis_before_uuid_resolution":
         errors.append("topology normalization must happen before UUID resolution")
+    framework = topology.get("framework", {})
+    if framework.get("name") != "Universal Dependencies":
+        errors.append("topology framework must be Universal Dependencies")
+    if framework.get("raw_treebank_material_included") is not False:
+        errors.append("topology must not include raw UD treebank material")
     topo_tags = [profile.get("exact_tag") for profile in topology.get("profiles", [])]
     if topo_tags != EXPECTED_EXACT_PROFILES:
         errors.append("topology exact profiles drifted")
+    for profile in topology.get("profiles", []):
+        tag = profile.get("exact_tag")
+        source = profile.get("topology_source", {})
+        if source.get("treebank", "").startswith("UD_") is not True:
+            errors.append(f"{tag}: topology source must name a UD treebank")
+        if source.get("raw_treebank_material_included") is not False:
+            errors.append(f"{tag}: raw UD treebank material must not be included")
+        if source.get("sentences") != 1000:
+            errors.append(f"{tag}: UD-PUD topology source must use 1000 aligned sentences")
+        if not profile.get("sbsql_clause_slot_order"):
+            errors.append(f"{tag}: topology profile lacks SBsql clause slot order")
+        if not profile.get("nominal_phrase_slot_order"):
+            errors.append(f"{tag}: topology profile lacks nominal phrase slot order")
+    phrase_table = read_json(pack_root / "resources/phrases/phrase-table.json")
+    templates = phrase_table.get("structural_templates", [])
+    if phrase_table.get("structural_template_count") != len(templates) or len(templates) < 3:
+        errors.append("phrase table must include structural templates")
+    for template in templates:
+        slot_order = template.get("slot_order_by_profile", {})
+        if sorted(slot_order) != sorted(EXPECTED_EXACT_PROFILES):
+            errors.append(f"phrase structural template profile coverage drifted: {template.get('template_id')}")
+            break
     if unicode_policy.get("hidden_object_disclosure_allowed") is not False:
         errors.append("unicode policy must not allow hidden object disclosure")
     if resolver.get("authorized_schema_path_resolution_required") is not True:

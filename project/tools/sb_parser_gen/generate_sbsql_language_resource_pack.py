@@ -9,10 +9,12 @@
 
 """Generate the public SBsql language resource pack.
 
-The generated pack is product resource data. It is derived only from
+The generated pack is product resource data. Lexical resources are derived from
 ScratchBird-owned SBsql registry artifacts and the fixed system-object baseline
-in this generator. It never reads draft documentation and never uses network
-translation services.
+in this generator. Clause and phrase topology metadata includes deterministic
+summaries derived from Universal Dependencies PUD treebank structure. Raw
+treebank data is not vendored into the public pack. The generator never reads
+draft documentation and never uses network translation services.
 """
 
 from __future__ import annotations
@@ -153,6 +155,235 @@ SOURCE_AUTHORITY_REVIEWED_PROFILES = {
     for profile in LANGUAGE_PROFILES
     if profile["native_review_state"] == "source_authority_reviewed"
 }
+
+UD_PUD_TOPOLOGY_SOURCES = {
+    "en": {
+        "treebank": "UD_English-PUD",
+        "treebank_file": "en_pud-ud-test.conllu",
+        "license": "CC BY-SA 3.0",
+        "sentences": 1000,
+        "tokens": 21180,
+        "source_url": "https://github.com/UniversalDependencies/UD_English-PUD",
+    },
+    "fr": {
+        "treebank": "UD_French-PUD",
+        "treebank_file": "fr_pud-ud-test.conllu",
+        "license": "CC BY-SA 3.0",
+        "sentences": 1000,
+        "tokens": 24726,
+        "source_url": "https://github.com/UniversalDependencies/UD_French-PUD",
+    },
+    "de": {
+        "treebank": "UD_German-PUD",
+        "treebank_file": "de_pud-ud-test.conllu",
+        "license": "CC BY-SA 3.0",
+        "sentences": 1000,
+        "tokens": 21332,
+        "source_url": "https://github.com/UniversalDependencies/UD_German-PUD",
+    },
+    "it": {
+        "treebank": "UD_Italian-PUD",
+        "treebank_file": "it_pud-ud-test.conllu",
+        "license": "CC BY-SA 3.0",
+        "sentences": 1000,
+        "tokens": 23732,
+        "source_url": "https://github.com/UniversalDependencies/UD_Italian-PUD",
+    },
+    "es": {
+        "treebank": "UD_Spanish-PUD",
+        "treebank_file": "es_pud-ud-test.conllu",
+        "license": "CC BY-SA 3.0",
+        "sentences": 1000,
+        "tokens": 23283,
+        "source_url": "https://github.com/UniversalDependencies/UD_Spanish-PUD",
+    },
+}
+
+UD_TOPOLOGY_METRICS = {
+    "en": {
+        "dominant_predicate_argument_order": "subject_predicate_object",
+        "adposition_order": "prepositions_before_nominal_head",
+        "nominal_adjective_order": "adjective_before_noun",
+        "determiner_order": "determiner_before_noun",
+        "dependency_direction_ratios": {
+            "amod_before_head": 0.9897,
+            "case_before_head": 0.9562,
+            "det_before_head": 1.0,
+            "nsubj_before_predicate": 0.9669,
+            "obj_before_predicate": 0.0228,
+            "obl_before_predicate": 0.1944,
+        },
+    },
+    "fr": {
+        "dominant_predicate_argument_order": "subject_predicate_object",
+        "adposition_order": "prepositions_before_nominal_head",
+        "nominal_adjective_order": "mixed_postnominal_preferred",
+        "determiner_order": "determiner_before_noun",
+        "dependency_direction_ratios": {
+            "amod_before_head": 0.3061,
+            "case_before_head": 1.0,
+            "det_before_head": 1.0,
+            "nsubj_before_predicate": 0.9605,
+            "obj_before_predicate": 0.1187,
+            "obl_before_predicate": 0.1919,
+        },
+    },
+    "de": {
+        "dominant_predicate_argument_order": "verb_second_mixed_object_order",
+        "adposition_order": "prepositions_before_nominal_head",
+        "nominal_adjective_order": "adjective_before_noun",
+        "determiner_order": "determiner_before_noun",
+        "dependency_direction_ratios": {
+            "amod_before_head": 0.9973,
+            "case_before_head": 0.9951,
+            "det_before_head": 0.999,
+            "nsubj_before_predicate": 0.8378,
+            "obj_before_predicate": 0.5857,
+            "obl_before_predicate": 0.6561,
+        },
+    },
+    "it": {
+        "dominant_predicate_argument_order": "subject_predicate_object",
+        "adposition_order": "prepositions_before_nominal_head",
+        "nominal_adjective_order": "mixed_postnominal_preferred",
+        "determiner_order": "determiner_before_noun",
+        "dependency_direction_ratios": {
+            "amod_before_head": 0.3104,
+            "case_before_head": 0.9991,
+            "det_before_head": 1.0,
+            "nsubj_before_predicate": 0.8902,
+            "obj_before_predicate": 0.0636,
+            "obl_before_predicate": 0.2066,
+        },
+    },
+    "es": {
+        "dominant_predicate_argument_order": "subject_predicate_object",
+        "adposition_order": "prepositions_before_nominal_head",
+        "nominal_adjective_order": "mixed_postnominal_preferred",
+        "determiner_order": "determiner_before_noun",
+        "dependency_direction_ratios": {
+            "amod_before_head": 0.3043,
+            "case_before_head": 0.9995,
+            "det_before_head": 1.0,
+            "nsubj_before_predicate": 0.8827,
+            "obj_before_predicate": 0.092,
+            "obl_before_predicate": 0.1879,
+        },
+    },
+}
+
+PROFILE_TO_UD_LANGUAGE = {
+    "en-US": "en",
+    "en-CA": "en",
+    "fr-FR": "fr",
+    "fr-CA": "fr",
+    "de-DE": "de",
+    "it-IT": "it",
+    "es-ES": "es",
+}
+
+POSTNOMINAL_MODIFIER_PROFILES = {"fr-FR", "fr-CA", "it-IT", "es-ES"}
+
+NOMINAL_HEAD_TOKENS = {
+    "action", "address", "agent", "alias", "argument", "array", "artifact", "attribute",
+    "audit", "authorization", "backup", "binary", "block", "body", "branch", "bridge",
+    "buffer", "capability", "cardinality", "case", "catalog", "character", "checkpoint",
+    "class", "clause", "client", "cluster", "collation", "column", "comment", "compression",
+    "condition", "connection", "constraint", "constructor", "context", "copy", "cursor",
+    "data", "database", "date", "descriptor", "diagnostic", "dialect", "domain", "edge",
+    "element", "engine", "event", "exception", "expression", "extension", "field",
+    "filespace", "filter", "flag", "form", "function", "generator", "geometry", "graph",
+    "group", "handle", "identifier", "index", "instruction", "interval", "item", "job",
+    "key", "keyword", "label", "language", "length", "level", "list", "literal", "locator",
+    "lock", "log", "management", "map", "mask", "message", "method", "metric", "mode",
+    "modifier", "name", "namespace", "node", "object", "operation", "operator", "option",
+    "order", "package", "parser", "partition", "path", "pattern", "pipeline", "point",
+    "policy", "position", "privilege", "procedure", "processor", "profile", "projection",
+    "proxy", "query", "range", "record", "reference", "registry", "resource", "result",
+    "role", "routine", "route", "row", "rowset", "schema", "search", "security", "sequence",
+    "server", "session", "setting", "shape", "snapshot", "source", "statement", "stream",
+    "string", "subtype", "table", "target", "tenant", "text", "time", "timestamp",
+    "token", "transaction", "trigger", "type", "user", "value", "variable", "vector",
+    "version", "view", "window", "wrapper", "zone",
+}
+
+NON_NOMINAL_PREHEAD_TOKENS = {
+    "abs", "add", "alter", "and", "append", "begin", "call", "cancel", "cast", "close",
+    "coalesce", "collect", "commit", "contains", "copy", "create", "declare", "delete",
+    "disconnect", "distinct", "drop", "execute", "exists", "explain", "extract", "fetch",
+    "for", "from", "generate", "get", "grant", "has", "in", "insert", "into", "is", "join",
+    "like", "make", "merge", "move", "not", "on", "open", "or", "over", "raise", "read",
+    "replace", "restore", "revoke", "rollback", "search", "select", "set", "show", "split",
+    "start", "to", "transform", "truncate", "union", "unnest", "unpivot", "update", "use",
+    "when", "where", "with", "write",
+}
+
+STRUCTURAL_PHRASE_TEMPLATES = [
+    {
+        "template_id": "sbsql.query.select.basic",
+        "logical_form": "select_query",
+        "canonical_slots": ["action", "projection", "source", "condition", "modifier"],
+        "slot_required": ["action", "projection"],
+        "slot_order_by_profile": {
+            "en-US": ["action", "projection", "source", "condition", "modifier"],
+            "en-CA": ["action", "projection", "source", "condition", "modifier"],
+            "fr-FR": ["action", "projection", "source", "condition", "modifier"],
+            "fr-CA": ["action", "projection", "source", "condition", "modifier"],
+            "de-DE": ["action", "projection", "source", "condition", "modifier"],
+            "it-IT": ["action", "projection", "source", "condition", "modifier"],
+            "es-ES": ["action", "projection", "source", "condition", "modifier"],
+        },
+        "slot_markers_by_profile": {
+            "en-US": {"action": "select", "source": "from", "condition": "where"},
+            "en-CA": {"action": "select", "source": "from", "condition": "where"},
+            "fr-FR": {"action": "sélectionner", "source": "depuis", "condition": "où"},
+            "fr-CA": {"action": "sélectionner", "source": "depuis", "condition": "où"},
+            "de-DE": {"action": "auswählen", "source": "von", "condition": "wo"},
+            "it-IT": {"action": "seleziona", "source": "da", "condition": "dove"},
+            "es-ES": {"action": "seleccionar", "source": "desde", "condition": "donde"},
+        },
+    },
+    {
+        "template_id": "sbsql.command.transaction.basic",
+        "logical_form": "transaction_control",
+        "canonical_slots": ["action", "transaction_target", "modifier"],
+        "slot_required": ["action"],
+        "slot_order_by_profile": {
+            "en-US": ["action", "transaction_target", "modifier"],
+            "en-CA": ["action", "transaction_target", "modifier"],
+            "fr-FR": ["action", "transaction_target", "modifier"],
+            "fr-CA": ["action", "transaction_target", "modifier"],
+            "de-DE": ["action", "transaction_target", "modifier"],
+            "it-IT": ["action", "transaction_target", "modifier"],
+            "es-ES": ["action", "transaction_target", "modifier"],
+        },
+        "slot_markers_by_profile": {
+            "en-US": {"transaction_target": "transaction"},
+            "en-CA": {"transaction_target": "transaction"},
+            "fr-FR": {"transaction_target": "transaction"},
+            "fr-CA": {"transaction_target": "transaction"},
+            "de-DE": {"transaction_target": "Transaktion"},
+            "it-IT": {"transaction_target": "transazione"},
+            "es-ES": {"transaction_target": "transacción"},
+        },
+    },
+    {
+        "template_id": "sbsql.object.nominal.headed",
+        "logical_form": "catalog_object_name",
+        "canonical_slots": ["modifier", "nominal_head"],
+        "slot_required": ["nominal_head"],
+        "slot_order_by_profile": {
+            "en-US": ["modifier", "nominal_head"],
+            "en-CA": ["modifier", "nominal_head"],
+            "fr-FR": ["nominal_head", "modifier"],
+            "fr-CA": ["nominal_head", "modifier"],
+            "de-DE": ["modifier", "nominal_head"],
+            "it-IT": ["nominal_head", "modifier"],
+            "es-ES": ["nominal_head", "modifier"],
+        },
+        "slot_markers_by_profile": {},
+    },
+]
 
 SYSTEM_OBJECT_SOURCES = [
     ("database", "database", "storage_object", "database", "databases", "sys.database", "catalog_root", "Database file and database identity visible to SQL users."),
@@ -1113,20 +1344,71 @@ def build_source_corpus(system_registry: dict[str, Any], dialect: dict[str, Any]
     return sorted(rows, key=lambda row: row["record_id"])
 
 
-def translate_text(row: dict[str, Any], exact_tag: str) -> tuple[str, str, list[str]]:
+def apply_phrase_topology(
+    source_words: list[str],
+    translated_words: list[str],
+    exact_tag: str,
+) -> tuple[list[str], str | None]:
+    if exact_tag not in POSTNOMINAL_MODIFIER_PROFILES:
+        return translated_words, None
+    if len(source_words) < 2 or len(source_words) != len(translated_words):
+        return translated_words, None
+    if source_words[-1] not in NOMINAL_HEAD_TOKENS:
+        return translated_words, None
+    if any(word in NON_NOMINAL_PREHEAD_TOKENS for word in source_words[:-1]):
+        return translated_words, None
+    return [translated_words[-1], *translated_words[:-1]], "head_initial_nominal_phrase"
+
+
+def build_topology_profile(profile: dict[str, str]) -> dict[str, Any]:
+    exact_tag = profile["exact_tag"]
+    ud_language = PROFILE_TO_UD_LANGUAGE[exact_tag]
+    metrics = UD_TOPOLOGY_METRICS[ud_language]
+    source = UD_PUD_TOPOLOGY_SOURCES[ud_language]
+    nominal_order = STRUCTURAL_PHRASE_TEMPLATES[2]["slot_order_by_profile"][exact_tag]
+    return {
+        "adposition_order": metrics["adposition_order"],
+        "clause_slot_policy": "ud_topology_and_context_slot_binding",
+        "dependency_direction_ratios": metrics["dependency_direction_ratios"],
+        "determiner_order": metrics["determiner_order"],
+        "dominant_predicate_argument_order": metrics["dominant_predicate_argument_order"],
+        "english_fallback_when_stream_not_preferred_language": True,
+        "exact_tag": exact_tag,
+        "locale_topology_profile_uuid": stable_id("locale_topology", exact_tag, ud_language),
+        "nominal_adjective_order": metrics["nominal_adjective_order"],
+        "nominal_phrase_slot_order": nominal_order,
+        "profile_uuid": profile["profile_uuid"],
+        "sbsql_clause_slot_order": STRUCTURAL_PHRASE_TEMPLATES[0]["slot_order_by_profile"][exact_tag],
+        "topology_profile_uuid": TOPOLOGY_PROFILE_UUID,
+        "topology_source": {
+            "derived_metrics_only": True,
+            "license": source["license"],
+            "raw_treebank_material_included": False,
+            "sentences": source["sentences"],
+            "source_url": source["source_url"],
+            "tokens": source["tokens"],
+            "treebank": source["treebank"],
+            "treebank_file": source["treebank_file"],
+            "ud_language": ud_language,
+        },
+        "uuid_resolution_stage": "after_canonical_stream_normalization",
+    }
+
+
+def translate_text(row: dict[str, Any], exact_tag: str) -> tuple[str, str, list[str], str | None]:
     text = row["source_text"]
     if exact_tag in SOURCE_AUTHORITY_REVIEWED_PROFILES:
-        return text, "canonical_source", []
+        return text, "canonical_source", [], None
     if row["source_family"] == "diagnostic":
         translated = DIAGNOSTIC_TRANSLATIONS[exact_tag][row["source_id"]]
-        return translated, "localized_deterministic", []
+        return translated, "localized_deterministic", [], None
     if row.get("do_not_translate") is True:
-        return text, "technical_source_preserved", split_words(text)
+        return text, "technical_source_preserved", split_words(text), None
 
     glossary = SQL_GLOSSARY[exact_tag]
     words = split_words(text)
     if not words:
-        return text, "technical_source_preserved", []
+        return text, "technical_source_preserved", [], None
 
     translated_words: list[str] = []
     preserved_tokens: list[str] = []
@@ -1143,23 +1425,27 @@ def translate_text(row: dict[str, Any], exact_tag: str) -> tuple[str, str, list[
         translated_words.append(word)
         preserved_tokens.append(word)
 
+    translated_words, topology_transform = apply_phrase_topology(words, translated_words, exact_tag)
     translated = " ".join(translated_words)
     if translated_count == 0:
-        return translated, "technical_source_preserved", sorted(set(preserved_tokens))
+        return translated, "technical_source_preserved", sorted(set(preserved_tokens)), topology_transform
     if preserved_tokens:
-        return translated, "localized_with_technical_source_preserved", sorted(set(preserved_tokens))
-    return translated, "localized_deterministic", []
+        return translated, "localized_with_technical_source_preserved", sorted(set(preserved_tokens)), topology_transform
+    return translated, "localized_deterministic", [], topology_transform
 
 
 def build_language_profile(profile: dict[str, str], corpus_rows: list[dict[str, Any]]) -> dict[str, Any]:
     translations: list[dict[str, Any]] = []
     status_counts: dict[str, int] = {}
     preserved_token_counts: dict[str, int] = {}
+    topology_transform_counts: dict[str, int] = {}
     for row in corpus_rows:
-        translated, status, preserved_tokens = translate_text(row, profile["exact_tag"])
+        translated, status, preserved_tokens, topology_transform = translate_text(row, profile["exact_tag"])
         status_counts[status] = status_counts.get(status, 0) + 1
         for token in preserved_tokens:
             preserved_token_counts[token] = preserved_token_counts.get(token, 0) + 1
+        if topology_transform:
+            topology_transform_counts[topology_transform] = topology_transform_counts.get(topology_transform, 0) + 1
         translations.append(
             {
                 "case_policy": row["case_policy"],
@@ -1175,6 +1461,8 @@ def build_language_profile(profile: dict[str, str], corpus_rows: list[dict[str, 
         )
         if preserved_tokens:
             translations[-1]["source_tokens_preserved_by_policy"] = preserved_tokens
+        if topology_transform:
+            translations[-1]["topology_transform"] = topology_transform
     return {
         "schema_version": "sbsql.language_profile.v1",
         "display_name": profile["display_name"],
@@ -1198,6 +1486,7 @@ def build_language_profile(profile: dict[str, str], corpus_rows: list[dict[str, 
         "translation_count": len(translations),
         "translation_status_counts": dict(sorted(status_counts.items())),
         "translation_source": profile["translation_source"],
+        "topology_transform_counts": dict(sorted(topology_transform_counts.items())),
         "translations": translations,
     }
 
@@ -1222,23 +1511,22 @@ def build_auxiliary_resources(
     topology = {
         "schema_version": "sbsql.topology_profiles.v1",
         "topology_profile_uuid": TOPOLOGY_PROFILE_UUID,
+        "framework": {
+            "name": "Universal Dependencies",
+            "guidelines": "UD v2 dependency relations between content words with function words attached to content heads",
+            "derived_metrics_only": True,
+            "raw_treebank_material_included": False,
+        },
         "normalization_stage": "stream_analysis_before_uuid_resolution",
         "canonical_order": ["action", "projection", "source", "condition", "modifier"],
-        "profiles": [
-            {
-                "exact_tag": profile["exact_tag"],
-                "profile_uuid": profile["profile_uuid"],
-                "topology_profile_uuid": TOPOLOGY_PROFILE_UUID,
-                "clause_slot_policy": "marker_and_context_slot_binding",
-                "english_fallback_when_stream_not_preferred_language": True,
-                "uuid_resolution_stage": "after_canonical_stream_normalization",
-            }
-            for profile in LANGUAGE_PROFILES
-        ],
+        "structural_templates": STRUCTURAL_PHRASE_TEMPLATES,
+        "profiles": [build_topology_profile(profile) for profile in LANGUAGE_PROFILES],
     }
     phrases = {
         "schema_version": "sbsql.phrase_table.v1",
         "phrase_count": len(dialect["surfaces"]),
+        "structural_template_count": len(STRUCTURAL_PHRASE_TEMPLATES),
+        "structural_templates": STRUCTURAL_PHRASE_TEMPLATES,
         "phrases": [
             {
                 "phrase_id": stable_id("phrase", surface["surface_id"], surface["canonical_name"]),
@@ -1344,6 +1632,12 @@ def build_auxiliary_resources(
         "generated_by": GENERATOR_ID,
         "license": "MPL-2.0",
         "third_party_source_material_included": False,
+        "third_party_derived_topology_metadata": {
+            "included": True,
+            "source_family": "Universal Dependencies PUD",
+            "raw_treebank_material_included": False,
+            "sources": UD_PUD_TOPOLOGY_SOURCES,
+        },
         "native_review": [
             {
                 "exact_tag": profile["exact_tag"],
