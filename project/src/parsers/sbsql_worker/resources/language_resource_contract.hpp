@@ -253,9 +253,18 @@ struct LanguageResourceManifest {
   std::string signature_id;
   std::string signing_key_id;
   std::string governance_evidence_id;
+  std::string author_id{"scratchbird.governance.author.unspecified"};
+  std::string reviewer_id{"scratchbird.governance.reviewer.unspecified"};
   std::string native_review_evidence_id;
+  std::string native_technical_reviewer_id{
+      "scratchbird.governance.native_technical_reviewer.unspecified"};
+  std::string security_reviewer_id{"scratchbird.governance.security_reviewer.unspecified"};
   std::string support_owner_id;
   std::string trace_oracle_id;
+  std::string release_approval_id{"scratchbird.governance.release_approval.unspecified"};
+  std::string revocation_policy_id{"scratchbird.governance.revocation_policy.unspecified"};
+  std::string contribution_provenance_id{
+      "scratchbird.governance.contribution_provenance.unspecified"};
   std::string fallback_parent_uuid;
   std::string release_channel_evidence_id;
   std::string deprecation_notice_id;
@@ -302,7 +311,25 @@ struct LanguageResourceBundleManifest {
   std::string renderer_resource_hash;
   std::string diagnostic_resource_hash;
   std::string compatibility_identity{"sbsql.resource.compat.v1"};
+  std::uint32_t compatibility_version{1};
+  std::uint32_t min_parser_compatibility_version{1};
+  std::uint32_t max_parser_compatibility_version{1};
+  std::uint32_t parser_compatibility_version{1};
   std::string lifecycle_state{"staged"};
+  std::string generation_evidence_id{"sbsql.langpack.lifecycle.generation.unspecified"};
+  std::string signing_evidence_id{"sbsql.langpack.lifecycle.signing.unspecified"};
+  std::string publication_evidence_id{"sbsql.langpack.lifecycle.publication.unspecified"};
+  std::string admission_evidence_id{"sbsql.langpack.lifecycle.admission.unspecified"};
+  std::string download_evidence_id{"sbsql.langpack.lifecycle.download.unspecified"};
+  std::string cache_evidence_id{"sbsql.langpack.lifecycle.cache.unspecified"};
+  std::string delta_update_evidence_id{"sbsql.langpack.lifecycle.delta_update.unspecified"};
+  std::string rollback_evidence_id{"sbsql.langpack.lifecycle.rollback.unspecified"};
+  std::string revocation_evidence_id{"sbsql.langpack.lifecycle.revocation.unspecified"};
+  std::string expiry_evidence_id{"sbsql.langpack.lifecycle.expiry.unspecified"};
+  std::string key_rotation_evidence_id{
+      "sbsql.langpack.lifecycle.key_rotation.unspecified"};
+  std::string support_bundle_identity{"sbsql.support_bundle.language_resource.unspecified"};
+  std::string support_bundle_version{"1"};
   LanguageResourceManifest language_profile;
   std::vector<LanguageDataProvenance> provenance;
   bool signed_bundle{true};

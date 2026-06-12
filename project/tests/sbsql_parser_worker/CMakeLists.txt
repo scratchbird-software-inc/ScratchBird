@@ -42,6 +42,32 @@ set_tests_properties(sbsql_language_resource_contract_conformance PROPERTIES
   LABELS "sbsql_language_resource_contract;sbsql_parser_worker;SML-005;SML-010;SML-082;SML-083;SML-084;SML-086;SML-089;SML-091;SML-092;SML-093;SML-094;SML-095;SML-096;SML-097;SML-098;SML-099;SML-100;SML-101"
 )
 
+add_executable(sbsql_language_resource_governance_lifecycle_conformance
+  sbsql_language_resource_governance_lifecycle_conformance.cpp
+)
+target_compile_features(sbsql_language_resource_governance_lifecycle_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_language_resource_governance_lifecycle_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_language_resource_governance_lifecycle_conformance
+  COMMAND sbsql_language_resource_governance_lifecycle_conformance
+)
+set_tests_properties(sbsql_language_resource_governance_lifecycle_conformance PROPERTIES
+  LABELS "sbsql_language_resource_contract;sbsql_language_resource_governance_lifecycle;sbsql_parser_worker;SML-085;SML-088"
+)
+
+add_executable(sbsql_language_locale_profile_matrix_conformance
+  sbsql_language_locale_profile_matrix_conformance.cpp
+)
+target_compile_features(sbsql_language_locale_profile_matrix_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_language_locale_profile_matrix_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_language_locale_profile_matrix_conformance
+  COMMAND sbsql_language_locale_profile_matrix_conformance
+)
+set_tests_properties(sbsql_language_locale_profile_matrix_conformance PROPERTIES
+  LABELS "sbsql_language_locale_profile_matrix;sbsql_language_resource_contract;sbsql_parser_worker;SML-013;SML-014;SML-GATE-013;SML-GATE-014"
+)
+
 add_executable(sbsql_sml087_unicode_predictive_resource_conformance
   sbsql_sml087_unicode_predictive_resource_conformance.cpp
 )
@@ -149,6 +175,16 @@ add_test(
 )
 set_tests_properties(sbsql_driver_language_surface_gate PROPERTIES
   LABELS "sbsql_driver_language_surface;sbsql_parser_worker;SML-018;SML-020;SML-083;SML-086;SML-090;SML-091;SML-093;SML-101"
+)
+
+add_test(
+  NAME sbsql_language_golden_trace_oracle_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_language_golden_trace_oracle_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_language_golden_trace_oracle_gate PROPERTIES
+  LABELS "sbsql_language_golden_trace_oracle;sbsql_parser_worker;SML-089;SML-GATE-089"
 )
 
 if(NOT TARGET sb_isql AND EXISTS "${PROJECT_SOURCE_DIR}/drivers/tool/cli/CMakeLists.txt")
@@ -4666,6 +4702,24 @@ if(TARGET sb_server_core)
   )
   set_tests_properties(sbsql_server_language_session_control_conformance PROPERTIES
     LABELS "sbsql_server_language_session_control;SML-008;SML-009;SML-018;SML-020;sbsql_parser_worker;server_session_language_context"
+  )
+
+  add_executable(
+    sbsql_server_language_resource_directory_conformance
+    sbsql_server_language_resource_directory_conformance.cpp
+  )
+  target_compile_features(sbsql_server_language_resource_directory_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_server_language_resource_directory_conformance
+    PRIVATE
+      sb_server_core
+  )
+  add_test(
+    NAME sbsql_server_language_resource_directory_conformance
+    COMMAND sbsql_server_language_resource_directory_conformance
+  )
+  set_tests_properties(sbsql_server_language_resource_directory_conformance PROPERTIES
+    LABELS "sbsql_server_language_resource_directory;SML-015;SML-083;SML-085;SML-093;sbsql_parser_worker;server_session_language_context"
   )
   add_test(
     NAME sbsql_cluster_private_fail_closed_conformance

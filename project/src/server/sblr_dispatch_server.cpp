@@ -1191,6 +1191,12 @@ bool IsLanguageBundleOperation(std::string_view operation_id) {
          operation_id == "language.bundle.validate";
 }
 
+bool IsLanguageResourceDirectoryOperation(std::string_view operation_id) {
+  return operation_id == "language.resource_directory.scan" ||
+         operation_id == "language.resource_directory.reload" ||
+         operation_id == "language.resource_directory.show";
+}
+
 bool LanguageBundleManifestAdmitted(std::string_view encoded) {
   return JsonBoolField(encoded, "admitted_bundle_manifest_attached", false) &&
          JsonBoolField(encoded, "bundle_signature_verified", false) &&
@@ -1257,6 +1263,93 @@ std::string LanguageBundleRegistryPacket(std::string_view operation_id,
       << "loaded=" << (record.loaded ? "true" : "false") << "\n"
       << "required_profile=" << (record.required_profile ? "true" : "false") << "\n"
       << "language_resource_epoch=" << record.language_resource_epoch << "\n";
+  return out.str();
+}
+
+bool LanguageResourceDirectoryManifestAdmitted(std::string_view encoded) {
+  return JsonBoolField(encoded, "language_resource_directory_manifest_attached", false) &&
+         JsonBoolField(encoded, "language_resource_directory_signature_verified", false) &&
+         JsonBoolField(encoded, "language_resource_directory_security_admitted", false) &&
+         JsonBoolField(encoded, "language_resource_directory_compatible", false);
+}
+
+ServerLanguageResourceDirectoryRecord LanguageResourceDirectoryRecordFromEnvelope(
+    std::string_view encoded) {
+  ServerLanguageResourceDirectoryRecord record;
+  record.directory_id =
+      JsonTextField(encoded, "directory_id")
+          .value_or(JsonTextField(encoded, "language_resource_directory_id").value_or(""));
+  record.directory_path =
+      JsonTextField(encoded, "directory_path")
+          .value_or(JsonTextField(encoded, "resource_directory_path").value_or(""));
+  record.manifest_hash =
+      JsonTextField(encoded, "manifest_hash")
+          .value_or(JsonTextField(encoded, "language_resource_manifest_hash").value_or(""));
+  record.signing_key_id =
+      JsonTextField(encoded, "signing_key_id")
+          .value_or(JsonTextField(encoded, "language_resource_signing_key_id").value_or(""));
+  record.scan_evidence_id =
+      JsonTextField(encoded, "scan_evidence_id")
+          .value_or(JsonTextField(encoded, "language_resource_scan_evidence_id").value_or(""));
+  record.audit_reason =
+      JsonTextField(encoded, "audit_reason")
+          .value_or(JsonTextField(encoded, "language_resource_audit_reason").value_or(""));
+  record.signed_manifest_verified =
+      JsonBoolField(encoded, "language_resource_directory_signature_verified", false);
+  record.admitted_by_security_policy =
+      JsonBoolField(encoded, "language_resource_directory_security_admitted", false);
+  record.compatible_with_server =
+      JsonBoolField(encoded, "language_resource_directory_compatible", false);
+  record.active = true;
+  return record;
+}
+
+bool LanguageResourceDirectoryRecordIsComplete(
+    const ServerLanguageResourceDirectoryRecord& record) {
+  return !record.directory_id.empty() &&
+         !record.manifest_hash.empty() &&
+         !record.signing_key_id.empty() &&
+         !record.scan_evidence_id.empty() &&
+         !record.audit_reason.empty() &&
+         record.signed_manifest_verified &&
+         record.admitted_by_security_policy &&
+         record.compatible_with_server;
+}
+
+std::string LanguageResourceDirectoryPacket(
+    std::string_view operation_id,
+    const ServerLanguageResourceDirectoryRecord& record,
+    std::string_view outcome,
+    bool mutated) {
+  std::ostringstream out;
+  out << "operation_id=" << operation_id << "\n"
+      << "result_kind=language.resource_directory_registry.v1\n"
+      << "outcome=" << outcome << "\n"
+      << "mutated_language_resource_directory=" << (mutated ? "true" : "false") << "\n"
+      << "cache_invalidated=" << (mutated ? "true" : "false") << "\n"
+      << "server_language_resource_directory_authority=true\n"
+      << "server_language_resource_registry_authority=true\n"
+      << "parser_language_library_admission=false\n"
+      << "load_or_reload_effects_executed_by_parser=false\n"
+      << "row_storage_touched=false\n"
+      << "mga_finality_claimed=false\n"
+      << "directory_id=" << record.directory_id << "\n"
+      << "directory_path_state="
+      << (record.directory_path.empty() ? "not_reported" : "redacted") << "\n"
+      << "manifest_hash=" << record.manifest_hash << "\n"
+      << "signing_key_id=" << record.signing_key_id << "\n"
+      << "scan_evidence_id=" << record.scan_evidence_id << "\n"
+      << "audit_reason=" << record.audit_reason << "\n"
+      << "signed_manifest_verified="
+      << (record.signed_manifest_verified ? "true" : "false") << "\n"
+      << "admitted_by_security_policy="
+      << (record.admitted_by_security_policy ? "true" : "false") << "\n"
+      << "compatible_with_server="
+      << (record.compatible_with_server ? "true" : "false") << "\n"
+      << "active=" << (record.active ? "true" : "false") << "\n"
+      << "language_resource_epoch=" << record.language_resource_epoch << "\n"
+      << "localized_name_epoch=" << record.localized_name_epoch << "\n"
+      << "message_resource_epoch=" << record.message_resource_epoch << "\n";
   return out.str();
 }
 
@@ -4276,6 +4369,81 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                      true),
         0,
         "language_bundle_unloaded");
+  }
+  if (IsLanguageResourceDirectoryOperation(admission.operation_id)) {
+    if (admission.operation_id == "language.resource_directory.show") {
+      ServerLanguageResourceDirectoryRecord record =
+          LanguageResourceDirectoryRecordFromEnvelope(encoded);
+      if (!record.directory_id.empty()) {
+        const auto it =
+            registry->language_resource_directories_by_id.find(record.directory_id);
+        if (it != registry->language_resource_directories_by_id.end()) {
+          record = it->second;
+        }
+      } else if (!registry->language_resource_directories_by_id.empty()) {
+        record = registry->language_resource_directories_by_id.begin()->second;
+      }
+      return LanguageSessionControlResult(
+          registry,
+          request_record.request_uuid,
+          decoded->session_uuid,
+          admission.operation_id,
+          LanguageResourceDirectoryPacket(admission.operation_id,
+                                          record,
+                                          "language_resource_directory_show",
+                                          false),
+          record.directory_id.empty() ? 0 : 1,
+          "language_resource_directory_show");
+    }
+
+    if (!LanguageResourceDirectoryManifestAdmitted(encoded)) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     "language_resource_directory_admission_required");
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.LANGUAGE_RESOURCE_DIRECTORY_ADMISSION_REQUIRED",
+                     "Language resource directory scan and reload require admitted signed manifests.",
+                     "language_resource_directory_admission_required");
+    }
+
+    ServerLanguageResourceDirectoryRecord record =
+        LanguageResourceDirectoryRecordFromEnvelope(encoded);
+    if (!LanguageResourceDirectoryRecordIsComplete(record)) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     "language_resource_directory_manifest_incomplete");
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.LANGUAGE_RESOURCE_DIRECTORY_MANIFEST_INCOMPLETE",
+                     "Language resource directory manifests require id hash signing evidence audit reason and security admission.",
+                     "language_resource_directory_manifest_incomplete");
+    }
+
+    BumpSessionLanguageResourceEpochs(session);
+    record.language_resource_epoch = session->language_resource_epoch;
+    record.localized_name_epoch = session->localized_name_epoch;
+    record.message_resource_epoch = session->message_resource_epoch;
+    registry->language_resource_directories_by_id[record.directory_id] = record;
+    const std::string outcome =
+        admission.operation_id == "language.resource_directory.reload"
+            ? "language_resource_directory_reloaded"
+            : "language_resource_directory_scanned";
+    return LanguageSessionControlResult(
+        registry,
+        request_record.request_uuid,
+        decoded->session_uuid,
+        admission.operation_id,
+        LanguageResourceDirectoryPacket(admission.operation_id,
+                                        record,
+                                        outcome,
+                                        true),
+        0,
+        outcome);
   }
   if (admission.operation_id == "session.prepare_statement") {
     const std::string statement_name = JsonTextField(encoded, "prepared_statement_name").value_or("");

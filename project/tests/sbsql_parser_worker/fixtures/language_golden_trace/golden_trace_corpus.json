@@ -1,0 +1,1185 @@
+{
+  "schema_version": "sbsql.language_golden_trace_oracle.v1",
+  "gate_id": "SML-GATE-089",
+  "track_id": "SML-089",
+  "hash_algorithm": "sha256",
+  "fixture_root": "project/tests/sbsql_parser_worker/fixtures/language_golden_trace",
+  "required_classes": [
+    "ambiguity",
+    "canonical_element_stream",
+    "diagnostic_path",
+    "expired",
+    "fallback",
+    "incompatible_resource",
+    "localized",
+    "negative",
+    "parse_back",
+    "positive",
+    "preferred_render",
+    "renderer_lossiness",
+    "revoked",
+    "sblr_uuid_reference",
+    "standard",
+    "unicode"
+  ],
+  "cases": [
+    {
+      "case_id": "SML-089-001-positive-localized-preferred",
+      "classes": [
+        "positive",
+        "localized",
+        "canonical_element_stream",
+        "sblr_uuid_reference",
+        "preferred_render",
+        "parse_back",
+        "renderer_lossiness",
+        "diagnostic_path"
+      ],
+      "input": {
+        "profile": "localized",
+        "text": "clients depuis nom choisir",
+        "source_sha256": "5d7f25b1c599de313e5d9d3dd196d595e250eb9395bf1f1c6cff3784ca7a035d"
+      },
+      "canonical_element_stream": {
+        "resource_identity": "sbsql.resource.pack.fr-ca@beta.1",
+        "language_profile_uuid": "019f2089-0000-7000-8000-000000000101",
+        "exact_tag": "fr-CA",
+        "dialect_profile_uuid": "sbsql.v3",
+        "topology_profile_uuid": "topology.sbsql.localized_slot_order.v1",
+        "common_resource_hash": "sha256:sbsql.common.resource.pack.v1",
+        "source_hash": "5d7f25b1c599de313e5d9d3dd196d595e250eb9395bf1f1c6cff3784ca7a035d",
+        "canonical_order_id": "sbsql.canonical_order.v1",
+        "normalized_before_uuid_resolution": true,
+        "server_revalidation_required": true,
+        "elements": [
+          {
+            "kind": "keyword",
+            "canonical_text": "SELECT",
+            "canonical_id": "SBSQL.SELECT",
+            "surface_id": "surface.query.select",
+            "slot_id": "slot.action",
+            "alias_id": "alias.select",
+            "topology_role": "action",
+            "localized_text_hash": "334c4c610a71a5a9fe6f89ee9dd7e5775ddc048605c33c8efde0229525bd45b3",
+            "source_text": "choisir",
+            "source_span": {
+              "offset": 19,
+              "length": 7
+            }
+          },
+          {
+            "kind": "identifier",
+            "canonical_text": "name",
+            "canonical_id": "SBSQL.IDENTIFIER.PROJECTION.NAME",
+            "surface_id": "surface.identifier.name",
+            "slot_id": "slot.projection",
+            "alias_id": "alias.name",
+            "topology_role": "projection",
+            "localized_text_hash": "2f588afe14a613cb44993b87574220e5af06f5e035cadaa682ec08a20b47c66f",
+            "source_text": "nom",
+            "source_span": {
+              "offset": 15,
+              "length": 3
+            }
+          },
+          {
+            "kind": "keyword",
+            "canonical_text": "FROM",
+            "canonical_id": "SBSQL.FROM",
+            "surface_id": "surface.query.from",
+            "slot_id": "slot.source_marker",
+            "alias_id": "alias.from",
+            "topology_role": "source_marker",
+            "localized_text_hash": "b4ec6788ab04da10a5ee39ddf460ffdbcf81da8971a0639c49f53ebe0f154ad7",
+            "source_text": "depuis",
+            "source_span": {
+              "offset": 8,
+              "length": 6
+            }
+          },
+          {
+            "kind": "identifier",
+            "canonical_text": "customers",
+            "canonical_id": "SBSQL.IDENTIFIER.SOURCE.CUSTOMERS",
+            "surface_id": "surface.identifier.customers",
+            "slot_id": "slot.source",
+            "alias_id": "alias.customers",
+            "topology_role": "source",
+            "localized_text_hash": "8f4d9088121acfab37f4a5875ef93c8a89e1489f1fc3b4367a1ce950a44f23e8",
+            "source_text": "clients",
+            "source_span": {
+              "offset": 0,
+              "length": 7
+            }
+          }
+        ]
+      },
+      "sblr": {
+        "operation_uuid": "019f2089-0000-7000-8000-000000000001",
+        "statement_uuid": "019f2089-0000-7000-8000-000000000002",
+        "resource_uuid": "019f2089-0000-7000-8000-000000000003",
+        "reference_fields": {
+          "operation_family": "sblr.query.relational.v3",
+          "operation_name": "query.evaluate_projection",
+          "canonical_stream_hash_ref": "a286d3bdeaa9abbbdf320451fa30c46f1822f7f494e42537ca500f8a86b984d4",
+          "source_hash_ref": "5d7f25b1c599de313e5d9d3dd196d595e250eb9395bf1f1c6cff3784ca7a035d",
+          "resource_identity_ref": "sbsql.resource.pack.fr-ca@beta.1"
+        }
+      },
+      "render": {
+        "decision": "preferred_language",
+        "diagnostic_code": "SBSQL.LANG_RESOURCE.RENDERER_LOSSINESS_CLASSIFIED",
+        "server_revalidation_required": true,
+        "used_canonical_english_fallback": false,
+        "lossiness": "canonical_equivalent",
+        "text": "clients depuis nom choisir",
+        "text_sha256": "5d7f25b1c599de313e5d9d3dd196d595e250eb9395bf1f1c6cff3784ca7a035d"
+      },
+      "parse_back": {
+        "input_text": "SELECT name FROM customers",
+        "input_sha256": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e",
+        "canonical_element_stream": {
+          "resource_identity": "sbsql.resource.pack.fr-ca@beta.1",
+          "language_profile_uuid": "019f2089-0000-7000-8000-000000000011",
+          "exact_tag": "en",
+          "dialect_profile_uuid": "sbsql.v3",
+          "topology_profile_uuid": "topology.sbsql.localized_slot_order.v1",
+          "common_resource_hash": "sha256:sbsql.common.resource.pack.v1",
+          "source_hash": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e",
+          "canonical_order_id": "sbsql.canonical_order.v1",
+          "normalized_before_uuid_resolution": true,
+          "server_revalidation_required": true,
+          "elements": [
+            {
+              "kind": "keyword",
+              "canonical_text": "SELECT",
+              "canonical_id": "SBSQL.SELECT",
+              "surface_id": "surface.query.select",
+              "slot_id": "slot.action",
+              "alias_id": "alias.select",
+              "topology_role": "action",
+              "localized_text_hash": "6e4261695ad1aa36aac75303151674266d135fc12c26f8dc64bba0546d4238f2",
+              "source_text": "SELECT",
+              "source_span": {
+                "offset": 0,
+                "length": 6
+              }
+            },
+            {
+              "kind": "identifier",
+              "canonical_text": "name",
+              "canonical_id": "SBSQL.IDENTIFIER.PROJECTION.NAME",
+              "surface_id": "surface.identifier.name",
+              "slot_id": "slot.projection",
+              "alias_id": "alias.name",
+              "topology_role": "projection",
+              "localized_text_hash": "82a3537ff0dbce7eec35d69edc3a189ee6f17d82f353a553f9aa96cb0be3ce89",
+              "source_text": "name",
+              "source_span": {
+                "offset": 7,
+                "length": 4
+              }
+            },
+            {
+              "kind": "keyword",
+              "canonical_text": "FROM",
+              "canonical_id": "SBSQL.FROM",
+              "surface_id": "surface.query.from",
+              "slot_id": "slot.source_marker",
+              "alias_id": "alias.from",
+              "topology_role": "source_marker",
+              "localized_text_hash": "f4383c668fc0fd3898ecf9ff2ea3d6b7c62592e8e29ef2bb1eae3e2dd27eb0bd",
+              "source_text": "FROM",
+              "source_span": {
+                "offset": 12,
+                "length": 4
+              }
+            },
+            {
+              "kind": "identifier",
+              "canonical_text": "customers",
+              "canonical_id": "SBSQL.IDENTIFIER.SOURCE.CUSTOMERS",
+              "surface_id": "surface.identifier.customers",
+              "slot_id": "slot.source",
+              "alias_id": "alias.customers",
+              "topology_role": "source",
+              "localized_text_hash": "21eb2153dd1483cd67a621fb2c7b2f65b2ca46c64a49e49be4b939a1f0c844f8",
+              "source_text": "customers",
+              "source_span": {
+                "offset": 17,
+                "length": 9
+              }
+            }
+          ]
+        }
+      },
+      "diagnostics": [
+        {
+          "code": "SBSQL.LANG_RESOURCE.RENDERER_LOSSINESS_CLASSIFIED",
+          "severity": "WARNING",
+          "component": "sbp_sbsql.language_resource",
+          "path": [
+            "sml089",
+            "SML-089-001-positive-localized-preferred",
+            "diagnostic"
+          ],
+          "public_fields": [
+            {
+              "name": "diagnostic_contract",
+              "value": "sbsql.no_disclosure.v1"
+            },
+            {
+              "name": "failure_kind",
+              "value": "renderer_lossiness"
+            },
+            {
+              "name": "disclosure_state",
+              "value": "public_diagnostic_only"
+            },
+            {
+              "name": "private_input_state",
+              "value": "redacted"
+            },
+            {
+              "name": "resource_identity_state",
+              "value": "hashed"
+            },
+            {
+              "name": "profile_identity_state",
+              "value": "public_profile_id"
+            },
+            {
+              "name": "input_text_state",
+              "value": "redacted"
+            },
+            {
+              "name": "identifier_evidence_state",
+              "value": "redacted"
+            },
+            {
+              "name": "telemetry_redaction",
+              "value": "disabled"
+            },
+            {
+              "name": "support_bundle_redaction",
+              "value": "enabled"
+            },
+            {
+              "name": "server_revalidation_required",
+              "value": "true"
+            }
+          ]
+        }
+      ],
+      "expected_hashes": {
+        "source_sha256": "5d7f25b1c599de313e5d9d3dd196d595e250eb9395bf1f1c6cff3784ca7a035d",
+        "canonical_stream_sha256": "a286d3bdeaa9abbbdf320451fa30c46f1822f7f494e42537ca500f8a86b984d4",
+        "semantic_stream_sha256": "c745b6d2721e6a1852fc59309c85c17e07450bf1534b1e9577415e8d8dcb1def",
+        "sblr_reference_sha256": "7d086331e8084bcc6abe89fd8547e755c598e76a78db492176248402cf421626",
+        "render_sha256": "5bcf59078d920e95b7cf2fd4fce2c4fb2afc9c91f8f18cd5f515a000627a0445",
+        "parse_back_stream_sha256": "948a56b76a0a0f51fde1c3778826ef2aef4b6199aa121f431dc6bb13b7386a39",
+        "parse_back_semantic_stream_sha256": "c745b6d2721e6a1852fc59309c85c17e07450bf1534b1e9577415e8d8dcb1def",
+        "diagnostics_sha256": "caab8a459666c3f7691a902436424ddcb5dacd58e940234b788c782f21e26954",
+        "trace_sha256": "a96ac930b73bffb7c5f340d0bb96cb250d1f5d441dc2048a187c5a4385d39da6"
+      }
+    },
+    {
+      "case_id": "SML-089-002-standard-fallback",
+      "classes": [
+        "fallback",
+        "standard",
+        "canonical_element_stream",
+        "sblr_uuid_reference",
+        "parse_back",
+        "diagnostic_path"
+      ],
+      "input": {
+        "profile": "standard",
+        "text": "SELECT name FROM customers",
+        "source_sha256": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e"
+      },
+      "canonical_element_stream": {
+        "resource_identity": "sbsql.resource.pack.fr-ca@beta.1",
+        "language_profile_uuid": "019f2089-0000-7000-8000-000000000102",
+        "exact_tag": "en",
+        "dialect_profile_uuid": "sbsql.v3",
+        "topology_profile_uuid": "topology.sbsql.localized_slot_order.v1",
+        "common_resource_hash": "sha256:sbsql.common.resource.pack.v1",
+        "source_hash": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e",
+        "canonical_order_id": "sbsql.canonical_order.v1",
+        "normalized_before_uuid_resolution": true,
+        "server_revalidation_required": true,
+        "elements": [
+          {
+            "kind": "keyword",
+            "canonical_text": "SELECT",
+            "canonical_id": "SBSQL.SELECT",
+            "surface_id": "surface.query.select",
+            "slot_id": "slot.action",
+            "alias_id": "alias.select",
+            "topology_role": "action",
+            "localized_text_hash": "6e4261695ad1aa36aac75303151674266d135fc12c26f8dc64bba0546d4238f2",
+            "source_text": "SELECT",
+            "source_span": {
+              "offset": 0,
+              "length": 6
+            }
+          },
+          {
+            "kind": "identifier",
+            "canonical_text": "name",
+            "canonical_id": "SBSQL.IDENTIFIER.PROJECTION.NAME",
+            "surface_id": "surface.identifier.name",
+            "slot_id": "slot.projection",
+            "alias_id": "alias.name",
+            "topology_role": "projection",
+            "localized_text_hash": "82a3537ff0dbce7eec35d69edc3a189ee6f17d82f353a553f9aa96cb0be3ce89",
+            "source_text": "name",
+            "source_span": {
+              "offset": 7,
+              "length": 4
+            }
+          },
+          {
+            "kind": "keyword",
+            "canonical_text": "FROM",
+            "canonical_id": "SBSQL.FROM",
+            "surface_id": "surface.query.from",
+            "slot_id": "slot.source_marker",
+            "alias_id": "alias.from",
+            "topology_role": "source_marker",
+            "localized_text_hash": "f4383c668fc0fd3898ecf9ff2ea3d6b7c62592e8e29ef2bb1eae3e2dd27eb0bd",
+            "source_text": "FROM",
+            "source_span": {
+              "offset": 12,
+              "length": 4
+            }
+          },
+          {
+            "kind": "identifier",
+            "canonical_text": "customers",
+            "canonical_id": "SBSQL.IDENTIFIER.SOURCE.CUSTOMERS",
+            "surface_id": "surface.identifier.customers",
+            "slot_id": "slot.source",
+            "alias_id": "alias.customers",
+            "topology_role": "source",
+            "localized_text_hash": "21eb2153dd1483cd67a621fb2c7b2f65b2ca46c64a49e49be4b939a1f0c844f8",
+            "source_text": "customers",
+            "source_span": {
+              "offset": 17,
+              "length": 9
+            }
+          }
+        ]
+      },
+      "sblr": {
+        "operation_uuid": "019f2089-0000-7000-8000-000000000001",
+        "statement_uuid": "019f2089-0000-7000-8000-000000000002",
+        "resource_uuid": "019f2089-0000-7000-8000-000000000003",
+        "reference_fields": {
+          "operation_family": "sblr.query.relational.v3",
+          "operation_name": "query.evaluate_projection",
+          "canonical_stream_hash_ref": "9e3f399742fbaa9ab8ad15214899fa203bc4f44f0452f3b19a1b87afbbba50c8",
+          "source_hash_ref": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e",
+          "resource_identity_ref": "sbsql.resource.pack.fr-ca@beta.1"
+        }
+      },
+      "render": {
+        "decision": "canonical_english_fallback",
+        "diagnostic_code": "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
+        "server_revalidation_required": true,
+        "used_canonical_english_fallback": true,
+        "lossiness": "canonical_english_fallback",
+        "text": "SELECT name FROM customers",
+        "text_sha256": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e"
+      },
+      "parse_back": {
+        "input_text": "SELECT name FROM customers",
+        "input_sha256": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e",
+        "canonical_element_stream": {
+          "resource_identity": "sbsql.resource.pack.fr-ca@beta.1",
+          "language_profile_uuid": "019f2089-0000-7000-8000-000000000011",
+          "exact_tag": "en",
+          "dialect_profile_uuid": "sbsql.v3",
+          "topology_profile_uuid": "topology.sbsql.localized_slot_order.v1",
+          "common_resource_hash": "sha256:sbsql.common.resource.pack.v1",
+          "source_hash": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e",
+          "canonical_order_id": "sbsql.canonical_order.v1",
+          "normalized_before_uuid_resolution": true,
+          "server_revalidation_required": true,
+          "elements": [
+            {
+              "kind": "keyword",
+              "canonical_text": "SELECT",
+              "canonical_id": "SBSQL.SELECT",
+              "surface_id": "surface.query.select",
+              "slot_id": "slot.action",
+              "alias_id": "alias.select",
+              "topology_role": "action",
+              "localized_text_hash": "6e4261695ad1aa36aac75303151674266d135fc12c26f8dc64bba0546d4238f2",
+              "source_text": "SELECT",
+              "source_span": {
+                "offset": 0,
+                "length": 6
+              }
+            },
+            {
+              "kind": "identifier",
+              "canonical_text": "name",
+              "canonical_id": "SBSQL.IDENTIFIER.PROJECTION.NAME",
+              "surface_id": "surface.identifier.name",
+              "slot_id": "slot.projection",
+              "alias_id": "alias.name",
+              "topology_role": "projection",
+              "localized_text_hash": "82a3537ff0dbce7eec35d69edc3a189ee6f17d82f353a553f9aa96cb0be3ce89",
+              "source_text": "name",
+              "source_span": {
+                "offset": 7,
+                "length": 4
+              }
+            },
+            {
+              "kind": "keyword",
+              "canonical_text": "FROM",
+              "canonical_id": "SBSQL.FROM",
+              "surface_id": "surface.query.from",
+              "slot_id": "slot.source_marker",
+              "alias_id": "alias.from",
+              "topology_role": "source_marker",
+              "localized_text_hash": "f4383c668fc0fd3898ecf9ff2ea3d6b7c62592e8e29ef2bb1eae3e2dd27eb0bd",
+              "source_text": "FROM",
+              "source_span": {
+                "offset": 12,
+                "length": 4
+              }
+            },
+            {
+              "kind": "identifier",
+              "canonical_text": "customers",
+              "canonical_id": "SBSQL.IDENTIFIER.SOURCE.CUSTOMERS",
+              "surface_id": "surface.identifier.customers",
+              "slot_id": "slot.source",
+              "alias_id": "alias.customers",
+              "topology_role": "source",
+              "localized_text_hash": "21eb2153dd1483cd67a621fb2c7b2f65b2ca46c64a49e49be4b939a1f0c844f8",
+              "source_text": "customers",
+              "source_span": {
+                "offset": 17,
+                "length": 9
+              }
+            }
+          ]
+        }
+      },
+      "diagnostics": [
+        {
+          "code": "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
+          "severity": "ERROR",
+          "component": "sbp_sbsql.language_resource",
+          "path": [
+            "sml089",
+            "SML-089-002-standard-fallback",
+            "diagnostic"
+          ],
+          "public_fields": [
+            {
+              "name": "diagnostic_contract",
+              "value": "sbsql.no_disclosure.v1"
+            },
+            {
+              "name": "failure_kind",
+              "value": "fallback"
+            },
+            {
+              "name": "disclosure_state",
+              "value": "public_diagnostic_only"
+            },
+            {
+              "name": "private_input_state",
+              "value": "redacted"
+            },
+            {
+              "name": "resource_identity_state",
+              "value": "hashed"
+            },
+            {
+              "name": "profile_identity_state",
+              "value": "public_profile_id"
+            },
+            {
+              "name": "input_text_state",
+              "value": "redacted"
+            },
+            {
+              "name": "identifier_evidence_state",
+              "value": "redacted"
+            },
+            {
+              "name": "telemetry_redaction",
+              "value": "disabled"
+            },
+            {
+              "name": "support_bundle_redaction",
+              "value": "enabled"
+            },
+            {
+              "name": "server_revalidation_required",
+              "value": "true"
+            }
+          ]
+        }
+      ],
+      "expected_hashes": {
+        "source_sha256": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e",
+        "canonical_stream_sha256": "9e3f399742fbaa9ab8ad15214899fa203bc4f44f0452f3b19a1b87afbbba50c8",
+        "semantic_stream_sha256": "c745b6d2721e6a1852fc59309c85c17e07450bf1534b1e9577415e8d8dcb1def",
+        "sblr_reference_sha256": "812a46d9377e5b99971e8f69e296c5be86e983cce260669d621ce380e67afd00",
+        "render_sha256": "67b3630e49452a0dd2fc7fb071572a0dc68f2584d3400aa02eb8fcdecef66ee9",
+        "parse_back_stream_sha256": "948a56b76a0a0f51fde1c3778826ef2aef4b6199aa121f431dc6bb13b7386a39",
+        "parse_back_semantic_stream_sha256": "c745b6d2721e6a1852fc59309c85c17e07450bf1534b1e9577415e8d8dcb1def",
+        "diagnostics_sha256": "c257fb834df93c49b342a6a0176e4aa65395085fc9744720f763e871d507f20d",
+        "trace_sha256": "d20aa70416d594b7d8b7a8f13800cca90303229d770c6ed7f7988dd4f6f26200"
+      }
+    },
+    {
+      "case_id": "SML-089-003-negative-missing-resource",
+      "classes": [
+        "negative",
+        "standard",
+        "diagnostic_path"
+      ],
+      "input": {
+        "profile": "standard",
+        "text": "SELECT hidden_name FROM hidden_source",
+        "source_sha256": "36e5fe32abcfbf6621856a10b369bd09a055f2cb7ceb4473b5333f44c21b259a"
+      },
+      "canonical_element_stream": null,
+      "sblr": null,
+      "render": null,
+      "parse_back": null,
+      "diagnostics": [
+        {
+          "code": "SBSQL.LANG_RESOURCE.MISSING",
+          "severity": "ERROR",
+          "component": "sbp_sbsql.language_resource",
+          "path": [
+            "sml089",
+            "SML-089-003-negative-missing-resource",
+            "diagnostic"
+          ],
+          "public_fields": [
+            {
+              "name": "diagnostic_contract",
+              "value": "sbsql.no_disclosure.v1"
+            },
+            {
+              "name": "failure_kind",
+              "value": "missing_resource"
+            },
+            {
+              "name": "disclosure_state",
+              "value": "public_diagnostic_only"
+            },
+            {
+              "name": "private_input_state",
+              "value": "redacted"
+            },
+            {
+              "name": "resource_identity_state",
+              "value": "hashed"
+            },
+            {
+              "name": "profile_identity_state",
+              "value": "public_profile_id"
+            },
+            {
+              "name": "input_text_state",
+              "value": "redacted"
+            },
+            {
+              "name": "identifier_evidence_state",
+              "value": "redacted"
+            },
+            {
+              "name": "telemetry_redaction",
+              "value": "disabled"
+            },
+            {
+              "name": "support_bundle_redaction",
+              "value": "enabled"
+            },
+            {
+              "name": "server_revalidation_required",
+              "value": "true"
+            }
+          ]
+        }
+      ],
+      "expected_hashes": {
+        "source_sha256": "36e5fe32abcfbf6621856a10b369bd09a055f2cb7ceb4473b5333f44c21b259a",
+        "canonical_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "semantic_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "sblr_reference_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "render_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "parse_back_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "parse_back_semantic_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "diagnostics_sha256": "1c7a09eb93720c8c8591df9326f48659a6cb976fe15b2c831a63b8701feb9404",
+        "trace_sha256": "ec162e0b7a80bad7ecda1d8ebe61ef358c7821c9828ae0d30617cadba74ab6d3"
+      }
+    },
+    {
+      "case_id": "SML-089-004-ambiguity-refusal",
+      "classes": [
+        "ambiguity",
+        "localized",
+        "diagnostic_path"
+      ],
+      "input": {
+        "profile": "localized",
+        "text": "nom clients choisir",
+        "source_sha256": "73aa3217fab9c08eaefd959ba19455c6406516ed04532940b2bbd30e1e90b99a"
+      },
+      "canonical_element_stream": null,
+      "sblr": null,
+      "render": null,
+      "parse_back": null,
+      "diagnostics": [
+        {
+          "code": "SBSQL.LANG_RESOURCE.AMBIGUOUS_FALLBACK",
+          "severity": "ERROR",
+          "component": "sbp_sbsql.language_resource",
+          "path": [
+            "sml089",
+            "SML-089-004-ambiguity-refusal",
+            "diagnostic"
+          ],
+          "public_fields": [
+            {
+              "name": "diagnostic_contract",
+              "value": "sbsql.no_disclosure.v1"
+            },
+            {
+              "name": "failure_kind",
+              "value": "ambiguous_fallback"
+            },
+            {
+              "name": "disclosure_state",
+              "value": "public_diagnostic_only"
+            },
+            {
+              "name": "private_input_state",
+              "value": "redacted"
+            },
+            {
+              "name": "resource_identity_state",
+              "value": "hashed"
+            },
+            {
+              "name": "profile_identity_state",
+              "value": "public_profile_id"
+            },
+            {
+              "name": "input_text_state",
+              "value": "redacted"
+            },
+            {
+              "name": "identifier_evidence_state",
+              "value": "redacted"
+            },
+            {
+              "name": "telemetry_redaction",
+              "value": "disabled"
+            },
+            {
+              "name": "support_bundle_redaction",
+              "value": "enabled"
+            },
+            {
+              "name": "server_revalidation_required",
+              "value": "true"
+            }
+          ]
+        }
+      ],
+      "expected_hashes": {
+        "source_sha256": "73aa3217fab9c08eaefd959ba19455c6406516ed04532940b2bbd30e1e90b99a",
+        "canonical_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "semantic_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "sblr_reference_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "render_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "parse_back_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "parse_back_semantic_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "diagnostics_sha256": "fde7265801088291066a819b95fd4c4dc4c32fb8affd0924b7cf56b7c5aba4ac",
+        "trace_sha256": "c1e6af7d71a3dec38ca8a2b5c650cd0fbf9e2812e9809db6de311d521cb1d172"
+      }
+    },
+    {
+      "case_id": "SML-089-005-unicode-localized",
+      "classes": [
+        "positive",
+        "unicode",
+        "localized",
+        "canonical_element_stream",
+        "sblr_uuid_reference",
+        "parse_back"
+      ],
+      "input": {
+        "profile": "localized",
+        "text": "顧客 から 名前 を選択",
+        "source_sha256": "af872671db1cd0eeb70fc13ef80e4dcf6caa4c909d8ab6708681256275e4404a"
+      },
+      "canonical_element_stream": {
+        "resource_identity": "sbsql.resource.pack.ja-jp@preview.1",
+        "language_profile_uuid": "019f2089-0000-7000-8000-000000000105",
+        "exact_tag": "ja-JP",
+        "dialect_profile_uuid": "sbsql.v3",
+        "topology_profile_uuid": "topology.sbsql.localized_slot_order.v1",
+        "common_resource_hash": "sha256:sbsql.common.resource.pack.v1",
+        "source_hash": "af872671db1cd0eeb70fc13ef80e4dcf6caa4c909d8ab6708681256275e4404a",
+        "canonical_order_id": "sbsql.canonical_order.v1",
+        "normalized_before_uuid_resolution": true,
+        "server_revalidation_required": true,
+        "elements": [
+          {
+            "kind": "keyword",
+            "canonical_text": "SELECT",
+            "canonical_id": "SBSQL.SELECT",
+            "surface_id": "surface.query.select",
+            "slot_id": "slot.action",
+            "alias_id": "alias.select",
+            "topology_role": "action",
+            "localized_text_hash": "10dc2701275cc6e7563ff20bcaf0c693be20489f9719dc261ebe988d518c96bb",
+            "source_text": "を選択",
+            "source_span": {
+              "offset": 21,
+              "length": 9
+            }
+          },
+          {
+            "kind": "identifier",
+            "canonical_text": "name",
+            "canonical_id": "SBSQL.IDENTIFIER.PROJECTION.NAME",
+            "surface_id": "surface.identifier.name",
+            "slot_id": "slot.projection",
+            "alias_id": "alias.name",
+            "topology_role": "projection",
+            "localized_text_hash": "7ec26292414bccefa35290004928d8cf8f5e19d2bfb8b0c0322ee9e8b2854349",
+            "source_text": "名前",
+            "source_span": {
+              "offset": 14,
+              "length": 6
+            }
+          },
+          {
+            "kind": "keyword",
+            "canonical_text": "FROM",
+            "canonical_id": "SBSQL.FROM",
+            "surface_id": "surface.query.from",
+            "slot_id": "slot.source_marker",
+            "alias_id": "alias.from",
+            "topology_role": "source_marker",
+            "localized_text_hash": "9985533827ce5beedbe933e12377ae0488e160c617d80d6d5a28b02fdcf63a46",
+            "source_text": "から",
+            "source_span": {
+              "offset": 7,
+              "length": 6
+            }
+          },
+          {
+            "kind": "identifier",
+            "canonical_text": "customers",
+            "canonical_id": "SBSQL.IDENTIFIER.SOURCE.CUSTOMERS",
+            "surface_id": "surface.identifier.customers",
+            "slot_id": "slot.source",
+            "alias_id": "alias.customers",
+            "topology_role": "source",
+            "localized_text_hash": "40b3e4e1be19ea23c21fc734819b8e0152ed529f4b63d3a3c73fbfc8bd15c017",
+            "source_text": "顧客",
+            "source_span": {
+              "offset": 0,
+              "length": 6
+            }
+          }
+        ]
+      },
+      "sblr": {
+        "operation_uuid": "019f2089-0000-7000-8000-000000000001",
+        "statement_uuid": "019f2089-0000-7000-8000-000000000002",
+        "resource_uuid": "019f2089-0000-7000-8000-000000000003",
+        "reference_fields": {
+          "operation_family": "sblr.query.relational.v3",
+          "operation_name": "query.evaluate_projection",
+          "canonical_stream_hash_ref": "ca509dd526494412b7d343fedfe5c0ed7d03d31f7085de32fcceec0cd8353b1d",
+          "source_hash_ref": "af872671db1cd0eeb70fc13ef80e4dcf6caa4c909d8ab6708681256275e4404a",
+          "resource_identity_ref": "sbsql.resource.pack.ja-jp@preview.1"
+        }
+      },
+      "render": null,
+      "parse_back": {
+        "input_text": "SELECT name FROM customers",
+        "input_sha256": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e",
+        "canonical_element_stream": {
+          "resource_identity": "sbsql.resource.pack.ja-jp@preview.1",
+          "language_profile_uuid": "019f2089-0000-7000-8000-000000000011",
+          "exact_tag": "en",
+          "dialect_profile_uuid": "sbsql.v3",
+          "topology_profile_uuid": "topology.sbsql.localized_slot_order.v1",
+          "common_resource_hash": "sha256:sbsql.common.resource.pack.v1",
+          "source_hash": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e",
+          "canonical_order_id": "sbsql.canonical_order.v1",
+          "normalized_before_uuid_resolution": true,
+          "server_revalidation_required": true,
+          "elements": [
+            {
+              "kind": "keyword",
+              "canonical_text": "SELECT",
+              "canonical_id": "SBSQL.SELECT",
+              "surface_id": "surface.query.select",
+              "slot_id": "slot.action",
+              "alias_id": "alias.select",
+              "topology_role": "action",
+              "localized_text_hash": "6e4261695ad1aa36aac75303151674266d135fc12c26f8dc64bba0546d4238f2",
+              "source_text": "SELECT",
+              "source_span": {
+                "offset": 0,
+                "length": 6
+              }
+            },
+            {
+              "kind": "identifier",
+              "canonical_text": "name",
+              "canonical_id": "SBSQL.IDENTIFIER.PROJECTION.NAME",
+              "surface_id": "surface.identifier.name",
+              "slot_id": "slot.projection",
+              "alias_id": "alias.name",
+              "topology_role": "projection",
+              "localized_text_hash": "82a3537ff0dbce7eec35d69edc3a189ee6f17d82f353a553f9aa96cb0be3ce89",
+              "source_text": "name",
+              "source_span": {
+                "offset": 7,
+                "length": 4
+              }
+            },
+            {
+              "kind": "keyword",
+              "canonical_text": "FROM",
+              "canonical_id": "SBSQL.FROM",
+              "surface_id": "surface.query.from",
+              "slot_id": "slot.source_marker",
+              "alias_id": "alias.from",
+              "topology_role": "source_marker",
+              "localized_text_hash": "f4383c668fc0fd3898ecf9ff2ea3d6b7c62592e8e29ef2bb1eae3e2dd27eb0bd",
+              "source_text": "FROM",
+              "source_span": {
+                "offset": 12,
+                "length": 4
+              }
+            },
+            {
+              "kind": "identifier",
+              "canonical_text": "customers",
+              "canonical_id": "SBSQL.IDENTIFIER.SOURCE.CUSTOMERS",
+              "surface_id": "surface.identifier.customers",
+              "slot_id": "slot.source",
+              "alias_id": "alias.customers",
+              "topology_role": "source",
+              "localized_text_hash": "21eb2153dd1483cd67a621fb2c7b2f65b2ca46c64a49e49be4b939a1f0c844f8",
+              "source_text": "customers",
+              "source_span": {
+                "offset": 17,
+                "length": 9
+              }
+            }
+          ]
+        }
+      },
+      "diagnostics": [],
+      "expected_hashes": {
+        "source_sha256": "af872671db1cd0eeb70fc13ef80e4dcf6caa4c909d8ab6708681256275e4404a",
+        "canonical_stream_sha256": "ca509dd526494412b7d343fedfe5c0ed7d03d31f7085de32fcceec0cd8353b1d",
+        "semantic_stream_sha256": "cf9f3ec4380609c28e1c5ef7c7ffd69572b0672611d0c9bfef397029403d4d55",
+        "sblr_reference_sha256": "e6d166b7c92e867e052f62a86429af47fc7f070160a9a3485c23d967d82e77f8",
+        "render_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "parse_back_stream_sha256": "5e0bcbf76533bfcc4e9f4cc18700cdbcd81a945fcb3286f4d3fff6795da040e7",
+        "parse_back_semantic_stream_sha256": "cf9f3ec4380609c28e1c5ef7c7ffd69572b0672611d0c9bfef397029403d4d55",
+        "diagnostics_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "trace_sha256": "f4328983f573ac509d580f10d362f264432faaa9c3b6cdd70e14811467f75e8b"
+      }
+    },
+    {
+      "case_id": "SML-089-006-revoked-resource",
+      "classes": [
+        "revoked",
+        "localized",
+        "diagnostic_path"
+      ],
+      "input": {
+        "profile": "localized",
+        "text": "clients depuis nom choisir",
+        "source_sha256": "5d7f25b1c599de313e5d9d3dd196d595e250eb9395bf1f1c6cff3784ca7a035d"
+      },
+      "canonical_element_stream": null,
+      "sblr": null,
+      "render": {
+        "decision": "refuse_revoked_resource",
+        "diagnostic_code": "SBSQL.LANG_RESOURCE.REVOKED",
+        "server_revalidation_required": true,
+        "used_canonical_english_fallback": false,
+        "lossiness": "not_renderable",
+        "text": "",
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "parse_back": null,
+      "diagnostics": [
+        {
+          "code": "SBSQL.LANG_RESOURCE.REVOKED",
+          "severity": "ERROR",
+          "component": "sbp_sbsql.language_resource",
+          "path": [
+            "sml089",
+            "SML-089-006-revoked-resource",
+            "diagnostic"
+          ],
+          "public_fields": [
+            {
+              "name": "diagnostic_contract",
+              "value": "sbsql.no_disclosure.v1"
+            },
+            {
+              "name": "failure_kind",
+              "value": "revoked"
+            },
+            {
+              "name": "disclosure_state",
+              "value": "public_diagnostic_only"
+            },
+            {
+              "name": "private_input_state",
+              "value": "redacted"
+            },
+            {
+              "name": "resource_identity_state",
+              "value": "hashed"
+            },
+            {
+              "name": "profile_identity_state",
+              "value": "public_profile_id"
+            },
+            {
+              "name": "input_text_state",
+              "value": "redacted"
+            },
+            {
+              "name": "identifier_evidence_state",
+              "value": "redacted"
+            },
+            {
+              "name": "telemetry_redaction",
+              "value": "disabled"
+            },
+            {
+              "name": "support_bundle_redaction",
+              "value": "enabled"
+            },
+            {
+              "name": "server_revalidation_required",
+              "value": "true"
+            }
+          ]
+        }
+      ],
+      "expected_hashes": {
+        "source_sha256": "5d7f25b1c599de313e5d9d3dd196d595e250eb9395bf1f1c6cff3784ca7a035d",
+        "canonical_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "semantic_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "sblr_reference_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "render_sha256": "b06e266d2537ec24ea34a9217b3a7a0fb5d2bfc8de9881ea2195289a92c6b61b",
+        "parse_back_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "parse_back_semantic_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "diagnostics_sha256": "ad7859e54cf7e9a19540af24289fc125775ced8b83fc9fd39d72e0bbdafb4ddd",
+        "trace_sha256": "d1545a369f4087c59953f768a87690f06cd50f81a691a9d59e23893b6db57c18"
+      }
+    },
+    {
+      "case_id": "SML-089-007-expired-resource",
+      "classes": [
+        "expired",
+        "standard",
+        "diagnostic_path"
+      ],
+      "input": {
+        "profile": "standard",
+        "text": "SELECT name FROM customers",
+        "source_sha256": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e"
+      },
+      "canonical_element_stream": null,
+      "sblr": null,
+      "render": null,
+      "parse_back": null,
+      "diagnostics": [
+        {
+          "code": "SBSQL.LANG_RESOURCE.EXPIRED",
+          "severity": "ERROR",
+          "component": "sbp_sbsql.language_resource",
+          "path": [
+            "sml089",
+            "SML-089-007-expired-resource",
+            "diagnostic"
+          ],
+          "public_fields": [
+            {
+              "name": "diagnostic_contract",
+              "value": "sbsql.no_disclosure.v1"
+            },
+            {
+              "name": "failure_kind",
+              "value": "expired"
+            },
+            {
+              "name": "disclosure_state",
+              "value": "public_diagnostic_only"
+            },
+            {
+              "name": "private_input_state",
+              "value": "redacted"
+            },
+            {
+              "name": "resource_identity_state",
+              "value": "hashed"
+            },
+            {
+              "name": "profile_identity_state",
+              "value": "public_profile_id"
+            },
+            {
+              "name": "input_text_state",
+              "value": "redacted"
+            },
+            {
+              "name": "identifier_evidence_state",
+              "value": "redacted"
+            },
+            {
+              "name": "telemetry_redaction",
+              "value": "disabled"
+            },
+            {
+              "name": "support_bundle_redaction",
+              "value": "enabled"
+            },
+            {
+              "name": "server_revalidation_required",
+              "value": "true"
+            }
+          ]
+        }
+      ],
+      "expected_hashes": {
+        "source_sha256": "196d8c4afa6553bdb2a64f9e726721b174aa604f459fc43d4e6d40921fb0cc6e",
+        "canonical_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "semantic_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "sblr_reference_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "render_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "parse_back_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "parse_back_semantic_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "diagnostics_sha256": "f1865f7b1d544c323116e9745279d69876201b2457747dfa99e09926d147ad6b",
+        "trace_sha256": "ecdd804c6dbebb551c4bd3255fe54a1b0b29c279ea2f0be1bb42099efcdc8044"
+      }
+    },
+    {
+      "case_id": "SML-089-008-incompatible-resource",
+      "classes": [
+        "incompatible_resource",
+        "localized",
+        "diagnostic_path"
+      ],
+      "input": {
+        "profile": "localized",
+        "text": "clientes desde nombre seleccionar",
+        "source_sha256": "4a173d68bf45d6c388f64ae4de87fbd7fccab0e351dcbfbfa5874e1ce7c58b79"
+      },
+      "canonical_element_stream": null,
+      "sblr": null,
+      "render": {
+        "decision": "refuse_incompatible_resource",
+        "diagnostic_code": "SBSQL.LANG_RESOURCE.INCOMPATIBLE",
+        "server_revalidation_required": true,
+        "used_canonical_english_fallback": false,
+        "lossiness": "not_renderable",
+        "text": "",
+        "text_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "parse_back": null,
+      "diagnostics": [
+        {
+          "code": "SBSQL.LANG_RESOURCE.INCOMPATIBLE",
+          "severity": "ERROR",
+          "component": "sbp_sbsql.language_resource",
+          "path": [
+            "sml089",
+            "SML-089-008-incompatible-resource",
+            "diagnostic"
+          ],
+          "public_fields": [
+            {
+              "name": "diagnostic_contract",
+              "value": "sbsql.no_disclosure.v1"
+            },
+            {
+              "name": "failure_kind",
+              "value": "incompatible_resource"
+            },
+            {
+              "name": "disclosure_state",
+              "value": "public_diagnostic_only"
+            },
+            {
+              "name": "private_input_state",
+              "value": "redacted"
+            },
+            {
+              "name": "resource_identity_state",
+              "value": "hashed"
+            },
+            {
+              "name": "profile_identity_state",
+              "value": "public_profile_id"
+            },
+            {
+              "name": "input_text_state",
+              "value": "redacted"
+            },
+            {
+              "name": "identifier_evidence_state",
+              "value": "redacted"
+            },
+            {
+              "name": "telemetry_redaction",
+              "value": "disabled"
+            },
+            {
+              "name": "support_bundle_redaction",
+              "value": "enabled"
+            },
+            {
+              "name": "server_revalidation_required",
+              "value": "true"
+            }
+          ]
+        }
+      ],
+      "expected_hashes": {
+        "source_sha256": "4a173d68bf45d6c388f64ae4de87fbd7fccab0e351dcbfbfa5874e1ce7c58b79",
+        "canonical_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "semantic_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "sblr_reference_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "render_sha256": "083986e898092e407668135e6734af6304b5bbe72c25c2f2d80a6c330a3465c3",
+        "parse_back_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "parse_back_semantic_stream_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+        "diagnostics_sha256": "f93bdf271c990438eb4fcbcd25625c9609eeaa84b76f67c978a5dada27af6caa",
+        "trace_sha256": "3080e137baf4859ad5f60e1d340a664aaecdf21fb6db010ba66958f94b9722ab"
+      }
+    }
+  ],
+  "expected_manifest_hash": "be77f35c593bca89d20b2d8c0dfb41f034c440039317c30404ed8d0389e4f943"
+}
