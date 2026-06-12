@@ -283,6 +283,79 @@ void TestClusterInspectionControlAndReplicationFailClosed() {
           "cluster replication inspect did not fail closed without authority");
 }
 
+api::EngineShardPlacementDescriptor ShardPlacementDescriptor() {
+  api::EngineShardPlacementDescriptor descriptor;
+  descriptor.shard_uuid = TestEngineUuid("000000000041").canonical;
+  descriptor.source_filespace_uuid = TestEngineUuid("000000000042").canonical;
+  descriptor.target_filespace_uuid = TestEngineUuid("000000000043").canonical;
+  descriptor.range_begin = "00000000";
+  descriptor.range_end = "ffffffff";
+  descriptor.placement_epoch = 9;
+  descriptor.placement_generation = 2;
+  return descriptor;
+}
+
+void TestShardPlacementDescriptorWorkflow() {
+  const std::string operations[] = {
+      "create", "verify", "move", "split", "merge", "rebalance",
+      "freeze", "archive", "reattach", "quarantine", "reconcile", "drop"};
+  for (const auto& operation : operations) {
+    api::EngineShardPlacementOperationRequest request;
+    request.context = operation == "verify" ? StandaloneContext() : ClusterAuthorityContext();
+    request.placement_operation = operation;
+    request.descriptor = ShardPlacementDescriptor();
+    request.operator_authorized = true;
+    if (operation == "merge") {
+      auto left = ShardPlacementDescriptor();
+      left.shard_uuid = TestEngineUuid("000000000044").canonical;
+      auto right = ShardPlacementDescriptor();
+      right.shard_uuid = TestEngineUuid("000000000045").canonical;
+      request.merge_inputs = {left, right};
+    }
+
+    const auto planned = api::EnginePlanShardPlacementOperation(request);
+    Require(planned.ok, "shard placement descriptor operation failed");
+    Require(planned.descriptor_validated, "shard placement descriptor was not validated");
+    Require(!planned.durable_state_changed,
+            "shard placement descriptor planner mutated durable state");
+    Require(!planned.private_cluster_execution && !planned.cluster_provider_dispatch,
+            "shard placement descriptor planner entered private cluster execution");
+    Require(HasEvidence(planned, "mga_visibility_authority", "durable_transaction_inventory"),
+            "shard placement descriptor planner lost MGA authority evidence");
+    if (operation == "verify") {
+      Require(planned.operation_verified && !planned.operator_review_required,
+              "verify shard placement did not remain descriptor-only");
+    } else {
+      Require(planned.operation_planned && planned.operator_review_required,
+              "mutating shard placement operation did not require operator review");
+    }
+    if (operation == "move" || operation == "split" || operation == "merge" ||
+        operation == "rebalance" || operation == "reattach") {
+      Require(planned.physical_data_movement_required,
+              "physical shard placement operation did not expose movement requirement");
+    }
+  }
+
+  api::EngineShardPlacementOperationRequest physical;
+  physical.context = ClusterAuthorityContext();
+  physical.placement_operation = "move";
+  physical.descriptor = ShardPlacementDescriptor();
+  physical.physical_data_movement_requested = true;
+  const auto physical_refused = api::EnginePlanShardPlacementOperation(physical);
+  Require(!physical_refused.ok &&
+              HasDiagnostic(physical_refused,
+                            "physical_data_movement_not_available_in_open_core_descriptor_plan"),
+          "shard placement physical movement was not refused");
+
+  api::EngineShardPlacementOperationRequest missing_tx;
+  missing_tx.context = StandaloneContext();
+  missing_tx.placement_operation = "archive";
+  missing_tx.descriptor = ShardPlacementDescriptor();
+  const auto missing_tx_refused = api::EnginePlanShardPlacementOperation(missing_tx);
+  Require(!missing_tx_refused.ok && HasDiagnostic(missing_tx_refused, "local_transaction_id_required"),
+          "shard placement mutation did not require local transaction context");
+}
+
 void TestMGAAndIndexClusterTransactionsFailClosed() {
   mga::ClusterTransactionMetadata metadata;
   metadata.transaction_uuid = TestTypedUuid(UuidKind::transaction);
@@ -393,6 +466,7 @@ int main() {
   TestStandaloneClusterApiFailsBeforeRouteDetails();
   TestClusterAuthorityRoutesReachCompileTimeProviderBoundary();
   TestClusterInspectionControlAndReplicationFailClosed();
+  TestShardPlacementDescriptorWorkflow();
   TestMGAAndIndexClusterTransactionsFailClosed();
   TestSblrAndAgentClusterBoundary();
   TestClusterMetricDescriptorsHiddenFromStandaloneViews();

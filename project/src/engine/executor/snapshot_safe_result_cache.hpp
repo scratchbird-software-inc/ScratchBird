@@ -42,6 +42,8 @@ struct SnapshotSafeCacheKey {
   std::uint64_t redaction_epoch = 0;
   std::string mga_visibility_snapshot_class;
   std::uint64_t provider_generation = 0;
+  std::string descriptor_identity_digest;
+  std::uint64_t descriptor_epoch = 0;
   std::string result_contract_identity;
   std::string result_contract_hash;
   std::string route_compatibility;

@@ -10,6 +10,7 @@
 #include "catalog_record_codec.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
+#include "memory.hpp"
 #include "page_header.hpp"
 #include "page_manager.hpp"
 #include "startup_state.hpp"
@@ -33,6 +34,7 @@ namespace {
 namespace catalog = scratchbird::core::catalog;
 namespace db = scratchbird::storage::database;
 namespace disk = scratchbird::storage::disk;
+namespace memory = scratchbird::core::memory;
 namespace page = scratchbird::storage::page;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::TypedUuid;
@@ -64,6 +66,14 @@ std::uint64_t CurrentUnixMillis() {
 std::filesystem::path TestDatabasePath() {
   return std::filesystem::temp_directory_path() /
          ("sb_dblc_004a_filespace_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
+}
+
+void ConfigureMemoryFixture() {
+  auto policy = memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "database_lifecycle_filespace_conformance";
+  const auto configured = memory::ConfigureDefaultMemoryManagerForFixture(
+      policy, "database_lifecycle_filespace_conformance");
+  Require(configured.ok(), "default memory manager fixture setup failed");
 }
 
 bool SameTypedUuid(const TypedUuid& left, const TypedUuid& right) {
@@ -289,6 +299,7 @@ db::DatabaseLifecycleResult OpenDatabase(const std::filesystem::path& database_p
 }  // namespace
 
 int main() {
+  ConfigureMemoryFixture();
   const auto database_path = TestDatabasePath();
   struct Cleanup {
     std::filesystem::path path;

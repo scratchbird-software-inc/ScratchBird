@@ -836,7 +836,6 @@ if(TARGET sb_storage_database)
     database_lifecycle_create_bootstrap_conformance
     PRIVATE
       SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
-      SB_DEFAULT_POLICY_CATALOG_YAML="${SB_PRIVATE_REPO_ROOT}/public_contract_snapshot"
   )
   target_link_libraries(database_lifecycle_create_bootstrap_conformance
     PRIVATE
@@ -933,6 +932,30 @@ if(TARGET sb_storage_database)
     set_tests_properties(database_lifecycle_storage_page_filespace_p2_conformance PROPERTIES
       LABELS "storage_page_layout_gate;filespace_lifecycle_gate;foreign_filespace_quarantine_gate;storage_metrics_gate;database_lifecycle;database_lifecycle_storage;mga_transaction_regression"
     )
+
+    if(TARGET sb_engine_internal_api)
+      add_executable(database_lifecycle_storage_tier_migration_conformance
+        storage_tier_migration_conformance.cpp
+      )
+      target_compile_features(database_lifecycle_storage_tier_migration_conformance PRIVATE cxx_std_20)
+      target_include_directories(database_lifecycle_storage_tier_migration_conformance
+        PRIVATE
+          "${PROJECT_SOURCE_DIR}/include"
+      )
+      target_link_libraries(database_lifecycle_storage_tier_migration_conformance
+        PRIVATE
+          sb_engine_internal_api
+          sb_storage_page
+      )
+
+      add_test(
+        NAME database_lifecycle_storage_tier_migration_conformance
+        COMMAND database_lifecycle_storage_tier_migration_conformance
+      )
+      set_tests_properties(database_lifecycle_storage_tier_migration_conformance PROPERTIES
+        LABELS "storage_tier_migration;storage_management;database_lifecycle;database_lifecycle_storage;mga_transaction_regression"
+      )
+    endif()
 
     add_executable(filespace_preallocation_runtime_gate
       filespace_preallocation_runtime_gate.cpp
@@ -2017,6 +2040,775 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   )
 endif()
 
+add_executable(database_lifecycle_plain_value_payload_conformance
+  plain_value_payload_conformance.cpp
+)
+target_compile_features(database_lifecycle_plain_value_payload_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_plain_value_payload_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_plain_value_payload_conformance
+  COMMAND database_lifecycle_plain_value_payload_conformance
+)
+set_tests_properties(database_lifecycle_plain_value_payload_conformance PROPERTIES
+  LABELS "EDR-003;EDR-GATE-003;plain_value_payload;database_lifecycle;datatype_commercial_closure_gate"
+)
+
+add_executable(database_lifecycle_execution_data_packet_conformance
+  execution_data_packet_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_data_packet_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_data_packet_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_data_packet_conformance
+  COMMAND database_lifecycle_execution_data_packet_conformance
+)
+set_tests_properties(database_lifecycle_execution_data_packet_conformance PROPERTIES
+  LABELS "EDR-004;EDR-GATE-004;execution_data_packet;database_lifecycle;datatype_commercial_closure_gate"
+)
+
+add_executable(database_lifecycle_execution_row_batch_conformance
+  execution_row_batch_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_row_batch_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_row_batch_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_row_batch_conformance
+  COMMAND database_lifecycle_execution_row_batch_conformance
+)
+set_tests_properties(database_lifecycle_execution_row_batch_conformance PROPERTIES
+  LABELS "EDR-005;EDR-GATE-005;execution_row_batch;database_lifecycle;datatype_commercial_closure_gate"
+)
+
+add_executable(database_lifecycle_execution_result_envelope_conformance
+  execution_result_envelope_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_result_envelope_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_result_envelope_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_result_envelope_conformance
+  COMMAND database_lifecycle_execution_result_envelope_conformance
+)
+set_tests_properties(database_lifecycle_execution_result_envelope_conformance PROPERTIES
+  LABELS "EDR-006;EDR-GATE-006;execution_result_envelope;database_lifecycle;datatype_commercial_closure_gate"
+)
+
+add_executable(database_lifecycle_execution_coercion_context_conformance
+  execution_coercion_context_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_coercion_context_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_coercion_context_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_coercion_context_conformance
+  COMMAND database_lifecycle_execution_coercion_context_conformance
+)
+set_tests_properties(database_lifecycle_execution_coercion_context_conformance PROPERTIES
+  LABELS "EDR-007;EDR-GATE-007;execution_coercion_context;database_lifecycle;datatype_commercial_closure_gate"
+)
+
+add_executable(database_lifecycle_execution_text_temporal_semantics_conformance
+  execution_text_temporal_semantics_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_text_temporal_semantics_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_text_temporal_semantics_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_text_temporal_semantics_conformance
+  COMMAND database_lifecycle_execution_text_temporal_semantics_conformance
+)
+set_tests_properties(database_lifecycle_execution_text_temporal_semantics_conformance PROPERTIES
+  LABELS "EDR-008;EDR-GATE-008;execution_text_temporal_semantics;database_lifecycle;datatype_commercial_closure_gate"
+)
+
+add_executable(database_lifecycle_execution_large_value_handle_conformance
+  execution_large_value_handle_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_large_value_handle_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_large_value_handle_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_large_value_handle_conformance
+  COMMAND database_lifecycle_execution_large_value_handle_conformance
+)
+set_tests_properties(database_lifecycle_execution_large_value_handle_conformance PROPERTIES
+  LABELS "EDR-009;EDR-GATE-009;execution_large_value_handle;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_protected_value_conformance
+  execution_protected_value_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_protected_value_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_protected_value_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_protected_value_conformance
+  COMMAND database_lifecycle_execution_protected_value_conformance
+)
+set_tests_properties(database_lifecycle_execution_protected_value_conformance PROPERTIES
+  LABELS "EDR-010;EDR-GATE-010;execution_protected_value;database_lifecycle;datatype_commercial_closure_gate;security_negative"
+)
+
+add_executable(database_lifecycle_execution_udr_bridge_value_conformance
+  execution_udr_bridge_value_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_udr_bridge_value_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_udr_bridge_value_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_udr_bridge_value_conformance
+  COMMAND database_lifecycle_execution_udr_bridge_value_conformance
+)
+set_tests_properties(database_lifecycle_execution_udr_bridge_value_conformance PROPERTIES
+  LABELS "EDR-011;EDR-GATE-011;execution_udr_bridge_value;database_lifecycle;datatype_commercial_closure_gate"
+)
+
+add_executable(database_lifecycle_execution_index_cache_identity_conformance
+  execution_index_cache_identity_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_index_cache_identity_conformance PRIVATE cxx_std_20)
+target_link_libraries(database_lifecycle_execution_index_cache_identity_conformance
+  PRIVATE
+    sb_core_index
+    sb_engine_executor
+)
+
+add_test(
+  NAME database_lifecycle_execution_index_cache_identity_conformance
+  COMMAND database_lifecycle_execution_index_cache_identity_conformance
+)
+set_tests_properties(database_lifecycle_execution_index_cache_identity_conformance PROPERTIES
+  LABELS "EDR-012;EDR-GATE-012;execution_index_cache_identity;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_terminology_conformance
+  execution_terminology_conformance.cpp
+  "${PROJECT_SOURCE_DIR}/src/server/product_identity.cpp"
+)
+target_compile_features(database_lifecycle_execution_terminology_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_terminology_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/src/server"
+)
+
+add_test(
+  NAME database_lifecycle_execution_terminology_conformance
+  COMMAND database_lifecycle_execution_terminology_conformance
+)
+set_tests_properties(database_lifecycle_execution_terminology_conformance PROPERTIES
+  LABELS "EDR-013;EDR-GATE-013;execution_terminology;database_lifecycle;datatype_commercial_closure_gate"
+)
+
+add_test(
+  NAME database_lifecycle_execution_data_gate_matrix_conformance
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/execution_data_gate_matrix_conformance.py"
+          --source-root "${PROJECT_SOURCE_DIR}"
+          --build-root "${CMAKE_BINARY_DIR}"
+)
+set_tests_properties(database_lifecycle_execution_data_gate_matrix_conformance PROPERTIES
+  LABELS "EDR-014;EDR-GATE-014;execution_data_gate_matrix;database_lifecycle;datatype_commercial_closure_gate"
+)
+
+add_executable(database_lifecycle_execution_relation_descriptor_conformance
+  execution_relation_descriptor_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_relation_descriptor_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_relation_descriptor_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_relation_descriptor_conformance
+  COMMAND database_lifecycle_execution_relation_descriptor_conformance
+)
+set_tests_properties(database_lifecycle_execution_relation_descriptor_conformance PROPERTIES
+  LABELS "EDR-015;EDR-GATE-015;execution_relation_descriptor;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_cursor_handle_conformance
+  execution_cursor_handle_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_cursor_handle_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_cursor_handle_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_cursor_handle_conformance
+  COMMAND database_lifecycle_execution_cursor_handle_conformance
+)
+set_tests_properties(database_lifecycle_execution_cursor_handle_conformance PROPERTIES
+  LABELS "EDR-016;EDR-GATE-016;execution_cursor_handle;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_rowset_value_conformance
+  execution_rowset_value_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_rowset_value_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_rowset_value_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_rowset_value_conformance
+  COMMAND database_lifecycle_execution_rowset_value_conformance
+)
+set_tests_properties(database_lifecycle_execution_rowset_value_conformance PROPERTIES
+  LABELS "EDR-017;EDR-GATE-017;execution_rowset_value;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_table_value_conformance
+  execution_table_value_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_table_value_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_table_value_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_table_value_conformance
+  COMMAND database_lifecycle_execution_table_value_conformance
+)
+set_tests_properties(database_lifecycle_execution_table_value_conformance PROPERTIES
+  LABELS "EDR-018;EDR-GATE-018;execution_table_value;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_routine_signature_descriptor_conformance
+  execution_routine_signature_descriptor_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_routine_signature_descriptor_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_routine_signature_descriptor_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_routine_signature_descriptor_conformance
+  COMMAND database_lifecycle_execution_routine_signature_descriptor_conformance
+)
+set_tests_properties(database_lifecycle_execution_routine_signature_descriptor_conformance PROPERTIES
+  LABELS "EDR-019;EDR-GATE-019;execution_routine_signature_descriptor;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_ownership_transfer_conformance
+  execution_ownership_transfer_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_ownership_transfer_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_ownership_transfer_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_ownership_transfer_conformance
+  COMMAND database_lifecycle_execution_ownership_transfer_conformance
+)
+set_tests_properties(database_lifecycle_execution_ownership_transfer_conformance PROPERTIES
+  LABELS "EDR-020;EDR-GATE-020;execution_ownership_transfer;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_result_channel_descriptor_conformance
+  execution_result_channel_descriptor_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_result_channel_descriptor_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_result_channel_descriptor_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_result_channel_descriptor_conformance
+  COMMAND database_lifecycle_execution_result_channel_descriptor_conformance
+)
+set_tests_properties(database_lifecycle_execution_result_channel_descriptor_conformance PROPERTIES
+  LABELS "EDR-021;EDR-GATE-021;execution_result_channel_descriptor;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_optimizer_safety_conformance
+  execution_optimizer_safety_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_optimizer_safety_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_optimizer_safety_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_optimizer_safety_conformance
+  COMMAND database_lifecycle_execution_optimizer_safety_conformance
+)
+set_tests_properties(database_lifecycle_execution_optimizer_safety_conformance PROPERTIES
+  LABELS "EDR-022;EDR-GATE-022;execution_optimizer_safety;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_distributed_handle_conformance
+  execution_distributed_handle_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_distributed_handle_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_distributed_handle_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_distributed_handle_conformance
+  COMMAND database_lifecycle_execution_distributed_handle_conformance
+)
+set_tests_properties(database_lifecycle_execution_distributed_handle_conformance PROPERTIES
+  LABELS "EDR-023;EDR-GATE-023;execution_distributed_handle;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_domain_descriptor_conformance
+  execution_domain_descriptor_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_domain_descriptor_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_domain_descriptor_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_domain_descriptor_conformance
+  COMMAND database_lifecycle_execution_domain_descriptor_conformance
+)
+set_tests_properties(database_lifecycle_execution_domain_descriptor_conformance PROPERTIES
+  LABELS "EDR-024;EDR-GATE-024;execution_domain_descriptor;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_domain_element_path_conformance
+  execution_domain_element_path_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_domain_element_path_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_domain_element_path_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_domain_element_path_conformance
+  COMMAND database_lifecycle_execution_domain_element_path_conformance
+)
+set_tests_properties(database_lifecycle_execution_domain_element_path_conformance PROPERTIES
+  LABELS "EDR-025;EDR-GATE-025;execution_domain_element_path;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_domain_cast_operation_conformance
+  execution_domain_cast_operation_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_domain_cast_operation_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_domain_cast_operation_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_domain_cast_operation_conformance
+  COMMAND database_lifecycle_execution_domain_cast_operation_conformance
+)
+set_tests_properties(database_lifecycle_execution_domain_cast_operation_conformance PROPERTIES
+  LABELS "EDR-026;EDR-GATE-026;execution_domain_cast_operation;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_type_modifier_canonicalization_conformance
+  execution_type_modifier_canonicalization_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_type_modifier_canonicalization_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_type_modifier_canonicalization_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_type_modifier_canonicalization_conformance
+  COMMAND database_lifecycle_execution_type_modifier_canonicalization_conformance
+)
+set_tests_properties(database_lifecycle_execution_type_modifier_canonicalization_conformance PROPERTIES
+  LABELS "EDR-027;EDR-GATE-027;execution_type_modifier_canonicalization;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_enum_set_representation_conformance
+  execution_enum_set_representation_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_enum_set_representation_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_enum_set_representation_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_enum_set_representation_conformance
+  COMMAND database_lifecycle_execution_enum_set_representation_conformance
+)
+set_tests_properties(database_lifecycle_execution_enum_set_representation_conformance PROPERTIES
+  LABELS "EDR-028;EDR-GATE-028;execution_enum_set_representation;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_range_representation_conformance
+  execution_range_representation_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_range_representation_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_range_representation_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_range_representation_conformance
+  COMMAND database_lifecycle_execution_range_representation_conformance
+)
+set_tests_properties(database_lifecycle_execution_range_representation_conformance PROPERTIES
+  LABELS "EDR-029;EDR-GATE-029;execution_range_representation;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_container_representation_conformance
+  execution_container_representation_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_container_representation_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_container_representation_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_container_representation_conformance
+  COMMAND database_lifecycle_execution_container_representation_conformance
+)
+set_tests_properties(database_lifecycle_execution_container_representation_conformance PROPERTIES
+  LABELS "EDR-030;EDR-GATE-030;execution_container_representation;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_variant_representation_conformance
+  execution_variant_representation_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_variant_representation_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_variant_representation_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_variant_representation_conformance
+  COMMAND database_lifecycle_execution_variant_representation_conformance
+)
+set_tests_properties(database_lifecycle_execution_variant_representation_conformance PROPERTIES
+  LABELS "EDR-031;EDR-GATE-031;execution_variant_representation;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_polymorphic_routine_binding_conformance
+  execution_polymorphic_routine_binding_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_polymorphic_routine_binding_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_polymorphic_routine_binding_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_polymorphic_routine_binding_conformance
+  COMMAND database_lifecycle_execution_polymorphic_routine_binding_conformance
+)
+set_tests_properties(database_lifecycle_execution_polymorphic_routine_binding_conformance PROPERTIES
+  LABELS "EDR-032;EDR-GATE-032;execution_polymorphic_routine_binding;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_comparison_key_representation_conformance
+  execution_comparison_key_representation_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_comparison_key_representation_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_comparison_key_representation_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_comparison_key_representation_conformance
+  COMMAND database_lifecycle_execution_comparison_key_representation_conformance
+)
+set_tests_properties(database_lifecycle_execution_comparison_key_representation_conformance PROPERTIES
+  LABELS "EDR-033;EDR-GATE-033;execution_comparison_key_representation;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_numeric_edge_policy_conformance
+  execution_numeric_edge_policy_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_numeric_edge_policy_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_numeric_edge_policy_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_numeric_edge_policy_conformance
+  COMMAND database_lifecycle_execution_numeric_edge_policy_conformance
+)
+set_tests_properties(database_lifecycle_execution_numeric_edge_policy_conformance PROPERTIES
+  LABELS "EDR-034;EDR-GATE-034;execution_numeric_edge_policy;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_descriptor_migration_conformance
+  execution_descriptor_migration_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_descriptor_migration_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_descriptor_migration_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_descriptor_migration_conformance
+  COMMAND database_lifecycle_execution_descriptor_migration_conformance
+)
+set_tests_properties(database_lifecycle_execution_descriptor_migration_conformance PROPERTIES
+  LABELS "EDR-035;EDR-GATE-035;execution_descriptor_migration;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_donor_type_capability_conformance
+  execution_donor_type_capability_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_donor_type_capability_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_donor_type_capability_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_donor_type_capability_conformance
+  COMMAND database_lifecycle_execution_donor_type_capability_conformance
+)
+set_tests_properties(database_lifecycle_execution_donor_type_capability_conformance PROPERTIES
+  LABELS "EDR-037;EDR-GATE-037;DTC-DONOR-TYPE-COVERAGE;DTC-DONOR-UDR-DOMAIN-INSTALL;DTC-LLVM-DOMAIN-ACCELERATION;DTC-LITERAL-BIND-TYPING;DTC-TYPE-INFERENCE-OVERLOAD;DTC-LOCATOR-PSEUDOTYPE-SAFETY;DTC-OPAQUE-TYPE-LIFECYCLE;DTC-TYPE-MIGRATION;DTC-DONOR-SUPERIORITY;DTC-GATE-001;DTC-GATE-002;DTC-GATE-003;DTC-GATE-004;DTC-GATE-005;DTC-GATE-006;DTC-GATE-007;DTC-GATE-008;DTC-GATE-009;DTC-GATE-010;DTC-GATE-011;DTC-GATE-012;execution_donor_type_capability;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_type_operation_registry_conformance
+  type_operation_registry_conformance.cpp
+)
+target_compile_features(database_lifecycle_type_operation_registry_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_type_operation_registry_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_type_operation_registry_conformance
+  COMMAND database_lifecycle_type_operation_registry_conformance
+)
+set_tests_properties(database_lifecycle_type_operation_registry_conformance PROPERTIES
+  LABELS "TOR-TYPE-OPERATION-REGISTRY;TOR-OPERATION-DESCRIPTOR-FIELDS;TOR-OPERATION-REGISTRATION;TOR-OVERLOAD-RESOLUTION;TOR-CAST-REGISTRY;TOR-AGGREGATE-WINDOW-STATE;TOR-SBLR-OPERATION-BINDING;TOR-GATE-001;TOR-GATE-002;TOR-GATE-003;TOR-GATE-004;TOR-GATE-005;TOR-GATE-006;TOR-GATE-007;type_operation_registry;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_type_index_stats_optimizer_conformance
+  type_index_stats_optimizer_conformance.cpp
+)
+target_compile_features(database_lifecycle_type_index_stats_optimizer_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_type_index_stats_optimizer_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_type_index_stats_optimizer_conformance
+  COMMAND database_lifecycle_type_index_stats_optimizer_conformance
+)
+set_tests_properties(database_lifecycle_type_index_stats_optimizer_conformance PROPERTIES
+  LABELS "TIO-TYPE-INDEX-STATS-OPTIMIZER;TIO-CANONICAL-COMPARISON-CONTRACT;TIO-CANONICALIZATION-PROFILE;TIO-INDEX-COMPATIBILITY-DESCRIPTOR;TIO-INDEX-FAMILY-MATRIX;TIO-TYPE-STATISTICS-DESCRIPTOR;TIO-SELECTIVITY-MODEL;TIO-OPTIMIZER-ADMISSION;TIO-GATE-001;TIO-GATE-002;TIO-GATE-003;TIO-GATE-004;TIO-GATE-005;TIO-GATE-006;TIO-GATE-007;type_index_stats_optimizer;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_type_metadata_diagnostics_driver_conformance
+  type_metadata_diagnostics_driver_conformance.cpp
+)
+target_compile_features(database_lifecycle_type_metadata_diagnostics_driver_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_type_metadata_diagnostics_driver_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_type_metadata_diagnostics_driver_conformance
+  COMMAND database_lifecycle_type_metadata_diagnostics_driver_conformance
+)
+set_tests_properties(database_lifecycle_type_metadata_diagnostics_driver_conformance PROPERTIES
+  LABELS "TMD-TYPE-METADATA-DIAGNOSTICS-DRIVER;TMD-CATALOG-EXPOSURE-MODEL;TMD-DRIVER-TYPE-METADATA-DESCRIPTOR;TMD-DIAGNOSTIC-COMPATIBILITY-MODEL;TMD-BACKUP-RESTORE-TYPE-PROFILE;TMD-REPLICATION-TYPE-PROFILE;TMD-CLUSTER-TYPE-TRANSPORT-PROFILE;TMD-UNSUPPORTED-DEGRADED-CONTRACT;TMD-TYPE-TESTING-CORPUS;TMD-GATE-001;TMD-GATE-002;TMD-GATE-003;TMD-GATE-004;TMD-GATE-005;TMD-GATE-006;TMD-GATE-007;TMD-GATE-008;type_metadata_diagnostics_driver;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_canonical_scalar_datatypes_conformance
+  canonical_scalar_datatypes_conformance.cpp
+)
+target_compile_features(database_lifecycle_canonical_scalar_datatypes_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_canonical_scalar_datatypes_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_canonical_scalar_datatypes_conformance
+  COMMAND database_lifecycle_canonical_scalar_datatypes_conformance
+)
+set_tests_properties(database_lifecycle_canonical_scalar_datatypes_conformance PROPERTIES
+  LABELS "CSD-CANONICAL-SCALAR-DATATYPES;CSD-SCALAR-AUTHORITY-RULE;CSD-SCALAR-DESCRIPTOR-FIELDS;CSD-BOOLEAN;CSD-SIGNED-INTEGER;CSD-UNSIGNED-INTEGER;CSD-EXACT-NUMERIC;CSD-DECIMAL-FLOATING;CSD-APPROXIMATE-NUMERIC;CSD-FLOAT128-BINARY128;CSD-MONEY-CURRENCY;CSD-SCALAR-LITERAL-BIND-RESOLUTION;CSD-SCALAR-CAST-RANKING;CSD-SCALAR-OPERATION-FAMILIES;CSD-SCALAR-BACKUP-REPLICATION-TRANSPORT;CSD-SCALAR-DIAGNOSTICS;CSD-GATE-001;CSD-GATE-002;CSD-GATE-003;CSD-GATE-004;CSD-GATE-005;CSD-GATE-006;CSD-GATE-007;CSD-GATE-008;CSD-GATE-009;CSD-GATE-010;CSD-GATE-011;SCALAR-CONF-001;SCALAR-CONF-002;SCALAR-CONF-003;SCALAR-CONF-004;SCALAR-CONF-005;SCALAR-CONF-006;SCALAR-CONF-007;SCALAR-CONF-008;SCALAR-CONF-009;SCALAR-CONF-010;float128_backend_unavailable;float128_raw_host_encoding_refused;canonical_scalar_datatypes;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_native_vs_domain_datatype_decisions_conformance
+  native_vs_domain_datatype_decisions_conformance.cpp
+)
+target_compile_features(database_lifecycle_native_vs_domain_datatype_decisions_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_native_vs_domain_datatype_decisions_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_native_vs_domain_datatype_decisions_conformance
+  COMMAND database_lifecycle_native_vs_domain_datatype_decisions_conformance
+)
+set_tests_properties(database_lifecycle_native_vs_domain_datatype_decisions_conformance PROPERTIES
+  LABELS "NVD-NATIVE-VS-DOMAIN-DATATYPE-DECISIONS;NVD-CORE-DECISION;NVD-NATIVE-PROMOTION-CRITERIA;NVD-DOMAIN-ONLY-CRITERIA;NVD-REQUIRED-NATIVE-SUBSTRATE-FAMILIES;NVD-DOMAIN-ONLY-FAMILIES;NVD-OPAQUE-UDR-BRIDGE-FAMILIES;NVD-DONOR-FAMILY-DECISIONS;NVD-FULL-SUPPORT-RULE;NVD-GATE-001;NVD-GATE-002;NVD-GATE-003;NVD-GATE-004;NVD-CONF-001;NVD-CONF-002;NVD-CONF-003;NVD-CONF-004;NVD-CONF-005;NVD-CONF-006;NVD-CONF-007;NVD-CONF-008;NVD-CONF-009;NVD-CONF-010;NVD-CONF-011;NVD-CONF-012;NVD-CONF-013;NVD-CONF-014;NVD-CONF-015;native_vs_domain_datatype_decisions;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_canonical_datatype_families_conformance
+  canonical_datatype_families_conformance.cpp
+)
+target_compile_features(database_lifecycle_canonical_datatype_families_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_canonical_datatype_families_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_canonical_datatype_families_conformance
+  COMMAND database_lifecycle_canonical_datatype_families_conformance
+)
+set_tests_properties(database_lifecycle_canonical_datatype_families_conformance PROPERTIES
+  LABELS "CDT-CANONICAL-DATATYPE-FAMILY-IMPLEMENTATION;CTB-CANONICAL-TEXT-BINARY-BIT-DATATYPES;CTI-CANONICAL-TEMPORAL-INTERVAL-DATATYPES;CINL-CANONICAL-IDENTITY-NETWORK-LOB-DATATYPES;CSCR-CANONICAL-STRUCTURED-CONTAINER-RANGE-DATATYPES;CDSSV-CANONICAL-DOCUMENT-SEARCH-SPATIAL-VECTOR-DATATYPES;CGTC-CANONICAL-GRAPH-TIMESERIES-COLUMNAR-DATATYPES;CASLO-CANONICAL-AGGREGATE-SKETCH-LOCATOR-OPAQUE-DATATYPES;CTB-GATE-001;CTB-GATE-002;CTB-GATE-003;CTB-GATE-004;CTI-GATE-001;CTI-GATE-002;CTI-GATE-003;CTI-GATE-004;CINL-GATE-001;CINL-GATE-002;CINL-GATE-003;CINL-GATE-004;CSCR-GATE-001;CSCR-GATE-002;CSCR-GATE-003;CSCR-GATE-004;CDSSV-GATE-001;CDSSV-GATE-002;CDSSV-GATE-003;CDSSV-GATE-004;CGTC-GATE-001;CGTC-GATE-002;CGTC-GATE-003;CGTC-GATE-004;CASLO-GATE-001;CASLO-GATE-002;CASLO-GATE-003;CASLO-GATE-004;CTB-CONF-001;CTB-CONF-009;CTI-CONF-001;CTI-CONF-011;CINL-CONF-001;CINL-CONF-008;CSCR-CONF-001;CSCR-CONF-013;CDSSV-CONF-001;CDSSV-CONF-011;CGTC-CONF-001;CGTC-CONF-010;CASLO-CONF-001;CASLO-CONF-011;canonical_datatype_families;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_execution_detail_closure_matrix_conformance
+  execution_detail_closure_matrix_conformance.cpp
+)
+target_compile_features(database_lifecycle_execution_detail_closure_matrix_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_execution_detail_closure_matrix_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_execution_detail_closure_matrix_conformance
+  COMMAND database_lifecycle_execution_detail_closure_matrix_conformance
+)
+set_tests_properties(database_lifecycle_execution_detail_closure_matrix_conformance PROPERTIES
+  LABELS "EDC-DETAIL-CLOSURE-MATRICES;EDC-CANONICAL-TYPE-FAMILY-INVENTORY;EDC-DONOR-TYPE-COVERAGE-MATRIX;EDC-OPERATION-REGISTRY-SEED-MATRIX;EDC-CAST-REGISTRY-SEED-MATRIX;EDC-AGGREGATE-WINDOW-SEED-MATRIX;EDC-INDEX-FAMILY-COMPATIBILITY-MATRIX;EDC-STATISTICS-SELECTIVITY-SEED-MATRIX;EDC-DRIVER-METADATA-SEED-MATRIX;EDC-BACKUP-REPLICATION-TRANSPORT-MATRIX;EDC-SYSTEM-CATALOG-SEED-CONTRACTS;EDC-CONFORMANCE-CORPUS-SEED-MATRIX;EDC-GATE-001;EDC-GATE-002;EDC-GATE-003;EDC-GATE-004;EDC-GATE-005;EDC-GATE-006;EDC-GATE-007;EDC-GATE-008;EDC-GATE-009;EDC-GATE-010;EDC-GATE-011;EDC-GATE-012;EDC-GATE-013;EDC-GATE-014;EDC-GATE-015;EDC-GATE-016;EDC-GATE-017;execution_detail_closure_matrix;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_remaining_detail_closure_controls_conformance
+  remaining_detail_closure_controls_conformance.cpp
+)
+target_compile_features(database_lifecycle_remaining_detail_closure_controls_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_remaining_detail_closure_controls_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_remaining_detail_closure_controls_conformance
+  COMMAND database_lifecycle_remaining_detail_closure_controls_conformance
+)
+set_tests_properties(database_lifecycle_remaining_detail_closure_controls_conformance PROPERTIES
+  LABELS "RDC-REMAINING-DETAIL-CLOSURE-CONTROLS;RDC-001;RDC-002;RDC-003;RDC-004;RDC-005;RDC-006;RDC-007;RDC-008;RDC-009;RDC-010;RDC-011;RDC-012;RDC-013;RDC-014;RDC-015;RDC-016;SCS-SYSTEM-CATALOG-SCHEMA;TSP-TYPE-SECURITY-PRIVILEGE-MATRIX;DER-DIAGNOSTIC-ERROR-CODE-REGISTRY;RRV-RESOURCE-REGISTRY-VERSIONING;PSG-PARSER-SBLR-GRAMMAR-EXPANSION;DSM-DONOR-SPECIFIC-TYPE-MATRICES;CEE-CANONICAL-ENCODING-EXAMPLES;CMM-COMPATIBILITY-MODE-MATRIX;CTM-CONFORMANCE-TEST-MANIFEST-FORMAT;DEP-DOCUMENTATION-EXAMPLES-POLICY;SCT-SYSTEM-CATALOG-TABLE-DEFINITIONS;PSF-PARSER-SBLR-FORMAL-GRAMMAR;NEE-NORMATIVE-ENCODING-EXAMPLES;CMI-CONFORMANCE-MANIFEST-INVENTORY;DVP-DONOR-VERSION-PROFILE-CLOSURE;CGC-COMMERCIAL-GRADE-COMPLETION-GATES;SCS-GATE-001;SCS-GATE-005;TSP-GATE-001;TSP-GATE-004;DER-GATE-001;DER-GATE-013;RRV-GATE-001;RRV-GATE-004;RRV-CONF-001;RRV-CONF-012;PSG-GATE-001;PSG-GATE-003;DSM-GATE-001;DSM-GATE-013;CEE-GATE-001;CEE-CONF-001;CEE-CONF-007;CMM-GATE-001;CMM-GATE-013;CTM-GATE-001;CTM-GATE-013;DEP-GATE-001;DEP-GATE-008;SCT-GATE-001;SCT-GATE-004;PSF-GATE-001;PSF-GATE-004;PSF-CONF-001;PSF-CONF-012;NEE-GATE-001;NEE-GATE-005;CMI-GATE-001;CMI-GATE-012;DVP-GATE-001;DVP-GATE-010;CGC-GATE-001;CGC-GATE-025;remaining_detail_closure_controls;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+add_executable(database_lifecycle_commercial_grade_completion_evidence_conformance
+  commercial_grade_completion_evidence_conformance.cpp
+)
+target_compile_features(database_lifecycle_commercial_grade_completion_evidence_conformance PRIVATE cxx_std_20)
+target_include_directories(database_lifecycle_commercial_grade_completion_evidence_conformance
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/include"
+)
+
+add_test(
+  NAME database_lifecycle_commercial_grade_completion_evidence_conformance
+  COMMAND database_lifecycle_commercial_grade_completion_evidence_conformance
+)
+set_tests_properties(database_lifecycle_commercial_grade_completion_evidence_conformance PROPERTIES
+  LABELS "CGC-COMMERCIAL-GRADE-COMPLETION-GATES;CGC-SPECIFICATION-COMPLETE-GATES;CGC-IMPLEMENTATION-MAPPED-GATES;CGC-FINAL-CONTRADICTION-CHECKLIST;CGC-AUDIT-MATRIX;CGC-GATE-001;CGC-GATE-002;CGC-GATE-003;CGC-GATE-004;CGC-GATE-005;CGC-GATE-006;CGC-GATE-007;CGC-GATE-008;CGC-GATE-009;CGC-GATE-010;CGC-GATE-011;CGC-GATE-012;CGC-GATE-013;CGC-GATE-014;CGC-GATE-015;CGC-GATE-016;CGC-GATE-017;CGC-GATE-018;CGC-GATE-019;CGC-GATE-020;CGC-GATE-021;CGC-GATE-022;CGC-GATE-023;CGC-GATE-024;CGC-GATE-025;commercial_grade_completion_evidence;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
+)
+
+if(TARGET sb_engine_internal_api)
+  add_executable(database_lifecycle_execution_value_state_conformance
+    execution_value_state_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_execution_value_state_conformance PRIVATE cxx_std_20)
+  target_include_directories(database_lifecycle_execution_value_state_conformance
+    PRIVATE
+      "${PROJECT_SOURCE_DIR}/include"
+  )
+  target_link_libraries(database_lifecycle_execution_value_state_conformance
+    PRIVATE
+      sb_engine_internal_api
+  )
+
+  add_test(
+    NAME database_lifecycle_execution_value_state_conformance
+    COMMAND database_lifecycle_execution_value_state_conformance
+  )
+  set_tests_properties(database_lifecycle_execution_value_state_conformance PROPERTIES
+    LABELS "EDR-002;EDR-GATE-002;execution_value_state;database_lifecycle;datatype_commercial_closure_gate"
+  )
+endif()
+
+if(TARGET sb_core_datatypes)
+  add_executable(database_lifecycle_execution_type_descriptor_conformance
+    execution_type_descriptor_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_execution_type_descriptor_conformance PRIVATE cxx_std_20)
+  target_link_libraries(database_lifecycle_execution_type_descriptor_conformance
+    PRIVATE
+      sb_core_datatypes
+      sb_core_platform
+  )
+
+  add_test(
+    NAME database_lifecycle_execution_type_descriptor_conformance
+    COMMAND database_lifecycle_execution_type_descriptor_conformance
+  )
+  set_tests_properties(database_lifecycle_execution_type_descriptor_conformance PROPERTIES
+    LABELS "EDR-001;EDR-GATE-001;execution_type_descriptor;database_lifecycle;datatype_commercial_closure_gate"
+  )
+endif()
+
 if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core_index AND TARGET sb_core_metrics)
   add_executable(database_lifecycle_datatype_numeric_p3_conformance
     datatype_numeric_p3_conformance.cpp
@@ -2510,6 +3302,25 @@ if(TARGET sb_core_memory)
     LABELS "memory_support_bundle_evidence_gate;MMCH-080;MMCH_MEMORY_SUPPORT_BUNDLE_EVIDENCE;database_lifecycle;database_lifecycle_unit;support_bundle;memory_observability;mga_transaction_regression"
   )
 
+  if(TARGET sb_engine_internal_api)
+    add_executable(database_lifecycle_memory_management_descriptor_conformance
+      memory_management_descriptor_conformance.cpp
+    )
+    target_compile_features(database_lifecycle_memory_management_descriptor_conformance PRIVATE cxx_std_23)
+    target_link_libraries(database_lifecycle_memory_management_descriptor_conformance
+      PRIVATE
+        sb_engine_internal_api
+    )
+
+    add_test(
+      NAME database_lifecycle_memory_management_descriptor_conformance
+      COMMAND database_lifecycle_memory_management_descriptor_conformance
+    )
+    set_tests_properties(database_lifecycle_memory_management_descriptor_conformance PROPERTIES
+      LABELS "database_lifecycle_memory_management_descriptor_conformance;MEMORY-MANAGEMENT-DESCRIPTOR-PLANNER-IMPLEMENTED;MEMORY-GOVERNANCE-DIRECT-EXECUTOR-IMPLEMENTED;MEMORY-AUTOMATION-REPORT-CATALOG-IMPLEMENTED;MEMORY-AUTOMATION-SAFE-EXECUTOR-IMPLEMENTED;MEMORY-OBJECT-RESIDENCY-DURABLE-CATALOG-IMPLEMENTED;MEMORY-RATE-LIMIT-DURABLE-CATALOG-IMPLEMENTED;MEMORY-RATE-LIMIT-LIVE-EXECUTOR-IMPLEMENTED;MEMORY-POLICY-MIGRATION-DURABLE-CATALOG-IMPLEMENTED;MM-MEMORY-MANAGEMENT-CORRECTIVE-CLOSURE;MM-GATE-001;MM-GATE-002;MM-GATE-003;MM-GATE-004;MM-GATE-005;MM-GATE-006;MM-GATE-007;MM-GATE-008;MM-GATE-009;MM-GATE-010;MM-GATE-011;MM-GATE-012;MM-GATE-013;MM-GATE-014;MM-GATE-015;MM-GATE-016;MM-GATE-017;MM-GATE-018;MM-GATE-019;MM-GATE-020;MM-GATE-021;MM-GATE-022;MM-GATE-023;MM-GATE-024;memory_governance;memory_automation;memory_object_residency;memory_rate_limit;memory_policy_migration;database_lifecycle;memory;mga_transaction_regression"
+    )
+  endif()
+
   add_test(
     NAME memory_production_test_separation_gate
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/memory_production_test_separation_gate.py"
@@ -2720,6 +3531,27 @@ set_tests_properties(dpc_negative_rejected_technique_drift_gate PROPERTIES
 
 set(SB_DPC_EVIDENCE_PROVENANCE_RETENTION_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/dpc_evidence_provenance_retention_gate.py"
+)
+
+set(SB_MIGRATION_DEFERRED_OPERATIONS_CLOSURE_GATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/migration_deferred_operations_closure_gate.py"
+)
+
+add_custom_target(migration_deferred_operations_closure_gate_check
+  COMMAND "${Python3_EXECUTABLE}" "${SB_MIGRATION_DEFERRED_OPERATIONS_CLOSURE_GATE}"
+          --repo-root "${SB_PRIVATE_REPO_ROOT}"
+          --build-root "${CMAKE_BINARY_DIR}"
+  COMMENT "Validating migration deferred operations implementation closure"
+)
+
+add_test(
+  NAME migration_deferred_operations_closure_gate
+  COMMAND "${Python3_EXECUTABLE}" "${SB_MIGRATION_DEFERRED_OPERATIONS_CLOSURE_GATE}"
+          --repo-root "${SB_PRIVATE_REPO_ROOT}"
+          --build-root "${CMAKE_BINARY_DIR}"
+)
+set_tests_properties(migration_deferred_operations_closure_gate PROPERTIES
+  LABELS "migration_deferred_operations_closure_gate;MIGRATION-DEFERRED-OPERATIONS-CLOSURE;MIGRATION-DIRECTORY-IMPLEMENTATION-CLOSURE;DEFERRED-MIGRATION-IMPLEMENTATION-CLOSURE;TEMP-TABLE-GATE-017;database_lifecycle;mga_transaction_regression"
 )
 
 set(SB_DPC_EVIDENCE_PROVENANCE_RETENTION_MANIFEST

@@ -162,6 +162,13 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   if (!table) {
     return MakeCrudDiagnosticResult<EngineSelectRowsResult>(request.context, "dml.select_rows", MakeInvalidRequestDiagnostic("dml.select_rows", "source_table_not_visible"));
   }
+  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+    return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+        request.context,
+        "dml.select_rows",
+        MakeInvalidRequestDiagnostic("dml.select_rows",
+                                     "temporary_table_requires_session_uuid"));
+  }
   const EnginePredicateEnvelope& predicate =
       !request.select_predicate.predicate_kind.empty() ? request.select_predicate : request.predicate;
   if (CrudPredicateTouchesOpaqueColumn(*table, predicate)) {

@@ -797,6 +797,10 @@ std::string DetachCleanupDetail(std::string disconnect_reason,
                                 std::uint64_t cursors_tombstoned,
                                 std::uint64_t engine_results_released,
                                 std::uint64_t request_finality_records_updated,
+                                std::uint64_t temporary_rows_deleted,
+                                std::uint64_t temporary_large_values_reclaimed,
+                                std::uint64_t temporary_private_metadata_retired,
+                                std::string temporary_cleanup_state,
                                 std::uint64_t active_local_transaction_id) {
   std::ostringstream out;
   out << "disconnect_reason=" << disconnect_reason
@@ -806,6 +810,10 @@ std::string DetachCleanupDetail(std::string disconnect_reason,
       << ";cursors_tombstoned=" << cursors_tombstoned
       << ";engine_results_released=" << engine_results_released
       << ";request_finality_records_updated=" << request_finality_records_updated
+      << ";temporary_rows_deleted=" << temporary_rows_deleted
+      << ";temporary_large_values_reclaimed=" << temporary_large_values_reclaimed
+      << ";temporary_private_metadata_retired=" << temporary_private_metadata_retired
+      << ";temporary_cleanup_state=" << temporary_cleanup_state
       << ";disconnect_does_not_commit=true"
       << ";disconnect_does_not_rollback=true"
       << ";mga_finality_authority=engine";
@@ -2555,6 +2563,10 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
   std::array<std::uint8_t, 16> auth_context_uuid{};
   std::uint64_t active_local_transaction_id = 0;
   std::uint64_t rolled_back_local_transaction_id = 0;
+  std::uint64_t temporary_rows_deleted = 0;
+  std::uint64_t temporary_large_values_reclaimed = 0;
+  std::uint64_t temporary_private_metadata_retired = 0;
+  std::string temporary_cleanup_state = "not_run";
   if (session_found != registry->sessions_by_uuid.end()) {
     auth_context_uuid = session_found->second.auth_context_uuid;
     active_local_transaction_id = session_found->second.local_transaction_id;
@@ -2568,6 +2580,29 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
         rolled_back_local_transaction_id = active_local_transaction_id;
         active_local_transaction_id = 0;
       }
+    }
+    if (active_local_transaction_id == 0) {
+      engine_api::EngineCleanupTemporarySessionRequest cleanup;
+      cleanup.context = EngineContextForSession(session_found->second,
+                                                HostedEngineState{},
+                                                request);
+      cleanup.context.local_transaction_id = 0;
+      cleanup.context.transaction_uuid.canonical.clear();
+      cleanup.context.snapshot_visible_through_local_transaction_id = 0;
+      cleanup.context.transaction_timestamp.clear();
+      const auto cleaned = engine_api::EngineCleanupTemporarySessionState(cleanup);
+      if (cleaned.ok) {
+        temporary_rows_deleted = cleaned.temporary_deleted_rows;
+        temporary_large_values_reclaimed =
+            cleaned.temporary_reclaimed_large_values;
+        temporary_private_metadata_retired =
+            cleaned.temporary_retired_private_metadata;
+        temporary_cleanup_state = "committed";
+      } else {
+        temporary_cleanup_state = "failed";
+      }
+    } else {
+      temporary_cleanup_state = "skipped_active_transaction_outcome_unknown";
     }
   }
   const auto erased = registry->sessions_by_uuid.erase(key);
@@ -2649,6 +2684,10 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
                                                   cursors_tombstoned,
                                                   engine_results_released,
                                                   request_finality_records_updated,
+                                                  temporary_rows_deleted,
+                                                  temporary_large_values_reclaimed,
+                                                  temporary_private_metadata_retired,
+                                                  temporary_cleanup_state,
                                                   active_local_transaction_id);
   if (erased != 0) {
     result.diagnostics.push_back(DetachCleanupDiagnostic(
@@ -2661,7 +2700,11 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
          {"prepared_tombstoned", std::to_string(prepared_tombstoned)},
          {"cursors_tombstoned", std::to_string(cursors_tombstoned)},
          {"engine_results_released", std::to_string(engine_results_released)},
-         {"request_finality_records_updated", std::to_string(request_finality_records_updated)}}));
+         {"request_finality_records_updated", std::to_string(request_finality_records_updated)},
+         {"temporary_rows_deleted", std::to_string(temporary_rows_deleted)},
+         {"temporary_large_values_reclaimed", std::to_string(temporary_large_values_reclaimed)},
+         {"temporary_private_metadata_retired", std::to_string(temporary_private_metadata_retired)},
+         {"temporary_cleanup_state", temporary_cleanup_state}}));
     if (rolled_back_local_transaction_id != 0) {
       result.diagnostics.push_back(DetachCleanupDiagnostic(
           "ENGINE.DBLC_DETACH_TRANSACTION_ROLLED_BACK",

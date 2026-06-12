@@ -27,6 +27,14 @@ constexpr std::string_view kDatabaseB = "019e18d0-013b-7000-8000-000000000013";
 constexpr std::string_view kFilespaceA = "019e18d0-013c-7000-8000-000000000013";
 constexpr std::string_view kFilespaceB = "019e18d0-013d-7000-8000-000000000013";
 constexpr std::string_view kPlaintextSecret = "CorrectHorseBatteryStaple-DBLC013Z";
+constexpr std::string_view kProtectedMaterialUuid = "019e18d0-0140-7000-8000-000000000013";
+constexpr std::string_view kProtectedMaterialVersionA = "019e18d0-0141-7000-8000-000000000013";
+constexpr std::string_view kProtectedMaterialVersionB = "019e18d0-0142-7000-8000-000000000013";
+constexpr std::string_view kPolicyRetention = "019e18d0-0143-7000-8000-000000000013";
+constexpr std::string_view kPolicyAccess = "019e18d0-0144-7000-8000-000000000013";
+constexpr std::string_view kPolicyRelease = "019e18d0-0145-7000-8000-000000000013";
+constexpr std::string_view kPolicyPurge = "019e18d0-0146-7000-8000-000000000013";
+constexpr std::string_view kPolicyAudit = "019e18d0-0147-7000-8000-000000000013";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -46,7 +54,8 @@ std::filesystem::path MakeTempDir() {
 
 engine_api::EngineRequestContext Context(const std::filesystem::path& database_path,
                                          std::string_view database_uuid = kDatabaseA,
-                                         std::uint64_t epoch = 1000) {
+                                         std::uint64_t epoch = 1000,
+                                         std::uint64_t local_transaction_id = 1) {
   engine_api::EngineRequestContext context;
   context.trust_mode = engine_api::EngineTrustMode::server_isolated;
   context.database_path = database_path.string();
@@ -54,7 +63,8 @@ engine_api::EngineRequestContext Context(const std::filesystem::path& database_p
   context.security_context_present = true;
   context.trace_tags.push_back("security.bootstrap");
   context.resource_epoch = epoch;
-  context.local_transaction_id = 1;
+  context.local_transaction_id = local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id = local_transaction_id;
   std::ofstream touch(database_path, std::ios::app);
   Require(static_cast<bool>(touch), "DBLC-013Z database fixture create failed");
   return context;
@@ -73,6 +83,13 @@ bool HasDiagnostic(const engine_api::EngineApiResult& result, std::string_view c
   for (const auto& diagnostic : result.diagnostics) {
     if (diagnostic.code == code) { return true; }
     if (diagnostic.detail == code) { return true; }
+  }
+  return false;
+}
+
+bool HasEvidence(const engine_api::EngineApiResult& result, std::string_view kind) {
+  for (const auto& evidence : result.evidence) {
+    if (evidence.evidence_kind == kind) { return true; }
   }
   return false;
 }
@@ -98,6 +115,33 @@ void RequireNoLeak(const engine_api::EngineApiResult& result, std::string_view f
   const auto flattened = FlattenResult(result);
   Require(flattened.find(forbidden) == std::string::npos,
           "DBLC-013Z protected material leaked into diagnostics/result evidence");
+}
+
+void WriteProtectedMaterialPageFixture(const std::filesystem::path& path) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  Require(static_cast<bool>(out), "DBLC-013Z physical erase fixture open failed");
+  const std::string payload = "nonzero-protected-page-material-v2";
+  for (int index = 0; index < 128; ++index) {
+    out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+  }
+  out.close();
+  Require(static_cast<bool>(out), "DBLC-013Z physical erase fixture write failed");
+}
+
+bool FileAllZero(const std::filesystem::path& path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) { return false; }
+  bool saw_byte = false;
+  char buffer[1024];
+  while (input) {
+    input.read(buffer, sizeof(buffer));
+    const auto count = input.gcount();
+    for (std::streamsize index = 0; index < count; ++index) {
+      saw_byte = true;
+      if (buffer[index] != '\0') { return false; }
+    }
+  }
+  return saw_byte && input.eof();
 }
 
 engine_api::EngineAdmitEncryptionKeyResult Admit(const engine_api::EngineRequestContext& context,
@@ -304,6 +348,227 @@ void TestPlaintextRefusalAndNoDiagnosticLeak(const std::filesystem::path& databa
   RequireNoLeak(refused, kPlaintextSecret);
 }
 
+engine_api::EngineProtectedMaterialPolicySet MaterialPolicy(std::uint64_t retain_until = 0) {
+  engine_api::EngineProtectedMaterialPolicySet policy;
+  policy.retention_policy_uuid = std::string(kPolicyRetention);
+  policy.access_policy_uuid = std::string(kPolicyAccess);
+  policy.release_policy_uuid = std::string(kPolicyRelease);
+  policy.purge_policy_uuid = std::string(kPolicyPurge);
+  policy.audit_policy_uuid = std::string(kPolicyAudit);
+  policy.retention_until_epoch_millis = retain_until;
+  policy.release_purposes = {"filespace.open"};
+  return policy;
+}
+
+void TestProtectedMaterialCatalogLifecycle(const std::filesystem::path& database_path) {
+  const auto create_context = Context(database_path, kDatabaseA, 3000, 10);
+
+  engine_api::EngineCreateProtectedMaterialRequest create;
+  create.context = create_context;
+  create.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  create.object_class = "filespace_encryption_key";
+  create.owner_scope_uuid = std::string(kFilespaceA);
+  create.purpose_class = "encryption_use";
+  create.storage_class = "wrapped";
+  create.policy = MaterialPolicy();
+  create.initial_version_uuid = std::string(kProtectedMaterialVersionA);
+  create.protected_reference = "kms-ref:v1:wrapped-material-a";
+  create.envelope_reference = "kms-envelope:v1:wrapped-material-a";
+  create.payload_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const auto created = engine_api::EngineCreateProtectedMaterial(create);
+  Require(created.ok && created.created && created.initial_version_created,
+          "DBLC-013Z protected material create failed");
+  Require(!created.plaintext_material_stored && created.protected_material_redacted,
+          "DBLC-013Z protected material create stored plaintext or skipped redaction");
+  Require(created.active_version_number == 1,
+          "DBLC-013Z protected material initial version number mismatch");
+  RequireNoLeak(created, "wrapped-material-a");
+
+  engine_api::EngineAddProtectedMaterialVersionRequest add;
+  add.context = Context(database_path, kDatabaseA, 3500, 20);
+  add.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  add.protected_material_version_uuid = std::string(kProtectedMaterialVersionB);
+  add.protected_reference = "kms-ref:v1:wrapped-material-b";
+  add.envelope_reference = "kms-envelope:v1:wrapped-material-b";
+  add.payload_hash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  add.storage_class = "wrapped";
+  add.rotation_reason = "password=rotation-reason-must-redact";
+  add.policy_override = MaterialPolicy(5000);
+  const auto added = engine_api::EngineAddProtectedMaterialVersion(add);
+  Require(added.ok && added.version_added && added.active_version_changed,
+          "DBLC-013Z protected material add-version failed");
+  Require(!added.plaintext_material_stored && added.protected_material_redacted,
+          "DBLC-013Z protected material add-version stored plaintext or skipped redaction");
+  Require(added.active_version_uuid == kProtectedMaterialVersionB &&
+              added.active_version_number == 2,
+          "DBLC-013Z protected material active version did not rotate");
+  RequireNoLeak(added, "rotation-reason-must-redact");
+  RequireNoLeak(added, "wrapped-material-b");
+
+  engine_api::EngineResolveProtectedMaterialRequest resolve;
+  resolve.context = Context(database_path, kDatabaseA, 3600, 20);
+  resolve.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  resolve.purpose = "filespace.open";
+  const auto resolved = engine_api::EngineResolveProtectedMaterial(resolve);
+  Require(resolved.ok && resolved.resolved && resolved.active_version_visible,
+          "DBLC-013Z protected material resolve failed");
+  Require(resolved.protected_material_version_uuid == kProtectedMaterialVersionB,
+          "DBLC-013Z protected material resolve did not choose active version");
+  Require(!resolved.protected_material_ref.empty(),
+          "DBLC-013Z protected material resolve did not return opaque reference");
+  RequireNoLeak(resolved, "wrapped-material-b");
+
+  engine_api::EngineReleaseProtectedMaterialRequest release;
+  release.context = Context(database_path, kDatabaseA, 3700, 20);
+  release.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  release.purpose = "filespace.open";
+  const auto released = engine_api::EngineReleaseProtectedMaterial(release);
+  Require(released.ok && released.released && !released.policy_denied,
+          "DBLC-013Z protected material release failed");
+  Require(!released.plaintext_material_returned && !released.release_handle.empty(),
+          "DBLC-013Z protected material release returned plaintext or no handle");
+  RequireNoLeak(released, "wrapped-material-b");
+
+  engine_api::EngineReleaseProtectedMaterialRequest denied_release = release;
+  denied_release.purpose = "support.bundle.export";
+  const auto denied = engine_api::EngineReleaseProtectedMaterial(denied_release);
+  Require(!denied.ok && denied.policy_denied &&
+              HasDiagnostic(denied, "SECURITY.PROTECTED_MATERIAL.POLICY_DENIED"),
+          "DBLC-013Z protected material release policy denial failed");
+
+  engine_api::EngineExportProtectedMaterialPackageRequest export_package;
+  export_package.context = Context(database_path, kDatabaseA, 3800, 21);
+  export_package.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  export_package.include_versions = true;
+  export_package.include_audit = true;
+  export_package.export_reason = "reference-package-transfer";
+  const auto exported_package =
+      engine_api::EngineExportProtectedMaterialPackage(export_package);
+  Require(exported_package.ok && exported_package.exported &&
+              exported_package.material_count == 1 &&
+              exported_package.version_count >= 2 &&
+              !exported_package.encoded_package.empty() &&
+              !exported_package.package_digest.empty(),
+          "DBLC-013Z protected material package export failed");
+  Require(exported_package.protected_material_redacted &&
+              !exported_package.plaintext_material_returned,
+          "DBLC-013Z protected material package export redaction failed");
+  Require(HasEvidence(exported_package, "protected_material_package_export"),
+          "DBLC-013Z protected material package export evidence missing");
+  RequireNoLeak(exported_package, "wrapped-material-b");
+
+  const auto import_database_path =
+      database_path.parent_path() / "dblc013z-import-target.sbdb";
+  engine_api::EngineImportProtectedMaterialPackageRequest import_denied;
+  import_denied.context = Context(import_database_path, kDatabaseB, 3900, 22);
+  import_denied.encoded_package = exported_package.encoded_package;
+  import_denied.expected_package_digest = exported_package.package_digest;
+  const auto denied_import =
+      engine_api::EngineImportProtectedMaterialPackage(import_denied);
+  Require(!denied_import.ok &&
+              HasDiagnostic(denied_import,
+                            "SECURITY.PROTECTED_MATERIAL.PACKAGE_IMPORT_AUTHORITY_REQUIRED"),
+          "DBLC-013Z protected material package import authority refusal failed");
+
+  engine_api::EngineImportProtectedMaterialPackageRequest import_package = import_denied;
+  import_package.import_authorized = true;
+  import_package.import_reason = "authorized-reference-package-transfer";
+  const auto imported_package =
+      engine_api::EngineImportProtectedMaterialPackage(import_package);
+  Require(imported_package.ok && imported_package.imported &&
+              imported_package.material_count == 1 &&
+              imported_package.version_count >= 2 &&
+              imported_package.package_digest == exported_package.package_digest,
+          "DBLC-013Z protected material package import failed");
+  Require(imported_package.protected_material_redacted &&
+              !imported_package.plaintext_material_returned,
+          "DBLC-013Z protected material package import redaction failed");
+  Require(HasEvidence(imported_package, "protected_material_package_import"),
+          "DBLC-013Z protected material package import evidence missing");
+  RequireNoLeak(imported_package, "wrapped-material-b");
+
+  engine_api::EngineInspectProtectedMaterialCatalogRequest inspect_import;
+  inspect_import.context = Context(import_database_path, kDatabaseB, 4000, 22);
+  inspect_import.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  inspect_import.include_versions = true;
+  inspect_import.include_audit = true;
+  const auto imported_catalog =
+      engine_api::EngineInspectProtectedMaterialCatalog(inspect_import);
+  Require(imported_catalog.ok && imported_catalog.materials.size() == 1 &&
+              imported_catalog.versions.size() >= 2 &&
+              imported_catalog.materials.front().database_uuid == kDatabaseB,
+          "DBLC-013Z imported protected material catalog visibility failed");
+  RequireNoLeak(imported_catalog, "wrapped-material-b");
+
+  engine_api::EnginePurgeProtectedMaterialVersionRequest purge_retained;
+  purge_retained.context = Context(database_path, kDatabaseA, 4000, 30);
+  purge_retained.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  purge_retained.protected_material_version_uuid = std::string(kProtectedMaterialVersionB);
+  purge_retained.purge_reason = "retention-check";
+  const auto retained = engine_api::EnginePurgeProtectedMaterialVersion(purge_retained);
+  Require(!retained.ok && retained.refused_by_retention && retained.audit_preserved,
+          "DBLC-013Z protected material retention refusal failed");
+  Require(retained.protected_reference_reachable,
+          "DBLC-013Z retained protected material lost reference");
+
+  const auto physical_page_path =
+      database_path.parent_path() / "dblc013z-protected-material-version-b.page";
+  WriteProtectedMaterialPageFixture(physical_page_path);
+
+  engine_api::EnginePurgeProtectedMaterialVersionRequest physical_denied = purge_retained;
+  physical_denied.context = Context(database_path, kDatabaseA, 6000, 39);
+  physical_denied.purge_reason = "physical-erase-authority-check";
+  physical_denied.physical_erase_requested = true;
+  physical_denied.physical_erase_path = physical_page_path.string();
+  const auto denied_physical =
+      engine_api::EnginePurgeProtectedMaterialVersion(physical_denied);
+  Require(!denied_physical.ok && denied_physical.audit_preserved &&
+              denied_physical.protected_reference_reachable &&
+              HasDiagnostic(denied_physical,
+                            "SECURITY.PROTECTED_MATERIAL.PHYSICAL_ERASE_AUTHORITY_REQUIRED"),
+          "DBLC-013Z physical erase authority refusal failed");
+  Require(!FileAllZero(physical_page_path),
+          "DBLC-013Z physical erase authority refusal changed protected page bytes");
+
+  engine_api::EnginePurgeProtectedMaterialVersionRequest purge_allowed = purge_retained;
+  purge_allowed.context = Context(database_path, kDatabaseA, 6000, 40);
+  purge_allowed.purge_reason = "retention-expired";
+  purge_allowed.physical_erase_requested = true;
+  purge_allowed.physical_erase_authorized = true;
+  purge_allowed.physical_erase_retention_satisfied = true;
+  purge_allowed.physical_erase_legal_hold_clear = true;
+  purge_allowed.physical_erase_path = physical_page_path.string();
+  const auto purged = engine_api::EnginePurgeProtectedMaterialVersion(purge_allowed);
+  Require(purged.ok && purged.purged && purged.audit_preserved,
+          "DBLC-013Z protected material purge after retention failed");
+  Require(!purged.protected_reference_reachable,
+          "DBLC-013Z purged protected material reference remained reachable");
+  Require(purged.physical_erase_executed && purged.physical_erase_verified &&
+              purged.physical_erase_bytes > 0,
+          "DBLC-013Z physical cryptographic erase was not executed and verified");
+  Require(FileAllZero(physical_page_path),
+          "DBLC-013Z physical cryptographic erase did not clear protected page bytes");
+  Require(HasEvidence(purged, "protected_material_physical_erase") &&
+              HasEvidence(purged, "protected_material_physical_erase_verified"),
+          "DBLC-013Z physical erase evidence missing");
+
+  engine_api::EngineInspectProtectedMaterialCatalogRequest inspect;
+  inspect.context = Context(database_path, kDatabaseA, 6100, 40);
+  inspect.protected_material_uuid = std::string(kProtectedMaterialUuid);
+  inspect.include_versions = true;
+  inspect.include_audit = true;
+  const auto inspected = engine_api::EngineInspectProtectedMaterialCatalog(inspect);
+  Require(inspected.ok && inspected.protected_material_redacted,
+          "DBLC-013Z protected material catalog inspect failed");
+  Require(!inspected.materials.empty(), "DBLC-013Z protected material catalog material missing");
+  Require(inspected.versions.size() >= 2,
+          "DBLC-013Z protected material catalog versions missing");
+  Require(inspected.audit_events.size() >= 7,
+          "DBLC-013Z protected material audit history incomplete");
+  RequireNoLeak(inspected, "wrapped-material-a");
+  RequireNoLeak(inspected, "wrapped-material-b");
+}
+
 }  // namespace
 
 int main() {
@@ -313,5 +578,6 @@ int main() {
   TestScopeAndMissingAuthorityRefusals(database_path);
   TestRotationExpiryPurgeAndShutdown(database_path);
   TestPlaintextRefusalAndNoDiagnosticLeak(database_path);
+  TestProtectedMaterialCatalogLifecycle(database_path);
   return EXIT_SUCCESS;
 }

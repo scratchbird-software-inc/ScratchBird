@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <poll.h>
 #include <netinet/in.h>
 #include <string>
 #include <sys/socket.h>
@@ -99,6 +100,18 @@ bool WriteAll(int fd, const std::string& text) {
   return true;
 }
 
+void DrainAvailableLines(int fd, std::string* line) {
+  pollfd pfd{};
+  pfd.fd = fd;
+  pfd.events = POLLIN;
+  for (int i = 0; i < 512; ++i) {
+    pfd.revents = 0;
+    const int ready = ::poll(&pfd, 1, 10);
+    if (ready <= 0 || (pfd.revents & POLLIN) == 0) return;
+    if (!ReadLine(fd, line)) return;
+  }
+}
+
 std::filesystem::path MakeTempDir() {
   std::string tmpl = "/tmp/sb_sbp_sbsql_full_route.XXXXXX";
   std::vector<char> writable(tmpl.begin(), tmpl.end());
@@ -176,11 +189,17 @@ bool ExecuteAndExpectResult(int fd,
   command += '\n';
   if (!WriteAll(fd, command)) return false;
   const std::string result_prefix = "RESULT " + std::string(operation_id) + " ";
-  for (int i = 0; i < 10 && ReadLine(fd, line); ++i) {
+  for (int i = 0; i < 512 && ReadLine(fd, line); ++i) {
     if (line->starts_with(result_prefix)) {
-      if (!operation_id.starts_with("transaction.")) return true;
+      if (!operation_id.starts_with("transaction.")) {
+        DrainAvailableLines(fd, line);
+        return true;
+      }
       for (int drain = 0; drain < 20 && ReadLine(fd, line); ++drain) {
-        if (line->starts_with("transaction_uuid=")) return true;
+        if (line->starts_with("transaction_uuid=")) {
+          DrainAvailableLines(fd, line);
+          return true;
+        }
         if (line->starts_with("MESSAGE ")) return false;
       }
       return false;
@@ -188,6 +207,203 @@ bool ExecuteAndExpectResult(int fd,
     if (line->starts_with("MESSAGE ")) return false;
   }
   return false;
+}
+
+bool ExecuteAndExpectResultRows(int fd,
+                                std::string_view sql,
+                                std::string_view operation_id,
+                                std::uint64_t row_count,
+                                std::string* line) {
+  std::string command = "EXECUTE ";
+  command += sql;
+  command += '\n';
+  if (!WriteAll(fd, command)) return false;
+  const std::string result_prefix = "RESULT " + std::string(operation_id) +
+                                    " " + std::to_string(row_count) + " ";
+  for (int i = 0; i < 512 && ReadLine(fd, line); ++i) {
+    if (line->starts_with(result_prefix)) {
+      DrainAvailableLines(fd, line);
+      return true;
+    }
+    if (line->starts_with("MESSAGE ")) return false;
+  }
+  return false;
+}
+
+bool ExecuteAndExpectMessage(int fd,
+                             std::string_view sql,
+                             std::string_view message_prefix,
+                             std::string* line) {
+  std::string command = "EXECUTE ";
+  command += sql;
+  command += '\n';
+  if (!WriteAll(fd, command)) return false;
+  for (int i = 0; i < 512 && ReadLine(fd, line); ++i) {
+    if (line->starts_with(message_prefix)) return true;
+    if (line->starts_with("RESULT ")) return false;
+  }
+  return false;
+}
+
+bool AuthenticateAlice(int fd, std::string* line) {
+  const std::string valid_auth =
+      "AUTH alice " + LocalPasswordEvidence(kAliceVerifier) + "\n";
+  if (!WriteAll(fd, valid_auth)) return false;
+  for (int i = 0; i < 4 && ReadLine(fd, line); ++i) {
+    if (*line == "OK AUTHENTICATED") return true;
+  }
+  return false;
+}
+
+int ConnectAndAuthenticate(int port, std::string* line) {
+  int fd = -1;
+  for (int i = 0; i < 120; ++i) {
+    fd = ConnectLoopback(port);
+    if (fd >= 0) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  if (fd < 0) return -1;
+  if (!ReadLine(fd, line) || *line != "ScratchBird SBSQL parser ready" ||
+      !AuthenticateAlice(fd, line)) {
+    ::close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+bool RunTemporaryTableFullRouteProof(int* fd, int port, std::string* line) {
+  if (!ExecuteAndExpectResult(*fd,
+                              "CREATE TEMPORARY TABLE route_temp_delete (id int) ON COMMIT DELETE ROWS",
+                              "ddl.create_table",
+                              line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route private temp create failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  if (!ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route private temp create commit failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  if (!ExecuteAndExpectResultRows(*fd,
+                                  "INSERT INTO route_temp_delete VALUES (1)",
+                                  "dml.insert_rows",
+                                  1,
+                                  line) ||
+      !ExecuteAndExpectResultRows(*fd,
+                                  "SELECT * FROM route_temp_delete",
+                                  "dml.select_rows",
+                                  1,
+                                  line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route private temp DML failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  if (!ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line) ||
+      !ExecuteAndExpectResultRows(*fd,
+                                  "SELECT * FROM route_temp_delete",
+                                  "dml.select_rows",
+                                  0,
+                                  line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route ON COMMIT DELETE proof failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  if (!ExecuteAndExpectResultRows(*fd,
+                                  "INSERT INTO route_temp_delete VALUES (2)",
+                                  "dml.insert_rows",
+                                  1,
+                                  line) ||
+      !ExecuteAndExpectResult(*fd, "ROLLBACK", "transaction.rollback", line) ||
+      !ExecuteAndExpectResultRows(*fd,
+                                  "SELECT * FROM route_temp_delete",
+                                  "dml.select_rows",
+                                  0,
+                                  line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route rollback proof failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  if (!ExecuteAndExpectResult(*fd,
+                              "DROP TABLE route_temp_delete",
+                              "ddl.drop_object",
+                              line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route private temp drop failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  if (!ExecuteAndExpectMessage(
+          *fd,
+          "SELECT * FROM route_temp_delete",
+          "MESSAGE ERROR SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE",
+          line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route private temp drop refusal failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  if (!ExecuteAndExpectResult(*fd,
+                              "CREATE GLOBAL TEMPORARY TABLE route_gtt (id int) ON COMMIT PRESERVE ROWS",
+                              "ddl.create_table",
+                              line) ||
+      !ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line) ||
+      !ExecuteAndExpectResultRows(*fd,
+                                  "INSERT INTO route_gtt VALUES (7)",
+                                  "dml.insert_rows",
+                                  1,
+                                  line) ||
+      !ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line) ||
+      !ExecuteAndExpectResultRows(*fd,
+                                  "SELECT * FROM route_gtt",
+                                  "dml.select_rows",
+                                  1,
+                                  line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route GTT preserve proof failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  if (!ExecuteAndExpectResult(*fd,
+                              "CREATE TEMPORARY TABLE route_temp_cleanup (id int) ON COMMIT PRESERVE ROWS",
+                              "ddl.create_table",
+                              line) ||
+      !ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line) ||
+      !ExecuteAndExpectResultRows(*fd,
+                                  "INSERT INTO route_temp_cleanup VALUES (9)",
+                                  "dml.insert_rows",
+                                  1,
+                                  line) ||
+      !ExecuteAndExpectResult(*fd, "COMMIT", "transaction.commit", line) ||
+      !ExecuteAndExpectResultRows(*fd,
+                                  "SELECT * FROM route_temp_cleanup",
+                                  "dml.select_rows",
+                                  1,
+                                  line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route private preserve proof failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+
+  ::close(*fd);
+  *fd = ConnectAndAuthenticate(port, line);
+  if (*fd < 0) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route reconnect after temp cleanup failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  if (!ExecuteAndExpectResultRows(*fd,
+                                  "SELECT * FROM route_gtt",
+                                  "dml.select_rows",
+                                  0,
+                                  line) ||
+      !ExecuteAndExpectMessage(
+          *fd,
+          "SELECT * FROM route_temp_cleanup",
+          "MESSAGE ERROR SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE",
+          line)) {
+    std::cerr << "TEMP-TABLE-GATE-015 live route session cleanup proof failed, last_line="
+              << *line << '\n';
+    return false;
+  }
+  return true;
 }
 
 void StopProcess(pid_t pid) {
@@ -630,6 +846,14 @@ int main(int argc, char** argv) {
               << work << " last_line=" << line << '\n';
     return EXIT_FAILURE;
   }
+  if (!RunTemporaryTableFullRouteProof(&fd, port, &line)) {
+    ::close(fd);
+    StopProcess(listener_pid);
+    StopProcess(server_pid);
+    std::cerr << "full route temporary-table proof failed under "
+              << work << " last_line=" << line << '\n';
+    return EXIT_FAILURE;
+  }
   if (!WriteAll(fd, "ENGINE STREAM\n")) {
     ::close(fd);
     StopProcess(listener_pid);
@@ -700,6 +924,80 @@ int main(int argc, char** argv) {
   }
   if (!saw_engine_cursor_closed) {
     std::cerr << "full route did not close engine-backed streaming cursor under "
+              << work << " last_line=" << line << '\n';
+    ::close(fd);
+    StopProcess(listener_pid);
+    StopProcess(server_pid);
+    return EXIT_FAILURE;
+  }
+  if (!WriteAll(fd, "ROUTINE CURSOR\n")) {
+    ::close(fd);
+    StopProcess(listener_pid);
+    StopProcess(server_pid);
+    return EXIT_FAILURE;
+  }
+  bool saw_routine_cursor = false;
+  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
+    if (line.starts_with("ROUTINE_CURSOR ") &&
+        line.find("operation_id=routine.execute_cursor_argument") != std::string::npos &&
+        line.find("routine_rows=1") != std::string::npos &&
+        line.find("same_cursor=true") != std::string::npos &&
+        line.find("routine_row_zero=true") != std::string::npos &&
+        line.find("routine_operation=true") != std::string::npos) {
+      saw_routine_cursor = true;
+      break;
+    }
+    if (line.starts_with("MESSAGE ")) break;
+  }
+  if (!saw_routine_cursor) {
+    std::cerr << "ROUTINE-CURSOR-GATE-009 full route routine cursor proof failed under "
+              << work << " last_line=" << line << '\n';
+    ::close(fd);
+    StopProcess(listener_pid);
+    StopProcess(server_pid);
+    return EXIT_FAILURE;
+  }
+  if (!WriteAll(fd, "FETCH 1\n")) {
+    ::close(fd);
+    StopProcess(listener_pid);
+    StopProcess(server_pid);
+    return EXIT_FAILURE;
+  }
+  bool saw_routine_owner_fetch = false;
+  for (int i = 0; i < 8 && ReadLine(fd, &line); ++i) {
+    if (line.starts_with("FETCH ") &&
+        line.find("\"chunk_start\":1") != std::string::npos &&
+        line.find("\"event\":\"command_tag\"") != std::string::npos &&
+        line.find("\"tag\":\"SELECT 1\"") != std::string::npos) {
+      saw_routine_owner_fetch = true;
+      break;
+    }
+    if (line.starts_with("MESSAGE ")) break;
+  }
+  if (!saw_routine_owner_fetch) {
+    std::cerr << "ROUTINE-CURSOR-GATE-009 full route owner fetch after routine did not advance under "
+              << work << " last_line=" << line << '\n';
+    ::close(fd);
+    StopProcess(listener_pid);
+    StopProcess(server_pid);
+    return EXIT_FAILURE;
+  }
+  if (!WriteAll(fd, "CLOSE CURSOR\n")) {
+    ::close(fd);
+    StopProcess(listener_pid);
+    StopProcess(server_pid);
+    return EXIT_FAILURE;
+  }
+  bool saw_routine_cursor_closed = false;
+  for (int i = 0; i < 4 && ReadLine(fd, &line); ++i) {
+    if (line == "OK CURSOR_CLOSED") {
+      saw_routine_cursor_closed = true;
+      break;
+    }
+    if (line.starts_with("MESSAGE ")) break;
+  }
+  if (!saw_routine_cursor_closed) {
+    std::cerr << "ROUTINE-CURSOR-GATE-009 full route routine cursor close failed under "
               << work << " last_line=" << line << '\n';
     ::close(fd);
     StopProcess(listener_pid);

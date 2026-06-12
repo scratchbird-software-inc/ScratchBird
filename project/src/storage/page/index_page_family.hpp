@@ -44,7 +44,7 @@ enum class IndexPageFamilyKind : u16 {
   unknown = 0xffffu
 };
 
-struct IndexPageFamilyHeader {
+struct IndexSpecialHeader {
   TypedUuid index_object_uuid;
   TypedUuid family_uuid;
   u64 resource_epoch = 0;
@@ -56,18 +56,24 @@ struct IndexPageFamilyHeader {
   PageType page_type = PageType::unknown;
 };
 
-struct IndexPageFamilyHeaderResult {
+using IndexPageFamilyHeader = IndexSpecialHeader;
+
+struct IndexSpecialHeaderResult {
   Status status;
-  IndexPageFamilyHeader header;
+  IndexSpecialHeader header;
   std::vector<byte> serialized;
   DiagnosticRecord diagnostic;
 
   bool ok() const { return status.ok(); }
 };
 
+using IndexPageFamilyHeaderResult = IndexSpecialHeaderResult;
+
 const char* IndexPageFamilyKindName(IndexPageFamilyKind family);
 IndexPageFamilyKind IndexPageFamilyKindForPageType(PageType page_type);
 PageType RootPageTypeForIndexFamilyKind(IndexPageFamilyKind family);
+IndexSpecialHeaderResult BuildIndexSpecialHeader(const IndexSpecialHeader& header);
+IndexSpecialHeaderResult ParseIndexSpecialHeader(const std::vector<byte>& serialized);
 IndexPageFamilyHeaderResult BuildIndexPageFamilyHeader(const IndexPageFamilyHeader& header);
 IndexPageFamilyHeaderResult ParseIndexPageFamilyHeader(const std::vector<byte>& serialized);
 DiagnosticRecord MakeIndexPageFamilyDiagnostic(Status status,

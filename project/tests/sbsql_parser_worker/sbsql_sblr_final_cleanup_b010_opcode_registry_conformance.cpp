@@ -42,17 +42,36 @@ struct OpcodeRow {
   bool requires_cluster_authority;
 };
 
-constexpr std::array<OpcodeRow, 53> kRows{{
+constexpr std::array<OpcodeRow, 72> kRows{{
     {"security.group_mapping.drop", "SBLR_SEC_DROP_GROUP_MAPPING", "security-management", sblr::SblrOpcodeCategory::security, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::security, sblr::SblrOpcodeSecurityClass::admin_authorized, true, false},
     {"filespace.create", "SBLR_FILESPACE_CREATE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
     {"filespace.preallocate", "SBLR_FILESPACE_PREALLOCATE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
     {"filespace.attach", "SBLR_FILESPACE_ATTACH", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
     {"filespace.detach", "SBLR_FILESPACE_DETACH", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.disconnect", "SBLR_FILESPACE_DISCONNECT", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
     {"filespace.move", "SBLR_FILESPACE_MOVE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.merge", "SBLR_FILESPACE_MERGE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
     {"filespace.promote", "SBLR_FILESPACE_PROMOTE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.verify", "SBLR_FILESPACE_VERIFY", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
     {"filespace.compact", "SBLR_FILESPACE_COMPACT", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.fence", "SBLR_FILESPACE_FENCE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.release", "SBLR_FILESPACE_RELEASE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.archive", "SBLR_FILESPACE_ARCHIVE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.quarantine", "SBLR_FILESPACE_QUARANTINE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.snapshot.create", "SBLR_FILESPACE_SNAPSHOT_CREATE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.snapshot.refresh", "SBLR_FILESPACE_SNAPSHOT_REFRESH", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.snapshot.validate", "SBLR_FILESPACE_SNAPSHOT_VALIDATE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.snapshot.retire", "SBLR_FILESPACE_SNAPSHOT_RETIRE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.shadow.create", "SBLR_FILESPACE_SHADOW_CREATE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.shadow.refresh", "SBLR_FILESPACE_SHADOW_REFRESH", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.shadow.validate", "SBLR_FILESPACE_SHADOW_VALIDATE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.shadow.promote", "SBLR_FILESPACE_SHADOW_PROMOTE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
     {"filespace.truncate", "SBLR_FILESPACE_TRUNCATE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
     {"filespace.drop", "SBLR_FILESPACE_DROP", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.delete_physical", "SBLR_FILESPACE_DELETE_PHYSICAL", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.repair", "SBLR_FILESPACE_REPAIR", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.rebuild", "SBLR_FILESPACE_REBUILD", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
+    {"filespace.salvage", "SBLR_FILESPACE_SALVAGE", "filespace-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::sysarch_authorized, true, false},
     {"index.rebuild", "SBLR_INDEX_REBUILD", "index-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::admin_authorized, true, false},
     {"index.rebalance", "SBLR_INDEX_REBALANCE", "index-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::management, sblr::SblrOpcodeSecurityClass::admin_authorized, true, false},
     {"index.verify", "SBLR_INDEX_VERIFY", "index-management", sblr::SblrOpcodeCategory::management, sblr::SblrOpcodeSupport::implemented, sblr::SblrOpcodeTransactionEffect::read, sblr::SblrOpcodeSecurityClass::admin_authorized, true, false},
@@ -98,7 +117,7 @@ constexpr std::array<OpcodeRow, 53> kRows{{
     {"cluster.mga_txn.retry_decision", "SBLR_MGA_CLUSTER_TXN_RETRY_DECISION", "mga-management", sblr::SblrOpcodeCategory::cluster, sblr::SblrOpcodeSupport::cluster_refusal, sblr::SblrOpcodeTransactionEffect::cluster_write, sblr::SblrOpcodeSecurityClass::cluster_authorized, true, true},
 }};
 
-void Require(bool condition, std::string_view message) {
+void Require(bool condition, const std::string& message) {
   if (!condition) {
     std::cerr << message << '\n';
     std::exit(EXIT_FAILURE);

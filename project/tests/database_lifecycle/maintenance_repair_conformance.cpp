@@ -12,9 +12,15 @@
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "maintenance_coordinator.hpp"
 #include "manager_control.hpp"
+#include "repair_event_ledger.hpp"
+#include "repair_history_inspection.hpp"
+#include "repair_identity_rules.hpp"
+#include "row_data_page.hpp"
+#include "row_version.hpp"
 #include "sblr_dispatch.hpp"
 #include "session_registry.hpp"
 #include "startup_state.hpp"
+#include "transaction_state.hpp"
 #include "uuid.hpp"
 
 #include <array>
@@ -32,7 +38,9 @@ namespace {
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace disk = scratchbird::storage::disk;
+namespace page = scratchbird::storage::page;
 namespace sblr = scratchbird::engine::sblr;
+namespace txn = scratchbird::transaction::mga;
 namespace uuid = scratchbird::core::uuid;
 namespace sbps = scratchbird::server::sbps;
 using scratchbird::core::platform::UuidKind;
@@ -184,6 +192,257 @@ db::DatabaseLifecycleRepairConfig RepairConfig(const Fixture& fixture,
   config.repair_admission_proven = admitted;
   config.allow_mutation = admitted;
   return config;
+}
+
+scratchbird::core::platform::TypedUuid RepairUuid(UuidKind kind,
+                                                  std::uint64_t offset) {
+  const auto generated =
+      uuid::GenerateEngineIdentityV7(kind, 1779300010000ull + offset);
+  return generated.ok() ? generated.value
+                        : scratchbird::core::platform::TypedUuid{};
+}
+
+struct RepairEvidenceFixture {
+  scratchbird::core::platform::TypedUuid database_uuid =
+      RepairUuid(UuidKind::database, 1);
+  scratchbird::core::platform::TypedUuid operation_uuid =
+      RepairUuid(UuidKind::object, 2);
+  scratchbird::core::platform::TypedUuid finding_uuid =
+      RepairUuid(UuidKind::object, 3);
+  scratchbird::core::platform::TypedUuid page_uuid =
+      RepairUuid(UuidKind::page, 4);
+  scratchbird::core::platform::TypedUuid object_uuid =
+      RepairUuid(UuidKind::object, 5);
+  scratchbird::core::platform::TypedUuid row_uuid =
+      RepairUuid(UuidKind::row, 6);
+  scratchbird::core::platform::TypedUuid version_one_uuid =
+      RepairUuid(UuidKind::row, 7);
+  scratchbird::core::platform::TypedUuid version_two_uuid =
+      RepairUuid(UuidKind::row, 8);
+  scratchbird::core::platform::TypedUuid transaction_one_uuid =
+      RepairUuid(UuidKind::transaction, 9);
+  scratchbird::core::platform::TypedUuid transaction_two_uuid =
+      RepairUuid(UuidKind::transaction, 10);
+  scratchbird::core::platform::u64 page_number = 410;
+};
+
+db::RepairEventRecord RepairEventFor(const RepairEvidenceFixture& fixture,
+                                     db::RepairEventPhase phase,
+                                     scratchbird::core::platform::u64 sequence,
+                                     scratchbird::core::platform::u64 previous_digest,
+                                     std::string reason_code) {
+  db::RepairEventRecord event;
+  event.sequence = sequence;
+  event.ledger_epoch = 17;
+  event.phase = phase;
+  event.database_uuid = fixture.database_uuid;
+  event.operation_uuid = fixture.operation_uuid;
+  event.finding_uuid = fixture.finding_uuid;
+  event.page_uuid = fixture.page_uuid;
+  event.object_uuid = fixture.object_uuid;
+  event.row_uuid = fixture.row_uuid;
+  event.version_uuid = fixture.version_two_uuid;
+  event.transaction_uuid = fixture.transaction_two_uuid;
+  event.local_transaction_id = 2;
+  event.page_number = fixture.page_number;
+  event.page_generation = 11;
+  event.page_type = disk::PageType::row_data;
+  event.observed_header_checksum = 0x4100ull + sequence;
+  event.observed_body_checksum_low64 = 0x4200ull + sequence;
+  event.observed_body_checksum_high64 = 0x4300ull + sequence;
+  event.previous_event_digest = previous_digest;
+  event.reason_code = std::move(reason_code);
+  event.stable_detail = "maintenance_repair_conformance";
+  return event;
+}
+
+db::RepairAccessRequest RepairAccessFor(const RepairEvidenceFixture& fixture,
+                                        db::RepairAccessIntent intent) {
+  db::RepairAccessRequest request;
+  request.intent = intent;
+  request.operation_uuid = fixture.operation_uuid;
+  request.finding_uuid = fixture.finding_uuid;
+  request.page_uuid = fixture.page_uuid;
+  request.page_number = fixture.page_number;
+  request.durable_mga_inventory_authority = true;
+  return request;
+}
+
+db::RepairEventLedger AppendRepairEventSequence(
+    const std::filesystem::path& ledger_path,
+    const RepairEvidenceFixture& fixture,
+    std::vector<std::pair<db::RepairEventPhase, std::string>> phases) {
+  std::filesystem::remove(ledger_path);
+  scratchbird::core::platform::u64 previous_digest = 0;
+  for (std::size_t index = 0; index < phases.size(); ++index) {
+    const auto appended = db::AppendRepairEventToLedger(
+        ledger_path.string(),
+        RepairEventFor(fixture,
+                       phases[index].first,
+                       static_cast<scratchbird::core::platform::u64>(index + 1),
+                       previous_digest,
+                       phases[index].second));
+    if (!appended.ok()) {
+      std::cerr << appended.diagnostic.diagnostic_code << ':'
+                << appended.diagnostic.message_key << '\n';
+    }
+    Require(appended.ok(), "repair evidence event append failed");
+    previous_digest = appended.event.event_digest;
+  }
+  const auto loaded = db::LoadRepairEventLedger(ledger_path.string());
+  Require(loaded.ok(), "repair evidence ledger did not reload");
+  Require(loaded.ledger.verified_append_only,
+          "repair evidence ledger chain did not verify");
+  return loaded.ledger;
+}
+
+txn::TransactionIdentity RepairTransactionIdentity(
+    scratchbird::core::platform::TypedUuid transaction_uuid,
+    scratchbird::core::platform::u64 local_id) {
+  txn::TransactionIdentity identity;
+  identity.local_id = txn::MakeLocalTransactionId(local_id);
+  identity.transaction_uuid = transaction_uuid;
+  identity.scope = txn::TransactionScope::local_node;
+  return identity;
+}
+
+txn::RowVersionMetadata RepairMetadata(
+    const RepairEvidenceFixture& fixture,
+    scratchbird::core::platform::TypedUuid transaction_uuid,
+    scratchbird::core::platform::u64 local_id,
+    scratchbird::core::platform::u64 sequence,
+    txn::RowVersionState row_state,
+    txn::TransactionState transaction_state) {
+  txn::RowVersionMetadata metadata;
+  metadata.identity.row.row_uuid = fixture.row_uuid;
+  metadata.identity.creator_transaction =
+      RepairTransactionIdentity(transaction_uuid, local_id);
+  metadata.identity.version_sequence = sequence;
+  metadata.state = row_state;
+  metadata.creator_transaction_state = transaction_state;
+  metadata.payload_present =
+      row_state != txn::RowVersionState::rolled_back &&
+      row_state != txn::RowVersionState::delete_marker;
+  return metadata;
+}
+
+page::RowDataRecord RepairRowFor(
+    const RepairEvidenceFixture& fixture,
+    scratchbird::core::platform::TypedUuid transaction_uuid,
+    scratchbird::core::platform::u64 local_id,
+    scratchbird::core::platform::u32 version_sequence) {
+  page::RowDataRecord row;
+  row.row_uuid = fixture.row_uuid;
+  row.transaction_uuid = transaction_uuid;
+  row.local_transaction_id = local_id;
+  row.row_version = version_sequence;
+  row.stable_slot_id = version_sequence;
+  return row;
+}
+
+page::RepairIdentityRequest RepairExactIdentityRequest(
+    const RepairEvidenceFixture& fixture,
+    scratchbird::core::platform::u64 repair_event_digest) {
+  page::RepairIdentityRequest request;
+  request.action = page::RepairIdentityAction::exact_relocation;
+  request.original_row =
+      RepairRowFor(fixture, fixture.transaction_one_uuid, 1, 1);
+  request.candidate_row = request.original_row;
+  request.candidate_row.stable_slot_id = 9;
+  request.original_metadata =
+      RepairMetadata(fixture,
+                     fixture.transaction_one_uuid,
+                     1,
+                     1,
+                     txn::RowVersionState::committed,
+                     txn::TransactionState::committed);
+  request.candidate_metadata = request.original_metadata;
+  request.original_version_uuid = fixture.version_one_uuid;
+  request.candidate_version_uuid = fixture.version_one_uuid;
+  request.repair_event_digest = repair_event_digest;
+  return request;
+}
+
+page::RepairIdentityRequest RepairSalvagePromotionRequest(
+    const RepairEvidenceFixture& fixture,
+    scratchbird::core::platform::u64 repair_event_digest) {
+  auto request = RepairExactIdentityRequest(fixture, repair_event_digest);
+  request.action = page::RepairIdentityAction::salvage_promote_with_authority;
+  request.candidate_row =
+      RepairRowFor(fixture, fixture.transaction_two_uuid, 2, 2);
+  request.candidate_metadata =
+      RepairMetadata(fixture,
+                     fixture.transaction_two_uuid,
+                     2,
+                     2,
+                     txn::RowVersionState::uncommitted,
+                     txn::TransactionState::active);
+  request.candidate_metadata.chain.previous_version_sequence = 1;
+  request.candidate_metadata.chain.previous_version_uuid =
+      fixture.version_one_uuid;
+  request.original_metadata.chain.next_version_sequence = 2;
+  request.original_metadata.chain.next_version_uuid = fixture.version_two_uuid;
+  request.candidate_version_uuid = fixture.version_two_uuid;
+  request.logical_payload_changed = true;
+  request.authoritative_payload_proof = true;
+  request.salvage_uncertain = true;
+  request.salvage_restore_required = true;
+  request.salvage_payload_promoted_to_committed = true;
+  return request;
+}
+
+db::RepairHistoryInspectionRequest RepairHistoryRequest(
+    const RepairEvidenceFixture& fixture,
+    const db::RepairEventLedger& ledger) {
+  db::RepairHistoryInspectionRequest request;
+  request.durable_mga_inventory_authority = true;
+  request.repair_events = ledger.events;
+
+  db::RepairOrdinaryVersionRecord first;
+  first.metadata = RepairMetadata(fixture,
+                                  fixture.transaction_one_uuid,
+                                  1,
+                                  1,
+                                  txn::RowVersionState::committed,
+                                  txn::TransactionState::committed);
+  first.metadata.chain.next_version_sequence = 2;
+  first.metadata.chain.next_version_uuid = fixture.version_two_uuid;
+  first.version_uuid = fixture.version_one_uuid;
+  first.page_uuid = fixture.page_uuid;
+  first.page_number = fixture.page_number;
+  request.ordinary_versions.push_back(first);
+
+  db::RepairArchiveEntry archive;
+  archive.row_uuid = fixture.row_uuid;
+  archive.version_uuid = fixture.version_one_uuid;
+  archive.page_uuid = fixture.page_uuid;
+  archive.object_uuid = fixture.object_uuid;
+  archive.page_number = fixture.page_number;
+  archive.version_sequence = 1;
+  archive.local_transaction_id = 1;
+  archive.archive_manifest_digest = "maintenance_repair_archive_digest";
+  archive.payload_present = false;
+  request.archive_entries.push_back(archive);
+
+  db::RepairSalvageEvidence salvage;
+  salvage.finding_uuid = fixture.finding_uuid;
+  salvage.page_uuid = fixture.page_uuid;
+  salvage.row_uuid = fixture.row_uuid;
+  salvage.version_uuid = fixture.version_two_uuid;
+  salvage.page_number = fixture.page_number;
+  salvage.salvage_class = "uncertain_review_only";
+  salvage.uncertain = true;
+  request.salvage_evidence.push_back(salvage);
+
+  db::RepairDiagnosticEvidence diagnostic;
+  diagnostic.row_uuid = fixture.row_uuid;
+  diagnostic.page_uuid = fixture.page_uuid;
+  diagnostic.page_number = fixture.page_number;
+  diagnostic.diagnostic_code = "SB-REPAIR-HISTORY-DATA-LOSS-POSSIBLE";
+  diagnostic.message_key = "repair.history.data_loss_possible";
+  diagnostic.detail = "archive_payload_absent";
+  request.diagnostics.push_back(diagnostic);
+  return request;
 }
 
 api::EngineRequestContext EngineContext(const Fixture& fixture) {
@@ -493,6 +752,206 @@ void TestManagementRoute(const Fixture& fixture) {
           "auditor denial diagnostic mismatch");
 }
 
+void TestRepairEvidenceAuthority(const std::filesystem::path& temp_dir) {
+  const RepairEvidenceFixture fixture;
+  const auto ledger_path = temp_dir / "dblc010_repair_evidence.sbrel";
+  const auto ledger = AppendRepairEventSequence(
+      ledger_path,
+      fixture,
+      {{db::RepairEventPhase::finding_recorded, "damaged_page_finding"},
+       {db::RepairEventPhase::scan_admission, "repair_scan_admitted"},
+       {db::RepairEventPhase::mutation_admission, "repair_mutation_admitted"},
+       {db::RepairEventPhase::page_quarantined, "page_quarantined"}});
+  Require(ledger.events.size() == 4,
+          "repair evidence ledger did not retain ordered events");
+  const auto mutation_digest = ledger.events[2].event_digest;
+
+  const auto scan_access = db::AdmitRepairAccessFromLedger(
+      ledger, RepairAccessFor(fixture, db::RepairAccessIntent::repair_scan));
+  Require(scan_access.ok() && scan_access.scan_allowed,
+          "repair scan was not admitted from durable scan event");
+  const auto mutation_access = db::AdmitRepairAccessFromLedger(
+      ledger, RepairAccessFor(fixture, db::RepairAccessIntent::repair_mutation));
+  Require(mutation_access.ok() && mutation_access.mutation_allowed,
+          "repair mutation was not admitted from durable mutation event");
+  const auto normal_access = db::AdmitRepairAccessFromLedger(
+      ledger, RepairAccessFor(fixture, db::RepairAccessIntent::normal_access));
+  Require(!normal_access.ok(),
+          "ordinary page access was admitted while page was quarantined");
+  Require(normal_access.diagnostic.diagnostic_code ==
+              "SB-REPAIR-ACCESS-PAGE-QUARANTINED",
+          "quarantined page access diagnostic mismatch");
+
+  auto sequence_gap = RepairEventFor(fixture,
+                                     db::RepairEventPhase::scan_admission,
+                                     ledger.last_sequence + 2,
+                                     ledger.last_event_digest,
+                                     "sequence_gap");
+  const auto sequence_result =
+      db::AppendRepairEventToLedger(ledger_path.string(), sequence_gap);
+  Require(!sequence_result.ok(),
+          "repair evidence ledger admitted sequence gap");
+  Require(sequence_result.diagnostic.diagnostic_code ==
+              "SB-REPAIR-EVENT-LEDGER-CHAIN-INVALID",
+          "repair evidence sequence-gap diagnostic mismatch");
+
+  auto finality_authority = RepairEventFor(
+      fixture,
+      db::RepairEventPhase::scan_admission,
+      ledger.last_sequence + 1,
+      ledger.last_event_digest,
+      "finality_authority_refused");
+  finality_authority.authority
+      .repair_evidence_is_transaction_finality_authority = true;
+  const auto finality_result =
+      db::AppendRepairEventToLedger(ledger_path.string(), finality_authority);
+  Require(!finality_result.ok(),
+          "repair event admitted transaction-finality authority drift");
+  Require(finality_result.diagnostic.diagnostic_code ==
+              "SB-REPAIR-EVENT-AUTHORITY-REFUSED",
+          "repair event authority-refusal diagnostic mismatch");
+  const auto unchanged = db::LoadRepairEventLedger(ledger_path.string());
+  Require(unchanged.ok() && unchanged.ledger.events.size() == ledger.events.size(),
+          "refused repair events mutated append-only ledger");
+
+  db::RepairEventRetentionRequest retention;
+  retention.ledger = ledger;
+  retention.now_epoch_millis = 1000;
+  retention.retention_deadline_epoch_millis = 999;
+  retention.durable_retention_policy_loaded = true;
+  retention.purge_requested = true;
+  const auto purge_allowed = db::EvaluateRepairEventRetention(retention);
+  Require(purge_allowed.ok() && purge_allowed.purge_allowed,
+          "repair retention did not allow purge after policy deadline");
+  auto legal_hold = retention;
+  legal_hold.legal_hold_active = true;
+  const auto legal = db::EvaluateRepairEventRetention(legal_hold);
+  Require(legal.ok() && legal.purge_blocked && legal.legal_hold_blocker,
+          "repair retention did not expose legal-hold blocker");
+  Require(!legal.repair_evidence_is_transaction_authority,
+          "repair retention elevated repair evidence to transaction authority");
+  auto no_policy = retention;
+  no_policy.durable_retention_policy_loaded = false;
+  const auto missing_policy = db::EvaluateRepairEventRetention(no_policy);
+  Require(!missing_policy.ok() &&
+              missing_policy.diagnostic.diagnostic_code ==
+                  "SB-REPAIR-RETENTION-POLICY-REQUIRED",
+          "repair retention without durable policy did not fail closed");
+  auto retention_drift = retention;
+  retention_drift.repair_evidence_is_transaction_authority = true;
+  const auto retention_refused =
+      db::EvaluateRepairEventRetention(retention_drift);
+  Require(!retention_refused.ok() &&
+              retention_refused.diagnostic.diagnostic_code ==
+                  "SB-REPAIR-RETENTION-AUTHORITY-REFUSED",
+          "repair retention admitted repair evidence authority drift");
+
+  const auto started_ledger = AppendRepairEventSequence(
+      temp_dir / "dblc010_repair_crash_started.sbrel",
+      fixture,
+      {{db::RepairEventPhase::finding_recorded, "crash_finding"},
+       {db::RepairEventPhase::scan_admission, "crash_scan"},
+       {db::RepairEventPhase::mutation_admission, "crash_mutation"},
+       {db::RepairEventPhase::crash_resume_started, "crash_resume_started"}});
+  db::RepairCrashResumeRequest crash;
+  crash.ledger = started_ledger;
+  crash.durable_mga_inventory_authority = true;
+  const auto crash_started = db::EvaluateRepairCrashResumeFromLedger(crash);
+  Require(crash_started.ok() && crash_started.resume_required &&
+              crash_started.replay_required && !crash_started.completed,
+          "repair crash-resume start did not require replay");
+  Require(!crash_started.repair_evidence_is_recovery_authority,
+          "repair crash-resume elevated repair evidence to recovery authority");
+  const auto completed_ledger = AppendRepairEventSequence(
+      temp_dir / "dblc010_repair_crash_completed.sbrel",
+      fixture,
+      {{db::RepairEventPhase::finding_recorded, "crash_done_finding"},
+       {db::RepairEventPhase::scan_admission, "crash_done_scan"},
+       {db::RepairEventPhase::mutation_admission, "crash_done_mutation"},
+       {db::RepairEventPhase::crash_resume_started, "crash_done_started"},
+       {db::RepairEventPhase::crash_resume_replay_admitted,
+        "crash_done_replay"},
+       {db::RepairEventPhase::crash_resume_completed,
+        "crash_done_completed"}});
+  crash.ledger = completed_ledger;
+  const auto crash_completed = db::EvaluateRepairCrashResumeFromLedger(crash);
+  Require(crash_completed.ok() && !crash_completed.resume_required &&
+              !crash_completed.replay_required && crash_completed.completed,
+          "repair crash-resume completion did not close replay requirement");
+
+  const auto inspected =
+      db::InspectRepairHistory(RepairHistoryRequest(fixture, ledger));
+  Require(inspected.ok(), "repair history inspection failed");
+  Require(inspected.ordinary_version_count == 1,
+          "repair history ordinary-version count mismatch");
+  Require(inspected.archive_entry_count == 1,
+          "repair history archive-entry count mismatch");
+  Require(inspected.repair_event_count == 4,
+          "repair history repair-event count mismatch");
+  Require(inspected.salvage_evidence_count == 1,
+          "repair history salvage count mismatch");
+  Require(inspected.diagnostic_count == 1,
+          "repair history diagnostic count mismatch");
+  Require(inspected.quarantine_present,
+          "repair history did not expose quarantine");
+  Require(inspected.data_loss_possible && inspected.restore_required,
+          "repair history did not expose restore-required data loss assessment");
+  Require(!inspected.repair_evidence_is_transaction_authority,
+          "repair history elevated repair evidence to transaction authority");
+
+  auto history_drift = RepairHistoryRequest(fixture, ledger);
+  history_drift.repair_evidence_is_transaction_authority = true;
+  const auto drift_result = db::InspectRepairHistory(history_drift);
+  Require(!drift_result.ok() &&
+              drift_result.diagnostic.diagnostic_code ==
+                  "SB-REPAIR-HISTORY-AUTHORITY-REFUSED",
+          "repair history admitted repair evidence authority drift");
+  auto salvage_promotion = RepairHistoryRequest(fixture, ledger);
+  salvage_promotion.salvage_evidence.front().payload_promoted_to_committed =
+      true;
+  const auto salvage_result = db::InspectRepairHistory(salvage_promotion);
+  Require(!salvage_result.ok() &&
+              salvage_result.diagnostic.diagnostic_code ==
+                  "SB-REPAIR-HISTORY-SALVAGE-INVALID",
+          "repair history admitted direct salvage-to-committed promotion");
+
+  auto review = RepairExactIdentityRequest(fixture, 0);
+  review.action = page::RepairIdentityAction::salvage_review;
+  review.repair_event_persisted_before_mutation = false;
+  review.salvage_uncertain = true;
+  review.salvage_restore_required = true;
+  const auto review_decision = page::EvaluateRepairIdentityRule(review);
+  Require(review_decision.ok() && !review_decision.mutation_allowed,
+          "salvage review did not remain non-mutating evidence");
+  Require(review_decision.salvage_remains_evidence &&
+              review_decision.restore_required,
+          "salvage review did not expose restore-required evidence");
+
+  auto no_proof = RepairSalvagePromotionRequest(fixture, mutation_digest);
+  no_proof.authoritative_payload_proof = false;
+  const auto proof_refused = page::EvaluateRepairIdentityRule(no_proof);
+  Require(!proof_refused.ok() &&
+              proof_refused.diagnostic.diagnostic_code ==
+                  "SB-REPAIR-IDENTITY-SALVAGE-PROOF-REQUIRED",
+          "salvage promotion without proof did not fail closed");
+  const auto promoted = page::EvaluateRepairIdentityRule(
+      RepairSalvagePromotionRequest(fixture, mutation_digest));
+  Require(promoted.ok() && promoted.mutation_allowed &&
+              promoted.logical_correction_created_new_version,
+          "authorized salvage promotion did not route through new MGA version");
+  Require(promoted.salvage_remains_evidence &&
+              !promoted.repair_evidence_is_transaction_authority,
+          "authorized salvage promotion made salvage evidence authoritative");
+
+  auto identity_drift = RepairExactIdentityRequest(fixture, mutation_digest);
+  identity_drift.repair_evidence_is_transaction_authority = true;
+  const auto identity_refused = page::EvaluateRepairIdentityRule(identity_drift);
+  Require(!identity_refused.ok() &&
+              identity_refused.diagnostic.diagnostic_code ==
+                  "SB-REPAIR-IDENTITY-AUTHORITY-REFUSED",
+          "repair identity rules admitted transaction-authority drift");
+}
+
 }  // namespace
 
 int main() {
@@ -509,6 +968,7 @@ int main() {
   TestEngineLifecycleApi(fixture, corrupt_fixture);
   TestSblrLifecycleRoute(fixture);
   TestManagementRoute(fixture);
+  TestRepairEvidenceAuthority(temp_dir);
 
   std::filesystem::remove_all(temp_dir);
   return EXIT_SUCCESS;

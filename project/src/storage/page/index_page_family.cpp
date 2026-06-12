@@ -123,7 +123,9 @@ IndexPageFamilyHeaderResult BuildIndexPageFamilyHeader(const IndexPageFamilyHead
   IndexPageFamilyHeaderResult result;
   if (!header.index_object_uuid.valid() || !header.family_uuid.valid() || header.family == IndexPageFamilyKind::unknown) {
     result.status = ErrorStatus();
-    result.diagnostic = MakeIndexPageFamilyDiagnostic(result.status, "INDEX.PAGE.FAMILY_HEADER_INVALID", "index.page.family_header_invalid");
+    result.diagnostic = MakeIndexPageFamilyDiagnostic(result.status,
+                                                      "SB_DIAG_PAGE_INDEX_SPECIAL_HEADER_INVALID",
+                                                      "index.page.special_header_invalid");
     return result;
   }
   result.status = OkStatus();
@@ -145,7 +147,9 @@ IndexPageFamilyHeaderResult ParseIndexPageFamilyHeader(const std::vector<byte>& 
   IndexPageFamilyHeaderResult result;
   if (serialized.size() < kIndexPageFamilyHeaderBytes) {
     result.status = ErrorStatus();
-    result.diagnostic = MakeIndexPageFamilyDiagnostic(result.status, "INDEX.PAGE.FAMILY_HEADER_TRUNCATED", "index.page.family_header_truncated");
+    result.diagnostic = MakeIndexPageFamilyDiagnostic(result.status,
+                                                      "SB_DIAG_PAGE_INDEX_SPECIAL_HEADER_INVALID",
+                                                      "index.page.special_header_truncated");
     return result;
   }
   result.status = OkStatus();
@@ -161,9 +165,19 @@ IndexPageFamilyHeaderResult ParseIndexPageFamilyHeader(const std::vector<byte>& 
   result.header.page_type = static_cast<PageType>(Load32(serialized, 80));
   if (result.header.family == IndexPageFamilyKind::unknown || !result.header.index_object_uuid.valid() || !result.header.family_uuid.valid()) {
     result.status = ErrorStatus();
-    result.diagnostic = MakeIndexPageFamilyDiagnostic(result.status, "INDEX.PAGE.FAMILY_HEADER_INVALID", "index.page.family_header_invalid");
+    result.diagnostic = MakeIndexPageFamilyDiagnostic(result.status,
+                                                      "SB_DIAG_PAGE_INDEX_SPECIAL_HEADER_INVALID",
+                                                      "index.page.special_header_invalid");
   }
   return result;
+}
+
+IndexSpecialHeaderResult BuildIndexSpecialHeader(const IndexSpecialHeader& header) {
+  return BuildIndexPageFamilyHeader(header);
+}
+
+IndexSpecialHeaderResult ParseIndexSpecialHeader(const std::vector<byte>& serialized) {
+  return ParseIndexPageFamilyHeader(serialized);
 }
 
 DiagnosticRecord MakeIndexPageFamilyDiagnostic(Status status, std::string diagnostic_code,

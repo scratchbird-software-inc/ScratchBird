@@ -124,6 +124,10 @@ std::uint64_t VisibilityHighWaterForContext(const CrudState& state, const Engine
 bool CrudRowVersionVisibleToContextInternal(const CrudState& state,
                                             const CrudRowVersionRecord& row,
                                             const EngineRequestContext& context) {
+  if (!row.temporary_session_uuid.empty() &&
+      row.temporary_session_uuid != context.session_uuid.canonical) {
+    return false;
+  }
   const std::uint64_t observer_tx = context.local_transaction_id;
   if (row.creator_tx == observer_tx) {
     const auto own = state.transactions.find(row.creator_tx);

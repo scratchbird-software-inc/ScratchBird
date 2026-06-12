@@ -8,7 +8,6 @@
 
 #pragma once
 
-#include "api_types.hpp"
 #include "event_notification_router.hpp"
 
 #include <cstdint>
@@ -43,9 +42,13 @@ struct ParserServerEventUuidRef {
   std::string canonical;
 };
 
+enum class ParserServerEventTrustMode {
+  server_isolated,
+  embedded_in_process
+};
+
 struct ParserServerEventEngineContext {
-  scratchbird::engine::internal_api::EngineTrustMode trust_mode =
-      scratchbird::engine::internal_api::EngineTrustMode::server_isolated;
+  ParserServerEventTrustMode trust_mode = ParserServerEventTrustMode::server_isolated;
   std::string request_id;
   std::string database_path;
   ParserServerEventUuidRef database_uuid;

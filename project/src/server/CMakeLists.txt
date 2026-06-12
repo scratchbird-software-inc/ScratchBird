@@ -78,7 +78,7 @@ target_link_libraries(sb_server_event_notifications PUBLIC
   sb_server_engine_bridge
 )
 
-# SEARCH_KEY: SB_SERVER_PRODUCT_SKELETON_CMAKE
+# SEARCH_KEY: SB_SERVER_PRODUCT_CMAKE
 if(SB_BUILD_SERVER)
   add_library(sb_server_core
     boundary_guard.cpp

@@ -175,7 +175,10 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   created_table.columns = columns;
   created_table.temporary = temporary_options.temporary;
   created_table.temporary_scope = temporary_options.temporary ? temporary_options.scope : "";
-  created_table.temporary_session_uuid = temporary_options.temporary ? request.context.session_uuid.canonical : "";
+  created_table.temporary_session_uuid =
+      temporary_options.temporary && temporary_options.scope != "global"
+          ? request.context.session_uuid.canonical
+          : "";
   created_table.on_commit_action = temporary_options.temporary ? temporary_options.on_commit_action : "";
   const auto appended = AppendMgaTableMetadata(request.context, created_table);
   if (appended.error) {

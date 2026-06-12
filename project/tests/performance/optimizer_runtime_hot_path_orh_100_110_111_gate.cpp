@@ -175,6 +175,8 @@ exec::SnapshotSafeCacheKey BaseKey() {
   key.redaction_epoch = 104;
   key.mga_visibility_snapshot_class = "repeatable_read:orh110";
   key.provider_generation = 105;
+  key.descriptor_identity_digest = "descriptor:orh110-rowset:v1";
+  key.descriptor_epoch = 106;
   key.result_contract_identity = "orh110.rowset.v1";
   key.result_contract_hash = "sha256:orh110-rowset-contract";
   key.route_compatibility = "embedded_ipc_v1";

@@ -855,6 +855,13 @@ const LifecycleMappingDescriptor* MapSbsqlLifecycleCommand(std::string_view sql_
   if (StartsWithCommand(command, "DROP DATABASE")) {
     return MappingByKey("sbsql.lifecycle.drop_database");
   }
+  if (StartsWithCommand(command, "CREATE SHADOW FILESPACE") ||
+      StartsWithCommand(command, "REFRESH SHADOW FILESPACE") ||
+      StartsWithCommand(command, "VALIDATE SHADOW FILESPACE") ||
+      (StartsWithCommand(command, "ALTER SHADOW") &&
+       Contains(command, " PROMOTE") && Contains(command, " PRIMARY"))) {
+    return nullptr;
+  }
   if (StartsWithCommand(command, "CREATE SHADOW") ||
       StartsWithCommand(command, "ALTER SHADOW") ||
       StartsWithCommand(command, "DROP SHADOW")) {

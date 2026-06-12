@@ -222,7 +222,8 @@ server::ParserServerEventSession EventSession(const Fixture& fixture,
   session.engine_context.resource_epoch = 1;
   session.engine_context.name_resolution_epoch = 1;
   if (authorized) {
-    session.engine_context.trust_mode = api::EngineTrustMode::embedded_in_process;
+    session.engine_context.trust_mode =
+        server::ParserServerEventTrustMode::embedded_in_process;
     session.engine_context.trace_tags.push_back("security.fixture_trace_authority");
     session.engine_context.trace_tags.push_back("group:DBA");
   }

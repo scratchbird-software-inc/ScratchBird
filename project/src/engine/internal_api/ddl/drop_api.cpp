@@ -12,6 +12,7 @@
 #include "catalog/name_registry.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 
 namespace scratchbird::engine::internal_api {
@@ -84,6 +85,47 @@ EngineDropObjectResult EngineDropObject(const EngineDropObjectRequest& request) 
     result.primary_object = request.target_object;
     result.evidence.push_back({"domain_event", "domain_drop"});
     return result;
+  }
+  if (kind == "table" || kind == "relation") {
+    const std::string object_uuid = request.target_object.uuid.canonical;
+    auto temporary_drop = DropMgaTemporaryTable(request.context, object_uuid);
+    if (!temporary_drop.ok) {
+      if (temporary_drop.target_was_temporary) {
+        return MakeCrudDiagnosticResult<EngineDropObjectResult>(
+            request.context,
+            "ddl.drop_object",
+            temporary_drop.diagnostic);
+      }
+    } else if (temporary_drop.target_was_temporary) {
+      const auto retired = RetireNameRegistryEntriesForObject(
+          request.context,
+          "ddl.drop_object",
+          object_uuid);
+      if (retired.error) {
+        return MakeCrudDiagnosticResult<EngineDropObjectResult>(
+            request.context,
+            "ddl.drop_object",
+            retired);
+      }
+      auto result = MakeCrudSuccessResult<EngineDropObjectResult>(
+          request.context,
+          "ddl.drop_object");
+      result.primary_object = request.target_object;
+      if (result.primary_object.object_kind.empty()) {
+        result.primary_object.object_kind = "table";
+      }
+      result.evidence.push_back({"name_registry_retired", object_uuid});
+      result.evidence.push_back({"temporary_metadata_retired",
+                                 temporary_drop.metadata_retired ? "true" : "false"});
+      result.evidence.push_back({"temporary_object_scope",
+                                 temporary_drop.temporary_scope});
+      result.evidence.push_back({"temporary_drop_deleted_rows",
+                                 std::to_string(temporary_drop.deleted_row_count)});
+      result.evidence.push_back(
+          {"temporary_drop_reclaimed_large_values",
+           std::to_string(temporary_drop.reclaimed_large_value_count)});
+      return result;
+    }
   }
   auto result = PersistedRecordResult<EngineDropObjectResult>(request, "ddl.drop_object", kind, true, "dropped", true);
   if (!result.ok) { return result; }

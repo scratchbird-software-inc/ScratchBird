@@ -208,6 +208,7 @@ std::vector<std::string> CrudIndexKeyColumns(const CrudIndexRecord& index) {
 // SB_MGA_TEMPORARY_OBJECT_SCOPE_AUTHORITY
 bool TableVisibleInCurrentTemporaryScope(const CrudTableRecord& table, const EngineRequestContext& context) {
   if (!table.temporary) { return true; }
+  if (table.temporary_scope == "global") { return true; }
   const std::string session_uuid = SessionUuidOrEmpty(context);
   return !session_uuid.empty() && table.temporary_session_uuid == session_uuid;
 }

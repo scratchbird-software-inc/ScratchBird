@@ -1023,6 +1023,7 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   }
   const bool read_only_commit = committing_entry->state == TransactionState::read_only_active;
   std::uint64_t temporary_deleted_rows = 0;
+  std::uint64_t temporary_reclaimed_large_values = 0;
   if (!read_only_commit) {
     const auto deferred_constraints = ValidateDeferredTransactionConstraints(request.context);
     if (deferred_constraints.error) {
@@ -1030,7 +1031,8 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
     }
     const auto temporary_cleanup = ApplyMgaTemporaryOnCommitActions(request.context,
                                                                    request.context.local_transaction_id,
-                                                                   &temporary_deleted_rows);
+                                                                   &temporary_deleted_rows,
+                                                                   &temporary_reclaimed_large_values);
     if (temporary_cleanup.error) {
       return MakeTxnError<EngineCommitTransactionResult>(request.context, operation_id, temporary_cleanup);
     }
@@ -1063,6 +1065,8 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   result.evidence.push_back({"transaction_state", "committed"});
   result.evidence.push_back({"transaction_read_only", read_only_commit ? "true" : "false"});
   result.evidence.push_back({"temporary_on_commit_deleted_rows", std::to_string(temporary_deleted_rows)});
+  result.evidence.push_back({"temporary_on_commit_reclaimed_large_values",
+                             std::to_string(temporary_reclaimed_large_values)});
   const auto released_locks =
       NamedAdvisoryLockTable().ReleaseAll(MakeLocalTransactionId(request.context.local_transaction_id));
   result.evidence.push_back({"transaction_advisory_locks_released",
@@ -1142,6 +1146,113 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
     result.evidence.push_back({"read_only_rollback_delta_cleanup",
                                "skipped_no_mutation_authority"});
   }
+  return result;
+}
+
+EngineCleanupTemporarySessionResult EngineCleanupTemporarySessionState(
+    const EngineCleanupTemporarySessionRequest& request) {
+  const std::string operation_id = "transaction.cleanup_temporary_session";
+  const auto path_status = ValidateDatabasePath(request.context, operation_id);
+  if (path_status.error) {
+    return MakeTxnError<EngineCleanupTemporarySessionResult>(
+        request.context,
+        operation_id,
+        path_status);
+  }
+  if (request.context.session_uuid.canonical.empty()) {
+    return MakeTxnError<EngineCleanupTemporarySessionResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id, "session_uuid_required"));
+  }
+  if (request.context.local_transaction_id != 0 ||
+      !request.context.transaction_uuid.canonical.empty()) {
+    return MakeTxnError<EngineCleanupTemporarySessionResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "active_transaction_must_be_finalized"));
+  }
+
+  EngineBeginTransactionRequest begin;
+  begin.context = request.context;
+  begin.context.local_transaction_id = 0;
+  begin.context.transaction_uuid.canonical.clear();
+  begin.context.snapshot_visible_through_local_transaction_id = 0;
+  begin.context.transaction_timestamp.clear();
+  begin.isolation_level = request.context.transaction_isolation_level;
+  begin.transaction_policy_profile.encoded_profiles.push_back("fail_closed:true");
+  begin.transaction_policy_profile.encoded_profiles.push_back(
+      "transaction_read_only:false");
+  begin.transaction_policy_profile.encoded_profiles.push_back(
+      "transaction_read_mode:read_write");
+  auto begun = EngineBeginTransaction(begin);
+  if (!begun.ok) {
+    return MakeTxnError<EngineCleanupTemporarySessionResult>(
+        request.context,
+        operation_id,
+        begun.diagnostics.empty()
+            ? MakeInvalidRequestDiagnostic(operation_id,
+                                           "cleanup_transaction_begin_failed")
+            : begun.diagnostics.front());
+  }
+
+  auto cleanup_context = request.context;
+  cleanup_context.local_transaction_id = begun.local_transaction_id;
+  cleanup_context.transaction_uuid = begun.transaction_uuid;
+  cleanup_context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  cleanup_context.transaction_timestamp = CurrentUtcTimestampText();
+
+  std::uint64_t temporary_deleted_rows = 0;
+  std::uint64_t temporary_reclaimed_large_values = 0;
+  std::uint64_t temporary_retired_private_metadata = 0;
+  const auto cleanup = ApplyMgaTemporarySessionCleanupActions(
+      cleanup_context,
+      cleanup_context.local_transaction_id,
+      &temporary_deleted_rows,
+      &temporary_reclaimed_large_values,
+      &temporary_retired_private_metadata);
+  if (cleanup.error) {
+    EngineRollbackTransactionRequest rollback;
+    rollback.context = cleanup_context;
+    (void)EngineRollbackTransaction(rollback);
+    return MakeTxnError<EngineCleanupTemporarySessionResult>(
+        request.context,
+        operation_id,
+        cleanup);
+  }
+
+  EngineCommitTransactionRequest commit;
+  commit.context = cleanup_context;
+  const auto committed = EngineCommitTransaction(commit);
+  if (!committed.ok) {
+    return MakeTxnError<EngineCleanupTemporarySessionResult>(
+        request.context,
+        operation_id,
+        committed.diagnostics.empty()
+            ? MakeInvalidRequestDiagnostic(operation_id,
+                                           "cleanup_transaction_commit_failed")
+            : committed.diagnostics.front());
+  }
+
+  auto result = MakeTxnOk<EngineCleanupTemporarySessionResult>(
+      request.context,
+      operation_id);
+  result.cleanup_local_transaction_id = cleanup_context.local_transaction_id;
+  result.temporary_deleted_rows = temporary_deleted_rows;
+  result.temporary_reclaimed_large_values = temporary_reclaimed_large_values;
+  result.temporary_retired_private_metadata = temporary_retired_private_metadata;
+  result.evidence.push_back({"temporary_session_cleanup_deleted_rows",
+                             std::to_string(temporary_deleted_rows)});
+  result.evidence.push_back({"temporary_session_cleanup_reclaimed_large_values",
+                             std::to_string(temporary_reclaimed_large_values)});
+  result.evidence.push_back({"temporary_session_cleanup_retired_private_metadata",
+                             std::to_string(temporary_retired_private_metadata)});
+  result.evidence.push_back({"temporary_session_cleanup_transaction_state",
+                             "committed"});
+  result.evidence.push_back({"temporary_session_cleanup_session_uuid",
+                             request.context.session_uuid.canonical});
   return result;
 }
 

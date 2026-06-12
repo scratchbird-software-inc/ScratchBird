@@ -500,6 +500,73 @@ std::string RouteCanonicalTypeName(std::string_view type_text) {
   return lowered;
 }
 
+bool ConsumeOptionalTemporaryTablePrefix(const CstDocument& cst,
+                                         std::size_t* index,
+                                         bool* temporary,
+                                         std::string* temporary_scope) {
+  if (index == nullptr || temporary == nullptr || temporary_scope == nullptr) {
+    return false;
+  }
+  SkipTriviaTokens(cst, index);
+  *temporary = false;
+  *temporary_scope = "private";
+  if (*index < cst.tokens.size() && IsWord(cst.tokens[*index], "GLOBAL")) {
+    ++(*index);
+    if (!ConsumeRouteKeyword(cst, index, "TEMPORARY")) return false;
+    *temporary = true;
+    *temporary_scope = "global";
+    return true;
+  }
+  if (*index < cst.tokens.size() && IsWord(cst.tokens[*index], "LOCAL")) {
+    ++(*index);
+    SkipTriviaTokens(cst, index);
+    if (*index >= cst.tokens.size() ||
+        (!IsWord(cst.tokens[*index], "TEMPORARY") &&
+         !IsWord(cst.tokens[*index], "TEMP"))) {
+      return false;
+    }
+    ++(*index);
+    *temporary = true;
+    *temporary_scope = "private";
+    return true;
+  }
+  if (*index < cst.tokens.size() &&
+      (IsWord(cst.tokens[*index], "TEMPORARY") ||
+       IsWord(cst.tokens[*index], "TEMP"))) {
+    ++(*index);
+    *temporary = true;
+    *temporary_scope = "private";
+  }
+  return true;
+}
+
+bool ConsumeOptionalOnCommitAction(const CstDocument& cst,
+                                   std::size_t* index,
+                                   std::string* on_commit_action) {
+  if (index == nullptr || on_commit_action == nullptr) return false;
+  *on_commit_action = "delete_rows";
+  SkipTriviaTokens(cst, index);
+  if (*index >= cst.tokens.size() || cst.tokens[*index].kind == TokenKind::kEnd ||
+      cst.tokens[*index].kind == TokenKind::kStatementTerminator) {
+    return true;
+  }
+  if (!ConsumeRouteKeyword(cst, index, "ON") ||
+      !ConsumeRouteKeyword(cst, index, "COMMIT")) {
+    return false;
+  }
+  if (ConsumeRouteKeyword(cst, index, "DELETE")) {
+    if (!ConsumeRouteKeyword(cst, index, "ROWS")) return false;
+    *on_commit_action = "delete_rows";
+    return true;
+  }
+  if (ConsumeRouteKeyword(cst, index, "PRESERVE")) {
+    if (!ConsumeRouteKeyword(cst, index, "ROWS")) return false;
+    *on_commit_action = "preserve_rows";
+    return true;
+  }
+  return false;
+}
+
 std::string EscapeRouteOperandField(std::string_view value) {
   std::string out;
   out.reserve(value.size());
@@ -532,6 +599,12 @@ std::optional<std::string> CreateTableRouteExecutionEnvelope(
     std::string_view operation_family) {
   std::size_t index = 0;
   if (!ConsumeRouteKeyword(cst, &index, "CREATE")) return std::nullopt;
+  bool temporary = false;
+  std::string temporary_scope = "private";
+  if (!ConsumeOptionalTemporaryTablePrefix(
+          cst, &index, &temporary, &temporary_scope)) {
+    return std::nullopt;
+  }
   if (!ConsumeRouteKeyword(cst, &index, "TABLE")) return std::nullopt;
   std::string table_name;
   if (!ConsumeRouteQualifiedNameLeaf(cst, &index, &table_name)) return std::nullopt;
@@ -542,6 +615,11 @@ std::optional<std::string> CreateTableRouteExecutionEnvelope(
   if (!ConsumeRouteIdentifier(cst, &index, &type_name)) return std::nullopt;
   const std::string canonical_type = RouteCanonicalTypeName(type_name);
   if (!ConsumeRouteSymbol(cst, &index, ")")) return std::nullopt;
+  std::string on_commit_action = "delete_rows";
+  if (temporary &&
+      !ConsumeOptionalOnCommitAction(cst, &index, &on_commit_action)) {
+    return std::nullopt;
+  }
   SkipTriviaTokens(cst, &index);
   while (index < cst.tokens.size() &&
          cst.tokens[index].kind == TokenKind::kStatementTerminator) {
@@ -573,6 +651,11 @@ std::optional<std::string> CreateTableRouteExecutionEnvelope(
   AppendRouteTextOperand(&out, "column_0_type", canonical_type);
   AppendRouteTextOperand(&out, "column_0_descriptor", "type=" + canonical_type);
   AppendRouteTextOperand(&out, "column_0_nullable", "true");
+  if (temporary) {
+    AppendRouteTextOperand(&out, "temporary", "true");
+    AppendRouteTextOperand(&out, "temporary_scope", temporary_scope);
+    AppendRouteTextOperand(&out, "on_commit", on_commit_action);
+  }
   return out;
 }
 
@@ -843,6 +926,37 @@ std::string FinalityStreamParserJsonEnvelope(std::string_view mode,
   out += "\",\"stream_finality_after_fetches\":";
   out += std::to_string(after_fetches);
   out += "}";
+  return out;
+}
+
+std::string RoutineCursorArgumentJsonEnvelope(std::string_view cursor_uuid) {
+  std::string out = "{\"envelope\":\"SBLRExecutionEnvelope.v3\",";
+  out += "\"operation_family\":\"sblr.routine.execute.v3\",";
+  out += "\"operation_id\":\"routine.execute_cursor_argument\",";
+  out += "\"surface_key\":\"routine_cursor_argument.live_route\",";
+  out += "\"sblr_operation_key\":\"routine_cursor_argument.live_route\",";
+  out += "\"result_shape\":\"routine_cursor_argument.rows.v1\",";
+  out += "\"diagnostic_shape\":\"routine_cursor_argument.diag.v1\",";
+  out += "\"resource_contract\":\"routine_cursor_argument.resource.v1\",";
+  out += "\"trace_key\":\"ROUTINE-CURSOR-FULL-ROUTE\",";
+  out += "\"source_payload_embedded\":false,";
+  out += "\"routine_cursor_uuid\":\"";
+  out += EscapeJson(cursor_uuid);
+  out += "\",\"routine_context_kind\":\"procedure\",";
+  out += "\"routine_cursor_action\":\"fetch\",";
+  out += "\"routine_cursor_borrow_policy\":\"borrowed_read\",";
+  out += "\"routine_cursor_argument_binding\":\"descriptor.cursor_handle.session_registry\",";
+  out += "\"routine_cursor_descriptor\":\"rowshape:int64:value\",";
+  out += "\"routine_expected_cursor_descriptor\":\"rowshape:int64:value\",";
+  out += "\"routine_security_recheck\":\"passed\",";
+  out += "\"routine_protected_material_policy\":\"rechecked\",";
+  out += "\"routine_deterministic_context\":false,";
+  out += "\"routine_cursor_fetch_max_rows\":1,";
+  out += "\"resolved_object_uuids\":[],";
+  out += "\"descriptor_refs\":[\"sys.server.cursor_descriptor\",";
+  out += "\"sys.routine.cursor_parameter_descriptor\"],";
+  out += "\"policy_refs\":[\"routine_cursor_session_registry_policy\",";
+  out += "\"routine_cursor_security_recheck_policy\"]}";
   return out;
 }
 
@@ -1567,6 +1681,49 @@ WireResponse SbsqlTestWireSession::HandleLine(std::string_view line) {
     std::ostringstream out;
     out << ToUpperAscii(mode) << "_CURSOR " << executed.cursor_uuid
         << " events=" << executed.row_count << '\n';
+    return {false, out.str()};
+  }
+  if (upper == "ROUTINE CURSOR") {
+    MessageVectorSet messages;
+    if (!HasExecutionRoute()) {
+      messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.SERVER.UNAVAILABLE",
+          "ERROR",
+          "routine cursor testing requires an execution route",
+          "sbp_sbsql.wire"));
+      return {false, RenderMessageVectorSet(messages)};
+    }
+    if (!session_.authenticated) {
+      messages.diagnostics.push_back(MakeDiagnostic(
+          "SBSQL.AUTH.REQUIRED",
+          "ERROR",
+          "routine cursor testing requires an authenticated server session",
+          "sbp_sbsql.wire"));
+      return {false, RenderMessageVectorSet(messages)};
+    }
+    const auto opened = ExecuteSblrOnRoute(MultiResultParserJsonEnvelope(2), true);
+    if (!opened.accepted) return {false, RenderMessageVectorSet(opened.messages)};
+    const auto routine =
+        ExecuteSblrOnRoute(RoutineCursorArgumentJsonEnvelope(opened.cursor_uuid), false);
+    if (!routine.accepted) {
+      (void)CloseCursorOnRoute(opened.cursor_uuid);
+      return {false, RenderMessageVectorSet(routine.messages)};
+    }
+    last_cursor_uuid_ = opened.cursor_uuid;
+    const bool same_cursor = routine.cursor_uuid == opened.cursor_uuid;
+    const bool routine_row_zero =
+        routine.row_packet.find("\"row_index\":0") != std::string::npos;
+    const bool routine_operation =
+        routine.operation_id == "routine.execute_cursor_argument" &&
+        routine.row_packet.find("\"operation_id\":\"routine.execute_cursor_argument\"") !=
+            std::string::npos;
+    std::ostringstream out;
+    out << "ROUTINE_CURSOR " << opened.cursor_uuid
+        << " operation_id=" << routine.operation_id
+        << " routine_rows=" << routine.row_count
+        << " same_cursor=" << (same_cursor ? "true" : "false")
+        << " routine_row_zero=" << (routine_row_zero ? "true" : "false")
+        << " routine_operation=" << (routine_operation ? "true" : "false") << '\n';
     return {false, out.str()};
   }
   if (upper.starts_with("FETCH")) {

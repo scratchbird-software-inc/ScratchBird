@@ -837,6 +837,13 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   if (!table) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "target_table_not_visible"));
   }
+  if (table->temporary && request.context.session_uuid.canonical.empty()) {
+    return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+        request.context,
+        "dml.insert_rows",
+        MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                     "temporary_table_requires_session_uuid"));
+  }
   if (CrudRowsTouchOpaqueColumn(*table, input_rows)) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
         request.context,
@@ -1146,6 +1153,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         row_record.table_uuid = request.target_table.uuid.canonical;
         row_record.row_uuid = conflict_row.row_uuid;
         row_record.version_uuid = version_uuid;
+        row_record.temporary_session_uuid =
+            table->temporary ? request.context.session_uuid.canonical : "";
         row_record.previous_version_uuid = conflict_row.version_uuid;
         row_record.previous_sequence = conflict_row.sequence;
         row_record.deleted = false;
@@ -1267,6 +1276,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     row_record.table_uuid = request.target_table.uuid.canonical;
     row_record.row_uuid = prepared.row_uuid;
     row_record.version_uuid = version_uuid;
+    row_record.temporary_session_uuid =
+        table->temporary ? request.context.session_uuid.canonical : "";
     row_record.deleted = false;
     row_record.values = values;
     CrudRowVersionRecord overlay_row = row_record;

@@ -13,10 +13,13 @@
 #include "sblr_admission.hpp"
 
 #include "backup_archive/backup_archive_api.hpp"
+#include "crud_support/crud_store.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
 
 #include "scratchbird/engine/engine.h"
 #include "scratchbird/engine/sblr/lowering.hpp"
+#include "../engine/sblr/sblr_opcode_registry.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -966,6 +969,14 @@ engine_api::EngineRequestContext ArchiveReplicationEngineContext(
   return context;
 }
 
+engine_api::EngineRequestContext PublicAbiDispatchEngineContext(
+    const ServerSessionRecord& session) {
+  engine_api::EngineRequestContext context =
+      ArchiveReplicationEngineContext(session, session.session_uuid);
+  context.trace_tags.push_back("sblr.public_abi.dispatch");
+  return context;
+}
+
 void AddArchiveReplicationCommonOptions(engine_api::EngineApiRequest* request,
                                         std::string_view manifest_uri) {
   if (request == nullptr) return;
@@ -1187,6 +1198,93 @@ void AppendProjectionExpressionOperands(std::string_view encoded,
   }
 }
 
+bool LooksLikeOrdinalInsertFieldName(std::string_view name) {
+  if (name.size() < 2 || name.front() != 'c') return false;
+  for (std::size_t index = 1; index < name.size(); ++index) {
+    if (!std::isdigit(static_cast<unsigned char>(name[index]))) return false;
+  }
+  return true;
+}
+
+std::vector<std::string> VisibleInsertColumnNamesForTarget(
+    const ServerSessionRecord& session,
+    const std::string& target_object_uuid) {
+  if (target_object_uuid.empty()) return {};
+  const auto context = PublicAbiDispatchEngineContext(session);
+  const auto loaded = engine_api::LoadMgaRelationStoreState(context);
+  if (!loaded.ok) return {};
+  const engine_api::CrudState state =
+      engine_api::BuildCrudCompatibilityStateFromMga(loaded.state);
+  const auto table = engine_api::FindVisibleCrudTable(
+      state,
+      target_object_uuid,
+      context.local_transaction_id);
+  if (!table) return {};
+  std::vector<std::string> columns;
+  columns.reserve(table->columns.size());
+  for (const auto& [name, descriptor] : table->columns) {
+    (void)descriptor;
+    columns.push_back(name);
+  }
+  return columns;
+}
+
+void AppendDmlInsertValueOperands(const ServerSessionRecord& session,
+                                  std::string_view encoded,
+                                  std::string* operation_envelope) {
+  if (operation_envelope == nullptr ||
+      encoded.find("operand=row_field") != std::string_view::npos ||
+      encoded.find("operand=row_null_field") != std::string_view::npos) {
+    return;
+  }
+  const std::uint64_t row_count =
+      ParseU64Text(EncodedTextField(encoded, "insert_values_row_count"));
+  const std::uint64_t column_count =
+      ParseU64Text(EncodedTextField(encoded, "insert_values_column_count"));
+  if (row_count == 0 || column_count == 0) return;
+
+  const bool explicit_column_list =
+      JsonBoolField(encoded, "insert_values_column_list_present", false) ||
+      TextBoolField(encoded, "insert_values_column_list_present", false);
+  std::vector<std::string> descriptor_columns;
+  if (!explicit_column_list) {
+    const std::string target_uuid = EncodedTextField(encoded, "target_object_uuid");
+    descriptor_columns = VisibleInsertColumnNamesForTarget(session, target_uuid);
+  }
+
+  for (std::uint64_t row = 0; row < row_count; ++row) {
+    const std::string row_uuid = engine_api::GenerateCrudEngineUuid("row");
+    for (std::uint64_t column = 0; column < column_count; ++column) {
+      const std::string prefix =
+          "insert_values_" + std::to_string(row) + "_" + std::to_string(column) + "_";
+      std::string name = EncodedTextField(encoded, prefix + "name");
+      if (!explicit_column_list &&
+          (name.empty() || LooksLikeOrdinalInsertFieldName(name)) &&
+          column < descriptor_columns.size() &&
+          !descriptor_columns[static_cast<std::size_t>(column)].empty()) {
+        name = descriptor_columns[static_cast<std::size_t>(column)];
+      }
+      if (name.empty()) name = "c" + std::to_string(column);
+      std::string type = EncodedTextField(encoded, prefix + "type");
+      if (type.empty()) type = "text";
+      const std::string value = EncodedTextField(encoded, prefix + "value");
+      const bool is_null =
+          JsonBoolField(encoded, prefix + "is_null", false) ||
+          TextBoolField(encoded, prefix + "is_null", false);
+      *operation_envelope += "operand=";
+      *operation_envelope += is_null ? "row_null_field:" : "row_field:";
+      *operation_envelope += EscapeOperationOperandField(type);
+      *operation_envelope += "\t";
+      *operation_envelope += EscapeOperationOperandField(row_uuid);
+      *operation_envelope += "|";
+      *operation_envelope += EscapeOperationOperandField(name);
+      *operation_envelope += "\t";
+      *operation_envelope += EscapeOperationOperandField(value);
+      *operation_envelope += "\n";
+    }
+  }
+}
+
 std::optional<std::uint64_t> EvidenceU64(std::string_view encoded, std::string_view evidence_kind) {
   const std::string prefix = "evidence=" + std::string(evidence_kind) + ":";
   std::size_t start = 0;
@@ -1235,6 +1333,7 @@ const char* CatalogMutationPublicAbiOpcodeForOperation(std::string_view operatio
   if (operation_id == "catalog.mutation.graph_create_node") return "SBLR_CATALOG_MUTATION_GRAPH_CREATE_NODE";
   if (operation_id == "catalog.mutation.create_bucket") return "SBLR_CATALOG_MUTATION_CREATE_BUCKET";
   if (operation_id == "catalog.mutation.alter_filespace") return "SBLR_CATALOG_MUTATION_ALTER_FILESPACE";
+  if (operation_id == "catalog.mutation.create_operation") return "SBLR_CATALOG_MUTATION_CREATE_OPERATION";
   if (operation_id == "catalog.mutation.create_operator") return "SBLR_CATALOG_MUTATION_CREATE_OPERATOR";
   if (operation_id == "catalog.mutation.create_event_trigger") return "SBLR_CATALOG_MUTATION_CREATE_EVENT_TRIGGER";
   if (operation_id == "catalog.mutation.create_package_body") return "SBLR_CATALOG_MUTATION_CREATE_PACKAGE_BODY";
@@ -1336,6 +1435,34 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "dml.execute_native_bulk_ingest") return "SBLR_DML_EXECUTE_NATIVE_BULK_INGEST";
   if (operation_id == "extensibility.inspect_gpu_capability") return "SBLR_EXTENSIBILITY_INSPECT_GPU_CAPABILITY";
   if (operation_id == "extensibility.compile_llvm_module") return "SBLR_EXTENSIBILITY_COMPILE_LLVM_MODULE";
+  if (operation_id == "filespace.create") return "SBLR_FILESPACE_CREATE";
+  if (operation_id == "filespace.preallocate") return "SBLR_FILESPACE_PREALLOCATE";
+  if (operation_id == "filespace.attach") return "SBLR_FILESPACE_ATTACH";
+  if (operation_id == "filespace.detach") return "SBLR_FILESPACE_DETACH";
+  if (operation_id == "filespace.disconnect") return "SBLR_FILESPACE_DISCONNECT";
+  if (operation_id == "filespace.move") return "SBLR_FILESPACE_MOVE";
+  if (operation_id == "filespace.merge") return "SBLR_FILESPACE_MERGE";
+  if (operation_id == "filespace.promote") return "SBLR_FILESPACE_PROMOTE";
+  if (operation_id == "filespace.verify") return "SBLR_FILESPACE_VERIFY";
+  if (operation_id == "filespace.compact") return "SBLR_FILESPACE_COMPACT";
+  if (operation_id == "filespace.fence") return "SBLR_FILESPACE_FENCE";
+  if (operation_id == "filespace.release") return "SBLR_FILESPACE_RELEASE";
+  if (operation_id == "filespace.archive") return "SBLR_FILESPACE_ARCHIVE";
+  if (operation_id == "filespace.quarantine") return "SBLR_FILESPACE_QUARANTINE";
+  if (operation_id == "filespace.snapshot.create") return "SBLR_FILESPACE_SNAPSHOT_CREATE";
+  if (operation_id == "filespace.snapshot.refresh") return "SBLR_FILESPACE_SNAPSHOT_REFRESH";
+  if (operation_id == "filespace.snapshot.validate") return "SBLR_FILESPACE_SNAPSHOT_VALIDATE";
+  if (operation_id == "filespace.snapshot.retire") return "SBLR_FILESPACE_SNAPSHOT_RETIRE";
+  if (operation_id == "filespace.shadow.create") return "SBLR_FILESPACE_SHADOW_CREATE";
+  if (operation_id == "filespace.shadow.refresh") return "SBLR_FILESPACE_SHADOW_REFRESH";
+  if (operation_id == "filespace.shadow.validate") return "SBLR_FILESPACE_SHADOW_VALIDATE";
+  if (operation_id == "filespace.shadow.promote") return "SBLR_FILESPACE_SHADOW_PROMOTE";
+  if (operation_id == "filespace.truncate") return "SBLR_FILESPACE_TRUNCATE";
+  if (operation_id == "filespace.drop") return "SBLR_FILESPACE_DROP";
+  if (operation_id == "filespace.delete_physical") return "SBLR_FILESPACE_DELETE_PHYSICAL";
+  if (operation_id == "filespace.repair") return "SBLR_FILESPACE_REPAIR";
+  if (operation_id == "filespace.rebuild") return "SBLR_FILESPACE_REBUILD";
+  if (operation_id == "filespace.salvage") return "SBLR_FILESPACE_SALVAGE";
   if (operation_id == "storage.manage_operation") return "SBLR_STORAGE_MANAGEMENT_OPERATION";
   if (operation_id == "ddl.create_table") return "SBLR_DDL_CREATE_TABLE";
   if (operation_id == "query.cast_value") return "SBLR_QUERY_CAST_VALUE";
@@ -1430,6 +1557,39 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "op.show.migrations") return "SBLR_SHOW_MIGRATIONS";
   if (operation_id == "management.inspect_runtime") return "SBLR_MANAGEMENT_INSPECT_RUNTIME";
   if (operation_id == "management.control_runtime") return "SBLR_MANAGEMENT_CONTROL_RUNTIME";
+  if (operation_id.starts_with("memory.")) {
+    if (const auto* entry = scratchbird::engine::sblr::LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("storage_tier.")) {
+    if (const auto* entry = scratchbird::engine::sblr::LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("filespace.discovery.")) {
+    if (const auto* entry = scratchbird::engine::sblr::LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("filespace.package.")) {
+    if (const auto* entry = scratchbird::engine::sblr::LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("shard_placement.")) {
+    if (const auto* entry = scratchbird::engine::sblr::LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("security.encryption_key.") ||
+      operation_id.starts_with("security.protected_material") ||
+      operation_id == "security.encrypted_filespace.open" ||
+      operation_id == "security.request_protected_material") {
+    if (const auto* entry = scratchbird::engine::sblr::LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
   if (operation_id == "lifecycle.create_database") return "SBLR_LIFECYCLE_CREATE_DATABASE";
   if (operation_id == "lifecycle.open_database") return "SBLR_LIFECYCLE_OPEN_DATABASE";
   if (operation_id == "lifecycle.attach_database") return "SBLR_LIFECYCLE_ATTACH_DATABASE";
@@ -1527,7 +1687,10 @@ scratchbird::engine::SblrOperationFamily PublicAbiFamilyForServerFamily(std::str
   if (family == "sblr.bulk.import.v3") return SblrOperationFamily::bulk_import;
   if (family == "sblr.bulk.export.v3") return SblrOperationFamily::bulk_export;
   if (family == "sblr.catalog.mutation.v3") return SblrOperationFamily::catalog_mutation;
-  if (family == "sblr.security.mutation.v3") return SblrOperationFamily::security_mutation;
+  if (family == "sblr.security.mutation.v3" ||
+      family == "sblr.security.mutation_or_inspect.v3") {
+    return SblrOperationFamily::security_mutation;
+  }
   if (family == "sblr.policy.operation.v3") return SblrOperationFamily::security_mutation;
   if (family == "sblr.management.control.v3") return SblrOperationFamily::management_control;
   if (family == "sblr.management.report.v3") return SblrOperationFamily::management_inspect;
@@ -2340,6 +2503,54 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += "\n";
     }
   }
+  if (dispatch_operation_id == "ddl.create_table") {
+    constexpr std::string_view kTableFields[] = {
+        "target_object_uuid", "target_object_kind",
+        "table_object_uuid", "table_name",
+        "target_schema_uuid", "schema_uuid",
+        "column_count", "column_definition_count",
+        "canonical_type_name",
+        "column_0_name", "column_0_type", "column_0_descriptor",
+        "column_0_nullable"};
+    for (const auto field : kTableFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
+      if (value.empty()) continue;
+      AppendOperationOperand(&operation_envelope, field, value);
+    }
+    const std::string table_uuid = JsonTextField(encoded, "table_object_uuid").value_or(
+        TextLineValue(encoded, "table_object_uuid").value_or(""));
+    if (!table_uuid.empty() &&
+        JsonTextField(encoded, "target_object_uuid").value_or(
+            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
+      AppendOperationOperand(&operation_envelope, "target_object_uuid", table_uuid);
+      AppendOperationOperand(&operation_envelope, "target_object_kind", "table");
+    }
+    const std::string table_name = JsonTextField(encoded, "table_name").value_or(
+        TextLineValue(encoded, "table_name").value_or(""));
+    if (!table_name.empty()) {
+      AppendOperationOperand(&operation_envelope, "name", table_name);
+    }
+    const bool temporary =
+        JsonBoolField(encoded, "temporary_table", false) ||
+        JsonBoolField(encoded, "temporary", false) ||
+        TextBoolField(encoded, "temporary_table", false) ||
+        TextBoolField(encoded, "temporary", false);
+    if (temporary) {
+      AppendOperationOperand(&operation_envelope, "temporary", "true");
+      const std::string scope = JsonTextField(encoded, "temporary_scope").value_or(
+          TextLineValue(encoded, "temporary_scope").value_or("private"));
+      AppendOperationOperand(&operation_envelope, "temporary_scope",
+                             scope.empty() ? "session" : scope);
+      const std::string on_commit = JsonTextField(encoded, "on_commit_action").value_or(
+          JsonTextField(encoded, "on_commit").value_or(
+              TextLineValue(encoded, "on_commit_action").value_or(
+                  TextLineValue(encoded, "on_commit").value_or("delete_rows"))));
+      AppendOperationOperand(&operation_envelope, "on_commit",
+                             on_commit.empty() ? "delete_rows" : on_commit);
+    }
+  }
   if (dispatch_operation_id == "ddl.create_index_template") {
     constexpr std::string_view kIndexTemplateFields[] = {
         "target_object_uuid", "target_object_kind",
@@ -2609,10 +2820,16 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "target_schema_uuid", "schema_uuid",
         "executable_object_kind", "descriptor_kind",
         "signature_descriptor_kind", "signature_descriptor_uuid",
-        "signature_descriptor", "routine_language"};
+        "signature_descriptor", "routine_language",
+        "routine_parameter_descriptor_present", "routine_parameter_count",
+        "routine_parameter_0_name_descriptor", "routine_parameter_0_type",
+        "routine_parameter_0_mode", "routine_parameter_0_descriptor_kind",
+        "routine_cursor_argument", "routine_cursor_argument_binding",
+        "routine_cursor_argument_parser_executes_cursor"};
     for (const auto field : kExecutableFields) {
       const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;
@@ -3071,6 +3288,9 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
   }
   if (dispatch_operation_id.starts_with("dml.")) {
+    if (dispatch_operation_id == "dml.insert_rows") {
+      AppendDmlInsertValueOperands(session, encoded, &operation_envelope);
+    }
     constexpr std::string_view kDmlFields[] = {
         "target_object_uuid", "target_object_kind", "dml_surface_variant",
         "source_kind", "source_uuid", "source_fingerprint", "source_position",
@@ -3337,6 +3557,56 @@ std::string CursorMetadataDetail(const ServerCursorRecord& cursor) {
       << "\"finality\":{\"kind\":\"" << JsonEscape(cursor.finality_kind) << "\","
       << "\"state\":\"" << JsonEscape(cursor.finality_state) << "\","
       << "\"reason\":\"" << JsonEscape(cursor.finality_reason) << "\"}"
+      << "}}";
+  return out.str();
+}
+
+std::optional<std::array<std::uint8_t, 16>> ParseUuidTextForDispatch(
+    std::string_view text) {
+  std::array<std::uint8_t, 16> out{};
+  auto hex_value = [](char ch) -> int {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+  };
+  std::size_t nibble = 0;
+  for (const char ch : text) {
+    if (ch == '-') continue;
+    const int value = hex_value(ch);
+    if (value < 0 || nibble >= 32) return std::nullopt;
+    if ((nibble % 2) == 0) {
+      out[nibble / 2] = static_cast<std::uint8_t>(value << 4);
+    } else {
+      out[nibble / 2] = static_cast<std::uint8_t>(out[nibble / 2] | value);
+    }
+    ++nibble;
+  }
+  if (nibble != 32) return std::nullopt;
+  return out;
+}
+
+std::string RoutineCursorInvocationDetail(const ServerCursorRecord& cursor,
+                                          std::string_view context_kind,
+                                          std::string_view action,
+                                          std::string_view borrow_policy,
+                                          std::string_view cleanup_state) {
+  std::ostringstream out;
+  out << "{\"routine_cursor_argument\":{\"contract\":\"routine.cursor_argument.v1\","
+      << "\"cursor_uuid\":\"" << JsonEscape(UuidBytesToText(cursor.cursor_uuid))
+      << "\",\"context_kind\":\"" << JsonEscape(context_kind)
+      << "\",\"action\":\"" << JsonEscape(action)
+      << "\",\"borrow_policy\":\"" << JsonEscape(borrow_policy)
+      << "\",\"cleanup_state\":\"" << JsonEscape(cleanup_state)
+      << "\",\"descriptor_bound\":true,"
+      << "\"security_rechecked\":true,"
+      << "\"protected_material_rechecked\":true,"
+      << "\"parser_executes_cursor\":false,"
+      << "\"fetch_count\":" << cursor.fetch_count
+      << ",\"next_row_index\":" << cursor.next_row_index
+      << ",\"total_rows\":" << cursor.total_row_count
+      << ",\"closed\":" << (cursor.closed ? "true" : "false")
+      << ",\"exhausted\":" << (cursor.exhausted ? "true" : "false")
       << "}}";
   return out.str();
 }
@@ -4226,6 +4496,244 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
                                        ? "transaction_admission_denied"
                                        : transaction_refusal->diagnostics.front().code);
     return *transaction_refusal;
+  }
+  if (admission.operation_id == "routine.execute_cursor_argument") {
+    const auto fail_routine_cursor = [&](std::string code,
+                                         std::string message,
+                                         std::string detail) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     detail.empty() ? code : detail);
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     std::move(code),
+                     std::move(message),
+                     std::move(detail));
+    };
+
+    const std::string binding =
+        JsonTextField(encoded, "routine_cursor_argument_binding").value_or("");
+    if (binding != "descriptor.cursor_handle.session_registry") {
+      return fail_routine_cursor(
+          "PARSER_SERVER_IPC.ROUTINE_CURSOR_DESCRIPTOR_MISMATCH",
+          "Routine cursor arguments must bind through the server cursor registry descriptor.",
+          "routine_cursor_binding_mismatch");
+    }
+    const std::string descriptor =
+        JsonTextField(encoded, "routine_cursor_descriptor").value_or("");
+    const std::string expected_descriptor =
+        JsonTextField(encoded, "routine_expected_cursor_descriptor").value_or("");
+    if (descriptor.empty() || expected_descriptor.empty() ||
+        descriptor != expected_descriptor) {
+      return fail_routine_cursor(
+          "PARSER_SERVER_IPC.ROUTINE_CURSOR_DESCRIPTOR_MISMATCH",
+          "The supplied cursor row descriptor does not match the routine contract.",
+          "routine_cursor_descriptor_mismatch");
+    }
+    if (JsonTextField(encoded, "routine_security_recheck").value_or("") !=
+            "passed" ||
+        JsonTextField(encoded, "routine_protected_material_policy").value_or("") !=
+            "rechecked") {
+      return fail_routine_cursor(
+          "PARSER_SERVER_IPC.ROUTINE_CURSOR_SECURITY_RECHECK_REQUIRED",
+          "Routine cursor invocation requires security, masking, visibility, and protected-material rechecks.",
+          "routine_cursor_security_recheck_required");
+    }
+
+    const std::string context_kind =
+        JsonTextField(encoded, "routine_context_kind").value_or("procedure");
+    const std::string action =
+        JsonTextField(encoded, "routine_cursor_action").value_or("fetch");
+    const std::string borrow_policy =
+        JsonTextField(encoded, "routine_cursor_borrow_policy").value_or(
+            "borrowed_read");
+    const bool deterministic_context =
+        JsonBoolField(encoded, "routine_deterministic_context", false) ||
+        JsonTextField(encoded, "routine_function_context").value_or("") ==
+            "deterministic_only";
+    if (context_kind == "function" && deterministic_context) {
+      return fail_routine_cursor(
+          "PARSER_SERVER_IPC.ROUTINE_CURSOR_DETERMINISTIC_CONTEXT_REFUSED",
+          "Cursor-observing routine functions are refused in deterministic-only contexts.",
+          "routine_cursor_deterministic_context_refused");
+    }
+    if (action == "close" && borrow_policy != "owned") {
+      return fail_routine_cursor(
+          "PARSER_SERVER_IPC.ROUTINE_CURSOR_BORROWED_CLOSE_REFUSED",
+          "A borrowed routine cursor argument cannot be closed by the callee.",
+          "routine_cursor_borrowed_close_refused");
+    }
+
+    const std::string cursor_uuid_text =
+        JsonTextField(encoded, "routine_cursor_uuid").value_or("");
+    const auto parsed_cursor_uuid = ParseUuidTextForDispatch(cursor_uuid_text);
+    if (!parsed_cursor_uuid) {
+      return fail_routine_cursor(
+          "PARSER_SERVER_IPC.ROUTINE_CURSOR_HANDLE_INVALID",
+          "Routine cursor invocation requires a valid cursor handle UUID.",
+          "routine_cursor_uuid_invalid");
+    }
+    auto cursor_it =
+        registry->cursors_by_uuid.find(UuidBytesToText(*parsed_cursor_uuid));
+    if (cursor_it == registry->cursors_by_uuid.end() || cursor_it->second.closed ||
+        cursor_it->second.session_uuid != decoded->session_uuid) {
+      return fail_routine_cursor(
+          "PARSER_SERVER_IPC.CURSOR_NOT_FOUND",
+          "The requested cursor does not exist.",
+          "cursor_not_found");
+    }
+
+    auto& cursor = cursor_it->second;
+    UpdateServerRequestLifecycleOperation(registry,
+                                          request_record.request_uuid,
+                                          admission.operation_id);
+    LinkServerRequestCursor(registry,
+                            request_record.request_uuid,
+                            cursor.cursor_uuid,
+                            cursor.engine_result != nullptr);
+
+    const bool trigger_scoped =
+        context_kind == "trigger" &&
+        JsonTextField(encoded, "routine_cursor_lifetime").value_or("") ==
+            "trigger_event";
+    std::uint64_t row_count = 0;
+    std::string row_packet;
+    std::string cleanup_state = "borrowed_cursor_retained";
+
+    if (action == "inspect") {
+      row_packet = ResultPacket(admission.operation_id,
+                                true,
+                                0,
+                                "routine_cursor_metadata_inspected");
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kCompleted,
+                                     "routine_cursor_inspect_completed");
+    } else if (action == "close") {
+      MarkCursorFinality(&cursor, "closed", "routine_owned_close");
+      cursor.closed = true;
+      cleanup_state = "owned_cursor_closed";
+      row_packet = ResultPacket(admission.operation_id,
+                                true,
+                                0,
+                                "routine_owned_cursor_closed");
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kCompleted,
+                                     "routine_cursor_close_completed");
+      MarkServerRequestClosedByCursor(registry,
+                                      cursor.cursor_uuid,
+                                      ServerRequestLifecycleState::kCompleted,
+                                      "routine_owned_close");
+    } else if (action == "fetch") {
+      std::uint64_t max_rows =
+          JsonU64Field(encoded, "routine_cursor_fetch_max_rows").value_or(1);
+      if (max_rows == 0) max_rows = 1;
+      const std::uint64_t max_bytes =
+          JsonU64Field(encoded, "routine_cursor_fetch_max_bytes").value_or(0);
+      if (max_rows > cursor.max_chunk_rows) {
+        return fail_routine_cursor(
+            "SERVER.STREAM.CHUNK_TOO_LARGE",
+            "Routine cursor fetch exceeds the cursor chunk limit.",
+            "max_rows_exceeds_server_limit");
+      }
+      if (max_bytes > cursor.max_chunk_bytes) {
+        return fail_routine_cursor(
+            "SERVER.STREAM.BYTES_TOO_LARGE",
+            "Routine cursor fetch byte limit exceeds the cursor protocol limit.",
+            "max_bytes_exceeds_server_limit");
+      }
+      if (cursor.engine_result != nullptr) {
+        const auto batch =
+            FetchEngineCursorBatch(cursor.engine_result, max_rows, max_bytes);
+        if (!batch.ok) {
+          return fail_routine_cursor(
+              "PARSER_SERVER_IPC.ENGINE_FETCH_FAILED",
+              "The engine could not produce the next routine cursor batch.",
+              batch.diagnostic_detail);
+        }
+        row_count = batch.row_count;
+        row_packet = batch.row_packet;
+        cursor.next_row_index += batch.row_count;
+        cursor.fetch_count++;
+        cursor.exhausted = batch.end_of_stream;
+      } else {
+        const auto remaining = cursor.total_row_count > cursor.next_row_index
+                                   ? cursor.total_row_count -
+                                         cursor.next_row_index
+                                   : 0;
+        row_count = std::min(max_rows, remaining);
+        const auto first_row = cursor.next_row_index;
+        const bool end_of_cursor =
+            first_row + row_count >= cursor.total_row_count;
+        row_packet = ResultPacket(admission.operation_id,
+                                  true,
+                                  row_count,
+                                  "routine_cursor_fetch",
+                                  first_row,
+                                  cursor.total_row_count,
+                                  end_of_cursor);
+        if (max_bytes != 0 && row_packet.size() > max_bytes) {
+          return fail_routine_cursor(
+              "SERVER.STREAM.BYTES_TOO_SMALL",
+              "Routine cursor fetch byte limit is too small for the next result packet.",
+              "max_bytes_below_next_packet");
+        }
+        cursor.next_row_index += row_count;
+        cursor.fetch_count++;
+        cursor.exhausted = end_of_cursor;
+      }
+      CompleteServerRequestLifecycle(
+          registry,
+          request_record.request_uuid,
+          ServerRequestLifecycleState::kCompleted,
+          cursor.exhausted ? "routine_cursor_fetch_completed_end_of_cursor"
+                           : "routine_cursor_fetch_completed");
+      if (cursor.exhausted) {
+        MarkServerRequestClosedByCursor(registry,
+                                        cursor.cursor_uuid,
+                                        ServerRequestLifecycleState::kCompleted,
+                                        "cursor_exhausted");
+      }
+    } else {
+      return fail_routine_cursor(
+          "PARSER_SERVER_IPC.ROUTINE_CURSOR_ACTION_UNSUPPORTED",
+          "The routine cursor action is not supported by this server.",
+          "routine_cursor_action_unsupported");
+    }
+
+    if (trigger_scoped && !cursor.closed) {
+      MarkCursorFinality(&cursor, "closed", "trigger_event_scope_cleanup");
+      cursor.closed = true;
+      cleanup_state = "trigger_event_scope_cleanup";
+      MarkServerRequestClosedByCursor(registry,
+                                      cursor.cursor_uuid,
+                                      ServerRequestLifecycleState::kCompleted,
+                                      "trigger_event_scope_cleanup");
+    }
+
+    SessionOperationResult result;
+    result.accepted = true;
+    result.response_message_type =
+        static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult);
+    result.response_schema_id = kSchemaExecuteResultTestV1;
+    result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+    result.session_uuid = decoded->session_uuid;
+    result.payload = EncodeExecuteResult(
+        "accepted",
+        request_record.request_uuid,
+        cursor.cursor_uuid,
+        row_count,
+        admission.operation_id,
+        row_packet,
+        RoutineCursorInvocationDetail(cursor,
+                                      context_kind,
+                                      action,
+                                      borrow_policy,
+                                      cleanup_state));
+    return result;
   }
   const auto cursor_uuid = cursor_requested ? sbps::MakeUuidV7Bytes() : std::array<std::uint8_t, 16>{};
   const auto request_uuid = request.header.request_uuid;

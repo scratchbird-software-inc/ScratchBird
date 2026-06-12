@@ -28,5 +28,8 @@ if(NOT TARGET sbl_numeric)
 endif()
 
 target_compile_features(sb_core_datatypes PUBLIC cxx_std_17)
-target_include_directories(sb_core_datatypes PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(sb_core_datatypes PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${PROJECT_SOURCE_DIR}/include
+)
 target_link_libraries(sb_core_datatypes PUBLIC sb_core_platform sb_core_hash sbl_numeric)

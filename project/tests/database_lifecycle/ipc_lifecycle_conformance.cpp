@@ -389,7 +389,8 @@ ParserServerEventSession EventSession(const std::filesystem::path& database_path
   session.engine_context.principal_uuid.canonical = "018f58bd-98f0-7000-8000-0000001306cc";
   session.engine_context.local_transaction_id = local_transaction_id;
   session.engine_context.security_context_present = true;
-  session.engine_context.trust_mode = api::EngineTrustMode::embedded_in_process;
+  session.engine_context.trust_mode =
+      scratchbird::server::ParserServerEventTrustMode::embedded_in_process;
   session.engine_context.trace_tags.push_back("security.fixture_trace_authority");
   session.engine_context.trace_tags.push_back("group:DBA");
   return session;
@@ -411,7 +412,12 @@ void CreateEventChannel(const ParserServerEventSession& session,
   request.context.principal_uuid.canonical = session.engine_context.principal_uuid.canonical;
   request.context.local_transaction_id = session.engine_context.local_transaction_id;
   request.context.security_context_present = session.engine_context.security_context_present;
-  request.context.trust_mode = session.engine_context.trust_mode;
+  request.context.trust_mode =
+      session.engine_context.trust_mode ==
+              scratchbird::server::ParserServerEventTrustMode::
+                  embedded_in_process
+          ? api::EngineTrustMode::embedded_in_process
+          : api::EngineTrustMode::server_isolated;
   request.context.trace_tags = session.engine_context.trace_tags;
   request.target_object = {{channel_uuid}, "event_channel"};
   request.option_envelopes.push_back("channel_uuid:" + channel_uuid);

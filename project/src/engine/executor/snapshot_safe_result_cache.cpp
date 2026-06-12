@@ -33,6 +33,8 @@ bool KeyComplete(const SnapshotSafeCacheKey& key) {
          key.redaction_epoch != 0 &&
          !key.mga_visibility_snapshot_class.empty() &&
          key.provider_generation != 0 &&
+         !key.descriptor_identity_digest.empty() &&
+         key.descriptor_epoch != 0 &&
          !key.result_contract_identity.empty() &&
          !key.result_contract_hash.empty() &&
          !key.route_compatibility.empty() &&
@@ -198,6 +200,10 @@ SnapshotSafeCacheDecision BaseDecision(const SnapshotSafeCacheKey& key,
   Add(&decision.evidence,
       "provider_generation=" + std::to_string(key.provider_generation));
   Add(&decision.evidence,
+      "descriptor_identity_digest=" + key.descriptor_identity_digest);
+  Add(&decision.evidence,
+      "descriptor_epoch=" + std::to_string(key.descriptor_epoch));
+  Add(&decision.evidence,
       "result_contract_identity=" + key.result_contract_identity);
   Add(&decision.evidence,
       "result_contract_hash=" + key.result_contract_hash);
@@ -331,6 +337,8 @@ std::string SnapshotSafeCacheKeyText(const SnapshotSafeCacheKey& key) {
       << "|redaction=" << key.redaction_epoch
       << "|mga_snapshot=" << key.mga_visibility_snapshot_class
       << "|provider_generation=" << key.provider_generation
+      << "|descriptor_identity=" << key.descriptor_identity_digest
+      << "|descriptor_epoch=" << key.descriptor_epoch
       << "|result_contract=" << key.result_contract_identity
       << "|result_contract_hash=" << key.result_contract_hash
       << "|route=" << key.route_compatibility

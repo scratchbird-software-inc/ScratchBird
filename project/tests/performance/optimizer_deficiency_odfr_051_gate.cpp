@@ -57,6 +57,8 @@ SnapshotSafeCacheKey BaseKey() {
   key.redaction_epoch = 14;
   key.mga_visibility_snapshot_class = "repeatable_read_snapshot:42";
   key.provider_generation = 15;
+  key.descriptor_identity_digest = "descriptor:candidate-rowset:v1";
+  key.descriptor_epoch = 16;
   key.result_contract_identity = "candidate_rowset.v1";
   key.result_contract_hash = "sha256:candidate-rowset-contract";
   key.route_compatibility = "embedded_ipc_v1";

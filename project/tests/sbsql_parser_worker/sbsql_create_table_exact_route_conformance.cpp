@@ -25,6 +25,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -46,6 +47,12 @@ constexpr std::string_view kBinarySql = "CREATE TABLE customer (payload binary)"
 constexpr std::string_view kArraySql = "CREATE TABLE customer (tags array)";
 constexpr std::string_view kRowSql = "CREATE TABLE customer (payload row)";
 constexpr std::string_view kRowsetSql = "CREATE TABLE customer (items rowset)";
+constexpr std::string_view kTemporaryDeleteSql =
+    "CREATE TEMPORARY TABLE customer (id int) ON COMMIT DELETE ROWS";
+constexpr std::string_view kTemporaryPreserveSql =
+    "CREATE TEMP TABLE customer (id int) ON COMMIT PRESERVE ROWS";
+constexpr std::string_view kLocalTemporaryDefaultSql =
+    "CREATE LOCAL TEMPORARY TABLE customer (id int)";
 constexpr std::string_view kOperationId = "ddl.create_table";
 constexpr std::string_view kOpcode = "SBLR_DDL_CREATE_TABLE";
 constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
@@ -558,7 +565,10 @@ void RequireExactLowering(const PipelineArtifacts& artifacts,
                           std::string_view sql,
                           std::string_view canonical_type_name,
                           const CreateTableRowEvidence& type_row,
-                          std::string_view column_name) {
+                          std::string_view column_name,
+                          bool temporary = false,
+                          std::string_view on_commit_action = "delete_rows",
+                          bool on_commit_clause_present = false) {
   Require(!artifacts.cst.messages.has_errors(), "CREATE TABLE CST failed");
   Require(!artifacts.ast.messages.has_errors(), "CREATE TABLE AST failed");
   Require(artifacts.bound.bound, "CREATE TABLE bind failed");
@@ -604,8 +614,41 @@ void RequireExactLowering(const PipelineArtifacts& artifacts,
           "CREATE TABLE payload missing expected type evidence");
   Require(Contains(artifacts.envelope.payload, "\"constraints_included\":false"),
           "CREATE TABLE payload claimed constraints");
-  Require(Contains(artifacts.envelope.payload, "\"temporary_table\":false"),
-          "CREATE TABLE payload claimed temporary table");
+  if (temporary) {
+    Require(Contains(artifacts.envelope.payload, "\"temporary_table\":true"),
+            "CREATE TEMPORARY TABLE payload did not mark temporary table");
+    Require(Contains(artifacts.envelope.payload, "\"temporary_scope\":\"private\""),
+            "CREATE TEMPORARY TABLE payload missing private scope");
+    Require(Contains(artifacts.envelope.payload, "\"temporary_object_scope\":\"private\""),
+            "CREATE TEMPORARY TABLE payload missing object scope");
+    Require(Contains(artifacts.envelope.payload, "\"temporary_metadata_scope\":\"private\""),
+            "CREATE TEMPORARY TABLE payload missing metadata scope");
+    Require(Contains(artifacts.envelope.payload, "\"temporary_data_scope\":\"session\""),
+            "CREATE TEMPORARY TABLE payload missing data scope");
+    Require(Contains(artifacts.envelope.payload, "\"temporary_session_uuid_required\":true"),
+            "CREATE TEMPORARY TABLE payload missing session UUID requirement");
+    Require(Contains(artifacts.envelope.payload,
+                     std::string("\"temporary_on_commit_clause_present\":") +
+                         (on_commit_clause_present ? "true" : "false")),
+            "CREATE TEMPORARY TABLE payload on-commit clause evidence mismatch");
+    Require(Contains(artifacts.envelope.payload,
+                     std::string("\"on_commit_action\":\"") +
+                         std::string(on_commit_action) + "\""),
+            "CREATE TEMPORARY TABLE payload missing on-commit action");
+    Require(Contains(artifacts.envelope.payload, "\"temporary_parser_executes_sql\":false"),
+            "CREATE TEMPORARY TABLE payload did not prove parser does not execute temp SQL");
+    Require(Contains(artifacts.envelope.payload, "\"persistence_options_included\":true"),
+            "CREATE TEMPORARY TABLE payload missing persistence option evidence");
+    Require(Contains(artifacts.envelope.payload, "SBSQL-D9366D02D5DE") &&
+                Contains(artifacts.envelope.payload, "SBSQL-60FF8D790ABF") &&
+                Contains(artifacts.envelope.payload, "SBSQL-D57F1C8B14EF"),
+            "CREATE TEMPORARY TABLE payload missing table persistence option surface evidence");
+  } else {
+    Require(Contains(artifacts.envelope.payload, "\"temporary_table\":false"),
+            "CREATE TABLE payload claimed temporary table");
+    Require(Contains(artifacts.envelope.payload, "\"persistence_options_included\":false"),
+            "CREATE TABLE payload claimed persistence options");
+  }
   Require(Contains(artifacts.envelope.payload, "\"index_definitions_included\":false"),
           "CREATE TABLE payload claimed indexes");
   Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
@@ -632,7 +675,10 @@ void RequireExactLowering(const PipelineArtifacts& artifacts,
 }
 
 void RequireServerAdmission(const SblrEnvelope& envelope);
-void RequireEngineDispatch(std::string_view canonical_type_name, std::string_view column_name);
+void RequireEngineDispatch(std::string_view canonical_type_name,
+                           std::string_view column_name,
+                           bool temporary = false,
+                           std::string_view on_commit_action = "delete_rows");
 
 void RequireTypeKeywordDescriptorRoute(const TypeKeywordDescriptorEvidence& row) {
   const auto artifacts = RunPipeline(row.sql);
@@ -832,13 +878,23 @@ sblr::SblrOperationEnvelope EngineEnvelope() {
   return envelope;
 }
 
-void RequireEngineDispatch(std::string_view canonical_type_name, std::string_view column_name) {
+void RequireEngineDispatch(std::string_view canonical_type_name,
+                           std::string_view column_name,
+                           bool temporary,
+                           std::string_view on_commit_action) {
   const auto database_uuid = CreateMinimalDatabaseForEngineDispatch();
   auto context = BeginEngineTransaction(database_uuid);
+  auto api_request = EngineCreateTableApiRequest(canonical_type_name, column_name);
+  if (temporary) {
+    api_request.option_envelopes.push_back("temporary:true");
+    api_request.option_envelopes.push_back("temporary_scope:private");
+    api_request.option_envelopes.push_back(std::string("on_commit:") +
+                                           std::string(on_commit_action));
+  }
   const sblr::SblrDispatchRequest request{
       context,
       EngineEnvelope(),
-      EngineCreateTableApiRequest(canonical_type_name, column_name)};
+      std::move(api_request)};
   const auto result = sblr::DispatchSblrOperation(request);
   for (const auto& diagnostic : result.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
@@ -858,13 +914,27 @@ void RequireEngineDispatch(std::string_view canonical_type_name, std::string_vie
               "019f0000-0000-7000-8000-000000020206",
           "EngineCreateTable returned wrong table UUID");
   bool saw_table_create = false;
+  bool saw_temporary_scope = false;
+  bool saw_temporary_on_commit = false;
   for (const auto& evidence : result.api_result.evidence) {
     if (evidence.evidence_kind == "mga_relation_metadata" &&
         evidence.evidence_id == "table_create") {
       saw_table_create = true;
     }
+    if (evidence.evidence_kind == "temporary_object_scope" &&
+        evidence.evidence_id == "private") {
+      saw_temporary_scope = true;
+    }
+    if (evidence.evidence_kind == "temporary_on_commit" &&
+        evidence.evidence_id == on_commit_action) {
+      saw_temporary_on_commit = true;
+    }
   }
   Require(saw_table_create, "EngineCreateTable missing MGA table-create evidence");
+  if (temporary) {
+    Require(saw_temporary_scope, "EngineCreateTable missing temporary private scope evidence");
+    Require(saw_temporary_on_commit, "EngineCreateTable missing temporary on-commit evidence");
+  }
   RemoveTestDatabase();
 }
 
@@ -892,6 +962,24 @@ int main() {
   RequireExactLowering(int_artifacts, kIntSql, "int", kNumericTypeRow, "id");
   RequireServerAdmission(int_artifacts.envelope);
   RequireEngineDispatch("int", "id");
+
+  const auto temporary_delete_artifacts = RunPipeline(kTemporaryDeleteSql);
+  RequireExactLowering(temporary_delete_artifacts, kTemporaryDeleteSql, "int",
+                       kNumericTypeRow, "id", true, "delete_rows", true);
+  RequireServerAdmission(temporary_delete_artifacts.envelope);
+  RequireEngineDispatch("int", "id", true, "delete_rows");
+
+  const auto temporary_preserve_artifacts = RunPipeline(kTemporaryPreserveSql);
+  RequireExactLowering(temporary_preserve_artifacts, kTemporaryPreserveSql, "int",
+                       kNumericTypeRow, "id", true, "preserve_rows", true);
+  RequireServerAdmission(temporary_preserve_artifacts.envelope);
+  RequireEngineDispatch("int", "id", true, "preserve_rows");
+
+  const auto local_temporary_artifacts = RunPipeline(kLocalTemporaryDefaultSql);
+  RequireExactLowering(local_temporary_artifacts, kLocalTemporaryDefaultSql, "int",
+                       kNumericTypeRow, "id", true, "delete_rows", false);
+  RequireServerAdmission(local_temporary_artifacts.envelope);
+  RequireEngineDispatch("int", "id", true, "delete_rows");
 
   const auto text_artifacts = RunPipeline(kTextSql);
   RequireExactLowering(text_artifacts, kTextSql, "text", kTextTypeRow, "name");

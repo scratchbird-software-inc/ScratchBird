@@ -89,6 +89,10 @@ struct SysInformationCatalogObjectSource {
   std::string schema_uuid;
   std::string parent_object_uuid;
   std::string table_type;
+  bool temporary = false;
+  std::string temporary_scope;
+  std::string temporary_session_uuid;
+  std::string on_commit_action;
   std::uint64_t catalog_generation_id = 0;
   std::uint64_t created_local_transaction_id = 0;
   std::uint64_t dropped_local_transaction_id = 0;
@@ -416,6 +420,7 @@ struct SysInformationProjectionContext {
   std::string catalog_display_name = "ScratchBird";
   std::string session_language = "en";
   std::string default_language = "en";
+  std::string session_uuid;
   std::uint64_t visible_catalog_generation_id = 0;
   bool strict_mode = false;
   bool cluster_authority_available = false;

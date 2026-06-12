@@ -370,8 +370,18 @@ index_api::IndexCandidate Candidate(std::string key, unsigned char salt) {
 index_api::IndexKeyEncodingComponent KeyComponent(std::string value, unsigned ordinal = 0) {
   index_api::IndexKeyEncodingComponent component;
   component.ordinal = ordinal;
-  component.type_descriptor_uuid = GeneratedUuid(UuidKind::object, 700 + ordinal);
-  component.collation_uuid = GeneratedUuid(UuidKind::object, 800 + ordinal);
+  if (ordinal == 0) {
+    static const platform::TypedUuid kTypeDescriptorUuid =
+        GeneratedUuid(UuidKind::object, 700);
+    static const platform::TypedUuid kCollationUuid =
+        GeneratedUuid(UuidKind::object, 800);
+    component.type_descriptor_uuid = kTypeDescriptorUuid;
+    component.collation_uuid = kCollationUuid;
+  } else {
+    component.type_descriptor_uuid =
+        GeneratedUuid(UuidKind::object, 700 + ordinal);
+    component.collation_uuid = GeneratedUuid(UuidKind::object, 800 + ordinal);
+  }
   component.payload.assign(value.begin(), value.end());
   return component;
 }

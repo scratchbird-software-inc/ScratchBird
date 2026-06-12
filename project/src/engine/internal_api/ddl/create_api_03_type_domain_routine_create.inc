@@ -94,23 +94,31 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
         "ddl.create_index",
         UnsupportedCrudFeatureDiagnostic("ddl.create_index", "unsupported_expression_index_envelope"));
   }
+  const auto index_build_rows =
+      RowsVisibleForCreateIndexBuild(loaded_state, *target_table, request.context);
   if (created_index.unique &&
-      ExistingRowsHaveDuplicateKeys(loaded_state, created_index, request.target_object.uuid.canonical, request.context.local_transaction_id)) {
+      ExistingRowsHaveDuplicateKeys(loaded_state,
+                                    *target_table,
+                                    created_index,
+                                    request.context)) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
         request.context,
         "ddl.create_index",
         MakeInvalidRequestDiagnostic("ddl.create_index", "unique_index_duplicate"));
   }
-  const auto sorted_build = BuildCreateIndexSortedBulkArtifact(
-      request.context,
-      loaded_state,
-      created_index,
-      request.target_object.uuid.canonical);
-  if (!sorted_build.ok) {
-    return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
+  CreateIndexSortedBuildResult sorted_build;
+  if (!target_table->temporary) {
+    sorted_build = BuildCreateIndexSortedBulkArtifact(
         request.context,
-        "ddl.create_index",
-        sorted_build.diagnostic);
+        created_index,
+        request.target_object.uuid.canonical,
+        index_build_rows);
+    if (!sorted_build.ok) {
+      return MakeCrudDiagnosticResult<EngineCreateIndexResult>(
+          request.context,
+          "ddl.create_index",
+          sorted_build.diagnostic);
+    }
   }
   const auto appended = AppendMgaIndexMetadata(request.context, created_index);
   if (appended.error) {
@@ -126,7 +134,7 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
   if (index_name_appended.error) {
     return MakeCrudDiagnosticResult<EngineCreateIndexResult>(request.context, "ddl.create_index", index_name_appended);
   }
-  if (sorted_build.selected && !sorted_build.batch.entries.empty()) {
+  if (!target_table->temporary && sorted_build.selected && !sorted_build.batch.entries.empty()) {
     const auto entry = AppendMgaExactIndexEntryBatches(
         request.context,
         std::vector<MgaExactIndexEntryAppendBatch>{sorted_build.batch});
@@ -136,8 +144,8 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
           "ddl.create_index",
           entry);
     }
-  } else if (!sorted_build.selected) {
-    for (const auto& row : VisibleCrudRows(loaded_state, request.target_object.uuid.canonical, request.context.local_transaction_id)) {
+  } else {
+    for (const auto& row : index_build_rows) {
       const auto entry = AppendMgaIndexEntriesForIndex(request.context,
                                                        created_index,
                                                        row.row_uuid,
@@ -154,12 +162,19 @@ EngineCreateIndexResult EngineCreateIndex(const EngineCreateIndexRequest& reques
   result.catalog_row_uuid.canonical = GenerateCrudEngineUuid("row");
   result.evidence.push_back({"mga_relation_metadata", "index_create"});
   result.evidence.push_back({"index_family", created_index.family});
-  if (sorted_build.selected) {
+  if (!target_table->temporary && sorted_build.selected) {
     result.evidence.insert(result.evidence.end(),
                            sorted_build.evidence.begin(),
                            sorted_build.evidence.end());
     result.evidence.push_back({"sorted_bulk_index_exact_append",
                                "mga_index_append_path"});
+  } else if (target_table->temporary) {
+    result.evidence.push_back({"temporary_index_entry_scope",
+                               target_table->temporary_scope.empty()
+                                   ? "private"
+                                   : target_table->temporary_scope});
+    result.evidence.push_back({"temporary_index_build_rows",
+                               std::to_string(index_build_rows.size())});
   }
   return result;
 }

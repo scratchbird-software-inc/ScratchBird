@@ -20,6 +20,7 @@ namespace scratchbird::core::index {
 using scratchbird::core::platform::byte;
 using scratchbird::core::platform::u16;
 using scratchbird::core::platform::u32;
+using scratchbird::core::platform::u64;
 
 enum class IndexKeyComponentKind : u32 {
   scalar = 1,
@@ -55,6 +56,7 @@ struct IndexKeyEncodingComponent {
   IndexKeyComponentKind kind = IndexKeyComponentKind::scalar;
   u32 ordinal = 0;
   TypedUuid type_descriptor_uuid;
+  u64 type_descriptor_epoch = 1;
   TypedUuid collation_uuid;
   IndexKeySortDirection sort_direction = IndexKeySortDirection::ascending;
   IndexKeyNullPlacement null_placement = IndexKeyNullPlacement::nulls_last;

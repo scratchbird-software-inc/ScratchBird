@@ -708,6 +708,120 @@ bool IsUnsafeFinalityState(const std::string& state) {
          state == "committing" || state == "limbo" || state == "recovering";
 }
 
+struct TemporaryBackupExclusionStats {
+  std::uint64_t table_count = 0;
+  std::uint64_t row_count = 0;
+  std::uint64_t index_count = 0;
+};
+
+std::vector<std::string> TemporaryTableUuidsVisibleThrough(
+    const CrudState& state,
+    std::uint64_t visible_through_tx) {
+  std::vector<std::string> table_uuids;
+  for (const auto& table : state.tables) {
+    if (table.temporary &&
+        CrudCreatorVisible(state,
+                           table.creator_tx,
+                           table.event_sequence,
+                           visible_through_tx)) {
+      table_uuids.push_back(table.table_uuid);
+    }
+  }
+  return table_uuids;
+}
+
+bool ContainsUuid(const std::vector<std::string>& uuids,
+                  const std::string& uuid) {
+  return std::find(uuids.begin(), uuids.end(), uuid) != uuids.end();
+}
+
+TemporaryBackupExclusionStats CountTemporarySnapshotExclusions(
+    const CrudState& state,
+    std::uint64_t snapshot_tx) {
+  TemporaryBackupExclusionStats stats;
+  const auto temporary_table_uuids =
+      TemporaryTableUuidsVisibleThrough(state, snapshot_tx);
+  for (const auto& table : state.tables) {
+    if (ContainsUuid(temporary_table_uuids, table.table_uuid)) {
+      ++stats.table_count;
+    }
+  }
+  for (const auto& index : state.indexes) {
+    if (ContainsUuid(temporary_table_uuids, index.table_uuid) &&
+        CrudCreatorVisible(state,
+                           index.creator_tx,
+                           index.event_sequence,
+                           snapshot_tx)) {
+      ++stats.index_count;
+    }
+  }
+  for (const auto& row : state.row_versions) {
+    if (ContainsUuid(temporary_table_uuids, row.table_uuid) &&
+        CrudCreatorVisible(state,
+                           row.creator_tx,
+                           row.event_sequence,
+                           snapshot_tx)) {
+      ++stats.row_count;
+    }
+  }
+  return stats;
+}
+
+TemporaryBackupExclusionStats CountTemporaryDeltaExclusions(
+    const CrudState& state,
+    std::uint64_t start_tx,
+    std::uint64_t end_tx) {
+  TemporaryBackupExclusionStats stats;
+  const auto temporary_table_uuids =
+      TemporaryTableUuidsVisibleThrough(state, end_tx);
+  for (const auto& table : state.tables) {
+    if (ContainsUuid(temporary_table_uuids, table.table_uuid) &&
+        table.creator_tx >= start_tx && table.creator_tx <= end_tx &&
+        CrudCreatorVisible(state,
+                           table.creator_tx,
+                           table.event_sequence,
+                           end_tx)) {
+      ++stats.table_count;
+    }
+  }
+  for (const auto& index : state.indexes) {
+    if (ContainsUuid(temporary_table_uuids, index.table_uuid) &&
+        index.creator_tx >= start_tx && index.creator_tx <= end_tx &&
+        CrudCreatorVisible(state,
+                           index.creator_tx,
+                           index.event_sequence,
+                           end_tx)) {
+      ++stats.index_count;
+    }
+  }
+  for (const auto& row : state.row_versions) {
+    if (ContainsUuid(temporary_table_uuids, row.table_uuid) &&
+        row.creator_tx >= start_tx && row.creator_tx <= end_tx &&
+        CrudCreatorVisible(state,
+                           row.creator_tx,
+                           row.event_sequence,
+                           end_tx)) {
+      ++stats.row_count;
+    }
+  }
+  return stats;
+}
+
+void AddTemporaryBackupExclusionEvidence(
+    EngineApiResult* result,
+    const TemporaryBackupExclusionStats& stats) {
+  AddApiBehaviorEvidence(result, "temporary_content_excluded", "true");
+  AddApiBehaviorEvidence(result,
+                         "temporary_tables_excluded",
+                         std::to_string(stats.table_count));
+  AddApiBehaviorEvidence(result,
+                         "temporary_rows_excluded",
+                         std::to_string(stats.row_count));
+  AddApiBehaviorEvidence(result,
+                         "temporary_indexes_excluded",
+                         std::to_string(stats.index_count));
+}
+
 std::string UnsafeFinalityGap(const CrudState& state, std::uint64_t snapshot_tx) {
   for (const auto& [transaction_id, transaction_state] : state.transactions) {
     if (transaction_id <= snapshot_tx && IsUnsafeFinalityState(transaction_state)) {
@@ -2175,6 +2289,8 @@ EngineStartLogicalBackupResult EngineStartLogicalBackup(const EngineStartLogical
       records.indexes.insert(records.indexes.end(), indexes.begin(), indexes.end());
     }
   }
+  const auto temporary_exclusions =
+      CountTemporarySnapshotExclusions(loaded_state, records.snapshot_tx);
   const auto body = BuildManifestBody(request, records);
   const auto checksum = Fnv1a64(body);
   const std::string manifest_payload = body + "CHECKSUM\t" + std::to_string(checksum) + "\n";
@@ -2211,6 +2327,7 @@ EngineStartLogicalBackupResult EngineStartLogicalBackup(const EngineStartLogical
   AddApiBehaviorEvidence(&result, "finality_boundary_local_transaction_id", std::to_string(records.snapshot_tx));
   AddApiBehaviorEvidence(&result, "lineage_source", "mga_row_version_lineage");
   AddApiBehaviorEvidence(&result, "authoritative_wal", "false");
+  AddTemporaryBackupExclusionEvidence(&result, temporary_exclusions);
   AddApiBehaviorRow(&result, {{"backup_uuid", result.backup_uuid.canonical},
                               {"snapshot_uuid", result.snapshot_uuid.canonical},
                               {"manifest_uri", path},
@@ -2220,6 +2337,10 @@ EngineStartLogicalBackupResult EngineStartLogicalBackup(const EngineStartLogical
                               {"tables", std::to_string(result.table_count)},
                               {"rows", std::to_string(result.row_count)},
                               {"indexes", std::to_string(result.index_count)},
+                              {"temporary_content_excluded", "true"},
+                              {"temporary_tables_excluded", std::to_string(temporary_exclusions.table_count)},
+                              {"temporary_rows_excluded", std::to_string(temporary_exclusions.row_count)},
+                              {"temporary_indexes_excluded", std::to_string(temporary_exclusions.index_count)},
                               {"authoritative_wal", "false"}});
   return result;
 }
@@ -2787,6 +2908,10 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
   std::vector<CrudTableRecord> tables;
   std::vector<CrudIndexRecord> indexes;
   std::vector<CrudRowVersionRecord> rows;
+  const auto temporary_table_uuids =
+      TemporaryTableUuidsVisibleThrough(loaded_state, end_tx);
+  const auto temporary_exclusions =
+      CountTemporaryDeltaExclusions(loaded_state, start_tx, end_tx);
   for (const auto& table : loaded_state.tables) {
     if (table.temporary) { continue; }
     if (table.creator_tx >= start_tx && table.creator_tx <= end_tx &&
@@ -2795,12 +2920,14 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
     }
   }
   for (const auto& index : loaded_state.indexes) {
+    if (ContainsUuid(temporary_table_uuids, index.table_uuid)) { continue; }
     if (index.creator_tx >= start_tx && index.creator_tx <= end_tx &&
         CrudCreatorVisible(loaded_state, index.creator_tx, index.event_sequence, end_tx)) {
       indexes.push_back(index);
     }
   }
   for (const auto& row : loaded_state.row_versions) {
+    if (ContainsUuid(temporary_table_uuids, row.table_uuid)) { continue; }
     if (row.creator_tx >= start_tx && row.creator_tx <= end_tx &&
         CrudCreatorVisible(loaded_state, row.creator_tx, row.event_sequence, end_tx)) {
       rows.push_back(row);
@@ -2837,6 +2964,7 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
   AddApiBehaviorEvidence(&result, "delta_source", "mga_row_version_lineage");
   AddApiBehaviorEvidence(&result, "archive_slice_bytes", std::to_string(delta_payload.size()));
   AddApiBehaviorEvidence(&result, "archive_retention_max_age_microseconds", std::to_string(ArchiveMaxAgeMicroseconds(request)));
+  AddTemporaryBackupExclusionEvidence(&result, temporary_exclusions);
   AddApiBehaviorRow(&result, {{"delta_uuid", delta_uuid.canonical},
                               {"delta_manifest_uri", path},
                               {"start_transaction_id", std::to_string(start_tx)},
@@ -2844,6 +2972,10 @@ EnginePackageDeltaStreamResult EnginePackageDeltaStream(const EnginePackageDelta
                               {"delta_source", "mga_row_version_lineage"},
                               {"rows", std::to_string(result.row_count)},
                               {"tables", std::to_string(result.table_count)},
+                              {"temporary_content_excluded", "true"},
+                              {"temporary_tables_excluded", std::to_string(temporary_exclusions.table_count)},
+                              {"temporary_rows_excluded", std::to_string(temporary_exclusions.row_count)},
+                              {"temporary_indexes_excluded", std::to_string(temporary_exclusions.index_count)},
                               {"authoritative_wal", "false"}});
   return result;
 }

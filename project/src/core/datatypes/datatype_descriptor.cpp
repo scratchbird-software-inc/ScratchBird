@@ -8,6 +8,7 @@
 
 #include "datatype_descriptor.hpp"
 
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -31,6 +32,97 @@ Status DatatypeWarningStatus() {
 
 Status DatatypeErrorStatus() {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::datatypes};
+}
+
+bool IsNilEngineUuid(const scratchbird::engine::Uuid& uuid) {
+  for (const std::uint8_t byte : uuid.bytes) {
+    if (byte != 0) {
+      return false;
+    }
+  }
+  return true;
+}
+
+scratchbird::engine::Uuid ToEngineUuid(const scratchbird::core::platform::Uuid& source) {
+  scratchbird::engine::Uuid out{};
+  for (std::size_t index = 0; index < source.bytes.size(); ++index) {
+    out.bytes[index] = source.bytes[index];
+  }
+  return out;
+}
+
+scratchbird::engine::ExecutionTypeFamily ToExecutionFamily(TypeFamily family) {
+  using EngineFamily = scratchbird::engine::ExecutionTypeFamily;
+  switch (family) {
+    case TypeFamily::null_type: return EngineFamily::null_type;
+    case TypeFamily::boolean: return EngineFamily::boolean;
+    case TypeFamily::signed_integer: return EngineFamily::signed_integer;
+    case TypeFamily::unsigned_integer: return EngineFamily::unsigned_integer;
+    case TypeFamily::real: return EngineFamily::real;
+    case TypeFamily::decimal: return EngineFamily::decimal;
+    case TypeFamily::uuid: return EngineFamily::uuid;
+    case TypeFamily::character: return EngineFamily::character;
+    case TypeFamily::binary: return EngineFamily::binary;
+    case TypeFamily::bit_string: return EngineFamily::bit_string;
+    case TypeFamily::temporal: return EngineFamily::temporal;
+    case TypeFamily::blob: return EngineFamily::blob;
+    case TypeFamily::network: return EngineFamily::network;
+    case TypeFamily::document: return EngineFamily::document;
+    case TypeFamily::search: return EngineFamily::search;
+    case TypeFamily::structured: return EngineFamily::structured;
+    case TypeFamily::range: return EngineFamily::range;
+    case TypeFamily::spatial: return EngineFamily::spatial;
+    case TypeFamily::vector: return EngineFamily::vector;
+    case TypeFamily::graph: return EngineFamily::graph;
+    case TypeFamily::time_series: return EngineFamily::time_series;
+    case TypeFamily::columnar: return EngineFamily::columnar;
+    case TypeFamily::aggregate_state: return EngineFamily::aggregate_state;
+    case TypeFamily::sketch: return EngineFamily::sketch;
+    case TypeFamily::locator: return EngineFamily::locator;
+    case TypeFamily::opaque: return EngineFamily::opaque;
+    case TypeFamily::result_set: return EngineFamily::result_set;
+    case TypeFamily::unknown: return EngineFamily::unknown;
+  }
+  return EngineFamily::unknown;
+}
+
+scratchbird::engine::ExecutionTypeWidthClass ToExecutionWidthClass(TypeWidthClass width_class) {
+  using EngineWidth = scratchbird::engine::ExecutionTypeWidthClass;
+  switch (width_class) {
+    case TypeWidthClass::fixed: return EngineWidth::fixed;
+    case TypeWidthClass::variable: return EngineWidth::variable;
+    case TypeWidthClass::descriptor_defined: return EngineWidth::descriptor_defined;
+    case TypeWidthClass::unknown: return EngineWidth::unknown;
+  }
+  return EngineWidth::unknown;
+}
+
+void SetModifier(std::uint64_t* flags, scratchbird::engine::ExecutionTypeModifierFlag flag) {
+  *flags |= scratchbird::engine::ExecutionTypeModifierFlagBit(flag);
+}
+
+ExecutionTypeDescriptorResult DescriptorBuildFailure(std::string diagnostic_code,
+                                                     std::string message_key,
+                                                     std::string detail) {
+  ExecutionTypeDescriptorResult result;
+  result.status = DatatypeErrorStatus();
+  result.diagnostic = MakeDatatypeDiagnostic(result.status,
+                                             std::move(diagnostic_code),
+                                             std::move(message_key),
+                                             std::move(detail));
+  return result;
+}
+
+bool AttachTypedUuid(const TypedUuid& typed_uuid,
+                     scratchbird::engine::ExecutionTypeModifierFlag flag,
+                     scratchbird::engine::Uuid* out,
+                     std::uint64_t* modifier_flags) {
+  if (!typed_uuid.valid()) {
+    return false;
+  }
+  *out = ToEngineUuid(typed_uuid.value);
+  SetModifier(modifier_flags, flag);
+  return true;
 }
 
 DatatypeDescriptor Descriptor(CanonicalTypeId type_id,
@@ -429,6 +521,141 @@ DatatypeCapabilityCheck CheckDatatypeMandatoryCapabilities(const RuntimeCapabili
   }
 
   return result;
+}
+
+ExecutionTypeDescriptorResult BuildExecutionTypeDescriptorFromCatalog(
+    const DatatypeDescriptor& descriptor,
+    const CatalogExecutionTypeMetadata& metadata) {
+  const auto validation = ValidateDatatypeDescriptor(descriptor);
+  if (!validation.ok()) {
+    ExecutionTypeDescriptorResult result;
+    result.status = validation.status;
+    result.diagnostic = validation.diagnostic;
+    return result;
+  }
+
+  if (!metadata.descriptor_uuid.valid()) {
+    return DescriptorBuildFailure("SB-EDR-DESCRIPTOR-MISSING-UUID",
+                                  "execution_type_descriptor.missing_descriptor_uuid",
+                                  descriptor.stable_name);
+  }
+  if (metadata.descriptor_epoch == 0) {
+    return DescriptorBuildFailure("SB-EDR-DESCRIPTOR-MISSING-EPOCH",
+                                  "execution_type_descriptor.missing_descriptor_epoch",
+                                  descriptor.stable_name);
+  }
+
+  ExecutionTypeDescriptorResult result;
+  result.status = DatatypeOkStatus();
+  result.descriptor.descriptor_uuid = ToEngineUuid(metadata.descriptor_uuid.value);
+  result.descriptor.descriptor_epoch = metadata.descriptor_epoch;
+  result.descriptor.canonical_type_id = static_cast<std::uint32_t>(descriptor.type_id);
+  result.descriptor.family = ToExecutionFamily(descriptor.family);
+  result.descriptor.width_class = ToExecutionWidthClass(descriptor.width_class);
+  result.descriptor.stable_name = descriptor.stable_name;
+  result.descriptor.bit_width = descriptor.bit_width;
+  result.descriptor.precision = metadata.precision != 0 ? metadata.precision : descriptor.default_precision;
+  result.descriptor.scale = metadata.scale != 0 ? metadata.scale : descriptor.default_scale;
+  result.descriptor.length = metadata.length;
+  result.descriptor.vector_dimensions = metadata.vector_dimensions;
+  result.descriptor.container_rank = metadata.container_rank;
+  result.descriptor.nullable_allowed = descriptor.nullable_allowed;
+  result.descriptor.descriptor_authoritative = descriptor.descriptor_authoritative;
+  result.descriptor.parser_independent = true;
+
+  if (result.descriptor.precision != 0) {
+    SetModifier(&result.descriptor.modifier_flags,
+                scratchbird::engine::ExecutionTypeModifierFlag::precision);
+  }
+  if (result.descriptor.scale != 0 || descriptor.default_scale != 0 ||
+      descriptor.type_id == CanonicalTypeId::decimal ||
+      descriptor.type_id == CanonicalTypeId::decimal_float) {
+    SetModifier(&result.descriptor.modifier_flags,
+                scratchbird::engine::ExecutionTypeModifierFlag::scale);
+  }
+  if (result.descriptor.length != 0) {
+    SetModifier(&result.descriptor.modifier_flags,
+                scratchbird::engine::ExecutionTypeModifierFlag::length);
+  }
+  if (result.descriptor.vector_dimensions != 0) {
+    SetModifier(&result.descriptor.modifier_flags,
+                scratchbird::engine::ExecutionTypeModifierFlag::vector_dimensions);
+  }
+  if (result.descriptor.container_rank != 0) {
+    SetModifier(&result.descriptor.modifier_flags,
+                scratchbird::engine::ExecutionTypeModifierFlag::container_rank);
+  }
+
+  if (metadata.domain_uuid.valid()) {
+    AttachTypedUuid(metadata.domain_uuid,
+                    scratchbird::engine::ExecutionTypeModifierFlag::domain_uuid,
+                    &result.descriptor.domain_uuid,
+                    &result.descriptor.modifier_flags);
+  }
+
+  for (const TypedUuid& domain_uuid : metadata.domain_stack) {
+    if (!domain_uuid.valid()) {
+      return DescriptorBuildFailure("SB-EDR-DESCRIPTOR-BAD-DOMAIN-STACK",
+                                    "execution_type_descriptor.bad_domain_stack",
+                                    descriptor.stable_name);
+    }
+    result.descriptor.domain_stack.push_back(ToEngineUuid(domain_uuid.value));
+  }
+  if (!result.descriptor.domain_stack.empty()) {
+    SetModifier(&result.descriptor.modifier_flags,
+                scratchbird::engine::ExecutionTypeModifierFlag::domain_stack);
+    if (IsNilEngineUuid(result.descriptor.domain_uuid)) {
+      result.descriptor.domain_uuid = result.descriptor.domain_stack.back();
+      SetModifier(&result.descriptor.modifier_flags,
+                  scratchbird::engine::ExecutionTypeModifierFlag::domain_uuid);
+    }
+  }
+
+  if (metadata.charset_uuid.valid()) {
+    AttachTypedUuid(metadata.charset_uuid,
+                    scratchbird::engine::ExecutionTypeModifierFlag::charset_uuid,
+                    &result.descriptor.charset_uuid,
+                    &result.descriptor.modifier_flags);
+  }
+  if (metadata.collation_uuid.valid()) {
+    AttachTypedUuid(metadata.collation_uuid,
+                    scratchbird::engine::ExecutionTypeModifierFlag::collation_uuid,
+                    &result.descriptor.collation_uuid,
+                    &result.descriptor.modifier_flags);
+  }
+  if (metadata.timezone_uuid.valid()) {
+    AttachTypedUuid(metadata.timezone_uuid,
+                    scratchbird::engine::ExecutionTypeModifierFlag::timezone_uuid,
+                    &result.descriptor.timezone_uuid,
+                    &result.descriptor.modifier_flags);
+  }
+  if (metadata.element_descriptor_uuid.valid()) {
+    AttachTypedUuid(metadata.element_descriptor_uuid,
+                    scratchbird::engine::ExecutionTypeModifierFlag::element_descriptor_uuid,
+                    &result.descriptor.element_descriptor_uuid,
+                    &result.descriptor.modifier_flags);
+  }
+  if (metadata.security_policy_uuid.valid()) {
+    AttachTypedUuid(metadata.security_policy_uuid,
+                    scratchbird::engine::ExecutionTypeModifierFlag::security_policy_uuid,
+                    &result.descriptor.security_policy_uuid,
+                    &result.descriptor.modifier_flags);
+  }
+
+  return result;
+}
+
+ExecutionTypeDescriptorResult LookupExecutionTypeDescriptorFromCatalog(
+    CanonicalTypeId type_id,
+    const CatalogExecutionTypeMetadata& metadata) {
+  const auto descriptor = LookupDatatypeDescriptor(type_id);
+  if (!descriptor.ok()) {
+    ExecutionTypeDescriptorResult result;
+    result.status = descriptor.status;
+    result.diagnostic = descriptor.diagnostic;
+    return result;
+  }
+  return BuildExecutionTypeDescriptorFromCatalog(descriptor.descriptor, metadata);
 }
 
 DiagnosticRecord MakeDatatypeDiagnostic(Status status,

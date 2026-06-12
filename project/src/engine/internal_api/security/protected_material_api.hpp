@@ -275,6 +275,11 @@ struct EnginePurgeProtectedMaterialVersionRequest : EngineApiRequest {
   std::string protected_material_uuid;
   std::string protected_material_version_uuid;
   std::string purge_reason;
+  std::string physical_erase_path;
+  bool physical_erase_requested = false;
+  bool physical_erase_authorized = false;
+  bool physical_erase_retention_satisfied = false;
+  bool physical_erase_legal_hold_clear = false;
 };
 
 struct EnginePurgeProtectedMaterialVersionResult : EngineApiResult {
@@ -282,6 +287,9 @@ struct EnginePurgeProtectedMaterialVersionResult : EngineApiResult {
   bool refused_by_retention = false;
   bool audit_preserved = false;
   bool protected_reference_reachable = true;
+  bool physical_erase_executed = false;
+  bool physical_erase_verified = false;
+  EngineApiU64 physical_erase_bytes = 0;
   std::string protected_material_uuid;
   std::string protected_material_version_uuid;
   std::string audit_event_uuid;
@@ -298,6 +306,47 @@ struct EngineInspectProtectedMaterialCatalogResult : EngineApiResult {
   std::vector<EngineProtectedMaterialVersionCatalogEntry> versions;
   std::vector<EngineProtectedMaterialAuditEvent> audit_events;
   bool protected_material_redacted = true;
+};
+
+struct EngineExportProtectedMaterialPackageRequest : EngineApiRequest {
+  std::string protected_material_uuid;
+  bool include_versions = true;
+  bool include_audit = false;
+  bool include_purged_versions = false;
+  std::string export_reason;
+};
+
+struct EngineExportProtectedMaterialPackageResult : EngineApiResult {
+  bool exported = false;
+  bool protected_material_redacted = true;
+  bool plaintext_material_returned = false;
+  std::string package_format = "scratchbird.protected_material.reference_package.v1";
+  std::string package_digest;
+  std::string encoded_package;
+  std::string source_database_uuid;
+  std::string protected_material_uuid;
+  EngineApiU64 material_count = 0;
+  EngineApiU64 version_count = 0;
+  EngineApiU64 audit_event_count = 0;
+};
+
+struct EngineImportProtectedMaterialPackageRequest : EngineApiRequest {
+  std::string encoded_package;
+  std::string expected_package_digest;
+  bool import_authorized = false;
+  bool allow_uuid_conflict_replace = false;
+  std::string import_reason;
+};
+
+struct EngineImportProtectedMaterialPackageResult : EngineApiResult {
+  bool imported = false;
+  bool protected_material_redacted = true;
+  bool plaintext_material_returned = false;
+  std::string package_format = "scratchbird.protected_material.reference_package.v1";
+  std::string package_digest;
+  EngineApiU64 material_count = 0;
+  EngineApiU64 version_count = 0;
+  EngineApiU64 audit_event_count = 0;
 };
 
 EngineAdmitEncryptionKeyResult EngineAdmitEncryptionKey(
@@ -326,6 +375,10 @@ EnginePurgeProtectedMaterialVersionResult EnginePurgeProtectedMaterialVersion(
     const EnginePurgeProtectedMaterialVersionRequest& request);
 EngineInspectProtectedMaterialCatalogResult EngineInspectProtectedMaterialCatalog(
     const EngineInspectProtectedMaterialCatalogRequest& request);
+EngineExportProtectedMaterialPackageResult EngineExportProtectedMaterialPackage(
+    const EngineExportProtectedMaterialPackageRequest& request);
+EngineImportProtectedMaterialPackageResult EngineImportProtectedMaterialPackage(
+    const EngineImportProtectedMaterialPackageRequest& request);
 std::string RedactProtectedMaterialForDiagnostics(std::string text);
 
 }  // namespace scratchbird::engine::internal_api

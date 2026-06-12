@@ -161,7 +161,8 @@ EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const CrudState& state,
                                                     const std::string& table_uuid,
                                                     const std::string& row_uuid,
                                                     const std::vector<std::pair<std::string, std::string>>& values,
-                                                    std::uint64_t observer_tx) {
+                                                    const EngineRequestContext& context) {
+  const std::uint64_t observer_tx = context.local_transaction_id;
   for (const auto& index : VisibleCrudIndexesForTable(state, table_uuid, observer_tx)) {
     if (!index.unique) { continue; }
     const auto keys = CrudIndexEntryKeysForValues(index, values);
@@ -171,7 +172,8 @@ EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const CrudState& state,
             entry.key_value != key || !TxVisible(state, entry.creator_tx, observer_tx)) {
           continue;
         }
-        const auto visible_row = FindVisibleCrudRow(state, table_uuid, entry.row_uuid, observer_tx);
+        const auto visible_row =
+            FindVisibleCrudRowForContext(state, table_uuid, entry.row_uuid, context);
         if (visible_row) { return MakeInvalidRequestDiagnostic("crud.unique_index", "unique_index_duplicate"); }
       }
     }

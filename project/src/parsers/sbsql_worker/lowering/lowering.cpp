@@ -163,9 +163,13 @@ struct SynonymDdlInfo {
 struct SimpleCreateTableInfo {
   bool active{false};
   bool valid{false};
+  bool temporary{false};
+  bool on_commit_clause_present{false};
   std::size_t table_name_parts{0};
   std::size_t column_count{0};
   std::string canonical_type_name;
+  std::string temporary_scope{"private"};
+  std::string on_commit_action{"delete_rows"};
   std::vector<std::string> type_surface_ids;
 };
 
@@ -370,6 +374,7 @@ struct SimpleCreateExecutableObjectInfo {
   std::size_t name_parts{0};
   bool parameter_def_present{false};
   bool parameter_name_present{false};
+  bool parameter_is_cursor{false};
   std::size_t parameter_count{0};
   std::string parameter_name_descriptor;
   std::string parameter_type_name;
@@ -465,6 +470,13 @@ struct SecurityPolicyRouteInfo {
   std::vector<std::string> row_surface_ids;
 };
 
+struct DmlInsertFieldInfo {
+  std::string name;
+  std::string type_name;
+  std::string value;
+  bool is_null{false};
+};
+
 struct DmlRouteInfo {
   bool active{false};
   bool valid{false};
@@ -485,6 +497,9 @@ struct DmlRouteInfo {
   bool conflict_target_present{false};
   bool conflict_do_nothing{false};
   bool conflict_do_update{false};
+  bool has_insert_values{false};
+  bool insert_column_list_present{false};
+  std::size_t insert_column_count{0};
   std::string operation_id;
   std::string opcode;
   std::string surface_variant;
@@ -507,6 +522,7 @@ struct DmlRouteInfo {
   std::string conflict_update_column;
   std::string conflict_update_source_column;
   std::vector<std::string> keyword_surface_ids;
+  std::vector<std::vector<DmlInsertFieldInfo>> insert_rows;
 };
 
 struct AgentRuntimeRouteInfo {
@@ -1354,7 +1370,7 @@ bool OnlyOptionalTerminatorAfter(const std::vector<std::string>& words, std::siz
   return words.size() == index || (words.size() == index + 1 && words[index] == ";");
 }
 
-constexpr std::array<PublicExactCommandSpec, 113> kPublicExactCommandSpecs{{
+constexpr std::array<PublicExactCommandSpec, 187> kPublicExactCommandSpecs{{
     {"alter.gpu.artifact_quarantine", "ALTER GPU ARTIFACT <artifact_ref> QUARANTINE", "ALTER GPU ARTIFACT QUARANTINE", "op.gpu.artifact_quarantine", "SBLR_OP_GPU_ARTIFACT_QUARANTINE", "sblr.acceleration.gpu.v3", "rs.acceleration.control.v1", "EngineControlGpuAcceleration", "acceleration_control", "sys.acceleration.gpu_artifacts", "artifact", true},
     {"alter.gpu.cache_clear", "ALTER GPU CACHE CLEAR", "ALTER GPU CACHE CLEAR", "op.gpu.cache_clear", "SBLR_OP_GPU_CACHE_CLEAR", "sblr.acceleration.gpu.v3", "rs.acceleration.control.v1", "EngineControlGpuAcceleration", "acceleration_control", "sys.acceleration.gpu_cache", "", true},
     {"alter.gpu.device_quarantine", "ALTER GPU DEVICE <device_ref> QUARANTINE", "ALTER GPU DEVICE QUARANTINE", "op.gpu.device_quarantine", "SBLR_OP_GPU_DEVICE_QUARANTINE", "sblr.acceleration.gpu.v3", "rs.acceleration.control.v1", "EngineControlGpuAcceleration", "acceleration_control", "sys.acceleration.gpu_devices", "device", true},
@@ -1378,6 +1394,80 @@ constexpr std::array<PublicExactCommandSpec, 113> kPublicExactCommandSpecs{{
     {"management.instruction.cancel", "ALTER MANAGEMENT INSTRUCTION <instruction_ref> CANCEL", "ALTER MANAGEMENT INSTRUCTION CANCEL", "op.management.instruction.cancel", "SBLR_OP_MANAGEMENT_INSTRUCTION_CANCEL", "sblr.management.runtime_operation.v3", "rs.acceleration.control.v1", "EngineControlManagementRuntime", "management_control", "sys.management.instructions", "instruction", true},
     {"management.instruction.quarantine", "ALTER MANAGEMENT INSTRUCTION <instruction_ref> QUARANTINE", "ALTER MANAGEMENT INSTRUCTION QUARANTINE", "op.management.instruction.quarantine", "SBLR_OP_MANAGEMENT_INSTRUCTION_QUARANTINE", "sblr.management.runtime_operation.v3", "rs.acceleration.control.v1", "EngineControlManagementRuntime", "management_control", "sys.management.instructions", "instruction", true},
     {"management.support_bundle.create", "SUPPORT BUNDLE CREATE", "SUPPORT BUNDLE CREATE", "op.management.support_bundle.create", "SBLR_OP_MANAGEMENT_SUPPORT_BUNDLE_CREATE", "sblr.management.runtime_operation.v3", "rs.acceleration.control.v1", "EngineControlManagementRuntime", "management_support_bundle", "sys.management.support_bundle", "", true},
+    {"memory.profile.list", "MEMORY PROFILE LIST", "MEMORY PROFILE LIST", "memory.profile.list", "SBLR_MEMORY_PROFILE_LIST", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_profile", "", false},
+    {"memory.profile.show", "MEMORY PROFILE SHOW [<profile_ref>]", "MEMORY PROFILE SHOW", "memory.profile.show", "SBLR_MEMORY_PROFILE_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_profile", "profile", false},
+    {"memory.profile.set", "MEMORY PROFILE SET <profile_ref>", "MEMORY PROFILE SET", "memory.profile.set", "SBLR_MEMORY_PROFILE_SET", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_profile", "profile", true},
+    {"memory.policy.validate", "MEMORY POLICY VALIDATE [<policy_ref>]", "MEMORY POLICY VALIDATE", "memory.policy.validate", "SBLR_MEMORY_POLICY_VALIDATE", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_domain_policy", "policy", false},
+    {"memory.tree.show", "MEMORY TREE SHOW", "MEMORY TREE SHOW", "memory.tree.show", "SBLR_MEMORY_TREE_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_budget_tree", "", false},
+    {"memory.pressure.show", "MEMORY PRESSURE SHOW", "MEMORY PRESSURE SHOW", "memory.pressure.show", "SBLR_MEMORY_PRESSURE_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_pressure", "", false},
+    {"memory.cache.show", "MEMORY CACHE SHOW", "MEMORY CACHE SHOW", "memory.cache.show", "SBLR_MEMORY_CACHE_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_cache", "", false},
+    {"memory.cache.flush", "MEMORY CACHE FLUSH", "MEMORY CACHE FLUSH", "memory.cache.flush", "SBLR_MEMORY_CACHE_FLUSH", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_cache", "", true},
+    {"memory.cache.invalidate", "MEMORY CACHE INVALIDATE", "MEMORY CACHE INVALIDATE", "memory.cache.invalidate", "SBLR_MEMORY_CACHE_INVALIDATE", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_cache", "", true},
+    {"memory.scavenge", "MEMORY SCAVENGE", "MEMORY SCAVENGE", "memory.scavenge", "SBLR_MEMORY_SCAVENGE", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_allocator", "", true},
+    {"memory.grants.show", "MEMORY GRANTS SHOW", "MEMORY GRANTS SHOW", "memory.grants.show", "SBLR_MEMORY_GRANTS_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_grant_feedback", "", false},
+    {"memory.grant_feedback.reset", "MEMORY GRANT FEEDBACK RESET", "MEMORY GRANT FEEDBACK RESET", "memory.grant_feedback.reset", "SBLR_MEMORY_GRANT_FEEDBACK_RESET", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_grant_feedback", "", true},
+    {"memory.streams.show", "MEMORY STREAMS SHOW", "MEMORY STREAMS SHOW", "memory.streams.show", "SBLR_MEMORY_STREAMS_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_stream_policy", "", false},
+    {"memory.stream_policy.set", "MEMORY STREAM POLICY SET", "MEMORY STREAM POLICY SET", "memory.stream_policy.set", "SBLR_MEMORY_STREAM_POLICY_SET", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_stream_policy", "", true},
+    {"memory.udr.show", "MEMORY UDR SHOW", "MEMORY UDR SHOW", "memory.udr.show", "SBLR_MEMORY_UDR_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_udr_policy", "", false},
+    {"memory.udr_limit.set", "MEMORY UDR LIMIT SET", "MEMORY UDR LIMIT SET", "memory.udr_limit.set", "SBLR_MEMORY_UDR_LIMIT_SET", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_udr_policy", "", true},
+    {"memory.dump_policy.set", "MEMORY DUMP POLICY SET", "MEMORY DUMP POLICY SET", "memory.dump_policy.set", "SBLR_MEMORY_DUMP_POLICY_SET", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_dump_policy", "", true},
+    {"memory.platform.show", "MEMORY PLATFORM SHOW", "MEMORY PLATFORM SHOW", "memory.platform.show", "SBLR_MEMORY_PLATFORM_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_platform", "", false},
+    {"memory.incident.bundle", "MEMORY INCIDENT BUNDLE", "MEMORY INCIDENT BUNDLE", "memory.incident.bundle", "SBLR_MEMORY_INCIDENT_BUNDLE", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_incident_bundle", "", false},
+    {"memory.report.create", "MEMORY REPORT CREATE", "MEMORY REPORT CREATE", "memory.report.create", "SBLR_MEMORY_REPORT_CREATE", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_report", "", false},
+    {"memory.optimizer.show", "MEMORY OPTIMIZER SHOW", "MEMORY OPTIMIZER SHOW", "memory.optimizer.show", "SBLR_MEMORY_OPTIMIZER_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_optimizer", "", false},
+    {"memory.optimizer.set", "MEMORY OPTIMIZER SET", "MEMORY OPTIMIZER SET", "memory.optimizer.set", "SBLR_MEMORY_OPTIMIZER_SET", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_optimizer", "", true},
+    {"memory.optimizer.run", "MEMORY OPTIMIZER RUN", "MEMORY OPTIMIZER RUN", "memory.optimizer.run", "SBLR_MEMORY_OPTIMIZER_RUN", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_optimizer", "", true},
+    {"memory.object_residency.show", "MEMORY OBJECT RESIDENCY SHOW <object_ref>", "MEMORY OBJECT RESIDENCY SHOW", "memory.object_residency.show", "SBLR_MEMORY_OBJECT_RESIDENCY_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_object_residency_policy", "object", false},
+    {"memory.object_residency.set", "MEMORY OBJECT RESIDENCY SET <object_ref>", "MEMORY OBJECT RESIDENCY SET", "memory.object_residency.set", "SBLR_MEMORY_OBJECT_RESIDENCY_SET", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_object_residency_policy", "object", true},
+    {"memory.rate_limit.show", "MEMORY RATE LIMIT SHOW", "MEMORY RATE LIMIT SHOW", "memory.rate_limit.show", "SBLR_MEMORY_RATE_LIMIT_SHOW", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_rate_limit_policy", "", false},
+    {"memory.rate_limit.set", "MEMORY RATE LIMIT SET", "MEMORY RATE LIMIT SET", "memory.rate_limit.set", "SBLR_MEMORY_RATE_LIMIT_SET", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_rate_limit_policy", "", true},
+    {"memory.policy_upgrade.plan", "MEMORY POLICY UPGRADE PLAN", "MEMORY POLICY UPGRADE PLAN", "memory.policy_upgrade.plan", "SBLR_MEMORY_POLICY_UPGRADE_PLAN", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_upgrade_state", "", false},
+    {"memory.policy_migration.plan", "MEMORY POLICY MIGRATE PLAN", "MEMORY POLICY MIGRATE PLAN", "memory.policy_migration.plan", "SBLR_MEMORY_POLICY_MIGRATION_PLAN", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_upgrade_state", "", true},
+    {"storage_tier.inspect", "STORAGE TIER INSPECT", "STORAGE TIER INSPECT", "storage_tier.inspect", "SBLR_STORAGE_TIER_INSPECT", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_inspect", "sys.storage_tier_policy", "", false},
+    {"storage_tier.validate", "STORAGE TIER VALIDATE", "STORAGE TIER VALIDATE", "storage_tier.validate", "SBLR_STORAGE_TIER_VALIDATE", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_inspect", "sys.storage_tier_policy", "", false},
+    {"storage_tier.plan_migration", "STORAGE TIER PLAN MIGRATION", "STORAGE TIER PLAN MIGRATION", "storage_tier.plan_migration", "SBLR_STORAGE_TIER_PLAN_MIGRATION", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_inspect", "sys.storage_tier_policy", "", false},
+    {"storage_tier.stage_migration", "STORAGE TIER STAGE MIGRATION", "STORAGE TIER STAGE MIGRATION", "storage_tier.stage_migration", "SBLR_STORAGE_TIER_STAGE_MIGRATION", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_control", "sys.storage_tier_policy", "", true},
+    {"storage_tier.commit_migration", "STORAGE TIER COMMIT MIGRATION", "STORAGE TIER COMMIT MIGRATION", "storage_tier.commit_migration", "SBLR_STORAGE_TIER_COMMIT_MIGRATION", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_control", "sys.storage_tier_policy", "", true},
+    {"storage_tier.rollback_migration", "STORAGE TIER ROLLBACK MIGRATION", "STORAGE TIER ROLLBACK MIGRATION", "storage_tier.rollback_migration", "SBLR_STORAGE_TIER_ROLLBACK_MIGRATION", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_control", "sys.storage_tier_policy", "", true},
+    {"filespace.discovery.scan", "DISCOVER FILESPACE ANOMALIES", "DISCOVER FILESPACE ANOMALIES", "filespace.discovery.scan", "SBLR_FILESPACE_DISCOVERY_SCAN", "sblr.filespace.management.v3", "rs.filespace.discovery_report.v1", "EngineDiscoverFilespaceAnomalies", "filespace_discovery_inspect", "sys.storage.filespace_discovery", "", false},
+    {"filespace.discovery.orphan_scan", "DISCOVER ORPHAN FILESPACES", "DISCOVER ORPHAN FILESPACES", "filespace.discovery.orphan_scan", "SBLR_FILESPACE_DISCOVERY_ORPHAN_SCAN", "sblr.filespace.management.v3", "rs.filespace.discovery_report.v1", "EngineDiscoverFilespaceAnomalies", "filespace_discovery_inspect", "sys.storage.filespace_discovery", "", false},
+    {"filespace.discovery.stale_scan", "DISCOVER STALE FILESPACES", "DISCOVER STALE FILESPACES", "filespace.discovery.stale_scan", "SBLR_FILESPACE_DISCOVERY_STALE_SCAN", "sblr.filespace.management.v3", "rs.filespace.discovery_report.v1", "EngineDiscoverFilespaceAnomalies", "filespace_discovery_inspect", "sys.storage.filespace_discovery", "", false},
+    {"filespace.package.export_manifest", "EXPORT FILESPACE PACKAGE", "EXPORT FILESPACE PACKAGE", "filespace.package.export_manifest", "SBLR_FILESPACE_PACKAGE_EXPORT_MANIFEST", "sblr.filespace.management.v3", "rs.filespace.package_report.v1", "EngineFilespacePackageOperation", "filespace_package_inspect", "sys.storage.filespace_package", "", false},
+    {"filespace.package.inspect_manifest", "INSPECT FILESPACE PACKAGE", "INSPECT FILESPACE PACKAGE", "filespace.package.inspect_manifest", "SBLR_FILESPACE_PACKAGE_INSPECT_MANIFEST", "sblr.filespace.management.v3", "rs.filespace.package_report.v1", "EngineFilespacePackageOperation", "filespace_package_inspect", "sys.storage.filespace_package", "", false},
+    {"filespace.package.import_to_quarantine", "IMPORT FILESPACE PACKAGE", "IMPORT FILESPACE PACKAGE", "filespace.package.import_to_quarantine", "SBLR_FILESPACE_PACKAGE_IMPORT_TO_QUARANTINE", "sblr.filespace.management.v3", "rs.filespace.package_report.v1", "EngineFilespacePackageOperation", "filespace_package_control", "sys.storage.filespace_package", "", true},
+    {"filespace.package.admit", "ADMIT FILESPACE PACKAGE", "ADMIT FILESPACE PACKAGE", "filespace.package.admit", "SBLR_FILESPACE_PACKAGE_ADMIT", "sblr.filespace.management.v3", "rs.filespace.package_report.v1", "EngineFilespacePackageOperation", "filespace_package_control", "sys.storage.filespace_package", "", true},
+    {"filespace.package.reject", "REJECT FILESPACE PACKAGE", "REJECT FILESPACE PACKAGE", "filespace.package.reject", "SBLR_FILESPACE_PACKAGE_REJECT", "sblr.filespace.management.v3", "rs.filespace.package_report.v1", "EngineFilespacePackageOperation", "filespace_package_control", "sys.storage.filespace_package", "", true},
+    {"shard_placement.create", "SHARD PLACEMENT CREATE", "SHARD PLACEMENT CREATE", "shard_placement.create", "SBLR_SHARD_PLACEMENT_CREATE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.verify", "SHARD PLACEMENT VERIFY", "SHARD PLACEMENT VERIFY", "shard_placement.verify", "SBLR_SHARD_PLACEMENT_VERIFY", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_inspect", "sys.storage.shard_placement", "", false},
+    {"shard_placement.move", "SHARD PLACEMENT MOVE", "SHARD PLACEMENT MOVE", "shard_placement.move", "SBLR_SHARD_PLACEMENT_MOVE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.split", "SHARD PLACEMENT SPLIT", "SHARD PLACEMENT SPLIT", "shard_placement.split", "SBLR_SHARD_PLACEMENT_SPLIT", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.merge", "SHARD PLACEMENT MERGE", "SHARD PLACEMENT MERGE", "shard_placement.merge", "SBLR_SHARD_PLACEMENT_MERGE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.rebalance", "SHARD PLACEMENT REBALANCE", "SHARD PLACEMENT REBALANCE", "shard_placement.rebalance", "SBLR_SHARD_PLACEMENT_REBALANCE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.freeze", "SHARD PLACEMENT FREEZE", "SHARD PLACEMENT FREEZE", "shard_placement.freeze", "SBLR_SHARD_PLACEMENT_FREEZE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.archive", "SHARD PLACEMENT ARCHIVE", "SHARD PLACEMENT ARCHIVE", "shard_placement.archive", "SBLR_SHARD_PLACEMENT_ARCHIVE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.reattach", "SHARD PLACEMENT REATTACH", "SHARD PLACEMENT REATTACH", "shard_placement.reattach", "SBLR_SHARD_PLACEMENT_REATTACH", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.quarantine", "SHARD PLACEMENT QUARANTINE", "SHARD PLACEMENT QUARANTINE", "shard_placement.quarantine", "SBLR_SHARD_PLACEMENT_QUARANTINE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.reconcile", "SHARD PLACEMENT RECONCILE", "SHARD PLACEMENT RECONCILE", "shard_placement.reconcile", "SBLR_SHARD_PLACEMENT_RECONCILE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.drop", "SHARD PLACEMENT DROP", "SHARD PLACEMENT DROP", "shard_placement.drop", "SBLR_SHARD_PLACEMENT_DROP", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"security.encryption_key.admit", "ADMIT ENCRYPTION KEY", "ADMIT ENCRYPTION KEY", "security.encryption_key.admit", "SBLR_SECURITY_ENCRYPTION_KEY_ADMIT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineAdmitEncryptionKey", "encryption_key_control", "sys.security.protected_material_cache", "", true},
+    {"security.encryption_key.rotate", "REKEY FILESPACE", "REKEY FILESPACE", "security.encryption_key.rotate", "SBLR_SECURITY_ENCRYPTION_KEY_ROTATE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineRotateEncryptionKey", "encryption_key_control", "sys.security.protected_material_catalog", "", true},
+    {"security.encryption_profile.change", "ALTER FILESPACE ENCRYPTION PROFILE", "ALTER FILESPACE ENCRYPTION PROFILE", "security.encryption_key.rotate", "SBLR_SECURITY_ENCRYPTION_KEY_ROTATE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineRotateEncryptionKey", "encryption_key_control", "sys.security.encryption_profile", "", true},
+    {"security.protected_material_cache.inspect", "SHOW PROTECTED MATERIAL CACHE", "SHOW PROTECTED MATERIAL CACHE", "security.protected_material_cache.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CACHE_INSPECT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineInspectProtectedMaterialCache", "encryption_key_inspect", "sys.security.protected_material_cache", "", false},
+    {"security.protected_material_cache.purge", "PURGE PROTECTED MATERIAL CACHE", "PURGE PROTECTED MATERIAL CACHE", "security.protected_material_cache.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_CACHE_PURGE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EnginePurgeProtectedMaterial", "encryption_key_control", "sys.security.protected_material_cache", "", true},
+    {"security.protected_material_cache.shutdown", "SHUTDOWN PROTECTED MATERIAL CACHE", "SHUTDOWN PROTECTED MATERIAL CACHE", "security.protected_material_cache.shutdown", "SBLR_SECURITY_PROTECTED_MATERIAL_CACHE_SHUTDOWN", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineShutdownProtectedMaterial", "encryption_key_control", "sys.security.protected_material_cache", "", true},
+    {"security.encrypted_filespace.open", "OPEN ENCRYPTED FILESPACE", "OPEN ENCRYPTED FILESPACE", "security.encrypted_filespace.open", "SBLR_SECURITY_ENCRYPTED_FILESPACE_OPEN", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineOpenEncryptedFilespace", "encryption_key_inspect", "sys.storage.filespace", "", false},
+    {"security.request_protected_material", "REQUEST KEY RELEASE", "REQUEST KEY RELEASE", "security.request_protected_material", "SBLR_SECURITY_REQUEST_PROTECTED_MATERIAL", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineRequestProtectedMaterial", "encryption_key_inspect", "sys.security.protected_material_catalog", "", false},
+    {"security.protected_material.version.purge", "CRYPTOGRAPHIC ERASE FILESPACE", "CRYPTOGRAPHIC ERASE FILESPACE", "security.protected_material.version.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_PURGE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EnginePurgeProtectedMaterialVersion", "encryption_key_control", "sys.security.protected_material_catalog", "", true},
+    {"security.protected_material.create", "CREATE PROTECTED MATERIAL", "CREATE PROTECTED MATERIAL", "security.protected_material.create", "SBLR_SECURITY_PROTECTED_MATERIAL_CREATE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineCreateProtectedMaterial", "protected_material_control", "sys.security.protected_material_catalog", "", true},
+    {"security.protected_material.version.add", "ADD PROTECTED MATERIAL VERSION", "ADD PROTECTED MATERIAL VERSION", "security.protected_material.version.add", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_ADD", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineAddProtectedMaterialVersion", "protected_material_control", "sys.security.protected_material_catalog", "", true},
+    {"security.protected_material.rotate", "ROTATE PROTECTED MATERIAL", "ROTATE PROTECTED MATERIAL", "security.protected_material.version.add", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_ADD", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineAddProtectedMaterialVersion", "protected_material_control", "sys.security.protected_material_catalog", "", true},
+    {"security.protected_material.resolve", "RESOLVE PROTECTED MATERIAL", "RESOLVE PROTECTED MATERIAL", "security.protected_material.resolve", "SBLR_SECURITY_PROTECTED_MATERIAL_RESOLVE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineResolveProtectedMaterial", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
+    {"security.protected_material.release", "RELEASE PROTECTED MATERIAL", "RELEASE PROTECTED MATERIAL", "security.protected_material.release", "SBLR_SECURITY_PROTECTED_MATERIAL_RELEASE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineReleaseProtectedMaterial", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
+    {"security.protected_material.version.purge.command", "PURGE PROTECTED MATERIAL VERSION", "PURGE PROTECTED MATERIAL VERSION", "security.protected_material.version.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_PURGE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EnginePurgeProtectedMaterialVersion", "protected_material_control", "sys.security.protected_material_catalog", "", true},
+    {"security.protected_material.catalog.inspect", "SHOW PROTECTED MATERIAL CATALOG", "SHOW PROTECTED MATERIAL CATALOG", "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineInspectProtectedMaterialCatalog", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
+    {"security.protected_material.audit.inspect", "SHOW PROTECTED MATERIAL AUDIT", "SHOW PROTECTED MATERIAL AUDIT", "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineInspectProtectedMaterialCatalog", "protected_material_inspect", "sys.security.protected_material_audit", "", false},
+    {"security.protected_material.package.export", "EXPORT PROTECTED MATERIAL PACKAGE", "EXPORT PROTECTED MATERIAL PACKAGE", "security.protected_material.package.export", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_EXPORT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineExportProtectedMaterialPackage", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
+    {"security.protected_material.package.import", "IMPORT PROTECTED MATERIAL PACKAGE", "IMPORT PROTECTED MATERIAL PACKAGE", "security.protected_material.package.import", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_IMPORT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineImportProtectedMaterialPackage", "protected_material_control", "sys.security.protected_material_catalog", "", true},
     {"migrate.from_donor", "MIGRATE FROM DONOR <donor_profile> WITH PACKAGE <package_ref>", "MIGRATE FROM DONOR", "op.migration.begin_from_donor", "SBLR_MIGRATION_BEGIN_FROM_DONOR", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineBeginMigration", "migration_control", "sys.migration.context", "donor_profile", true},
     {"alter.migration", "ALTER MIGRATION <migration_ref> START|PAUSE|RESUME|ABORT|FINALIZE", "ALTER MIGRATION", "op.migration.alter", "SBLR_MIGRATION_ALTER", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineAlterMigration", "migration_control", "sys.migration.context", "migration", true},
     {"show.migration", "SHOW MIGRATION <migration_ref>", "SHOW MIGRATION", "op.show.migration", "SBLR_SHOW_MIGRATION", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineShowMigration", "migration_inspect", "sys.migration.context", "migration", false},
@@ -1497,6 +1587,21 @@ std::string_view PublicExactCommandRequiredRight(const PublicExactCommandSpec& s
     return "right.management_runtime_control";
   }
   if (spec.route_kind == "management_inspect") return "right.management_runtime_read";
+  if (spec.route_kind == "memory_control") return "right.memory_management_control";
+  if (spec.route_kind == "memory_inspect") return "right.memory_management_read";
+  if (spec.route_kind == "storage_tier_control") return "right.filespace.lifecycle_control";
+  if (spec.route_kind == "storage_tier_inspect") return "right.observe";
+  if (spec.route_kind == "shard_placement_descriptor_control") {
+    return "right.filespace.lifecycle_control";
+  }
+  if (spec.route_kind == "shard_placement_descriptor_inspect") return "right.observe";
+  if (spec.route_kind == "filespace_discovery_inspect") return "right.observe";
+  if (spec.route_kind == "filespace_package_control") return "right.filespace.lifecycle_control";
+  if (spec.route_kind == "filespace_package_inspect") return "right.observe";
+  if (spec.route_kind == "encryption_key_control") return "right.key_release_approve";
+  if (spec.route_kind == "encryption_key_inspect") return "right.protected_material_release";
+  if (spec.route_kind == "protected_material_control") return "right.key_release_approve";
+  if (spec.route_kind == "protected_material_inspect") return "right.protected_material_release";
   if (spec.route_kind == "acceleration_control" ||
       spec.route_kind == "native_compile_control") {
     return "right.acceleration_control";
@@ -1519,6 +1624,31 @@ std::string_view PublicExactCommandAuthorityStep(const PublicExactCommandSpec& s
       spec.route_kind == "management_support_bundle" ||
       spec.route_kind == "management_inspect") {
     return "authority.engine.management_runtime_api_required";
+  }
+  if (spec.route_kind == "memory_control" ||
+      spec.route_kind == "memory_inspect") {
+    return "authority.engine.memory_management_descriptor_api_required";
+  }
+  if (spec.route_kind == "storage_tier_control" ||
+      spec.route_kind == "storage_tier_inspect") {
+    return "authority.engine.storage_tier_descriptor_api_required";
+  }
+  if (spec.route_kind == "shard_placement_descriptor_control" ||
+      spec.route_kind == "shard_placement_descriptor_inspect") {
+    return "authority.engine.shard_placement_descriptor_api_required";
+  }
+  if (spec.route_kind == "filespace_discovery_inspect") {
+    return "authority.engine.filespace_discovery_api_required";
+  }
+  if (spec.route_kind == "filespace_package_control" ||
+      spec.route_kind == "filespace_package_inspect") {
+    return "authority.engine.filespace_package_api_required";
+  }
+  if (spec.route_kind == "encryption_key_control" ||
+      spec.route_kind == "encryption_key_inspect" ||
+      spec.route_kind == "protected_material_control" ||
+      spec.route_kind == "protected_material_inspect") {
+    return "authority.engine.protected_material_api_required";
   }
   if (spec.route_kind == "observability_inspect") {
     return "authority.engine.observability_api_required";
@@ -2062,6 +2192,398 @@ PublicExactCommandRouteInfo AnalyzePublicExactMigrationRoute(
   return {};
 }
 
+PublicExactCommandRouteInfo AnalyzePublicExactMemoryRoute(
+    const std::vector<const Token*>& tokens) {
+  if (tokens.empty() || !PublicExactTokenEquals(tokens, 0, "MEMORY")) return {};
+  if (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 1, "PROFILE")) {
+    if (PublicExactFixed(tokens, {"MEMORY", "PROFILE", "LIST"})) {
+      return PublicExactValid("memory.profile.list");
+    }
+    if (tokens.size() == 3 && PublicExactTokenEquals(tokens, 2, "SHOW")) {
+      return PublicExactValid("memory.profile.show");
+    }
+    if (tokens.size() == 4 && PublicExactTokenEquals(tokens, 2, "SHOW") &&
+        PublicExactIsReferenceToken(*tokens[3])) {
+      return PublicExactValid("memory.profile.show", tokens[3]->text);
+    }
+    if (tokens.size() == 4 && PublicExactTokenEquals(tokens, 2, "SET") &&
+        PublicExactIsReferenceToken(*tokens[3])) {
+      return PublicExactValid("memory.profile.set", tokens[3]->text);
+    }
+    return PublicExactInvalid("memory.profile.show",
+                              "memory_profile_requires_list_show_or_set_ref");
+  }
+  if (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 1, "POLICY")) {
+    if (tokens.size() == 3 && PublicExactTokenEquals(tokens, 2, "VALIDATE")) {
+      return PublicExactValid("memory.policy.validate");
+    }
+    if (tokens.size() == 4 && PublicExactTokenEquals(tokens, 2, "VALIDATE") &&
+        PublicExactIsReferenceToken(*tokens[3])) {
+      return PublicExactValid("memory.policy.validate", tokens[3]->text);
+    }
+    if (PublicExactFixed(tokens, {"MEMORY", "POLICY", "UPGRADE", "PLAN"})) {
+      return PublicExactValid("memory.policy_upgrade.plan");
+    }
+    if (PublicExactFixed(tokens, {"MEMORY", "POLICY", "MIGRATE", "PLAN"})) {
+      return PublicExactValid("memory.policy_migration.plan");
+    }
+    return PublicExactInvalid("memory.policy.validate",
+                              "memory_policy_requires_validate_upgrade_plan_or_migrate_plan");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "TREE", "SHOW"})) {
+    return PublicExactValid("memory.tree.show");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "PRESSURE", "SHOW"})) {
+    return PublicExactValid("memory.pressure.show");
+  }
+  if (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 1, "CACHE")) {
+    if (PublicExactFixed(tokens, {"MEMORY", "CACHE", "SHOW"})) {
+      return PublicExactValid("memory.cache.show");
+    }
+    if (PublicExactFixed(tokens, {"MEMORY", "CACHE", "FLUSH"})) {
+      return PublicExactValid("memory.cache.flush");
+    }
+    if (PublicExactFixed(tokens, {"MEMORY", "CACHE", "INVALIDATE"})) {
+      return PublicExactValid("memory.cache.invalidate");
+    }
+    return PublicExactInvalid("memory.cache.show",
+                              "memory_cache_requires_show_flush_or_invalidate");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "SCAVENGE"})) {
+    return PublicExactValid("memory.scavenge");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "GRANTS", "SHOW"})) {
+    return PublicExactValid("memory.grants.show");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "GRANT", "FEEDBACK", "RESET"})) {
+    return PublicExactValid("memory.grant_feedback.reset");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "STREAMS", "SHOW"})) {
+    return PublicExactValid("memory.streams.show");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "STREAM", "POLICY", "SET"})) {
+    return PublicExactValid("memory.stream_policy.set");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "UDR", "SHOW"})) {
+    return PublicExactValid("memory.udr.show");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "UDR", "LIMIT", "SET"})) {
+    return PublicExactValid("memory.udr_limit.set");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "DUMP", "POLICY", "SET"})) {
+    return PublicExactValid("memory.dump_policy.set");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "PLATFORM", "SHOW"})) {
+    return PublicExactValid("memory.platform.show");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "INCIDENT", "BUNDLE"})) {
+    return PublicExactValid("memory.incident.bundle");
+  }
+  if (PublicExactFixed(tokens, {"MEMORY", "REPORT", "CREATE"})) {
+    return PublicExactValid("memory.report.create");
+  }
+  if (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 1, "OPTIMIZER")) {
+    if (PublicExactFixed(tokens, {"MEMORY", "OPTIMIZER", "SHOW"})) {
+      return PublicExactValid("memory.optimizer.show");
+    }
+    if (PublicExactFixed(tokens, {"MEMORY", "OPTIMIZER", "SET"})) {
+      return PublicExactValid("memory.optimizer.set");
+    }
+    if (PublicExactFixed(tokens, {"MEMORY", "OPTIMIZER", "RUN"})) {
+      return PublicExactValid("memory.optimizer.run");
+    }
+    return PublicExactInvalid("memory.optimizer.show",
+                              "memory_optimizer_requires_show_set_or_run");
+  }
+  if (tokens.size() >= 3 && PublicExactTokenEquals(tokens, 1, "OBJECT") &&
+      PublicExactTokenEquals(tokens, 2, "RESIDENCY")) {
+    if (tokens.size() == 5 && PublicExactTokenEquals(tokens, 3, "SHOW") &&
+        PublicExactIsReferenceToken(*tokens[4])) {
+      return PublicExactValid("memory.object_residency.show", tokens[4]->text);
+    }
+    if (tokens.size() == 5 && PublicExactTokenEquals(tokens, 3, "SET") &&
+        PublicExactIsReferenceToken(*tokens[4])) {
+      return PublicExactValid("memory.object_residency.set", tokens[4]->text);
+    }
+    return PublicExactInvalid("memory.object_residency.show",
+                              "memory_object_residency_requires_show_or_set_object_ref");
+  }
+  if (tokens.size() >= 3 && PublicExactTokenEquals(tokens, 1, "RATE") &&
+      PublicExactTokenEquals(tokens, 2, "LIMIT")) {
+    if (PublicExactFixed(tokens, {"MEMORY", "RATE", "LIMIT", "SHOW"})) {
+      return PublicExactValid("memory.rate_limit.show");
+    }
+    if (PublicExactFixed(tokens, {"MEMORY", "RATE", "LIMIT", "SET"})) {
+      return PublicExactValid("memory.rate_limit.set");
+    }
+    return PublicExactInvalid("memory.rate_limit.show",
+                              "memory_rate_limit_requires_show_or_set");
+  }
+  return PublicExactInvalid("memory.profile.show",
+                            "recognized_memory_surface_requires_exact_shape");
+}
+
+PublicExactCommandRouteInfo AnalyzePublicExactStorageTierRoute(
+    const std::vector<const Token*>& tokens) {
+  if (tokens.size() < 3 ||
+      !PublicExactTokenEquals(tokens, 0, "STORAGE") ||
+      !PublicExactTokenEquals(tokens, 1, "TIER")) {
+    return {};
+  }
+  if (PublicExactFixed(tokens, {"STORAGE", "TIER", "INSPECT"})) {
+    return PublicExactValid("storage_tier.inspect");
+  }
+  if (PublicExactFixed(tokens, {"STORAGE", "TIER", "VALIDATE"})) {
+    return PublicExactValid("storage_tier.validate");
+  }
+  if (tokens.size() >= 3 && PublicExactTokenEquals(tokens, 2, "PLAN")) {
+    if (PublicExactFixed(tokens, {"STORAGE", "TIER", "PLAN", "MIGRATION"})) {
+      return PublicExactValid("storage_tier.plan_migration");
+    }
+    return PublicExactInvalid("storage_tier.plan_migration",
+                              "storage_tier_plan_requires_migration");
+  }
+  if (tokens.size() >= 3 && PublicExactTokenEquals(tokens, 2, "STAGE")) {
+    if (PublicExactFixed(tokens, {"STORAGE", "TIER", "STAGE", "MIGRATION"})) {
+      return PublicExactValid("storage_tier.stage_migration");
+    }
+    return PublicExactInvalid("storage_tier.stage_migration",
+                              "storage_tier_stage_requires_migration");
+  }
+  if (tokens.size() >= 3 && PublicExactTokenEquals(tokens, 2, "COMMIT")) {
+    if (PublicExactFixed(tokens, {"STORAGE", "TIER", "COMMIT", "MIGRATION"})) {
+      return PublicExactValid("storage_tier.commit_migration");
+    }
+    return PublicExactInvalid("storage_tier.commit_migration",
+                              "storage_tier_commit_requires_migration");
+  }
+  if (tokens.size() >= 3 && PublicExactTokenEquals(tokens, 2, "ROLLBACK")) {
+    if (PublicExactFixed(tokens, {"STORAGE", "TIER", "ROLLBACK", "MIGRATION"})) {
+      return PublicExactValid("storage_tier.rollback_migration");
+    }
+    return PublicExactInvalid("storage_tier.rollback_migration",
+                              "storage_tier_rollback_requires_migration");
+  }
+  return {};
+}
+
+PublicExactCommandRouteInfo AnalyzePublicExactFilespaceDiscoveryRoute(
+    const std::vector<const Token*>& tokens) {
+  if (tokens.empty() || !PublicExactTokenEquals(tokens, 0, "DISCOVER")) return {};
+  if (PublicExactFixed(tokens, {"DISCOVER", "FILESPACE", "ANOMALIES"})) {
+    return PublicExactValid("filespace.discovery.scan");
+  }
+  if (PublicExactFixed(tokens, {"DISCOVER", "ORPHAN", "FILESPACES"})) {
+    return PublicExactValid("filespace.discovery.orphan_scan");
+  }
+  if (PublicExactFixed(tokens, {"DISCOVER", "STALE", "FILESPACES"})) {
+    return PublicExactValid("filespace.discovery.stale_scan");
+  }
+  if (tokens.size() >= 2 &&
+      (PublicExactTokenEquals(tokens, 1, "FILESPACE") ||
+       PublicExactTokenEquals(tokens, 1, "ORPHAN") ||
+       PublicExactTokenEquals(tokens, 1, "STALE"))) {
+    return PublicExactInvalid("filespace.discovery.scan",
+                              "filespace_discovery_requires_exact_anomaly_or_filter_shape");
+  }
+  return {};
+}
+
+PublicExactCommandRouteInfo AnalyzePublicExactFilespacePackageRoute(
+    const std::vector<const Token*>& tokens) {
+  if (tokens.empty()) return {};
+  if (PublicExactFixed(tokens, {"EXPORT", "FILESPACE", "PACKAGE"})) {
+    return PublicExactValid("filespace.package.export_manifest");
+  }
+  if (PublicExactFixed(tokens, {"INSPECT", "FILESPACE", "PACKAGE"})) {
+    return PublicExactValid("filespace.package.inspect_manifest");
+  }
+  if (PublicExactFixed(tokens, {"IMPORT", "FILESPACE", "PACKAGE"})) {
+    return PublicExactValid("filespace.package.import_to_quarantine");
+  }
+  if (PublicExactFixed(tokens, {"ADMIT", "FILESPACE", "PACKAGE"})) {
+    return PublicExactValid("filespace.package.admit");
+  }
+  if (PublicExactFixed(tokens, {"REJECT", "FILESPACE", "PACKAGE"})) {
+    return PublicExactValid("filespace.package.reject");
+  }
+  if ((PublicExactTokenEquals(tokens, 0, "EXPORT") ||
+       PublicExactTokenEquals(tokens, 0, "INSPECT") ||
+       PublicExactTokenEquals(tokens, 0, "IMPORT") ||
+       PublicExactTokenEquals(tokens, 0, "ADMIT") ||
+       PublicExactTokenEquals(tokens, 0, "REJECT")) &&
+      tokens.size() >= 2 &&
+      (PublicExactTokenEquals(tokens, 1, "FILESPACE") ||
+       PublicExactTokenEquals(tokens, 1, "PACKAGE"))) {
+    return PublicExactInvalid("filespace.package.inspect_manifest",
+                              "filespace_package_requires_exact_verb_filespace_package_shape");
+  }
+  return {};
+}
+
+PublicExactCommandRouteInfo AnalyzePublicExactShardPlacementRoute(
+    const std::vector<const Token*>& tokens) {
+  if (tokens.size() < 2 ||
+      !PublicExactTokenEquals(tokens, 0, "SHARD") ||
+      !PublicExactTokenEquals(tokens, 1, "PLACEMENT")) {
+    return {};
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "CREATE"})) {
+    return PublicExactValid("shard_placement.create");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "VERIFY"})) {
+    return PublicExactValid("shard_placement.verify");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "MOVE"})) {
+    return PublicExactValid("shard_placement.move");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "SPLIT"})) {
+    return PublicExactValid("shard_placement.split");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "MERGE"})) {
+    return PublicExactValid("shard_placement.merge");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "REBALANCE"})) {
+    return PublicExactValid("shard_placement.rebalance");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "FREEZE"})) {
+    return PublicExactValid("shard_placement.freeze");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "ARCHIVE"})) {
+    return PublicExactValid("shard_placement.archive");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "REATTACH"})) {
+    return PublicExactValid("shard_placement.reattach");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "QUARANTINE"})) {
+    return PublicExactValid("shard_placement.quarantine");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "RECONCILE"})) {
+    return PublicExactValid("shard_placement.reconcile");
+  }
+  if (PublicExactFixed(tokens, {"SHARD", "PLACEMENT", "DROP"})) {
+    return PublicExactValid("shard_placement.drop");
+  }
+  return PublicExactInvalid("shard_placement.verify",
+                            "shard_placement_requires_exact_supported_action");
+}
+
+PublicExactCommandRouteInfo AnalyzePublicExactEncryptionMaintenanceRoute(
+    const std::vector<const Token*>& tokens) {
+  if (tokens.empty()) return {};
+  if (PublicExactFixed(tokens, {"ADMIT", "ENCRYPTION", "KEY"})) {
+    return PublicExactValid("security.encryption_key.admit");
+  }
+  if (PublicExactFixed(tokens, {"REKEY", "FILESPACE"})) {
+    return PublicExactValid("security.encryption_key.rotate");
+  }
+  if (PublicExactFixed(tokens, {"ALTER", "FILESPACE", "ENCRYPTION", "PROFILE"})) {
+    return PublicExactValid("security.encryption_profile.change");
+  }
+  if (PublicExactFixed(tokens, {"SHOW", "PROTECTED", "MATERIAL", "CACHE"})) {
+    return PublicExactValid("security.protected_material_cache.inspect");
+  }
+  if (PublicExactFixed(tokens, {"PURGE", "PROTECTED", "MATERIAL", "CACHE"})) {
+    return PublicExactValid("security.protected_material_cache.purge");
+  }
+  if (PublicExactFixed(tokens, {"SHUTDOWN", "PROTECTED", "MATERIAL", "CACHE"})) {
+    return PublicExactValid("security.protected_material_cache.shutdown");
+  }
+  if (PublicExactFixed(tokens, {"OPEN", "ENCRYPTED", "FILESPACE"})) {
+    return PublicExactValid("security.encrypted_filespace.open");
+  }
+  if (PublicExactFixed(tokens, {"REQUEST", "KEY", "RELEASE"})) {
+    return PublicExactValid("security.request_protected_material");
+  }
+  if (PublicExactFixed(tokens, {"CRYPTOGRAPHIC", "ERASE", "FILESPACE"})) {
+    return PublicExactValid("security.protected_material.version.purge");
+  }
+  if ((tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "ADMIT") &&
+       (PublicExactTokenEquals(tokens, 1, "ENCRYPTION") ||
+        PublicExactTokenEquals(tokens, 1, "KEY"))) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "REKEY") &&
+       PublicExactTokenEquals(tokens, 1, "FILESPACE")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "PURGE") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "SHUTDOWN") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "REQUEST") &&
+       PublicExactTokenEquals(tokens, 1, "KEY")) ||
+      PublicExactTokenEquals(tokens, 0, "CRYPTOGRAPHIC") ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "OPEN") &&
+       PublicExactTokenEquals(tokens, 1, "ENCRYPTED")) ||
+      (tokens.size() >= 3 && PublicExactTokenEquals(tokens, 0, "ALTER") &&
+       PublicExactTokenEquals(tokens, 1, "FILESPACE") &&
+       PublicExactTokenEquals(tokens, 2, "ENCRYPTION")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "SHOW") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED"))) {
+    return PublicExactInvalid("security.protected_material_cache.inspect",
+                              "encryption_maintenance_requires_exact_supported_action");
+  }
+  return {};
+}
+
+PublicExactCommandRouteInfo AnalyzePublicExactProtectedMaterialRoute(
+    const std::vector<const Token*>& tokens) {
+  if (tokens.empty()) return {};
+  if (PublicExactFixed(tokens, {"CREATE", "PROTECTED", "MATERIAL"})) {
+    return PublicExactValid("security.protected_material.create");
+  }
+  if (PublicExactFixed(tokens, {"ADD", "PROTECTED", "MATERIAL", "VERSION"})) {
+    return PublicExactValid("security.protected_material.version.add");
+  }
+  if (PublicExactFixed(tokens, {"ROTATE", "PROTECTED", "MATERIAL"})) {
+    return PublicExactValid("security.protected_material.rotate");
+  }
+  if (PublicExactFixed(tokens, {"RESOLVE", "PROTECTED", "MATERIAL"})) {
+    return PublicExactValid("security.protected_material.resolve");
+  }
+  if (PublicExactFixed(tokens, {"RELEASE", "PROTECTED", "MATERIAL"})) {
+    return PublicExactValid("security.protected_material.release");
+  }
+  if (PublicExactFixed(tokens, {"PURGE", "PROTECTED", "MATERIAL", "VERSION"})) {
+    return PublicExactValid("security.protected_material.version.purge.command");
+  }
+  if (PublicExactFixed(tokens, {"SHOW", "PROTECTED", "MATERIAL", "CATALOG"})) {
+    return PublicExactValid("security.protected_material.catalog.inspect");
+  }
+  if (PublicExactFixed(tokens, {"SHOW", "PROTECTED", "MATERIAL", "AUDIT"})) {
+    return PublicExactValid("security.protected_material.audit.inspect");
+  }
+  if (PublicExactFixed(tokens, {"EXPORT", "PROTECTED", "MATERIAL", "PACKAGE"})) {
+    return PublicExactValid("security.protected_material.package.export");
+  }
+  if (PublicExactFixed(tokens, {"IMPORT", "PROTECTED", "MATERIAL", "PACKAGE"})) {
+    return PublicExactValid("security.protected_material.package.import");
+  }
+  if ((tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "CREATE") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "ADD") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "EXPORT") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "IMPORT") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "ROTATE") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "RESOLVE") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED")) ||
+      (tokens.size() >= 2 && PublicExactTokenEquals(tokens, 0, "RELEASE") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED")) ||
+      (tokens.size() >= 4 && PublicExactTokenEquals(tokens, 0, "PURGE") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED") &&
+       PublicExactTokenEquals(tokens, 2, "MATERIAL") &&
+       !PublicExactTokenEquals(tokens, 3, "CACHE")) ||
+      (tokens.size() >= 4 && PublicExactTokenEquals(tokens, 0, "SHOW") &&
+       PublicExactTokenEquals(tokens, 1, "PROTECTED") &&
+       PublicExactTokenEquals(tokens, 2, "MATERIAL") &&
+       !PublicExactTokenEquals(tokens, 3, "CACHE"))) {
+    return PublicExactInvalid("security.protected_material.catalog.inspect",
+                              "protected_material_requires_exact_supported_action");
+  }
+  return {};
+}
+
 PublicExactCommandRouteInfo AnalyzePublicExactShowRoute(
     const std::vector<const Token*>& tokens) {
   if (tokens.empty() || !PublicExactTokenEquals(tokens, 0, "SHOW")) return {};
@@ -2226,6 +2748,13 @@ PublicExactCommandRouteInfo AnalyzePublicExactCommandRoute(const CstDocument& cs
   if (auto info = AnalyzePublicExactAlterNativeCompileRoute(tokens); info.active) return info;
   if (auto info = AnalyzePublicExactAlterManagementRoute(tokens); info.active) return info;
   if (auto info = AnalyzePublicExactMigrationRoute(tokens); info.active) return info;
+  if (auto info = AnalyzePublicExactMemoryRoute(tokens); info.active) return info;
+  if (auto info = AnalyzePublicExactStorageTierRoute(tokens); info.active) return info;
+  if (auto info = AnalyzePublicExactFilespaceDiscoveryRoute(tokens); info.active) return info;
+  if (auto info = AnalyzePublicExactFilespacePackageRoute(tokens); info.active) return info;
+  if (auto info = AnalyzePublicExactShardPlacementRoute(tokens); info.active) return info;
+  if (auto info = AnalyzePublicExactProtectedMaterialRoute(tokens); info.active) return info;
+  if (auto info = AnalyzePublicExactEncryptionMaintenanceRoute(tokens); info.active) return info;
   if (PublicExactFixed(tokens, {"CONFIG", "RELOAD"})) return PublicExactValid("config.reload");
   if (tokens.size() >= 1 && PublicExactTokenEquals(tokens, 0, "CONFIG")) {
     return PublicExactInvalid("config.reload", "config_reload_exact_shape_required");
@@ -2481,6 +3010,7 @@ std::string CatalogOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "catalog.mutation.graph_create_node") return "SBLR_CATALOG_MUTATION_GRAPH_CREATE_NODE";
   if (operation_id == "catalog.mutation.create_bucket") return "SBLR_CATALOG_MUTATION_CREATE_BUCKET";
   if (operation_id == "catalog.mutation.alter_filespace") return "SBLR_CATALOG_MUTATION_ALTER_FILESPACE";
+  if (operation_id == "catalog.mutation.create_operation") return "SBLR_CATALOG_MUTATION_CREATE_OPERATION";
   if (operation_id == "catalog.mutation.create_operator") return "SBLR_CATALOG_MUTATION_CREATE_OPERATOR";
   if (operation_id == "catalog.mutation.create_event_trigger") return "SBLR_CATALOG_MUTATION_CREATE_EVENT_TRIGGER";
   if (operation_id == "catalog.mutation.create_package_body") return "SBLR_CATALOG_MUTATION_CREATE_PACKAGE_BODY";
@@ -2568,6 +3098,39 @@ std::string AgentOpcodeForOperation(std::string_view operation_id) {
 std::string ManagementOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "management.inspect_runtime") return "SBLR_MANAGEMENT_INSPECT_RUNTIME";
   if (operation_id == "management.control_runtime") return "SBLR_MANAGEMENT_CONTROL_RUNTIME";
+  return {};
+}
+
+std::string MemoryOpcodeForOperation(std::string_view operation_id) {
+  if (operation_id == "memory.profile.list") return "SBLR_MEMORY_PROFILE_LIST";
+  if (operation_id == "memory.profile.show") return "SBLR_MEMORY_PROFILE_SHOW";
+  if (operation_id == "memory.profile.set") return "SBLR_MEMORY_PROFILE_SET";
+  if (operation_id == "memory.policy.validate") return "SBLR_MEMORY_POLICY_VALIDATE";
+  if (operation_id == "memory.tree.show") return "SBLR_MEMORY_TREE_SHOW";
+  if (operation_id == "memory.pressure.show") return "SBLR_MEMORY_PRESSURE_SHOW";
+  if (operation_id == "memory.cache.show") return "SBLR_MEMORY_CACHE_SHOW";
+  if (operation_id == "memory.cache.flush") return "SBLR_MEMORY_CACHE_FLUSH";
+  if (operation_id == "memory.cache.invalidate") return "SBLR_MEMORY_CACHE_INVALIDATE";
+  if (operation_id == "memory.scavenge") return "SBLR_MEMORY_SCAVENGE";
+  if (operation_id == "memory.grants.show") return "SBLR_MEMORY_GRANTS_SHOW";
+  if (operation_id == "memory.grant_feedback.reset") return "SBLR_MEMORY_GRANT_FEEDBACK_RESET";
+  if (operation_id == "memory.streams.show") return "SBLR_MEMORY_STREAMS_SHOW";
+  if (operation_id == "memory.stream_policy.set") return "SBLR_MEMORY_STREAM_POLICY_SET";
+  if (operation_id == "memory.udr.show") return "SBLR_MEMORY_UDR_SHOW";
+  if (operation_id == "memory.udr_limit.set") return "SBLR_MEMORY_UDR_LIMIT_SET";
+  if (operation_id == "memory.dump_policy.set") return "SBLR_MEMORY_DUMP_POLICY_SET";
+  if (operation_id == "memory.platform.show") return "SBLR_MEMORY_PLATFORM_SHOW";
+  if (operation_id == "memory.incident.bundle") return "SBLR_MEMORY_INCIDENT_BUNDLE";
+  if (operation_id == "memory.report.create") return "SBLR_MEMORY_REPORT_CREATE";
+  if (operation_id == "memory.optimizer.show") return "SBLR_MEMORY_OPTIMIZER_SHOW";
+  if (operation_id == "memory.optimizer.set") return "SBLR_MEMORY_OPTIMIZER_SET";
+  if (operation_id == "memory.optimizer.run") return "SBLR_MEMORY_OPTIMIZER_RUN";
+  if (operation_id == "memory.object_residency.show") return "SBLR_MEMORY_OBJECT_RESIDENCY_SHOW";
+  if (operation_id == "memory.object_residency.set") return "SBLR_MEMORY_OBJECT_RESIDENCY_SET";
+  if (operation_id == "memory.rate_limit.show") return "SBLR_MEMORY_RATE_LIMIT_SHOW";
+  if (operation_id == "memory.rate_limit.set") return "SBLR_MEMORY_RATE_LIMIT_SET";
+  if (operation_id == "memory.policy_upgrade.plan") return "SBLR_MEMORY_POLICY_UPGRADE_PLAN";
+  if (operation_id == "memory.policy_migration.plan") return "SBLR_MEMORY_POLICY_MIGRATION_PLAN";
   return {};
 }
 
@@ -2830,6 +3393,34 @@ std::string ClusterProfileOpcodeForOperation(std::string_view operation_id) {
 }
 
 std::string StorageOpcodeForOperation(std::string_view operation_id) {
+  if (operation_id == "filespace.create") return "SBLR_FILESPACE_CREATE";
+  if (operation_id == "filespace.preallocate") return "SBLR_FILESPACE_PREALLOCATE";
+  if (operation_id == "filespace.attach") return "SBLR_FILESPACE_ATTACH";
+  if (operation_id == "filespace.detach") return "SBLR_FILESPACE_DETACH";
+  if (operation_id == "filespace.disconnect") return "SBLR_FILESPACE_DISCONNECT";
+  if (operation_id == "filespace.move") return "SBLR_FILESPACE_MOVE";
+  if (operation_id == "filespace.merge") return "SBLR_FILESPACE_MERGE";
+  if (operation_id == "filespace.promote") return "SBLR_FILESPACE_PROMOTE";
+  if (operation_id == "filespace.verify") return "SBLR_FILESPACE_VERIFY";
+  if (operation_id == "filespace.compact") return "SBLR_FILESPACE_COMPACT";
+  if (operation_id == "filespace.fence") return "SBLR_FILESPACE_FENCE";
+  if (operation_id == "filespace.release") return "SBLR_FILESPACE_RELEASE";
+  if (operation_id == "filespace.archive") return "SBLR_FILESPACE_ARCHIVE";
+  if (operation_id == "filespace.quarantine") return "SBLR_FILESPACE_QUARANTINE";
+  if (operation_id == "filespace.snapshot.create") return "SBLR_FILESPACE_SNAPSHOT_CREATE";
+  if (operation_id == "filespace.snapshot.refresh") return "SBLR_FILESPACE_SNAPSHOT_REFRESH";
+  if (operation_id == "filespace.snapshot.validate") return "SBLR_FILESPACE_SNAPSHOT_VALIDATE";
+  if (operation_id == "filespace.snapshot.retire") return "SBLR_FILESPACE_SNAPSHOT_RETIRE";
+  if (operation_id == "filespace.shadow.create") return "SBLR_FILESPACE_SHADOW_CREATE";
+  if (operation_id == "filespace.shadow.refresh") return "SBLR_FILESPACE_SHADOW_REFRESH";
+  if (operation_id == "filespace.shadow.validate") return "SBLR_FILESPACE_SHADOW_VALIDATE";
+  if (operation_id == "filespace.shadow.promote") return "SBLR_FILESPACE_SHADOW_PROMOTE";
+  if (operation_id == "filespace.truncate") return "SBLR_FILESPACE_TRUNCATE";
+  if (operation_id == "filespace.drop") return "SBLR_FILESPACE_DROP";
+  if (operation_id == "filespace.delete_physical") return "SBLR_FILESPACE_DELETE_PHYSICAL";
+  if (operation_id == "filespace.repair") return "SBLR_FILESPACE_REPAIR";
+  if (operation_id == "filespace.rebuild") return "SBLR_FILESPACE_REBUILD";
+  if (operation_id == "filespace.salvage") return "SBLR_FILESPACE_SALVAGE";
   if (operation_id == "storage.manage_operation") {
     return "SBLR_STORAGE_MANAGEMENT_OPERATION";
   }
@@ -3223,6 +3814,46 @@ Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077StorageRoute(
                            "authority.engine.storage_management_api_required",
                            "storage_management_operation",
                            runtime_evidence_id);
+}
+
+Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077FilespaceLifecycleRoute(
+    std::string surface_id,
+    std::string canonical_name,
+    std::string operation_id,
+    std::string route_kind) {
+  const std::string opcode = StorageOpcodeForOperation(operation_id);
+  auto info = MakeSbsfc077Route(std::move(surface_id),
+                                std::move(canonical_name),
+                                "sblr.storage.management_operation.v3",
+                                operation_id,
+                                opcode,
+                                "EngineFilespaceLifecycleOperation",
+                                std::move(route_kind),
+                                "authority.engine.filespace_lifecycle_api_required",
+                                "filespace_lifecycle_operation",
+                                operation_id,
+                                true);
+  info.object_kind = "filespace";
+  return info;
+}
+
+Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077FilespacePreallocateRoute(
+    std::string surface_id,
+    std::string canonical_name,
+    std::string route_kind) {
+  auto info = MakeSbsfc077Route(std::move(surface_id),
+                                std::move(canonical_name),
+                                "sblr.storage.management_operation.v3",
+                                "filespace.preallocate",
+                                StorageOpcodeForOperation("filespace.preallocate"),
+                                "EngineFilespacePreallocate",
+                                std::move(route_kind),
+                                "authority.engine.filespace_preallocate_api_required",
+                                "storage_executor",
+                                "PreallocateFilespace",
+                                true);
+  info.object_kind = "filespace";
+  return info;
 }
 
 Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077ClusterProfileRoute(
@@ -4445,6 +5076,172 @@ Sbsfc077NonGeneralResidualRouteInfo AnalyzeSbsfc077NonGeneralResidualRoute(
 
   if (StartsWithWords(words, {"STORAGE", "FILESPACE"})) {
     return MakeSbsfc077StorageRoute("SBSQL-407DF23BC3A4", "filespace_name", "filespace_profile");
+  }
+  if (StartsWithWords(words, {"GROW", "FILESPACE"})) {
+    return MakeSbsfc077FilespacePreallocateRoute("SBSQL-FADDF1E52001",
+                                                 "grow_filespace_stmt",
+                                                 "grow_filespace");
+  }
+  if (StartsWithWords(words, {"RESIZE", "FILESPACE"})) {
+    return MakeSbsfc077FilespacePreallocateRoute("SBSQL-FADDF1E52002",
+                                                 "resize_filespace_stmt",
+                                                 "resize_filespace");
+  }
+  if (StartsWithWords(words, {"ATTACH", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E51001",
+                                               "attach_filespace_stmt",
+                                               "filespace.attach",
+                                               "attach_filespace");
+  }
+  if (StartsWithWords(words, {"MOVE", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E51004",
+                                               "move_filespace_stmt",
+                                               "filespace.move",
+                                               "move_filespace");
+  }
+  if (StartsWithWords(words, {"MERGE", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53010",
+                                               "merge_filespace_stmt",
+                                               "filespace.merge",
+                                               "merge_filespace");
+  }
+  if (StartsWithWords(words, {"PROMOTE", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E51003",
+                                               "promote_filespace_stmt",
+                                               "filespace.promote",
+                                               "promote_filespace");
+  }
+  if (StartsWithWords(words, {"VERIFY", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53001",
+                                               "verify_filespace_stmt",
+                                               "filespace.verify",
+                                               "verify_filespace");
+  }
+  if (StartsWithWords(words, {"COMPACT", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53002",
+                                               "compact_filespace_stmt",
+                                               "filespace.compact",
+                                               "compact_filespace");
+  }
+  if (StartsWithWords(words, {"SHRINK", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E52003",
+                                               "shrink_filespace_stmt",
+                                               "filespace.truncate",
+                                               "shrink_filespace_safe_truncate");
+  }
+  if (StartsWithWords(words, {"FENCE", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53003",
+                                               "fence_filespace_stmt",
+                                               "filespace.fence",
+                                               "fence_filespace");
+  }
+  if (StartsWithWords(words, {"RELEASE", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53004",
+                                               "release_filespace_stmt",
+                                               "filespace.release",
+                                               "release_filespace");
+  }
+  if (StartsWithWords(words, {"ARCHIVE", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53005",
+                                               "archive_filespace_stmt",
+                                               "filespace.archive",
+                                               "archive_filespace");
+  }
+  if (StartsWithWords(words, {"QUARANTINE", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53008",
+                                               "quarantine_filespace_stmt",
+                                               "filespace.quarantine",
+                                               "quarantine_filespace");
+  }
+  if (StartsWithWords(words, {"CREATE", "SNAPSHOT", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E54001",
+                                               "create_snapshot_filespace_stmt",
+                                               "filespace.snapshot.create",
+                                               "create_snapshot_filespace");
+  }
+  if (StartsWithWords(words, {"REFRESH", "SNAPSHOT", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E54002",
+                                               "refresh_snapshot_filespace_stmt",
+                                               "filespace.snapshot.refresh",
+                                               "refresh_snapshot_filespace");
+  }
+  if (StartsWithWords(words, {"VALIDATE", "SNAPSHOT", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E54003",
+                                               "validate_snapshot_filespace_stmt",
+                                               "filespace.snapshot.validate",
+                                               "validate_snapshot_filespace");
+  }
+  if (StartsWithWords(words, {"RETIRE", "SNAPSHOT", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E54004",
+                                               "retire_snapshot_filespace_stmt",
+                                               "filespace.snapshot.retire",
+                                               "retire_snapshot_filespace");
+  }
+  if (StartsWithWords(words, {"CREATE", "SHADOW", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E54005",
+                                               "create_shadow_filespace_stmt",
+                                               "filespace.shadow.create",
+                                               "create_shadow_filespace");
+  }
+  if (StartsWithWords(words, {"REFRESH", "SHADOW", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E54006",
+                                               "refresh_shadow_filespace_stmt",
+                                               "filespace.shadow.refresh",
+                                               "refresh_shadow_filespace");
+  }
+  if (StartsWithWords(words, {"VALIDATE", "SHADOW", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E54007",
+                                               "validate_shadow_filespace_stmt",
+                                               "filespace.shadow.validate",
+                                               "validate_shadow_filespace");
+  }
+  if (StartsWithWords(words, {"ALTER", "SHADOW"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E54008",
+                                               "promote_shadow_filespace_stmt",
+                                               "filespace.shadow.promote",
+                                               "promote_shadow_filespace");
+  }
+  if (StartsWithWords(words, {"DROP", "STORAGE", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53007",
+                                               "drop_storage_filespace_stmt",
+                                               "filespace.drop",
+                                               "drop_storage_filespace");
+  }
+  if (StartsWithWords(words, {"DELETE", "STORAGE", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53009",
+                                               "delete_storage_filespace_stmt",
+                                               "filespace.delete_physical",
+                                               "delete_storage_filespace");
+  }
+  if (StartsWithWords(words, {"REPAIR", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53011",
+                                               "repair_filespace_stmt",
+                                               "filespace.repair",
+                                               "repair_filespace");
+  }
+  if (StartsWithWords(words, {"REBUILD", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53012",
+                                               "rebuild_filespace_stmt",
+                                               "filespace.rebuild",
+                                               "rebuild_filespace");
+  }
+  if (StartsWithWords(words, {"SALVAGE", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53013",
+                                               "salvage_filespace_stmt",
+                                               "filespace.salvage",
+                                               "salvage_filespace");
+  }
+  if (StartsWithWords(words, {"DISCONNECT", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E53006",
+                                               "disconnect_filespace_stmt",
+                                               "filespace.disconnect",
+                                               "disconnect_filespace");
+  }
+  if (StartsWithWords(words, {"DETACH", "FILESPACE"})) {
+    return MakeSbsfc077FilespaceLifecycleRoute("SBSQL-FADDF1E51002",
+                                               "detach_filespace_stmt",
+                                               "filespace.detach",
+                                               "detach_filespace");
   }
   if (StartsWithWords(words, {"STORAGE", "AOF"})) {
     return MakeSbsfc077StorageRoute("SBSQL-703A59D593A1", "aof_mode", "aof_mode");
@@ -5685,6 +6482,9 @@ bool TokenTextEquals(const std::vector<const Token*>& tokens,
                      std::size_t index,
                      std::string_view expected);
 
+std::string ScalarProjectionTypeForToken(const Token& token);
+bool IsScalarProjectionLiteral(const Token& token);
+
 void AnalyzeInsertOnConflict(const CstDocument& cst, DmlRouteInfo* info) {
   if (info == nullptr) return;
   const auto tokens = MeaningfulTokenPtrs(cst);
@@ -5771,6 +6571,127 @@ void AnalyzeInsertOnConflict(const CstDocument& cst, DmlRouteInfo* info) {
   }
 }
 
+void AnalyzeInsertValues(const CstDocument& cst, DmlRouteInfo* info) {
+  if (info == nullptr) return;
+  const auto tokens = MeaningfulTokenPtrs(cst);
+  if (tokens.empty() || !TokenTextEquals(tokens, 0, "INSERT")) return;
+  std::size_t index = 1;
+  if (TokenTextEquals(tokens, index, "INTO")) ++index;
+
+  std::string ignored_table_leaf;
+  if (!ConsumeTokenQualifiedLeaf(tokens, &index, &ignored_table_leaf)) return;
+
+  std::vector<std::string> column_names;
+  if (TokenTextEquals(tokens, index, "(")) {
+    ++index;
+    while (index < tokens.size()) {
+      std::string column_name;
+      if (!ConsumeTokenQualifiedLeaf(tokens, &index, &column_name)) {
+        info->unsupported_query_family = true;
+        info->unsupported_feature = "insert_column_list_invalid";
+        return;
+      }
+      column_names.push_back(std::move(column_name));
+      if (TokenTextEquals(tokens, index, ",")) {
+        ++index;
+        continue;
+      }
+      if (!TokenTextEquals(tokens, index, ")")) {
+        info->unsupported_query_family = true;
+        info->unsupported_feature = "insert_column_list_invalid";
+        return;
+      }
+      ++index;
+      break;
+    }
+    if (column_names.empty()) {
+      info->unsupported_query_family = true;
+      info->unsupported_feature = "insert_column_list_empty";
+      return;
+    }
+  }
+
+  if (!TokenTextEquals(tokens, index, "VALUES")) return;
+  ++index;
+
+  while (index < tokens.size()) {
+    if (!TokenTextEquals(tokens, index, "(")) {
+      info->unsupported_query_family = true;
+      info->unsupported_feature = "insert_values_row_required";
+      return;
+    }
+    ++index;
+    std::vector<DmlInsertFieldInfo> row;
+    while (index < tokens.size()) {
+      bool negative = false;
+      if (TokenTextEquals(tokens, index, "-") && index + 1 < tokens.size() &&
+          tokens[index + 1]->kind == TokenKind::kNumericLiteral) {
+        negative = true;
+        ++index;
+      }
+      if (index >= tokens.size() || !IsScalarProjectionLiteral(*tokens[index])) {
+        info->unsupported_query_family = true;
+        info->unsupported_feature = "insert_values_literal_required";
+        return;
+      }
+      DmlInsertFieldInfo field;
+      field.name = "c" + std::to_string(row.size());
+      field.type_name = ScalarProjectionTypeForToken(*tokens[index]);
+      field.value = negative ? "-" + tokens[index]->text : tokens[index]->text;
+      field.is_null = tokens[index]->kind == TokenKind::kNullLiteral;
+      if (tokens[index]->kind == TokenKind::kBooleanLiteral) {
+        field.value = ToUpperAscii(tokens[index]->text) == "TRUE" ? "true" : "false";
+      }
+      row.push_back(std::move(field));
+      ++index;
+      if (TokenTextEquals(tokens, index, ",")) {
+        ++index;
+        continue;
+      }
+      if (TokenTextEquals(tokens, index, ")")) {
+        ++index;
+        break;
+      }
+      info->unsupported_query_family = true;
+      info->unsupported_feature = "insert_values_row_invalid";
+      return;
+    }
+    if (row.empty()) {
+      info->unsupported_query_family = true;
+      info->unsupported_feature = "insert_values_row_empty";
+      return;
+    }
+    if (info->insert_column_count == 0) {
+      info->insert_column_count = row.size();
+    } else if (info->insert_column_count != row.size()) {
+      info->unsupported_query_family = true;
+      info->unsupported_feature = "insert_values_column_count_mismatch";
+      return;
+    }
+    info->insert_rows.push_back(std::move(row));
+    if (TokenTextEquals(tokens, index, ",")) {
+      ++index;
+      continue;
+    }
+    break;
+  }
+
+  if (!column_names.empty() && column_names.size() != info->insert_column_count) {
+    info->unsupported_query_family = true;
+    info->unsupported_feature = "insert_column_list_count_mismatch";
+    return;
+  }
+  if (!column_names.empty()) {
+    info->insert_column_list_present = true;
+    for (auto& row : info->insert_rows) {
+      for (std::size_t column = 0; column < row.size(); ++column) {
+        row[column].name = column_names[column];
+      }
+    }
+  }
+  info->has_insert_values = !info->insert_rows.empty() && info->insert_column_count > 0;
+}
+
 DmlRouteInfo AnalyzeDmlRoute(const CstDocument& cst,
                              const std::vector<std::string>& resolved_object_uuids) {
   DmlRouteInfo info;
@@ -5801,6 +6722,7 @@ DmlRouteInfo AnalyzeDmlRoute(const CstDocument& cst,
     info.surface_variant = "insert";
     info.requires_target_uuid = true;
     AppendIfMissing(&info.keyword_surface_ids, "SBSQL-510838831CA8");
+    AnalyzeInsertValues(cst, &info);
     AnalyzeInsertOnConflict(cst, &info);
   } else if (first == "UPDATE") {
     info.active = true;
@@ -13549,6 +14471,7 @@ bool ConsumeSimpleDropObjectKind(const CstDocument& cst,
     std::string_view row_surface_id;
   };
   static constexpr DropKind kDropKinds[] = {
+      {"TABLE", "table", "sys.catalog.table", "SBSQL-5CCF87EB0C5C"},
       {"FILESPACE", "filespace", "sys.catalog.filespace", "SBSQL-1E702FF60BA0"},
       {"POLICY", "policy", "sys.security.policy", "SBSQL-25CE560681AB"},
       {"PRINCIPAL", "principal", "sys.security.principal", "SBSQL-EF85496DB350"},
@@ -14468,14 +15391,41 @@ SimpleCreateTableInfo AnalyzeSimpleCreateTable(const CstDocument& cst) {
   SimpleCreateTableInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "CREATE")) return info;
+  const bool local_temporary_prefix = ConsumeKeyword(cst, &index, "LOCAL");
+  const bool global_temporary_prefix =
+      !local_temporary_prefix && ConsumeKeyword(cst, &index, "GLOBAL");
+  const bool scoped_temporary_prefix = local_temporary_prefix || global_temporary_prefix;
+  const bool temporary_prefix =
+      ConsumeKeyword(cst, &index, "TEMPORARY") || ConsumeKeyword(cst, &index, "TEMP");
+  if (scoped_temporary_prefix && !temporary_prefix) return info;
   if (!ConsumeKeyword(cst, &index, "TABLE")) return info;
   info.active = true;
+  info.temporary = temporary_prefix;
+  if (global_temporary_prefix) {
+    info.temporary_scope = "global";
+  } else if (local_temporary_prefix || temporary_prefix) {
+    info.temporary_scope = "private";
+  }
   if (!ConsumeQualifiedName(cst, &index, &info.table_name_parts)) return info;
   if (!ConsumeSymbolText(cst, &index, "(")) return info;
   if (!ConsumeSimpleIdentifierLike(cst, &index)) return info;
   if (!ConsumeSimpleCreateTableType(cst, &index, &info.canonical_type_name, &info.type_surface_ids)) return info;
   info.column_count = 1;
   if (!ConsumeSymbolText(cst, &index, ")")) return info;
+  if (ConsumeKeyword(cst, &index, "ON")) {
+    info.on_commit_clause_present = true;
+    if (!info.temporary) return info;
+    if (!ConsumeKeyword(cst, &index, "COMMIT")) return info;
+    if (ConsumeKeyword(cst, &index, "DELETE")) {
+      if (!ConsumeKeyword(cst, &index, "ROWS")) return info;
+      info.on_commit_action = "delete_rows";
+    } else if (ConsumeKeyword(cst, &index, "PRESERVE")) {
+      if (!ConsumeKeyword(cst, &index, "ROWS")) return info;
+      info.on_commit_action = "preserve_rows";
+    } else {
+      return info;
+    }
+  }
   info.valid = OnlyStatementTerminatorRemains(cst, index);
   return info;
 }
@@ -15696,6 +16646,7 @@ bool ConsumeOptionalRoutineParameterList(const CstDocument& cst,
   for (const auto& surface_id : type_surface_ids) {
     AppendIfMissing(&info->parameter_surface_ids, surface_id);
   }
+  info->parameter_is_cursor = info->parameter_type_name == "cursor";
   while (*index < cst.tokens.size() && IsTriviaToken(cst.tokens[*index])) ++(*index);
   if (*index >= cst.tokens.size() || cst.tokens[*index].text != ")") {
     info->invalid_reason = "routine_parameter_list_current_route_supports_one_parameter";
@@ -16068,6 +17019,10 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
   } else if (words.size() >= 3 && words[0] == "ALTER" && words[1] == "FILESPACE") {
     info = alter("SBSQL-433D89379149", "alter_filespace_stmt",
                  "alter_filespace", "filespace", "sys.catalog.filespace");
+  } else if (words.size() >= 3 && words[0] == "CREATE" && words[1] == "OPERATION") {
+    info = create("SBSQL-EDR036000001", "create_operation_stmt",
+                  "create_operation", "operation",
+                  "sys.catalog.operation_descriptor");
   } else if (words.size() >= 3 && words[0] == "CREATE" && words[1] == "OPERATOR") {
     info = create("SBSQL-43B8DD8E30F4", "create_operator_stmt",
                   "create_operator", "operator", "sys.catalog.operator");
@@ -17009,6 +17964,14 @@ void PopulateSimpleCreateTableAuthority(SblrEnvelope* envelope, const SimpleCrea
   AppendIfMissing(&envelope->descriptor_refs, "sys.storage.row_descriptor");
   AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_create_table_authorization_policy");
+  if (info.temporary) {
+    AppendIfMissing(&envelope->descriptor_refs, "sys.catalog.temporary_table");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.session_descriptor");
+    AppendIfMissing(&envelope->policy_refs,
+                    info.temporary_scope == "global"
+                        ? "temporary_table_global_metadata_policy"
+                        : "temporary_table_private_metadata_policy");
+  }
 }
 
 void PopulateSimpleCreateSchemaAuthority(SblrEnvelope* envelope, const SimpleCreateSchemaInfo& info) {
@@ -17295,6 +18258,10 @@ void PopulateSimpleCreateExecutableObjectAuthority(SblrEnvelope* envelope,
   if (info.parameter_def_present) {
     AppendIfMissing(&envelope->descriptor_refs, "sys.routine.parameter_descriptor");
   }
+  if (info.parameter_is_cursor) {
+    AppendIfMissing(&envelope->descriptor_refs, "sys.server.cursor_descriptor");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.routine.cursor_parameter_descriptor");
+  }
   AppendIfMissing(&envelope->descriptor_refs, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "ddl_create_executable_object_authorization_policy");
 }
@@ -17575,7 +18542,12 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
   envelope->sblr_operation_key = std::string(spec.operation_family);
   envelope->result_shape_key = std::string(spec.result_shape);
   envelope->diagnostic_shape_key = "diagnostic.canonical_message_vector";
-  if (spec.operation_family == "sblr.security.mutation_or_inspect.v3") {
+  if (spec.route_kind == "encryption_key_control" ||
+      spec.route_kind == "encryption_key_inspect" ||
+      spec.route_kind == "protected_material_control" ||
+      spec.route_kind == "protected_material_inspect") {
+    envelope->resource_contract_key = "resource.contract.protected_material";
+  } else if (spec.operation_family == "sblr.security.mutation_or_inspect.v3") {
     envelope->resource_contract_key = "resource.contract.security_inspect";
   } else if (spec.requires_cluster_authority) {
     envelope->resource_contract_key = "resource.contract.cluster_provider.route";
@@ -17585,9 +18557,35 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
   } else if (spec.operation_family == "sblr.migration.operation.v3") {
     envelope->resource_contract_key = spec.mutation ? "resource.contract.migration_control"
                                                     : "resource.contract.migration_report";
+  } else if (spec.operation_family == "sblr.storage.management_operation.v3") {
+    if (spec.route_kind == "storage_tier_control" ||
+        spec.route_kind == "storage_tier_inspect") {
+      envelope->resource_contract_key = "resource.contract.storage_tier_descriptor";
+    } else if (spec.route_kind == "shard_placement_descriptor_control" ||
+               spec.route_kind == "shard_placement_descriptor_inspect") {
+      envelope->resource_contract_key = "resource.contract.shard_placement_descriptor";
+    } else {
+      envelope->resource_contract_key = "resource.contract.management_report";
+    }
+  } else if (spec.operation_family == "sblr.filespace.management.v3") {
+    if (spec.route_kind == "filespace_discovery_inspect") {
+      envelope->resource_contract_key = "resource.contract.filespace_discovery_report";
+    } else if (spec.route_kind == "filespace_package_control" ||
+               spec.route_kind == "filespace_package_inspect") {
+      envelope->resource_contract_key = "resource.contract.filespace_package";
+    } else {
+      envelope->resource_contract_key = spec.mutation ? "resource.contract.filespace_control"
+                                                      : "resource.contract.management_report";
+    }
   } else if (spec.operation_family == "sblr.management.runtime_operation.v3") {
-    envelope->resource_contract_key = spec.mutation ? "resource.contract.management_control"
-                                                    : "resource.contract.management_report";
+    if (spec.route_kind == "memory_control" ||
+        spec.route_kind == "memory_inspect") {
+      envelope->resource_contract_key =
+          "resource.contract.memory_management_descriptor";
+    } else {
+      envelope->resource_contract_key = spec.mutation ? "resource.contract.management_control"
+                                                      : "resource.contract.management_report";
+    }
   } else {
     envelope->resource_contract_key = "resource.contract.management_report";
   }
@@ -17633,8 +18631,32 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
     AppendIfMissing(&envelope->policy_refs,
                     spec.mutation ? "migration_control_policy"
                                   : "migration_inspection_policy");
+  } else if (spec.route_kind == "encryption_key_control" ||
+             spec.route_kind == "encryption_key_inspect" ||
+             spec.route_kind == "protected_material_control" ||
+             spec.route_kind == "protected_material_inspect") {
+    AppendIfMissing(&envelope->policy_refs,
+                    spec.mutation ? "protected_material_control_policy"
+                                  : "protected_material_release_policy");
   } else if (spec.operation_family == "sblr.security.mutation_or_inspect.v3") {
     AppendIfMissing(&envelope->policy_refs, "security_inspection_authorization_policy");
+  } else if (spec.route_kind == "storage_tier_control" ||
+             spec.route_kind == "storage_tier_inspect") {
+    AppendIfMissing(&envelope->policy_refs,
+                    spec.mutation ? "storage_tier_migration_control_policy"
+                                  : "storage_tier_migration_inspection_policy");
+  } else if (spec.route_kind == "shard_placement_descriptor_control" ||
+             spec.route_kind == "shard_placement_descriptor_inspect") {
+    AppendIfMissing(&envelope->policy_refs,
+                    spec.mutation ? "shard_placement_descriptor_control_policy"
+                                  : "shard_placement_descriptor_inspection_policy");
+  } else if (spec.route_kind == "filespace_discovery_inspect") {
+    AppendIfMissing(&envelope->policy_refs, "filespace_discovery_inspection_policy");
+  } else if (spec.route_kind == "filespace_package_control" ||
+             spec.route_kind == "filespace_package_inspect") {
+    AppendIfMissing(&envelope->policy_refs,
+                    spec.mutation ? "filespace_package_control_policy"
+                                  : "filespace_package_inspection_policy");
   } else if (spec.mutation) {
     AppendIfMissing(&envelope->policy_refs, "management_control_authorization_policy");
   } else {
@@ -17679,6 +18701,27 @@ std::string EngineApiCommandResourceContract(const EngineApiCommandSpec& spec) {
   }
   if (spec.route_kind == "management_support_bundle") {
     return "resource.contract.supportability";
+  }
+  if (spec.route_kind == "memory_control" ||
+      spec.route_kind == "memory_inspect") {
+    return "resource.contract.memory_management_descriptor";
+  }
+  if (spec.route_kind == "storage_tier_control" ||
+      spec.route_kind == "storage_tier_inspect") {
+    return "resource.contract.storage_tier_descriptor";
+  }
+  if (spec.route_kind == "filespace_discovery_inspect") {
+    return "resource.contract.filespace_discovery_report";
+  }
+  if (spec.route_kind == "filespace_package_control" ||
+      spec.route_kind == "filespace_package_inspect") {
+    return "resource.contract.filespace_package";
+  }
+  if (spec.route_kind == "encryption_key_control" ||
+      spec.route_kind == "encryption_key_inspect" ||
+      spec.route_kind == "protected_material_control" ||
+      spec.route_kind == "protected_material_inspect") {
+    return "resource.contract.protected_material";
   }
   if (spec.route_kind == "lifecycle_control") return "resource.contract.lifecycle_control";
   if (spec.route_kind == "parser_package") return "resource.contract.parser_package";
@@ -18522,6 +19565,14 @@ void PopulateSbsfc077NonGeneralResidualAuthority(
   } else if (info.operation_id == "storage.manage_operation") {
     AppendIfMissing(&envelope->descriptor_refs, "sys.storage.management_profile");
     AppendIfMissing(&envelope->required_rights, "right.storage.manage");
+  } else if (info.operation_id.rfind("filespace.", 0) == 0) {
+    AppendIfMissing(&envelope->required_authority_steps,
+                    "authority.server.transaction_context_required");
+    AppendIfMissing(&envelope->descriptor_refs, "sys.storage.filespace_lifecycle");
+    AppendIfMissing(&envelope->required_rights, "right.filespace.lifecycle_control");
+    if (info.operation_id == "filespace.preallocate") {
+      AppendIfMissing(&envelope->required_rights, "right.agent_control");
+    }
   } else if (info.operation_id == "cluster.profile_operation") {
     AppendIfMissing(&envelope->required_authority_steps,
                     "authority.engine.cluster_profile_gate_not_private_execution");
@@ -19412,6 +20463,11 @@ void AppendSimpleCreateTableJson(std::ostream& out, const SimpleCreateTableInfo&
       << "\"SBSQL-0643E41C1575\","
       << "\"SBSQL-DB7AEEE23273\","
       << "\"SBSQL-62BBB6075151\"";
+  if (info.temporary) {
+    out << ",\"SBSQL-D9366D02D5DE\","
+        << "\"SBSQL-60FF8D790ABF\","
+        << "\"SBSQL-D57F1C8B14EF\"";
+  }
   for (const auto& type_surface_id : info.type_surface_ids) {
     if (!type_surface_id.empty()) {
       out << ",\"" << EscapeJson(type_surface_id) << "\"";
@@ -19421,8 +20477,22 @@ void AppendSimpleCreateTableJson(std::ostream& out, const SimpleCreateTableInfo&
       << "\"target_uuid_resolution\":\"server_name_registry_required\","
       << "\"mga_catalog_commit_required\":true,"
       << "\"constraints_included\":false,"
-      << "\"temporary_table\":false,"
-      << "\"persistence_options_included\":false,"
+      << "\"temporary_table\":" << (info.temporary ? "true" : "false") << ',';
+  if (info.temporary) {
+    out << "\"temporary_scope\":\"" << EscapeJson(info.temporary_scope) << "\","
+        << "\"temporary_object_scope\":\"" << EscapeJson(info.temporary_scope) << "\","
+        << "\"temporary_metadata_scope\":\"" << EscapeJson(info.temporary_scope) << "\","
+        << "\"temporary_data_scope\":\"session\","
+        << "\"temporary_session_uuid_required\":true,"
+        << "\"temporary_on_commit_clause_present\":"
+        << (info.on_commit_clause_present ? "true" : "false") << ','
+        << "\"on_commit_action\":\"" << EscapeJson(info.on_commit_action) << "\","
+        << "\"temporary_parser_executes_sql\":false,"
+        << "\"persistence_options_included\":true,";
+  } else {
+    out << "\"persistence_options_included\":false,";
+  }
+  out
       << "\"index_definitions_included\":false,"
       << "\"name_text_included\":false,"
       << "\"sql_text_included\":false,";
@@ -19630,13 +20700,14 @@ void AppendSimpleDropObjectJson(std::ostream& out, const SimpleDropObjectDdlInfo
     out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\","
         << "\"schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
   }
-  AppendJsonStringArray(out,
-                        "row_surface_ids",
-                        {"SBSQL-40CAFAB37942",
-                         "SBSQL-CFFCCDEF6AC4",
-                         info.row_surface_id,
-                         "SBSQL-5CCF87EB0C5C",
-                         "SBSQL-ADEF20254494"});
+  std::vector<std::string> row_surface_ids = {
+      "SBSQL-40CAFAB37942",
+      "SBSQL-CFFCCDEF6AC4",
+  };
+  AppendIfMissing(&row_surface_ids, info.row_surface_id);
+  AppendIfMissing(&row_surface_ids, "SBSQL-5CCF87EB0C5C");
+  AppendIfMissing(&row_surface_ids, "SBSQL-ADEF20254494");
+  AppendJsonStringArray(out, "row_surface_ids", row_surface_ids);
   out << ','
       << "\"target_uuid_resolution\":\"server_name_registry_required\","
       << "\"mga_catalog_commit_required\":true,"
@@ -19749,8 +20820,14 @@ void AppendSimpleCreateExecutableObjectJson(std::ostream& out,
         << "\"routine_parameter_0_type\":\"" << EscapeJson(info.parameter_type_name)
         << "\","
         << "\"routine_parameter_0_mode\":\"" << EscapeJson(info.parameter_mode)
-        << "\","
-        << "\"routine_parameter_name_text_included\":false,";
+        << "\",";
+    if (info.parameter_is_cursor) {
+      out << "\"routine_parameter_0_descriptor_kind\":\"cursor_handle\","
+          << "\"routine_cursor_argument\":true,"
+          << "\"routine_cursor_argument_binding\":\"descriptor.cursor_handle.session_registry\","
+          << "\"routine_cursor_argument_parser_executes_cursor\":false,";
+    }
+    out << "\"routine_parameter_name_text_included\":false,";
     AppendJsonStringArray(out, "routine_parameter_surface_ids",
                           info.parameter_surface_ids);
     out << ',';
@@ -19964,6 +21041,27 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
           << "\"on_conflict_update_source_column\":\""
           << EscapeJson(info.conflict_update_source_column) << "\","
           << "\"on_conflict_excluded_descriptor_bound\":true,";
+    }
+  }
+  if (info.has_insert_values) {
+    out << "\"insert_values_row_count\":\"" << info.insert_rows.size() << "\","
+        << "\"insert_values_column_count\":\"" << info.insert_column_count << "\","
+        << "\"insert_values_column_list_present\":"
+        << (info.insert_column_list_present ? "true" : "false") << ','
+        << "\"insert_values_descriptor_bound\":true,"
+        << "\"insert_values_parser_executes_sql\":false,";
+    for (std::size_t row = 0; row < info.insert_rows.size(); ++row) {
+      for (std::size_t column = 0; column < info.insert_rows[row].size(); ++column) {
+        const auto& field = info.insert_rows[row][column];
+        out << "\"insert_values_" << row << '_' << column << "_name\":\""
+            << EscapeJson(field.name) << "\","
+            << "\"insert_values_" << row << '_' << column << "_type\":\""
+            << EscapeJson(field.type_name) << "\","
+            << "\"insert_values_" << row << '_' << column << "_value\":\""
+            << EscapeJson(field.value) << "\","
+            << "\"insert_values_" << row << '_' << column << "_is_null\":\""
+            << (field.is_null ? "true" : "false") << "\",";
+      }
     }
   }
   if (info.import_planning) {
@@ -21231,6 +22329,7 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
       bridge_route.active && bridge_route.valid) {
     return bridge_route.operation_id;
   }
+  if (AnalyzeSimpleCreateDomain(cst).active) return "ddl.create_domain";
   if (const auto sbsfc085_surface = AnalyzeSbsfc085GrammarSurfaceRoute(cst);
       sbsfc085_surface.active && sbsfc085_surface.valid) {
     return sbsfc085_surface.operation_id;
@@ -21413,22 +22512,42 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
 
 SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, const SessionContext& session) {
   const auto lifecycle_bridge_guard = AnalyzeBridgeRoute(cst);
-  if (!lifecycle_bridge_guard.active) {
+  const bool filespace_lifecycle_command =
+      LifecycleCommandStartsWith(cst.source, "ATTACH FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "DETACH FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "MOVE FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "MERGE FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "GROW FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "RESIZE FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "SHRINK FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "VERIFY FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "COMPACT FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "FENCE FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "RELEASE FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "ARCHIVE FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "QUARANTINE FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "DISCONNECT FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "DROP STORAGE FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "DELETE STORAGE FILESPACE") ||
+      LifecycleCommandStartsWith(cst.source, "PROMOTE FILESPACE");
+  if (!lifecycle_bridge_guard.active && !filespace_lifecycle_command) {
     if (const auto* lifecycle = MapSbsqlLifecycleCommand(cst.source); lifecycle != nullptr) {
       return LowerLifecycleMapping(*lifecycle, cst, session);
     }
   }
 
-  const auto constraint_ddl = AnalyzeConstraintDdl(cst);
   const auto simple_create_schema = AnalyzeSimpleCreateSchema(cst);
   const auto simple_create_table = AnalyzeSimpleCreateTable(cst);
   const auto simple_create_sequence = AnalyzeSimpleCreateSequence(cst);
   const auto simple_create_view = AnalyzeSimpleCreateView(cst);
   const auto simple_create_domain = AnalyzeSimpleCreateDomain(cst);
+  const auto constraint_ddl =
+      simple_create_domain.active ? ConstraintDdlInfo{} : AnalyzeConstraintDdl(cst);
   const auto simple_create_executable_object = AnalyzeSimpleCreateExecutableObject(cst);
   const auto transaction_lock_route = AnalyzeTransactionLockRoute(cst);
+  const auto exact_command_route = AnalyzePublicExactCommandRoute(cst);
   const auto catalog_descriptor_mutation =
-      transaction_lock_route.active
+      (transaction_lock_route.active || exact_command_route.active)
           ? CatalogDescriptorMutationInfo{}
           : AnalyzeCatalogDescriptorMutation(cst, bound.resolved_object_uuids);
   const auto index_template_ddl =
@@ -21441,7 +22560,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto agent_route = AnalyzeAgentRuntimeRoute(cst);
   const auto udr_package_route = AnalyzeUdrPackageRoute(cst);
   const auto management_route = AnalyzeManagementRuntimeRoute(cst);
-  const auto exact_command_route = AnalyzePublicExactCommandRoute(cst);
   const auto engine_api_command_route = AnalyzeEngineApiCommandRoute(cst);
   const auto bridge_route = AnalyzeBridgeRoute(cst);
   const auto event_route =
@@ -21453,8 +22571,9 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto transaction_characteristics = AnalyzeTransactionCharacteristicsRoute(cst);
   const auto words = MeaningfulUpperTokens(cst);
   const auto observability_route = AnalyzeObservabilityRoute(cst);
-  const auto cursor_control = bridge_route.active ? CursorControlInfo{}
-                                                  : AnalyzeCursorControl(cst);
+  const auto cursor_control = (bridge_route.active || exact_command_route.active)
+                                  ? CursorControlInfo{}
+                                  : AnalyzeCursorControl(cst);
   const auto prepared_control =
       (engine_api_command_route.active || bridge_route.active)
           ? PreparedStatementControlInfo{}
@@ -21502,6 +22621,9 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   }
   if (envelope.sblr_opcode.empty()) {
     envelope.sblr_opcode = ManagementOpcodeForOperation(envelope.operation_id);
+  }
+  if (envelope.sblr_opcode.empty()) {
+    envelope.sblr_opcode = MemoryOpcodeForOperation(envelope.operation_id);
   }
   if (envelope.sblr_opcode.empty()) {
     envelope.sblr_opcode = JobsOpcodeForOperation(envelope.operation_id);
@@ -21881,7 +23003,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     return envelope;
   }
   const auto sbsfc077_residual = AnalyzeSbsfc077NonGeneralResidualRoute(cst);
-  if (sbsfc077_residual.active && sbsfc077_residual.valid) {
+  if (!exact_command_route.active && sbsfc077_residual.active && sbsfc077_residual.valid) {
     PopulateSbsfc077NonGeneralResidualAuthority(&envelope, sbsfc077_residual);
     if (!bound.bound || envelope.messages.has_errors()) return envelope;
 
@@ -22248,7 +23370,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   }
   if (!constraint_ddl.active && simple_create_table.active && !simple_create_table.valid) {
     AddVerifierError(&envelope.messages, "SBSQL.CREATE_TABLE_DDL.UNSUPPORTED_SHAPE",
-                     "this bounded CREATE TABLE route supports exactly CREATE TABLE name (column int)");
+                     "this bounded CREATE TABLE route supports CREATE [TEMPORARY] TABLE name (column type) with optional ON COMMIT DELETE/PRESERVE ROWS for temporary tables");
   }
   if (create_vector_collection.active && !create_vector_collection.valid) {
     AddVerifierError(&envelope.messages,

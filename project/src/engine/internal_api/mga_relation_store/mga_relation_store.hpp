@@ -40,6 +40,26 @@ struct MgaRelationStoreResult {
   MgaRelationStoreState state;
 };
 
+struct MgaTemporaryTableVisibilityResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  bool table_visible = false;
+  bool known_temporary = false;
+  bool visible_to_session = false;
+  bool hidden_by_temporary_visibility = false;
+  CrudTableRecord table;
+};
+
+struct MgaTemporaryTableDropResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  bool target_was_temporary = false;
+  bool metadata_retired = false;
+  std::string temporary_scope;
+  std::uint64_t deleted_row_count = 0;
+  std::uint64_t reclaimed_large_value_count = 0;
+};
+
 struct MgaEventSequenceRangeReservation {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
@@ -65,6 +85,27 @@ struct MgaRelationStatisticsResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
   MgaRelationStatistics statistics;
+};
+
+struct MgaTemporaryRecoveryClassificationResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  std::string classification;
+  std::string action;
+  bool recovery_required = false;
+  bool write_admission_must_remain_fenced = false;
+  bool silent_inconsistency_refused = true;
+  std::uint64_t durable_global_metadata_count = 0;
+  std::uint64_t orphaned_private_metadata_count = 0;
+  std::uint64_t active_or_unresolved_event_count = 0;
+  std::uint64_t fenced_event_count = 0;
+  std::uint64_t rolled_back_event_count = 0;
+  std::uint64_t orphaned_row_count = 0;
+  std::uint64_t cleaned_row_count = 0;
+  std::uint64_t orphaned_large_value_count = 0;
+  std::uint64_t reclaimed_large_value_count = 0;
+  std::uint64_t retired_private_metadata_count = 0;
+  std::vector<EngineEvidenceReference> evidence;
 };
 
 struct MgaIndexEntryRowInput {
@@ -273,11 +314,19 @@ struct MgaIndexedRowsLookupResult {
 
 MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& context);
 CrudState BuildCrudCompatibilityStateFromMga(const MgaRelationStoreState& state);
+MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
+    const EngineRequestContext& context,
+    const std::string& table_uuid);
+MgaTemporaryTableDropResult DropMgaTemporaryTable(
+    const EngineRequestContext& context,
+    const std::string& table_uuid);
 MgaRelationStatisticsResult EstimateMgaRelationStatistics(const EngineRequestContext& context,
                                                           const std::string& table_uuid,
                                                           bool include_indexes);
 MgaRelationStatisticsResult EstimateMgaCatalogStatistics(const EngineRequestContext& context,
                                                          bool include_indexes);
+MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
+    const EngineRequestContext& context);
 
 EngineApiDiagnostic EnsureMgaRelationStorageDescriptor(const EngineRequestContext& context,
                                                        const CrudTableRecord& table,
@@ -365,7 +414,14 @@ EngineApiDiagnostic ValidateMgaSavepointExists(const EngineRequestContext& conte
 std::vector<std::string> ActiveMgaSavepointNames(const EngineRequestContext& context);
 EngineApiDiagnostic ApplyMgaTemporaryOnCommitActions(const EngineRequestContext& context,
                                                      std::uint64_t local_transaction_id,
-                                                     std::uint64_t* deleted_row_count);
+                                                     std::uint64_t* deleted_row_count,
+                                                     std::uint64_t* reclaimed_large_value_count);
+EngineApiDiagnostic ApplyMgaTemporarySessionCleanupActions(
+    const EngineRequestContext& context,
+    std::uint64_t local_transaction_id,
+    std::uint64_t* deleted_row_count,
+    std::uint64_t* reclaimed_large_value_count,
+    std::uint64_t* retired_private_metadata_count);
 
 void ClearMgaEventSequenceRangeCacheForTesting();
 MgaEventSequenceRangeReservation ReserveMgaRowEventSequenceRangeForTesting(

@@ -320,6 +320,24 @@ bool ProjectionSourceVisible(bool hidden,
   return true;
 }
 
+bool HasTemporaryVisibilityDescriptor(const SysInformationCatalogObjectSource& object) {
+  return object.temporary || !object.temporary_scope.empty() ||
+         !object.temporary_session_uuid.empty() ||
+         !object.on_commit_action.empty();
+}
+
+bool TemporaryMetadataVisible(const SysInformationCatalogObjectSource& object,
+                              const SysInformationProjectionContext& context) {
+  if (!HasTemporaryVisibilityDescriptor(object)) { return true; }
+  if (!object.temporary) { return false; }
+  if (object.temporary_scope == "global") { return true; }
+  if (object.temporary_scope == "private") {
+    return !context.session_uuid.empty() &&
+           object.temporary_session_uuid == context.session_uuid;
+  }
+  return false;
+}
+
 bool ObjectVisible(const SysInformationCatalogObjectSource& object,
                    const SysInformationProjectionContext& context) {
   if (object.hidden) { return false; }
@@ -333,6 +351,7 @@ bool ObjectVisible(const SysInformationCatalogObjectSource& object,
       object.dropped_local_transaction_id <= context.visible_catalog_generation_id) {
     return false;
   }
+  if (!TemporaryMetadataVisible(object, context)) { return false; }
   return true;
 }
 
@@ -458,12 +477,25 @@ void AddField(SysInformationProjectionRow* row, std::string name, std::string va
 }
 
 std::string TableTypeForObject(const SysInformationCatalogObjectSource& object) {
+  if (object.temporary || object.object_class == "temporary_table") {
+    if (object.temporary_scope == "global") { return "GLOBAL TEMPORARY"; }
+    if (!object.table_type.empty() && ContainsToken(object.table_type, "TEMPORARY")) {
+      return object.table_type;
+    }
+    return "LOCAL TEMPORARY";
+  }
   if (!object.table_type.empty()) { return object.table_type; }
   if (object.object_class == "view") { return "VIEW"; }
   if (object.object_class == "materialized_view") { return "MATERIALIZED VIEW"; }
-  if (object.object_class == "temporary_table") { return "LOCAL TEMPORARY"; }
   if (object.object_class == "virtual_table") { return "VIRTUAL TABLE"; }
   return "BASE TABLE";
+}
+
+std::string CommitActionForObject(const SysInformationCatalogObjectSource& object) {
+  if (!object.temporary && object.object_class != "temporary_table") { return {}; }
+  if (object.on_commit_action == "delete_rows") { return "DELETE ROWS"; }
+  if (object.on_commit_action == "preserve_rows") { return "PRESERVE ROWS"; }
+  return {};
 }
 
 bool IsTableLikeObject(const SysInformationCatalogObjectSource& object) {
@@ -1240,7 +1272,7 @@ SysInformationProjectionResult BuildSysInformationProjection(
       AddField(&row, "user_defined_type_name", "");
       AddField(&row, "is_insertable_into", "YES");
       AddField(&row, "is_typed", "NO");
-      AddField(&row, "commit_action", "");
+      AddField(&row, "commit_action", CommitActionForObject(object));
       result.rows.push_back(std::move(row));
     }
     return result;

@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-// SEARCH_KEY: SB_SERVER_PRODUCT_SKELETON_IDENTITY
+// SEARCH_KEY: SB_SERVER_PRODUCT_IDENTITY
 
 #pragma once
 
@@ -19,7 +19,7 @@ struct ServerProductIdentity {
   std::string product_kind;
   std::string product_version;
   std::string protocol_family;
-  std::string implementation_stage;
+  std::string release_channel;
 };
 
 const ServerProductIdentity& GetServerProductIdentity();

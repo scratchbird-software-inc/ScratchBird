@@ -13,8 +13,92 @@
 #include "catalog/name_registry.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
+#include "mga_relation_store/mga_relation_store.hpp"
+
+#include <vector>
 
 namespace scratchbird::engine::internal_api {
+namespace {
+
+struct TemporaryFilteredNameMatches {
+  bool ok = true;
+  EngineApiDiagnostic diagnostic =
+      MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  std::vector<NameRegistryEntry> temporary_matches;
+  std::vector<NameRegistryEntry> durable_matches;
+};
+
+bool ObjectClassCanBeTemporaryTable(const std::string& object_class) {
+  return object_class == "table" || object_class == "relation";
+}
+
+bool NameRegistryMatchCanBeTemporaryTable(const NameRegistryEntry& match) {
+  return ObjectClassCanBeTemporaryTable(match.object_class);
+}
+
+TemporaryFilteredNameMatches FilterTemporaryNameMatches(
+    const EngineResolveNameRequest& request,
+    const std::vector<NameRegistryEntry>& matches) {
+  TemporaryFilteredNameMatches filtered;
+  for (const auto& match : matches) {
+    if (!NameRegistryMatchCanBeTemporaryTable(match)) {
+      filtered.durable_matches.push_back(match);
+      continue;
+    }
+    const auto visibility =
+        CheckMgaTemporaryTableVisibility(request.context, match.object_uuid);
+    if (!visibility.ok) {
+      filtered.ok = false;
+      filtered.diagnostic = visibility.diagnostic;
+      return filtered;
+    }
+    if (!visibility.table_visible) {
+      continue;
+    }
+    if (!visibility.known_temporary) {
+      filtered.durable_matches.push_back(match);
+      continue;
+    }
+    if (visibility.visible_to_session) {
+      filtered.temporary_matches.push_back(match);
+    }
+  }
+  return filtered;
+}
+
+EngineResolveNameResult MakeNameRegistryResolveResult(
+    const EngineResolveNameRequest& request,
+    const NameRegistryEntry& match,
+    bool temporary_shadow_match) {
+  auto result = MakeApiBehaviorSuccess<EngineResolveNameResult>(
+      request.context,
+      "catalog.resolve_name");
+  result.primary_object.uuid.canonical = match.object_uuid;
+  result.primary_object.object_kind = match.object_class;
+  result.bound_object_identity.object_uuid.canonical = match.object_uuid;
+  result.bound_object_identity.resolved_object_type = match.object_class;
+  result.bound_object_identity.resolved_schema_uuid.canonical = match.scope_uuid;
+  result.bound_object_identity.parent_object_uuid.canonical = match.parent_object_uuid;
+  result.bound_object_identity.catalog_generation_id = match.catalog_generation_id;
+  result.bound_object_identity.security_epoch = request.context.security_epoch;
+  result.bound_object_identity.resource_epoch = match.resource_epoch;
+  AddApiBehaviorRow(&result, {{"object_uuid", match.object_uuid},
+                              {"object_kind", match.object_class},
+                              {"name", match.display_name},
+                              {"scope_uuid", match.scope_uuid},
+                              {"identifier_profile_uuid", match.identifier_profile_uuid},
+                              {"language_tag", match.language_tag}});
+  AddApiBehaviorEvidence(&result, "name_resolution", match.normalized_lookup_key);
+  AddApiBehaviorEvidence(&result, "name_entry", match.name_entry_uuid);
+  if (temporary_shadow_match) {
+    AddApiBehaviorEvidence(&result,
+                           "temporary_name_resolution",
+                           "session_visible_shadow");
+  }
+  return result;
+}
+
+}  // namespace
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_CATALOG_NAME_RESOLUTION_API_BEHAVIOR
 EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& request) {
@@ -22,6 +106,26 @@ EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& reques
   static_cast<EngineApiRequest&>(catalog_request) = static_cast<const EngineApiRequest&>(request);
   const auto catalog_resolved = EngineCatalogResolveObjectName(catalog_request);
   if (catalog_resolved.ok) {
+    if (ObjectClassCanBeTemporaryTable(catalog_resolved.primary_object.object_kind)) {
+      const auto visibility = CheckMgaTemporaryTableVisibility(
+          request.context,
+          catalog_resolved.primary_object.uuid.canonical);
+      if (!visibility.ok) {
+        return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+            request.context,
+            "catalog.resolve_name",
+            visibility.diagnostic);
+      }
+      if (visibility.hidden_by_temporary_visibility ||
+          (visibility.known_temporary && !visibility.visible_to_session)) {
+        return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+            request.context,
+            "catalog.resolve_name",
+            MakeEngineApiDiagnostic("CATALOG.NAME.NOT_FOUND",
+                                    "message_vector.item_not_found_or_does_not_exist",
+                                    "item_not_found_or_does_not_exist"));
+      }
+    }
     auto result = MakeApiBehaviorSuccess<EngineResolveNameResult>(request.context, "catalog.resolve_name");
     result.primary_object = catalog_resolved.primary_object;
     result.bound_object_identity = catalog_resolved.bound_object_identity;
@@ -41,32 +145,34 @@ EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& reques
   if (!resolved.ok) {
     return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(request.context, "catalog.resolve_name", resolved.diagnostic);
   }
-  auto result = MakeApiBehaviorSuccess<EngineResolveNameResult>(request.context, "catalog.resolve_name");
-  if (resolved.matches.size() > 1) {
+  const auto filtered = FilterTemporaryNameMatches(request, resolved.matches);
+  if (!filtered.ok) {
+    return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+        request.context,
+        "catalog.resolve_name",
+        filtered.diagnostic);
+  }
+  const bool use_temporary_matches = !filtered.temporary_matches.empty();
+  const auto& effective_matches =
+      use_temporary_matches ? filtered.temporary_matches : filtered.durable_matches;
+  if (effective_matches.empty()) {
+    return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+        request.context,
+        "catalog.resolve_name",
+        MakeEngineApiDiagnostic("CATALOG.NAME.NOT_FOUND",
+                                "message_vector.item_not_found_or_does_not_exist",
+                                "item_not_found_or_does_not_exist"));
+  }
+  if (effective_matches.size() > 1) {
     return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
         request.context,
         "catalog.resolve_name",
         MakeEngineApiDiagnostic("CATALOG.NAME.AMBIGUOUS", "catalog.name.ambiguous", "ambiguous_name"));
   }
-  const auto& match = resolved.matches.front();
-  result.primary_object.uuid.canonical = match.object_uuid;
-  result.primary_object.object_kind = match.object_class;
-  result.bound_object_identity.object_uuid.canonical = match.object_uuid;
-  result.bound_object_identity.resolved_object_type = match.object_class;
-  result.bound_object_identity.resolved_schema_uuid.canonical = match.scope_uuid;
-  result.bound_object_identity.parent_object_uuid.canonical = match.parent_object_uuid;
-  result.bound_object_identity.catalog_generation_id = match.catalog_generation_id;
-  result.bound_object_identity.security_epoch = request.context.security_epoch;
-  result.bound_object_identity.resource_epoch = match.resource_epoch;
-  AddApiBehaviorRow(&result, {{"object_uuid", match.object_uuid},
-                              {"object_kind", match.object_class},
-                              {"name", match.display_name},
-                              {"scope_uuid", match.scope_uuid},
-                              {"identifier_profile_uuid", match.identifier_profile_uuid},
-                              {"language_tag", match.language_tag}});
-  AddApiBehaviorEvidence(&result, "name_resolution", match.normalized_lookup_key);
-  AddApiBehaviorEvidence(&result, "name_entry", match.name_entry_uuid);
-  return result;
+  return MakeNameRegistryResolveResult(
+      request,
+      effective_matches.front(),
+      use_temporary_matches);
 }
 
 EngineMapUuidToNameResult EngineMapUuidToName(const EngineMapUuidToNameRequest& request) {

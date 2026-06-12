@@ -2173,6 +2173,26 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   )
 
   add_executable(
+    sbsql_temporary_table_proof_closure_conformance
+    sbsql_temporary_table_proof_closure_conformance.cpp
+  )
+  target_compile_features(sbsql_temporary_table_proof_closure_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_temporary_table_proof_closure_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_server_core
+      sb_engine_sblr
+  )
+  add_test(
+    NAME sbsql_temporary_table_proof_closure_conformance
+    COMMAND sbsql_temporary_table_proof_closure_conformance
+  )
+  set_tests_properties(sbsql_temporary_table_proof_closure_conformance PROPERTIES
+    LABELS "sbsql_temporary_table_proof_closure_conformance;SBSQL-TEMPORARY-TABLE-PROOF-CLOSURE;TEMP-TABLE-GATE-001;TEMP-TABLE-GATE-002;TEMP-TABLE-GATE-003;TEMP-TABLE-GATE-004;TEMP-TABLE-GATE-005;TEMP-TABLE-GATE-006;TEMP-TABLE-GATE-007;TEMP-TABLE-GATE-008;TEMP-TABLE-GATE-009;TEMP-TABLE-GATE-010;TEMP-TABLE-GATE-011;TEMP-TABLE-GATE-012;TEMP-TABLE-GATE-013;TEMP-TABLE-GATE-014;TEMP-TABLE-GATE-015;TEMP-TABLE-GATE-016;TEMP-TABLE-GATE-017;sblr_operation_matrix_gate;mga_transaction_regression;sbsql_parser_worker;sbsql_e2e_passed"
+  )
+
+  add_executable(
     sbsql_create_statistics_exact_route_conformance
     sbsql_create_statistics_exact_route_conformance.cpp
   )
@@ -2353,6 +2373,26 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   )
 
   add_executable(
+    sbsql_domain_language_expansion_conformance
+    sbsql_domain_language_expansion_conformance.cpp
+  )
+  target_compile_features(sbsql_domain_language_expansion_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_domain_language_expansion_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_server_core
+      sb_engine_sblr
+  )
+  add_test(
+    NAME sbsql_domain_language_expansion_conformance
+    COMMAND sbsql_domain_language_expansion_conformance
+  )
+  set_tests_properties(sbsql_domain_language_expansion_conformance PROPERTIES
+    LABELS "sbsql_domain_language_expansion_conformance;EDR-036;EDR-GATE-036;EDR-DOMAIN-LANGUAGE-EXPANSION;mga_transaction_regression;sbsql_parser_worker"
+  )
+
+  add_executable(
     sbsql_transaction_policy_closure_conformance
     sbsql_transaction_policy_closure_conformance.cpp
   )
@@ -2517,6 +2557,25 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   )
 
   add_executable(
+    sbsql_routine_cursor_argument_conformance
+    sbsql_routine_cursor_argument_conformance.cpp
+  )
+  target_compile_features(sbsql_routine_cursor_argument_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_routine_cursor_argument_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_server_core
+  )
+  add_test(
+    NAME sbsql_routine_cursor_argument_conformance
+    COMMAND sbsql_routine_cursor_argument_conformance
+  )
+  set_tests_properties(sbsql_routine_cursor_argument_conformance PROPERTIES
+    LABELS "sbsql_routine_cursor_argument_conformance;ROUTINE-CURSOR-PROOF-CLOSURE;EDR-038;ROUTINE-CURSOR-GATE-001;ROUTINE-CURSOR-GATE-002;ROUTINE-CURSOR-GATE-003;ROUTINE-CURSOR-GATE-004;ROUTINE-CURSOR-GATE-005;ROUTINE-CURSOR-GATE-006;ROUTINE-CURSOR-GATE-007;ROUTINE-CURSOR-GATE-008;ROUTINE-CURSOR-GATE-009;sblr_operation_matrix_gate;mga_transaction_regression;sbsql_parser_worker;sbsql_e2e_passed"
+  )
+
+  add_executable(
     sbsql_sbsfc_075_catalog_descriptor_mutation_conformance
     sbsql_sbsfc_075_catalog_descriptor_mutation_conformance.cpp
   )
@@ -2654,6 +2713,148 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   )
   set_tests_properties(sbsql_sbsfc_080_operational_general_residual_exact_route_conformance PROPERTIES
     LABELS "sbsql_sbsfc_080_operational_general_residual_exact_route_conformance;SBSFC-080;SBSFC-030;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed"
+  )
+
+  add_executable(
+    sbsql_memory_management_exact_route_conformance
+    sbsql_memory_management_exact_route_conformance.cpp
+  )
+  target_compile_features(sbsql_memory_management_exact_route_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_memory_management_exact_route_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_server_core
+      sb_engine_sblr
+  )
+  add_test(
+    NAME sbsql_memory_management_exact_route_conformance
+    COMMAND sbsql_memory_management_exact_route_conformance
+  )
+  set_tests_properties(sbsql_memory_management_exact_route_conformance PROPERTIES
+    LABELS "sbsql_memory_management_exact_route_conformance;MEMORY-MANAGEMENT-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+  )
+
+  add_executable(
+    sbsql_storage_tier_exact_route_conformance
+    sbsql_storage_tier_exact_route_conformance.cpp
+  )
+  target_compile_features(sbsql_storage_tier_exact_route_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_storage_tier_exact_route_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_server_core
+      sb_engine_sblr
+  )
+  add_test(
+    NAME sbsql_storage_tier_exact_route_conformance
+    COMMAND sbsql_storage_tier_exact_route_conformance
+  )
+  set_tests_properties(sbsql_storage_tier_exact_route_conformance PROPERTIES
+    LABELS "sbsql_storage_tier_exact_route_conformance;STORAGE-TIER-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+  )
+
+  add_executable(
+    sbsql_filespace_discovery_exact_route_conformance
+    sbsql_filespace_discovery_exact_route_conformance.cpp
+  )
+  target_compile_features(sbsql_filespace_discovery_exact_route_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_filespace_discovery_exact_route_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_server_core
+      sb_engine_sblr
+  )
+  add_test(
+    NAME sbsql_filespace_discovery_exact_route_conformance
+    COMMAND sbsql_filespace_discovery_exact_route_conformance
+  )
+  set_tests_properties(sbsql_filespace_discovery_exact_route_conformance PROPERTIES
+    LABELS "sbsql_filespace_discovery_exact_route_conformance;FILESPACE-DISCOVERY-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+  )
+
+  add_executable(
+    sbsql_filespace_package_exact_route_conformance
+    sbsql_filespace_package_exact_route_conformance.cpp
+  )
+  target_compile_features(sbsql_filespace_package_exact_route_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_filespace_package_exact_route_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_server_core
+      sb_engine_sblr
+  )
+  add_test(
+    NAME sbsql_filespace_package_exact_route_conformance
+    COMMAND sbsql_filespace_package_exact_route_conformance
+  )
+  set_tests_properties(sbsql_filespace_package_exact_route_conformance PROPERTIES
+    LABELS "sbsql_filespace_package_exact_route_conformance;FILESPACE-PACKAGE-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+  )
+
+  add_executable(
+    sbsql_shard_placement_exact_route_conformance
+    sbsql_shard_placement_exact_route_conformance.cpp
+  )
+  target_compile_features(sbsql_shard_placement_exact_route_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_shard_placement_exact_route_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_server_core
+      sb_engine_sblr
+  )
+  add_test(
+    NAME sbsql_shard_placement_exact_route_conformance
+    COMMAND sbsql_shard_placement_exact_route_conformance
+  )
+  set_tests_properties(sbsql_shard_placement_exact_route_conformance PROPERTIES
+    LABELS "sbsql_shard_placement_exact_route_conformance;SHARD-PLACEMENT-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+  )
+
+  add_executable(
+    sbsql_encryption_maintenance_exact_route_conformance
+    sbsql_encryption_maintenance_exact_route_conformance.cpp
+  )
+  target_compile_features(sbsql_encryption_maintenance_exact_route_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_encryption_maintenance_exact_route_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_server_core
+      sb_engine_sblr
+      sb_engine_internal_api
+  )
+  add_test(
+    NAME sbsql_encryption_maintenance_exact_route_conformance
+    COMMAND sbsql_encryption_maintenance_exact_route_conformance
+  )
+  set_tests_properties(sbsql_encryption_maintenance_exact_route_conformance PROPERTIES
+    LABELS "sbsql_encryption_maintenance_exact_route_conformance;ENCRYPTION-MAINTENANCE-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
+  )
+
+  add_executable(
+    sbsql_protected_material_exact_route_conformance
+    sbsql_protected_material_exact_route_conformance.cpp
+  )
+  target_compile_features(sbsql_protected_material_exact_route_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_protected_material_exact_route_conformance
+    PRIVATE
+      sbl_sbsql_parser_pipeline
+      sb_server_core
+      sb_engine_sblr
+      sb_engine_internal_api
+  )
+  add_test(
+    NAME sbsql_protected_material_exact_route_conformance
+    COMMAND sbsql_protected_material_exact_route_conformance
+  )
+  set_tests_properties(sbsql_protected_material_exact_route_conformance PROPERTIES
+    LABELS "sbsql_protected_material_exact_route_conformance;PROTECTED-MATERIAL-SBSQL-ROUTE-IMPLEMENTED;sbsql_public_exact_commands;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_parser_worker;sbsql_e2e_passed;mga_transaction_regression"
   )
 
   add_executable(
@@ -3968,7 +4169,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
             $<$<TARGET_EXISTS:sbsql_example_database_seed>:$<TARGET_FILE:sbsql_example_database_seed>>
   )
   set_tests_properties(sb_listener_sbp_sbsql_server_engine_execution_smoke PROPERTIES
-    LABELS "public_single_node_full_route_gate;sbsql_canary_vertical_slice_gate;sb_server_sbsql_admission_conformance;sbsql_full_route_streaming_conformance;sbps_chunked_payload_conformance;sbsql_copy_streaming_conformance;sbsql_multi_result_conformance;sbsql_warning_partial_result_conformance;sbsql_stream_finality_conformance;sbsql_parser_worker;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;server_lifecycle_gate;listener_sbct_pool_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate"
+    LABELS "public_single_node_full_route_gate;sbsql_canary_vertical_slice_gate;sb_server_sbsql_admission_conformance;sbsql_full_route_streaming_conformance;sbps_chunked_payload_conformance;sbsql_copy_streaming_conformance;sbsql_multi_result_conformance;sbsql_warning_partial_result_conformance;sbsql_stream_finality_conformance;SBSQL-TEMPORARY-TABLE-PROOF-CLOSURE;TEMP-TABLE-GATE-015;ROUTINE-CURSOR-PROOF-CLOSURE;ROUTINE-CURSOR-GATE-009;sbsql_parser_worker;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;server_lifecycle_gate;listener_sbct_pool_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate"
   )
   if(TARGET sb_isql)
     add_test(
