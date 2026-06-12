@@ -1,0 +1,213 @@
+{
+  "description": "Self-contained SBsql release QA regression evidence package.",
+  "evidence_groups": [
+    {
+      "claim": "full_product_regression_surface_variation_and_hardening",
+      "ctest_labels": [
+        "sbsql_product_qa_manifest",
+        "sbsql_hardening_oracle",
+        "sbsql_no_spin_no_wal_no_direct_db_gate",
+        "sbsql_fuzz_malicious_input_gate"
+      ],
+      "evidence_files": [
+        {
+          "bytes": 237683,
+          "path": "project/tests/sbsql_parser_worker/generated/product_regression/sml_041_046/SML_041_046_PRODUCT_QA_MANIFEST.json",
+          "sha256": "f77c35a11bc4c5bcaf80feaf4ec59e1a189eb9bb232bff0fd1cc3df2aa521376"
+        },
+        {
+          "bytes": 17298,
+          "path": "project/tests/sbsql_parser_worker/generated/product_regression/sml_041_046/sbsql_sml_041_046_product_qa_manifest_gate.py",
+          "sha256": "b395f91f83337f650e49bf492da7db6f6ecdb5299fedaf5c4eba0b9f382a4ec1"
+        },
+        {
+          "bytes": 12621,
+          "path": "project/tests/sbsql_parser_worker/generated/hardening/sml_041_046/SML_044_046_HARDENING_ORACLE.json",
+          "sha256": "f0d0cc4ecbd79072ea6d3f042eed12f854d32a6fb46dfd61281432b28bf0adea"
+        },
+        {
+          "bytes": 10971,
+          "path": "project/tests/sbsql_parser_worker/generated/hardening/sml_041_046/sbsql_sml_044_046_hardening_oracle_gate.py",
+          "sha256": "6048e81fe4442deee6fdab16dfc877851652318484078a6c9f6a3c4880c4abf8"
+        },
+        {
+          "bytes": 2369,
+          "path": "project/tests/sbsql_parser_worker/generated/hardening/MALICIOUS_INPUT_FIXTURES.csv",
+          "sha256": "642e19301418c1cf061f4a43fdd7a55e1b29aceca23148219c32b93f0735a151"
+        },
+        {
+          "bytes": 20367,
+          "path": "project/tests/sbsql_parser_worker/generated/hardening/sbsql_fuzz_malicious_input_gate.cpp",
+          "sha256": "bb55c432a68358a2941b11b9b3c0715acef20c88426595717f5a3f1621bd66ef"
+        },
+        {
+          "bytes": 13479,
+          "path": "project/tests/sbsql_parser_worker/generated/hardening/sbsql_no_spin_no_wal_no_direct_db_gate.cpp",
+          "sha256": "5543e347c70aee6e0423375e0b28f726e43067b67e3e387edef9a51712bd2501"
+        }
+      ],
+      "group_id": "SML-041-046",
+      "group_sha256": "32713eac93879a01fb9761ee1ba0b1eabd2977e20c0f61006b910c0d60d887ad",
+      "parser_executes_sql": false,
+      "parser_owns_finality": false,
+      "private_workplan_dependency": false,
+      "reference_tree_dependency": false,
+      "runtime_dependency": "repo_tracked_project_evidence_only",
+      "sml_slices": [
+        "SML-041",
+        "SML-042",
+        "SML-043",
+        "SML-044",
+        "SML-045",
+        "SML-046"
+      ],
+      "storage_finality_authority": "scratchbird_engine_mga_transaction_inventory"
+    },
+    {
+      "claim": "filespace_relocation_primary_migration_and_recovery",
+      "ctest_labels": [
+        "sbsql_filespace_relocation"
+      ],
+      "evidence_files": [
+        {
+          "bytes": 24224,
+          "path": "project/tests/sbsql_parser_worker/generated/filespace_relocation/SML_049_052_FILESPACE_RELOCATION_MANIFEST.csv",
+          "sha256": "90b4befc46b36d77659ce63e77b65b3f7996788913150ff28463fb128fd14202"
+        },
+        {
+          "bytes": 19625,
+          "path": "project/tests/sbsql_parser_worker/generated/filespace_relocation/SML_049_052_FILESPACE_RELOCATION_ORACLE.json",
+          "sha256": "c2bb4e9450a97b83ed1d29cafc2dd422370475988784811237e430ccc9ebbff0"
+        },
+        {
+          "bytes": 19792,
+          "path": "project/tests/sbsql_parser_worker/generated/filespace_relocation/sbsql_sml_049_052_filespace_relocation_gate.py",
+          "sha256": "05b3c7eae58d5cb0fbc9b42ee9a856a2637d867e0ce8813af658021c89a16368"
+        }
+      ],
+      "group_id": "SML-049-052",
+      "group_sha256": "69bb76500ef6422cd9ae4b759100d481153751beaafc45e17b4bad6849730318",
+      "parser_executes_sql": false,
+      "parser_owns_finality": false,
+      "private_workplan_dependency": false,
+      "reference_tree_dependency": false,
+      "runtime_dependency": "repo_tracked_project_evidence_only",
+      "sml_slices": [
+        "SML-049",
+        "SML-050",
+        "SML-051",
+        "SML-052"
+      ],
+      "storage_finality_authority": "scratchbird_engine_mga_transaction_inventory"
+    },
+    {
+      "claim": "multimodel_capability_and_sql_nosql_join_closure",
+      "ctest_labels": [
+        "sbsql_multimodel_capability"
+      ],
+      "evidence_files": [
+        {
+          "bytes": 84982,
+          "path": "project/tests/sbsql_parser_worker/generated/multimodel_capability/SML_054_057_062_MULTIMODEL_CAPABILITY_MANIFEST.json",
+          "sha256": "e888a5b76fa449c982b0a270d45e1b7fb5db0e51449bfecaef9000315a9e44d7"
+        },
+        {
+          "bytes": 32532,
+          "path": "project/tests/sbsql_parser_worker/generated/multimodel_capability/SML_054_057_062_MULTIMODEL_CAPABILITY_ORACLE.jsonl",
+          "sha256": "5fe3f7e3afe82e5f16cfb84c8ad74202e157bade02ad2c0b4dd1297c95058a16"
+        },
+        {
+          "bytes": 24442,
+          "path": "project/tests/sbsql_parser_worker/generated/multimodel_capability/sbsql_sml_054_057_062_multimodel_capability_gate.py",
+          "sha256": "ab979e2b526ff5c7e270c960b8fb719530227b95937f6dca511f930ce88d8a7d"
+        }
+      ],
+      "group_id": "SML-054-057-062",
+      "group_sha256": "51118bc9ecb06c3ab9dddc48f793542a28f5422f7e9846c78b3477daee236939",
+      "parser_executes_sql": false,
+      "parser_owns_finality": false,
+      "private_workplan_dependency": false,
+      "reference_tree_dependency": false,
+      "runtime_dependency": "repo_tracked_project_evidence_only",
+      "sml_slices": [
+        "SML-054",
+        "SML-055",
+        "SML-056",
+        "SML-057",
+        "SML-062"
+      ],
+      "storage_finality_authority": "scratchbird_engine_mga_transaction_inventory"
+    },
+    {
+      "claim": "encrypted_database_full_route_key_failure_and_recovery",
+      "ctest_labels": [
+        "sbsql_encrypted_database_matrix"
+      ],
+      "evidence_files": [
+        {
+          "bytes": 8564,
+          "path": "project/tests/sbsql_parser_worker/generated/encrypted_database/ENCRYPTED_DATABASE_REGRESSION_MATRIX.json",
+          "sha256": "04dd17b790e0031c2329f83567331c41b78006bca8afc401202933eb1ee1f29a"
+        },
+        {
+          "bytes": 9880,
+          "path": "project/tests/sbsql_parser_worker/generated/encrypted_database/sbsql_sml_059_061_encrypted_database_gate.py",
+          "sha256": "139732835a628c731ff7b71e3764366cb484f45cd7939e82b491006c665fb9b0"
+        }
+      ],
+      "group_id": "SML-059-061",
+      "group_sha256": "c0a82de9cb62de317580a5024bc124fd875c0d99df012195169f3d3e7b26071a",
+      "parser_executes_sql": false,
+      "parser_owns_finality": false,
+      "private_workplan_dependency": false,
+      "reference_tree_dependency": false,
+      "runtime_dependency": "repo_tracked_project_evidence_only",
+      "sml_slices": [
+        "SML-059",
+        "SML-060",
+        "SML-061"
+      ],
+      "storage_finality_authority": "scratchbird_engine_mga_transaction_inventory"
+    },
+    {
+      "claim": "native_compile_jit_aot_equivalence_and_release_metrics",
+      "ctest_labels": [
+        "sbsql_native_compile_jit_aot"
+      ],
+      "evidence_files": [
+        {
+          "bytes": 8213,
+          "path": "project/tests/sbsql_parser_worker/generated/native_compile/NATIVE_COMPILE_JIT_AOT_MATRIX.json",
+          "sha256": "6b8edbf346e41bed0aa5104703ff76df9db97b2488ff4aac3a480fc05f8db8d4"
+        },
+        {
+          "bytes": 9612,
+          "path": "project/tests/sbsql_parser_worker/generated/native_compile/sbsql_sml_064_066_native_compile_gate.py",
+          "sha256": "50179b1a5a38102e83fc363075b2ec0aa2dbccb36a007ee3891864df620ec0f2"
+        }
+      ],
+      "group_id": "SML-064-066",
+      "group_sha256": "1d0b9998dbb655723f731a9c250be7299eb736f5e68038ce7597fd4806484bbf",
+      "parser_executes_sql": false,
+      "parser_owns_finality": false,
+      "private_workplan_dependency": false,
+      "reference_tree_dependency": false,
+      "runtime_dependency": "repo_tracked_project_evidence_only",
+      "sml_slices": [
+        "SML-064",
+        "SML-065",
+        "SML-066"
+      ],
+      "storage_finality_authority": "scratchbird_engine_mga_transaction_inventory"
+    }
+  ],
+  "gate_id": "SML-GATE-047",
+  "generated_from_tracked_project_files": true,
+  "manifest_sha256": "b31fce36577468b8391adf9069c58d511b3f4589106b21d76d801e7b3a1920fc",
+  "network_dependency": false,
+  "private_workplan_dependency": false,
+  "reference_tree_dependency": false,
+  "schema_version": "sbsql.sml_047.release_qa_package.v1",
+  "source": "deterministic_generator",
+  "status": "implemented_proven"
+}
