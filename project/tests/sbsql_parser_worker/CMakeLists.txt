@@ -276,6 +276,16 @@ set_tests_properties(sbsql_sml_064_066_native_compile_gate PROPERTIES
   LABELS "sbsql_native_compile_jit_aot;sbsql_parser_worker;SML-064;SML-065;SML-066;SML-GATE-064;SML-GATE-065;SML-GATE-066;mga_transaction_regression"
 )
 
+add_test(
+  NAME sbsql_sml_047_release_qa_package_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/release_qa/sbsql_sml_047_release_qa_package_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_sml_047_release_qa_package_gate PROPERTIES
+  LABELS "sbsql_release_qa_package;sbsql_parser_worker;SML-047;SML-GATE-047;mga_transaction_regression"
+)
+
 if(NOT TARGET sb_isql AND EXISTS "${PROJECT_SOURCE_DIR}/drivers/tool/cli/CMakeLists.txt")
   add_subdirectory("${PROJECT_SOURCE_DIR}/drivers/tool/cli" "${CMAKE_BINARY_DIR}/drivers/tool/cli")
 endif()
