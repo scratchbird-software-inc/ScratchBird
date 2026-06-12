@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import importlib.util
 import json
 import re
 import shutil
@@ -39,6 +40,8 @@ REGISTRY_MANIFEST = "project/src/parsers/sbsql_worker/registry/generated/sbsql_g
 RELEASE_DECLARATION = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/SBSQL_SURFACE_RELEASE_DECLARATION.csv"
 STRICT_LEDGER = "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv"
 DRIVER_SURFACE_MANIFEST = "project/drivers/language/sbsql_language_surface_manifest.json"
+PUBLIC_DIAGNOSTIC_MATRIX_GENERATOR = "project/tools/release/public_diagnostic_matrix_generator.py"
+SBLR_ENVELOPE_HPP = "project/include/scratchbird/engine/sblr_envelope.hpp"
 
 PACK_SCHEMA_VERSION = "sbsql.language_resource_pack.v1"
 MANIFEST_SCHEMA_VERSION = "sbsql.language_resource_pack_manifest.v1"
@@ -920,6 +923,90 @@ SQL_GLOSSARY["es-ES"].update({
     "write": "escribir", "year": "año", "zone": "zona",
 })
 
+for _tag, _terms in {
+    "fr-FR": {
+        "accepted": "accepté", "actual": "réel", "already": "déjà", "ambiguous": "ambigu",
+        "approval": "approbation", "asan": "ASan", "authentication": "authentification", "authority": "autorité",
+        "available": "disponible", "candidate": "candidat", "checksum": "somme de contrôle",
+        "classified": "classé", "closed": "fermé", "configuration": "configuration", "could": "a pu", "denied": "refusée",
+        "detected": "détecté", "did": "a", "duplicate": "doublon", "external": "externe",
+        "failed": "échoué", "failure": "échec", "file": "fichier", "forbidden": "interdit",
+        "forbids": "interdit", "found": "trouvé", "hash": "hachage", "invalid": "invalide", "journal": "journal", "keyring": "trousseau de clés",
+        "lifecycle": "cycle de vie", "lossiness": "perte", "malformed": "mal formé",
+        "manifest": "manifeste", "match": "correspondance", "mismatch": "incompatibilité", "missing": "manquant",
+        "opened": "ouvert", "pack": "paquet", "permission": "autorisation", "policy": "politique", "profile": "profil", "ready": "prêt", "redacted": "masqué",
+        "renderable": "rendu possible", "rendered": "rendu", "requested": "demandé",
+        "required": "requis", "requires": "requiert", "secret": "secret", "store": "magasin",
+        "tsan": "TSan", "unavailable": "indisponible", "unsafe": "non sûr", "validated": "validé",
+        "validation": "validation", "was": "a été",
+    },
+    "fr-CA": {
+        "accepted": "accepté", "actual": "réel", "already": "déjà", "ambiguous": "ambigu",
+        "approval": "approbation", "asan": "ASan", "authentication": "authentification", "authority": "autorité",
+        "available": "disponible", "candidate": "candidat", "checksum": "somme de contrôle",
+        "classified": "classé", "closed": "fermé", "configuration": "configuration", "could": "a pu", "denied": "refusée",
+        "detected": "détecté", "did": "a", "duplicate": "doublon", "external": "externe",
+        "failed": "échoué", "failure": "échec", "file": "fichier", "forbidden": "interdit",
+        "forbids": "interdit", "found": "trouvé", "hash": "hachage", "invalid": "invalide", "journal": "journal", "keyring": "trousseau de clés",
+        "lifecycle": "cycle de vie", "lossiness": "perte", "malformed": "mal formé",
+        "manifest": "manifeste", "match": "correspondance", "mismatch": "incompatibilité", "missing": "manquant",
+        "opened": "ouvert", "pack": "paquet", "permission": "autorisation", "policy": "politique", "profile": "profil", "ready": "prêt", "redacted": "caviardé",
+        "renderable": "rendu possible", "rendered": "rendu", "requested": "demandé",
+        "required": "requis", "requires": "requiert", "secret": "secret", "store": "magasin",
+        "tsan": "TSan", "unavailable": "indisponible", "unsafe": "non sûr", "validated": "validé",
+        "validation": "validation", "was": "a été",
+    },
+    "de-DE": {
+        "accepted": "akzeptiert", "actual": "tatsächlich", "already": "bereits", "ambiguous": "mehrdeutig",
+        "approval": "Freigabe", "asan": "ASan", "authentication": "Authentifizierung", "authority": "Autorität",
+        "available": "verfügbar", "candidate": "Kandidat", "checksum": "Prüfsumme",
+        "classified": "klassifiziert", "closed": "geschlossen", "configuration": "Konfiguration", "could": "konnte", "denied": "verweigert",
+        "detected": "erkannt", "did": "hat", "duplicate": "Duplikat", "external": "extern",
+        "failed": "fehlgeschlagen", "failure": "Fehler", "file": "Datei", "forbidden": "verboten",
+        "forbids": "verbietet", "found": "gefunden", "hash": "Hash", "invalid": "ungültig", "journal": "Journal", "keyring": "Schlüsselbund",
+        "lifecycle": "Lebenszyklus", "lossiness": "Verlustigkeit", "malformed": "fehlerhaft",
+        "manifest": "Manifest", "match": "Übereinstimmung", "mismatch": "Nichtübereinstimmung", "missing": "fehlend",
+        "opened": "geöffnet", "pack": "Paket", "permission": "Berechtigung", "policy": "Richtlinie", "profile": "Profil", "ready": "bereit", "redacted": "redigiert",
+        "renderable": "darstellbar", "rendered": "gerendert", "requested": "angefordert",
+        "required": "erforderlich", "requires": "erfordert", "secret": "Geheimnis", "store": "Speicher",
+        "tsan": "TSan", "unavailable": "nicht verfügbar", "unsafe": "unsicher", "validated": "validiert",
+        "validation": "Validierung", "was": "wurde",
+    },
+    "it-IT": {
+        "accepted": "accettato", "actual": "effettivo", "already": "già", "ambiguous": "ambiguo",
+        "approval": "approvazione", "asan": "ASan", "authentication": "autenticazione", "authority": "autorità",
+        "available": "disponibile", "candidate": "candidato", "checksum": "checksum",
+        "classified": "classificata", "closed": "chiuso", "configuration": "configurazione", "could": "poteva", "denied": "negata",
+        "detected": "rilevato", "did": "ha", "duplicate": "duplicato", "external": "esterno",
+        "failed": "fallito", "failure": "errore", "file": "file", "forbidden": "vietato",
+        "forbids": "vieta", "found": "trovato", "hash": "hash", "invalid": "non valido", "journal": "giornale", "keyring": "portachiavi",
+        "lifecycle": "ciclo di vita", "lossiness": "perdita", "malformed": "malformato",
+        "manifest": "manifesto", "match": "corrispondenza", "mismatch": "mancata corrispondenza", "missing": "mancante",
+        "opened": "aperto", "pack": "pacchetto", "permission": "permesso", "policy": "criterio", "profile": "profilo", "ready": "pronto", "redacted": "oscurato",
+        "renderable": "renderizzabile", "rendered": "renderizzato", "requested": "richiesto",
+        "required": "richiesto", "requires": "richiede", "secret": "segreto", "store": "archivio",
+        "tsan": "TSan", "unavailable": "non disponibile", "unsafe": "non sicuro", "validated": "convalidato",
+        "validation": "convalida", "was": "è stato",
+    },
+    "es-ES": {
+        "accepted": "aceptado", "actual": "real", "already": "ya", "ambiguous": "ambiguo",
+        "approval": "aprobación", "asan": "ASan", "authentication": "autenticación", "authority": "autoridad",
+        "available": "disponible", "candidate": "candidato", "checksum": "suma de comprobación",
+        "classified": "clasificado", "closed": "cerrado", "configuration": "configuración", "could": "pudo", "denied": "denegada",
+        "detected": "detectado", "did": "hizo", "duplicate": "duplicado", "external": "externo",
+        "failed": "fallido", "failure": "fallo", "file": "archivo", "forbidden": "prohibido",
+        "forbids": "prohíbe", "found": "encontrado", "hash": "hash", "invalid": "no válido", "journal": "diario", "keyring": "llavero",
+        "lifecycle": "ciclo de vida", "lossiness": "pérdida", "malformed": "mal formado",
+        "manifest": "manifiesto", "match": "coincidencia", "mismatch": "discordancia", "missing": "faltante",
+        "opened": "abierto", "pack": "paquete", "permission": "permiso", "policy": "política", "profile": "perfil", "ready": "listo", "redacted": "redactado",
+        "renderable": "representable", "rendered": "representado", "requested": "solicitado",
+        "required": "requerido", "requires": "requiere", "secret": "secreto", "store": "almacén",
+        "tsan": "TSan", "unavailable": "no disponible", "unsafe": "inseguro", "validated": "validado",
+        "validation": "validación", "was": "fue",
+    },
+}.items():
+    SQL_GLOSSARY[_tag].update(_terms)
+
 DIAGNOSTIC_TRANSLATIONS = {
     "fr-FR": {
         "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH": "Profil linguistique préféré non compatible; passage au SBsql anglais canonique.",
@@ -950,6 +1037,114 @@ DIAGNOSTIC_TRANSLATIONS = {
         "SBSQL.LANG_RESOURCE.FAIL_CLOSED_ON_PROFILE_MISMATCH": "El perfil de idioma no coincide; la operación se rechazó en modo cerrado.",
         "SBSQL.LANG_RESOURCE.RENDERER_LOSSINESS_CLASSIFIED": "La pérdida del renderizador se clasificó antes de la salida.",
         "SBSQL.LANG_RESOURCE.RENDERER_NOT_RENDERABLE": "El flujo SBLR solicitado no se puede representar en el idioma preferido.",
+    },
+}
+
+MESSAGE_PHRASE_TRANSLATIONS = {
+    "Authentication failed.": {
+        "fr-FR": "Échec de l'authentification.",
+        "fr-CA": "Échec de l'authentification.",
+        "de-DE": "Authentifizierung fehlgeschlagen.",
+        "it-IT": "Autenticazione fallita.",
+        "es-ES": "La autenticación falló.",
+    },
+    "Authorization forbidden.": {
+        "fr-FR": "Autorisation interdite.",
+        "fr-CA": "Autorisation interdite.",
+        "de-DE": "Autorisierung verboten.",
+        "it-IT": "Autorizzazione vietata.",
+        "es-ES": "Autorización prohibida.",
+    },
+    "Resource pack is missing.": {
+        "fr-FR": "Le pack de ressources est manquant.",
+        "fr-CA": "Le pack de ressources est manquant.",
+        "de-DE": "Ressourcenpaket fehlt.",
+        "it-IT": "Pacchetto risorse mancante.",
+        "es-ES": "Falta el paquete de recursos.",
+    },
+    "Manifest hash mismatch.": {
+        "fr-FR": "Discordance du hachage du manifeste.",
+        "fr-CA": "Discordance du hachage du manifeste.",
+        "de-DE": "Manifest-Hash stimmt nicht überein.",
+        "it-IT": "Hash del manifesto non corrispondente.",
+        "es-ES": "Discordancia del hash del manifiesto.",
+    },
+    "Invalid configuration value.": {
+        "fr-FR": "Valeur de configuration non valide.",
+        "fr-CA": "Valeur de configuration non valide.",
+        "de-DE": "Ungültiger Konfigurationswert.",
+        "it-IT": "Valore di configurazione non valido.",
+        "es-ES": "Valor de configuración no válido.",
+    },
+    "Server is not ready.": {
+        "fr-FR": "Le serveur n'est pas prêt.",
+        "fr-CA": "Le serveur n'est pas prêt.",
+        "de-DE": "Der Server ist nicht bereit.",
+        "it-IT": "Il server non è pronto.",
+        "es-ES": "El servidor no está listo.",
+    },
+    "Transaction conflict detected.": {
+        "fr-FR": "Conflit de transaction détecté.",
+        "fr-CA": "Conflit de transaction détecté.",
+        "de-DE": "Transaktionskonflikt erkannt.",
+        "it-IT": "Conflitto di transazione rilevato.",
+        "es-ES": "Conflicto de transacción detectado.",
+    },
+    "Database file could not be opened.": {
+        "fr-FR": "Le fichier de base de données n'a pas pu être ouvert.",
+        "fr-CA": "Le fichier de base de données n'a pas pu être ouvert.",
+        "de-DE": "Die Datenbankdatei konnte nicht geöffnet werden.",
+        "it-IT": "Impossibile aprire il file del database.",
+        "es-ES": "No se pudo abrir el archivo de base de datos.",
+    },
+    "Permission is required.": {
+        "fr-FR": "Une autorisation est requise.",
+        "fr-CA": "Une autorisation est requise.",
+        "de-DE": "Eine Berechtigung ist erforderlich.",
+        "it-IT": "È richiesta un'autorizzazione.",
+        "es-ES": "Se requiere permiso.",
+    },
+    "Unsupported operation.": {
+        "fr-FR": "Opération non prise en charge.",
+        "fr-CA": "Opération non prise en charge.",
+        "de-DE": "Nicht unterstützte Operation.",
+        "it-IT": "Operazione non supportata.",
+        "es-ES": "Operación no compatible.",
+    },
+    "Schema object was not found.": {
+        "fr-FR": "L'objet du schéma est introuvable.",
+        "fr-CA": "L'objet du schéma est introuvable.",
+        "de-DE": "Schemaobjekt wurde nicht gefunden.",
+        "it-IT": "Oggetto dello schema non trovato.",
+        "es-ES": "No se encontró el objeto del esquema.",
+    },
+    "SBLR stream validation failed.": {
+        "fr-FR": "La validation du flux SBLR a échoué.",
+        "fr-CA": "La validation du flux SBLR a échoué.",
+        "de-DE": "SBLR-Stream-Validierung fehlgeschlagen.",
+        "it-IT": "Convalida del flusso SBLR non riuscita.",
+        "es-ES": "Error de validación del flujo SBLR.",
+    },
+    "UUID descriptor is invalid.": {
+        "fr-FR": "Le descripteur UUID est invalide.",
+        "fr-CA": "Le descripteur UUID est invalide.",
+        "de-DE": "UUID-Deskriptor ist ungültig.",
+        "it-IT": "Il descrittore UUID non è valido.",
+        "es-ES": "El descriptor UUID no es válido.",
+    },
+    "Language profile is not supported.": {
+        "fr-FR": "Le profil linguistique n'est pas pris en charge.",
+        "fr-CA": "Le profil linguistique n'est pas pris en charge.",
+        "de-DE": "Sprachprofil wird nicht unterstützt.",
+        "it-IT": "Il profilo linguistico non è supportato.",
+        "es-ES": "El perfil de idioma no es compatible.",
+    },
+    "Diagnostic message redacted by policy.": {
+        "fr-FR": "Message de diagnostic masqué par la politique.",
+        "fr-CA": "Message de diagnostic caviardé par la politique.",
+        "de-DE": "Diagnosemeldung durch Richtlinie redigiert.",
+        "it-IT": "Messaggio diagnostico oscurato dal criterio.",
+        "es-ES": "Mensaje de diagnóstico redactado por la política.",
     },
 }
 
@@ -1018,6 +1213,103 @@ def keyword_tokens(canonical_name: str) -> list[str]:
     if re.fullmatch(r"[A-Z][A-Z0-9_]*", canonical_name):
         return canonical_name.split("_")
     return [word.upper() for word in split_words(canonical_name) if word.isalpha() and len(word) > 1 and word == word.upper()]
+
+
+DISPLAY_TOKEN_OVERRIDES = {
+    "ai": "AI",
+    "asan": "ASan",
+    "dbbt": "DBBT",
+    "mga": "MGA",
+    "sblr": "SBLR",
+    "sql": "SQL",
+    "sqlstate": "SQLSTATE",
+    "tsan": "TSan",
+    "ubsan": "UBSan",
+    "uuid": "UUID",
+}
+
+
+ONLINE_TRANSLATION_VERIFICATION_PHRASES = (
+    "Authentication failed.",
+    "Authorization forbidden.",
+    "Resource pack is missing.",
+    "Manifest hash mismatch.",
+    "Invalid configuration value.",
+    "Server is not ready.",
+    "Transaction conflict detected.",
+    "Database file could not be opened.",
+    "Permission is required.",
+    "Unsupported operation.",
+    "Schema object was not found.",
+    "SBLR stream validation failed.",
+    "UUID descriptor is invalid.",
+    "Language profile is not supported.",
+    "Diagnostic message redacted by policy.",
+)
+
+
+def load_public_diagnostic_matrix_rows(repo_root: Path) -> list[dict[str, str]]:
+    path = repo_root / PUBLIC_DIAGNOSTIC_MATRIX_GENERATOR
+    spec = importlib.util.spec_from_file_location("sb_public_diagnostic_matrix_generator", path)
+    if spec is None or spec.loader is None:
+        fail(f"cannot load public diagnostic matrix generator: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    rows = getattr(module, "MATRIX_ROWS", None)
+    if not isinstance(rows, tuple):
+        fail("public diagnostic matrix generator did not expose MATRIX_ROWS")
+    return [dict(row) for row in rows]
+
+
+def display_message_word(word: str) -> str:
+    lowered = word.lower()
+    if lowered in DISPLAY_TOKEN_OVERRIDES:
+        return DISPLAY_TOKEN_OVERRIDES[lowered]
+    return lowered
+
+
+def message_key_to_template(message_key: str) -> str:
+    words = [display_message_word(word) for word in split_words(message_key)]
+    if not words:
+        return "Diagnostic message."
+    text = " ".join(words)
+    return text[:1].upper() + text[1:] + "."
+
+
+def diagnostic_severity(row: dict[str, str]) -> str:
+    status = row.get("compatibility_status", "")
+    if status in {"diagnostic_only_stable", "native_runner_required"}:
+        return "info"
+    if status == "unsupported_stable":
+        return "warning"
+    return "error"
+
+
+def extract_sblr_envelope_diagnostics(repo_root: Path) -> list[dict[str, str]]:
+    text = (repo_root / SBLR_ENVELOPE_HPP).read_text(encoding="utf-8")
+    pattern = re.compile(
+        r'decoded\.diagnostic_code\s*=\s*"(?P<code>[^"]+)";\s*'
+        r'decoded\.message_key\s*=\s*"(?P<message_key>[^"]+)";',
+        re.MULTILINE,
+    )
+    rows: dict[str, dict[str, str]] = {}
+    for match in pattern.finditer(text):
+        code = match.group("code")
+        rows.setdefault(
+            code,
+            {
+                "diagnostic_id": "sblr.envelope." + safe_token(code),
+                "area": "sblr_envelope",
+                "code": code,
+                "message_key": match.group("message_key"),
+                "redaction_class": "public_code_only",
+                "compatibility_status": "fail_closed_stable",
+                "source_path": SBLR_ENVELOPE_HPP,
+                "public_test_path": "project/tests/release/public_sblr_uuid_mga_route_integration_gate.cpp",
+            },
+        )
+    return sorted(rows.values(), key=lambda row: row["code"])
 
 
 def parse_cpp_string_literal(text: str, start: int) -> tuple[bytes, int]:
@@ -1425,13 +1717,166 @@ def translate_text(row: dict[str, Any], exact_tag: str) -> tuple[str, str, list[
         translated_words.append(word)
         preserved_tokens.append(word)
 
-    translated_words, topology_transform = apply_phrase_topology(words, translated_words, exact_tag)
+    topology_transform = None
+    if row.get("topology_transform_allowed", True) is not False:
+        translated_words, topology_transform = apply_phrase_topology(words, translated_words, exact_tag)
     translated = " ".join(translated_words)
     if translated_count == 0:
         return translated, "technical_source_preserved", sorted(set(preserved_tokens)), topology_transform
     if preserved_tokens:
         return translated, "localized_with_technical_source_preserved", sorted(set(preserved_tokens)), topology_transform
     return translated, "localized_deterministic", [], topology_transform
+
+
+def translate_message_template(template: str, exact_tag: str) -> dict[str, Any]:
+    phrase_translations = MESSAGE_PHRASE_TRANSLATIONS.get(template, {})
+    if exact_tag in SOURCE_AUTHORITY_REVIEWED_PROFILES:
+        return {
+            "exact_tag": exact_tag,
+            "localized_template": template,
+            "translation_status": "canonical_source",
+        }
+    if exact_tag in phrase_translations:
+        return {
+            "exact_tag": exact_tag,
+            "localized_template": phrase_translations[exact_tag],
+            "translation_status": "localized_phrase_seed",
+        }
+    translated, status, preserved_tokens, topology_transform = translate_text(
+        {
+            "case_policy": "sentence",
+            "do_not_translate": False,
+            "source_family": "database_message",
+            "source_id": stable_id("message_source", template),
+            "source_text": template,
+            "topology_transform_allowed": False,
+        },
+        exact_tag,
+    )
+    payload: dict[str, Any] = {
+        "exact_tag": exact_tag,
+        "localized_template": translated,
+        "translation_status": status,
+    }
+    if preserved_tokens:
+        payload["source_tokens_preserved_by_policy"] = preserved_tokens
+    if topology_transform:
+        payload["topology_transform"] = topology_transform
+    return payload
+
+
+def build_database_message_catalog(repo_root: Path) -> dict[str, Any]:
+    matrix_rows = load_public_diagnostic_matrix_rows(repo_root)
+    message_rows: list[dict[str, Any]] = []
+    seen_codes: set[str] = set()
+    for row in matrix_rows:
+        template = message_key_to_template(row["message_key"])
+        seen_codes.add(row["code"])
+        message_rows.append(
+            {
+                "message_id": stable_id("database_message", row["code"], row["message_key"]),
+                "source_family": "public_diagnostic_matrix",
+                "diagnostic_id": row["diagnostic_id"],
+                "area": row["area"],
+                "diagnostic_code": row["code"],
+                "message_key": row["message_key"],
+                "severity": diagnostic_severity(row),
+                "redaction_class": row["redaction_class"],
+                "compatibility_status": row["compatibility_status"],
+                "canonical_template": template,
+                "source_path": row["source_path"],
+                "public_test_path": row["public_test_path"],
+                "translations": [
+                    translate_message_template(template, profile["exact_tag"])
+                    for profile in LANGUAGE_PROFILES
+                ],
+            }
+        )
+    for row in extract_sblr_envelope_diagnostics(repo_root):
+        if row["code"] in seen_codes:
+            continue
+        template = message_key_to_template(row["message_key"])
+        message_rows.append(
+            {
+                "message_id": stable_id("database_message", row["code"], row["message_key"]),
+                "source_family": "sblr_envelope_codec",
+                "diagnostic_id": row["diagnostic_id"],
+                "area": row["area"],
+                "diagnostic_code": row["code"],
+                "message_key": row["message_key"],
+                "severity": "error",
+                "redaction_class": row["redaction_class"],
+                "compatibility_status": row["compatibility_status"],
+                "canonical_template": template,
+                "source_path": row["source_path"],
+                "public_test_path": row["public_test_path"],
+                "translations": [
+                    translate_message_template(template, profile["exact_tag"])
+                    for profile in LANGUAGE_PROFILES
+                ],
+            }
+        )
+    message_rows.sort(key=lambda row: (row["area"], row["diagnostic_code"]))
+    return {
+        "schema_version": "sbsql.database_message_catalog.v1",
+        "generated_by": GENERATOR_ID,
+        "source_files": [PUBLIC_DIAGNOSTIC_MATRIX_GENERATOR, SBLR_ENVELOPE_HPP],
+        "profile_count": len(LANGUAGE_PROFILES),
+        "profiles": [profile["exact_tag"] for profile in LANGUAGE_PROFILES],
+        "message_count": len(message_rows),
+        "translation_policy": {
+            "canonical_english_profiles": sorted(SOURCE_AUTHORITY_REVIEWED_PROFILES),
+            "non_english_profiles": [
+                profile["exact_tag"]
+                for profile in LANGUAGE_PROFILES
+                if profile["exact_tag"] not in SOURCE_AUTHORITY_REVIEWED_PROFILES
+            ],
+            "no_english_fallback_rows_allowed": True,
+            "sentence_topology_reordering_allowed": False,
+            "placeholders_preserved_by_policy": True,
+        },
+        "messages": message_rows,
+    }
+
+
+def build_online_translation_verification_corpus() -> dict[str, Any]:
+    cases: list[dict[str, Any]] = []
+    for index, phrase in enumerate(ONLINE_TRANSLATION_VERIFICATION_PHRASES, start=1):
+        translations = [
+            translate_message_template(phrase, profile["exact_tag"])
+            for profile in LANGUAGE_PROFILES
+        ]
+        cases.append(
+            {
+                "case_id": f"SBSQL-ONLINE-TRANS-{index:03d}",
+                "source_language": "en",
+                "source_text": phrase,
+                "provider_query_text": phrase,
+                "verification_policy": "compare_external_online_translation_with_scratchbird_seed_translation",
+                "network_required": True,
+                "external_reference_text_not_vendored": True,
+                "translations": translations,
+            }
+        )
+    return {
+        "schema_version": "sbsql.online_translation_verification_corpus.v1",
+        "generated_by": GENERATOR_ID,
+        "profiles": [profile["exact_tag"] for profile in LANGUAGE_PROFILES],
+        "provider_policy": {
+            "release_pack_generation_uses_network": False,
+            "online_reference_checks_are_optional_external_verification": True,
+            "raw_online_responses_not_required_in_public_repo": True,
+            "supported_language_pairs": {
+                "fr-FR": "en|fr",
+                "fr-CA": "en|fr",
+                "de-DE": "en|de",
+                "it-IT": "en|it",
+                "es-ES": "en|es",
+            },
+        },
+        "case_count": len(cases),
+        "cases": cases,
+    }
 
 
 def build_language_profile(profile: dict[str, str], corpus_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1502,6 +1947,7 @@ def schema(name: str, required: list[str]) -> dict[str, Any]:
 
 
 def build_auxiliary_resources(
+    repo_root: Path,
     registry_rows: list[dict[str, str]],
     dialect: dict[str, Any],
     corpus_rows: list[dict[str, Any]],
@@ -1569,6 +2015,8 @@ def build_auxiliary_resources(
             if row["source_family"] == "diagnostic"
         ],
     }
+    database_messages = build_database_message_catalog(repo_root)
+    online_translation_verification = build_online_translation_verification_corpus()
     rendering = {
         "schema_version": "sbsql.rendering_templates.v1",
         "renderer_lossiness_classes": [
@@ -1647,7 +2095,15 @@ def build_auxiliary_resources(
             }
             for profile in LANGUAGE_PROFILES
         ],
-        "source_files": [REGISTRY_HPP, REGISTRY_CPP, REGISTRY_MANIFEST, RELEASE_DECLARATION, STRICT_LEDGER],
+        "source_files": [
+            REGISTRY_HPP,
+            REGISTRY_CPP,
+            REGISTRY_MANIFEST,
+            RELEASE_DECLARATION,
+            STRICT_LEDGER,
+            PUBLIC_DIAGNOSTIC_MATRIX_GENERATOR,
+            SBLR_ENVELOPE_HPP,
+        ],
     }
     dialect_profile = {
         "schema_version": "sbsql.dialect_profile.v1",
@@ -1662,10 +2118,12 @@ def build_auxiliary_resources(
         "phrases/phrase-table.json": phrases,
         "predictive/predictive-grammar.json": predictive,
         "diagnostics/diagnostic-messages.json": diagnostics,
+        "diagnostics/database-message-catalog.json": database_messages,
         "rendering/rendering-templates.json": rendering,
         "unicode/unicode-policy.json": unicode,
         "resolver/resolver-policy.json": resolver,
         "conformance/conformance-corpus.json": conformance,
+        "conformance/online-translation-verification-corpus.json": online_translation_verification,
         "provenance/provenance.json": provenance,
         "provenance/native-review-status.json": {"schema_version": "sbsql.native_review_status.v1", "profiles": provenance["native_review"]},
     }
@@ -1679,7 +2137,7 @@ def build_files(repo_root: Path) -> tuple[list[GeneratedFile], dict[str, Any], d
     dialect = build_dialect_baseline(registry_rows, release_by_id, ledger_by_id, registry_manifest, registry_count)
     corpus_rows = build_source_corpus(system_registry, dialect)
     language_profiles = [build_language_profile(profile, corpus_rows) for profile in LANGUAGE_PROFILES]
-    aux = build_auxiliary_resources(registry_rows, dialect, corpus_rows, language_profiles)
+    aux = build_auxiliary_resources(repo_root, registry_rows, dialect, corpus_rows, language_profiles)
 
     files: list[GeneratedFile] = [
         GeneratedFile("resources/canonical/system-object-name-registry.schema.json", canonical_json_bytes(schema("SBsql system object name registry", ["schema_version", "entries"]))),
@@ -1714,10 +2172,12 @@ def build_files(repo_root: Path) -> tuple[list[GeneratedFile], dict[str, Any], d
         "phrases/phrase-resource.schema.json": "SBsql phrase table",
         "predictive/predictive-resource.schema.json": "SBsql predictive resource",
         "diagnostics/diagnostic-resource.schema.json": "SBsql diagnostic messages",
+        "diagnostics/database-message-catalog.schema.json": "SBsql database message catalog",
         "rendering/rendering-resource.schema.json": "SBsql rendering templates",
         "unicode/unicode-policy.schema.json": "SBsql unicode policy",
         "resolver/resolver-resource.schema.json": "SBsql resolver policy",
         "conformance/conformance-corpus.schema.json": "SBsql conformance corpus",
+        "conformance/online-translation-verification-corpus.schema.json": "SBsql online translation verification corpus",
         "provenance/provenance.schema.json": "SBsql provenance",
     }
     for rel_path, title in schema_files.items():
@@ -1747,7 +2207,15 @@ def build_files(repo_root: Path) -> tuple[list[GeneratedFile], dict[str, Any], d
         "dialect_profile_uuid": DIALECT_PROFILE_UUID,
         "topology_profile_uuid": TOPOLOGY_PROFILE_UUID,
         "generated_by": GENERATOR_ID,
-        "generated_from": [REGISTRY_HPP, REGISTRY_CPP, REGISTRY_MANIFEST, RELEASE_DECLARATION, STRICT_LEDGER],
+        "generated_from": [
+            REGISTRY_HPP,
+            REGISTRY_CPP,
+            REGISTRY_MANIFEST,
+            RELEASE_DECLARATION,
+            STRICT_LEDGER,
+            PUBLIC_DIAGNOSTIC_MATRIX_GENERATOR,
+            SBLR_ENVELOPE_HPP,
+        ],
         "registry_row_count": registry_count,
         "translation_source_row_count": len(corpus_rows),
         "profiles": [

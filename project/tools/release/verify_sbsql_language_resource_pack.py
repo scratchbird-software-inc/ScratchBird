@@ -340,6 +340,8 @@ def validate_auxiliary_resources(pack_root: Path, manifest: dict[str, Any]) -> l
     unicode_policy = read_json(pack_root / "resources/unicode/unicode-policy.json")
     resolver = read_json(pack_root / "resources/resolver/resolver-policy.json")
     conformance = read_json(pack_root / "resources/conformance/conformance-corpus.json")
+    database_messages = read_json(pack_root / "resources/diagnostics/database-message-catalog.json")
+    online_translation = read_json(pack_root / "resources/conformance/online-translation-verification-corpus.json")
     if predictive.get("no_database_object_names") is not True or predictive.get("no_uuid_values") is not True:
         errors.append("predictive resource must not expose database object names or UUIDs")
     states = predictive.get("states", [])
@@ -392,6 +394,71 @@ def validate_auxiliary_resources(pack_root: Path, manifest: dict[str, Any]) -> l
     coverage = conformance.get("coverage", {})
     if coverage.get("registry_surface_count") != manifest.get("registry_row_count"):
         errors.append("conformance corpus registry coverage drifted")
+    if database_messages.get("schema_version") != "sbsql.database_message_catalog.v1":
+        errors.append("database message catalog schema version mismatch")
+    if database_messages.get("profiles") != EXPECTED_EXACT_PROFILES:
+        errors.append("database message catalog exact profile drifted")
+    messages = database_messages.get("messages", [])
+    if not isinstance(messages, list) or len(messages) < 20:
+        errors.append("database message catalog must include stable public diagnostics")
+    message_codes = [str(row.get("diagnostic_code", "")) for row in messages if isinstance(row, dict)]
+    if len(message_codes) != len(set(message_codes)):
+        errors.append("database message catalog duplicate diagnostic_code")
+    required_message_codes = {
+        "SECURITY.AUTHORIZATION.DENIED",
+        "SBLR.ENVELOPE.INVALID",
+        "SBLR.ENVELOPE.CHECKSUM_INVALID",
+        "SBLR.VERSION.UNSUPPORTED",
+        "SBLR.DESCRIPTOR.INVALID",
+    }
+    missing_required_codes = sorted(required_message_codes - set(message_codes))
+    if missing_required_codes:
+        errors.append(f"database message catalog missing required codes: {missing_required_codes}")
+    for message in messages:
+        if not isinstance(message, dict):
+            errors.append("database message catalog contains non-object message")
+            continue
+        if not message.get("canonical_template") or not str(message.get("canonical_template")).endswith("."):
+            errors.append(f"database message lacks canonical template: {message.get('diagnostic_code')}")
+        translations = message.get("translations", [])
+        tags = [row.get("exact_tag") for row in translations if isinstance(row, dict)]
+        if tags != EXPECTED_EXACT_PROFILES:
+            errors.append(f"database message translation profile drift: {message.get('diagnostic_code')}")
+            break
+        for row in translations:
+            if not row.get("localized_template"):
+                errors.append(f"empty localized message template: {message.get('diagnostic_code')}:{row.get('exact_tag')}")
+            if row.get("translation_status") == "english_fallback_machine_seed":
+                errors.append(f"database message fallback leaked: {message.get('diagnostic_code')}:{row.get('exact_tag')}")
+            if row.get("topology_transform"):
+                errors.append(f"database message must not apply phrase topology transform: {message.get('diagnostic_code')}:{row.get('exact_tag')}")
+    if online_translation.get("schema_version") != "sbsql.online_translation_verification_corpus.v1":
+        errors.append("online translation verification corpus schema version mismatch")
+    if online_translation.get("profiles") != EXPECTED_EXACT_PROFILES:
+        errors.append("online translation verification exact profile drifted")
+    provider_policy = online_translation.get("provider_policy", {})
+    if provider_policy.get("release_pack_generation_uses_network") is not False:
+        errors.append("online translation corpus must keep release generation offline")
+    if provider_policy.get("online_reference_checks_are_optional_external_verification") is not True:
+        errors.append("online translation corpus must mark online checks as optional external verification")
+    cases = online_translation.get("cases", [])
+    if online_translation.get("case_count") != len(cases) or len(cases) < 10:
+        errors.append("online translation verification corpus case count invalid")
+    for case in cases:
+        if case.get("network_required") is not True:
+            errors.append(f"online translation case must declare network requirement: {case.get('case_id')}")
+        if case.get("external_reference_text_not_vendored") is not True:
+            errors.append(f"online translation case must not vendor reference text: {case.get('case_id')}")
+        translations = case.get("translations", [])
+        tags = [row.get("exact_tag") for row in translations if isinstance(row, dict)]
+        if tags != EXPECTED_EXACT_PROFILES:
+            errors.append(f"online translation case profile drift: {case.get('case_id')}")
+            break
+        for row in translations:
+            if not row.get("localized_template"):
+                errors.append(f"online translation case empty localized template: {case.get('case_id')}:{row.get('exact_tag')}")
+            if row.get("translation_status") == "english_fallback_machine_seed":
+                errors.append(f"online translation case fallback leaked: {case.get('case_id')}:{row.get('exact_tag')}")
     return errors
 
 
