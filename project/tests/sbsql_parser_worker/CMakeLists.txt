@@ -216,6 +216,66 @@ set_tests_properties(sbsql_security_regression_matrix_gate PROPERTIES
   LABELS "sbsql_security_regression_matrix;sbsql_parser_worker;SML-033;SML-034;SML-035;SML-036;SML-037;SML-038;SML-039;SML-040;SML-GATE-033;SML-GATE-034;SML-GATE-035;SML-GATE-036;SML-GATE-037;SML-GATE-038;SML-GATE-039;SML-GATE-040;mga_transaction_regression"
 )
 
+add_test(
+  NAME sbsql_sml_041_046_product_qa_manifest_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/product_regression/sml_041_046/sbsql_sml_041_046_product_qa_manifest_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_sml_041_046_product_qa_manifest_gate PROPERTIES
+  LABELS "sbsql_product_qa_manifest;sbsql_parser_worker;SML-041;SML-042;SML-043;SML-044;SML-045;SML-046;SML-GATE-041;SML-GATE-042;SML-GATE-043;SML-GATE-044;SML-GATE-045;SML-GATE-046;mga_transaction_regression"
+)
+
+add_test(
+  NAME sbsql_sml_044_046_hardening_oracle_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/hardening/sml_041_046/sbsql_sml_044_046_hardening_oracle_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_sml_044_046_hardening_oracle_gate PROPERTIES
+  LABELS "sbsql_hardening_oracle;sbsql_parser_worker;SML-044;SML-046;SML-GATE-044;SML-GATE-046;mga_transaction_regression"
+)
+
+add_test(
+  NAME sbsql_sml_049_052_filespace_relocation_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/filespace_relocation/sbsql_sml_049_052_filespace_relocation_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_sml_049_052_filespace_relocation_gate PROPERTIES
+  LABELS "sbsql_filespace_relocation;sbsql_parser_worker;SML-049;SML-050;SML-051;SML-052;SML-GATE-049;SML-GATE-050;SML-GATE-051;SML-GATE-052;mga_transaction_regression"
+)
+
+add_test(
+  NAME sbsql_sml_054_057_062_multimodel_capability_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/multimodel_capability/sbsql_sml_054_057_062_multimodel_capability_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_sml_054_057_062_multimodel_capability_gate PROPERTIES
+  LABELS "sbsql_multimodel_capability;sbsql_parser_worker;SML-054;SML-055;SML-056;SML-057;SML-062;SML-GATE-054;SML-GATE-055;SML-GATE-056;SML-GATE-057;SML-GATE-062;mga_transaction_regression"
+)
+
+add_test(
+  NAME sbsql_sml_059_061_encrypted_database_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/encrypted_database/sbsql_sml_059_061_encrypted_database_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_sml_059_061_encrypted_database_gate PROPERTIES
+  LABELS "sbsql_encrypted_database_matrix;sbsql_parser_worker;SML-059;SML-060;SML-061;SML-GATE-059;SML-GATE-060;SML-GATE-061;mga_transaction_regression"
+)
+
+add_test(
+  NAME sbsql_sml_064_066_native_compile_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/native_compile/sbsql_sml_064_066_native_compile_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_sml_064_066_native_compile_gate PROPERTIES
+  LABELS "sbsql_native_compile_jit_aot;sbsql_parser_worker;SML-064;SML-065;SML-066;SML-GATE-064;SML-GATE-065;SML-GATE-066;mga_transaction_regression"
+)
+
 if(NOT TARGET sb_isql AND EXISTS "${PROJECT_SOURCE_DIR}/drivers/tool/cli/CMakeLists.txt")
   add_subdirectory("${PROJECT_SOURCE_DIR}/drivers/tool/cli" "${CMAKE_BINARY_DIR}/drivers/tool/cli")
 endif()

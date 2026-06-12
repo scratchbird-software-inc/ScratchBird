@@ -1,0 +1,218 @@
+{
+  "gate_id": "SML-GATE-064-066",
+  "manifest_sha256": "sha256:5067ab040852970eb073f81c3b183d45b8911f9ed50bf1b3137c4888e196621e",
+  "schema_version": "sbsql.native_compile_jit_aot_matrix.v1",
+  "source_evidence": [
+    {
+      "path": "project/src/engine/native_compile/native_compile.hpp",
+      "tokens": [
+        "NativeCompileMode",
+        "NativeCompileEffectiveMode",
+        "allow_interpreter_fallback",
+        "fallback_used",
+        "cache_key_material_digest",
+        "artifact_digest"
+      ]
+    },
+    {
+      "path": "project/src/engine/native_compile/native_compile.cpp",
+      "tokens": [
+        "DetectBackend",
+        "PolicyRequiresNative",
+        "CompileNativeUnit",
+        "NativeArtifactInvalidatedByDependency",
+        "sb_native_compile_jit_compile_total"
+      ]
+    },
+    {
+      "path": "project/src/engine/sblr/sblr_llvm_seam.hpp",
+      "tokens": [
+        "SblrLlvmExecutionMode",
+        "llvm_jit",
+        "llvm_aot",
+        "RefuseLlvmExecution"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "row_id": "SML064-LLVM-CAPABILITY",
+      "sml_slices": ["SML-064"],
+      "category": "llvm_capability",
+      "mode": "jit",
+      "workload_class": "capability_probe",
+      "expected_result": "accepted",
+      "implementation_kind": "live_llvm_capability",
+      "llvm_capability": "required_present",
+      "compiled": true,
+      "fallback_count": 0,
+      "metadata_only": false,
+      "diagnostic_code": "SBSQL.NATIVE_COMPILE.LLVM_CAPABILITY_PRESENT",
+      "evidence_text": "LLVM capability row records provider identity target triple feature set verifier and memory accounting"
+    },
+    {
+      "row_id": "SML064-JIT-COLD-WARM",
+      "sml_slices": ["SML-064", "SML-066"],
+      "category": "jit_cold_warm_metrics",
+      "mode": "jit",
+      "workload_class": "projection_filter_arithmetic",
+      "expected_result": "accepted",
+      "implementation_kind": "compiled_native_unit",
+      "llvm_capability": "required_present",
+      "compiled": true,
+      "fallback_count": 0,
+      "metadata_only": false,
+      "cache_state": "cold_then_warm_hit",
+      "metrics": {
+        "cold_build_ticks": 1200,
+        "warm_execute_ticks": 80,
+        "cache_hit_count": 1,
+        "artifact_bytes": 4096,
+        "memory_reserved_bytes": 65536
+      },
+      "diagnostic_code": "SBSQL.NATIVE_COMPILE.JIT_COLD_WARM_PASSED",
+      "evidence_text": "JIT cold and warm metrics are retained as reproducibility evidence without speed claim"
+    },
+    {
+      "row_id": "SML064-AOT-BUILD-LOAD",
+      "sml_slices": ["SML-064", "SML-066"],
+      "category": "aot_build_load_metrics",
+      "mode": "aot",
+      "workload_class": "scan_projection_package",
+      "expected_result": "accepted",
+      "implementation_kind": "compiled_native_unit",
+      "llvm_capability": "required_present",
+      "compiled": true,
+      "fallback_count": 0,
+      "metadata_only": false,
+      "cache_state": "artifact_build_then_load",
+      "metrics": {
+        "aot_build_ticks": 2200,
+        "artifact_load_ticks": 140,
+        "execute_ticks": 90,
+        "cache_hit_count": 1,
+        "artifact_bytes": 8192,
+        "memory_reserved_bytes": 98304
+      },
+      "diagnostic_code": "SBSQL.NATIVE_COMPILE.AOT_BUILD_LOAD_PASSED",
+      "evidence_text": "AOT build load and execute metrics retain artifact provenance and cache evidence without speed claim"
+    },
+    {
+      "row_id": "SML065-JIT-INTERPRETER-EQUIVALENCE",
+      "sml_slices": ["SML-065"],
+      "category": "equivalence",
+      "mode": "jit",
+      "workload_class": "projection_filter_arithmetic",
+      "expected_result": "accepted",
+      "implementation_kind": "compiled_native_unit",
+      "llvm_capability": "required_present",
+      "compiled": true,
+      "fallback_count": 0,
+      "metadata_only": false,
+      "equivalence": "native_result_hash_matches_interpreter_result_hash",
+      "diagnostic_code": "SBSQL.NATIVE_COMPILE.JIT_EQUIVALENT",
+      "evidence_text": "JIT result diagnostic and side-effect hashes match interpreter authority for the same SBLR unit"
+    },
+    {
+      "row_id": "SML065-AOT-INTERPRETER-EQUIVALENCE",
+      "sml_slices": ["SML-065"],
+      "category": "equivalence",
+      "mode": "aot",
+      "workload_class": "scan_projection_package",
+      "expected_result": "accepted",
+      "implementation_kind": "compiled_native_unit",
+      "llvm_capability": "required_present",
+      "compiled": true,
+      "fallback_count": 0,
+      "metadata_only": false,
+      "equivalence": "native_result_hash_matches_interpreter_result_hash",
+      "diagnostic_code": "SBSQL.NATIVE_COMPILE.AOT_EQUIVALENT",
+      "evidence_text": "AOT result diagnostic and side-effect hashes match interpreter authority for the same SBLR unit"
+    },
+    {
+      "row_id": "SML065-MISSING-LLVM-REFUSAL",
+      "sml_slices": ["SML-065"],
+      "category": "missing_llvm_refusal",
+      "mode": "jit",
+      "workload_class": "required_native_unit",
+      "expected_result": "refused",
+      "implementation_kind": "fail_closed_refusal",
+      "llvm_capability": "required_missing",
+      "compiled": false,
+      "fallback_count": 0,
+      "metadata_only": false,
+      "diagnostic_code": "SBSQL.NATIVE_COMPILE.LLVM_REQUIRED_UNAVAILABLE",
+      "evidence_text": "required native unit refuses when LLVM is unavailable and does not use interpreter fallback"
+    },
+    {
+      "row_id": "SML065-STUB-UNAVAILABLE-REFUSAL",
+      "sml_slices": ["SML-065"],
+      "category": "simulated_unavailable_refusal",
+      "mode": "jit",
+      "workload_class": "required_native_unit",
+      "expected_result": "refused",
+      "implementation_kind": "fail_closed_refusal",
+      "llvm_capability": "simulated_unavailable",
+      "compiled": false,
+      "fallback_count": 0,
+      "metadata_only": false,
+      "diagnostic_code": "SBSQL.NATIVE_COMPILE.SIMULATED_UNAVAILABLE_REFUSED",
+      "evidence_text": "simulated unavailable path refuses required native unit and does not promote metadata-only success"
+    },
+    {
+      "row_id": "SML065-CACHE-INVALIDATION",
+      "sml_slices": ["SML-065"],
+      "category": "cache_invalidation",
+      "mode": "jit",
+      "workload_class": "descriptor_epoch_change",
+      "expected_result": "accepted",
+      "implementation_kind": "compiled_native_unit",
+      "llvm_capability": "required_present",
+      "compiled": true,
+      "fallback_count": 0,
+      "metadata_only": false,
+      "cache_state": "invalidated_on_descriptor_security_policy_or_resource_epoch",
+      "diagnostic_code": "SBSQL.NATIVE_COMPILE.CACHE_INVALIDATED",
+      "evidence_text": "native artifact cache key includes descriptor security policy resource and opcode registry dependencies"
+    },
+    {
+      "row_id": "SML065-SECURITY-REFUSAL",
+      "sml_slices": ["SML-065"],
+      "category": "security_refusal",
+      "mode": "jit",
+      "workload_class": "missing_security_context",
+      "expected_result": "refused",
+      "implementation_kind": "fail_closed_refusal",
+      "llvm_capability": "required_present",
+      "compiled": false,
+      "fallback_count": 0,
+      "metadata_only": false,
+      "diagnostic_code": "SBSQL.NATIVE_COMPILE.SECURITY_CONTEXT_REQUIRED",
+      "evidence_text": "native compile refuses without server security context before artifact build or execution"
+    },
+    {
+      "row_id": "SML066-RELEASE-METRICS",
+      "sml_slices": ["SML-066"],
+      "category": "release_metrics",
+      "mode": "jit_and_aot",
+      "workload_class": "compiled_workload_classes",
+      "expected_result": "accepted",
+      "implementation_kind": "metrics_evidence",
+      "llvm_capability": "required_present",
+      "compiled": true,
+      "fallback_count": 0,
+      "metadata_only": false,
+      "metrics": {
+        "p50_ticks": 80,
+        "p95_ticks": 140,
+        "p99_ticks": 180,
+        "throughput_rows_per_tick": 4,
+        "cache_hit_count": 2,
+        "artifact_bytes": 12288,
+        "memory_reserved_bytes": 163840
+      },
+      "diagnostic_code": "SBSQL.NATIVE_COMPILE.RELEASE_METRICS_RETAINED",
+      "evidence_text": "release metrics retain cold warm JIT AOT build load execute cache artifact memory and fallback-count evidence without speed claim"
+    }
+  ]
+}
