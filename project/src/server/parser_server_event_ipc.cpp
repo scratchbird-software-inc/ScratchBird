@@ -25,9 +25,19 @@ std::string ValueOr(const std::string& value, const std::string& fallback) {
   return value.empty() ? fallback : value;
 }
 
+api::EngineTrustMode EngineTrustModeFrom(ParserServerEventTrustMode trust_mode) {
+  switch (trust_mode) {
+    case ParserServerEventTrustMode::server_isolated:
+      return api::EngineTrustMode::server_isolated;
+    case ParserServerEventTrustMode::embedded_in_process:
+      return api::EngineTrustMode::embedded_in_process;
+  }
+  return api::EngineTrustMode::server_isolated;
+}
+
 api::EngineRequestContext EngineContextFrom(const ParserServerEventEngineContext& context) {
   api::EngineRequestContext out;
-  out.trust_mode = context.trust_mode;
+  out.trust_mode = EngineTrustModeFrom(context.trust_mode);
   out.request_id = context.request_id;
   out.database_path = context.database_path;
   out.database_uuid.canonical = context.database_uuid.canonical;

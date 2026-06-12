@@ -82,7 +82,18 @@ enum class FilespaceOperation : u16 {
   verify_filespace,
   compact_filespace,
   truncate_filespace,
-  drop_filespace
+  drop_filespace,
+  create_snapshot_filespace,
+  create_shadow_filespace,
+  refresh_snapshot_or_shadow,
+  retire_snapshot_or_shadow,
+  quarantine_filespace,
+  move_filespace,
+  delete_physical_filespace,
+  merge_filespace,
+  repair_filespace,
+  rebuild_filespace,
+  salvage_filespace
 };
 
 enum class FilespacePinKind : u16 {
@@ -174,6 +185,33 @@ struct FilespaceLifecyclePolicy {
   bool require_no_active_pins_for_detach = true;
   bool require_no_active_pins_for_promote = true;
   bool require_no_active_pins_for_drop = true;
+  bool require_no_active_pins_for_quarantine = true;
+  bool require_no_active_pins_for_move = true;
+  bool require_no_active_pins_for_merge = true;
+  bool require_no_active_pins_for_delete_physical = true;
+  bool require_no_active_pins_for_repair = true;
+  bool require_no_active_pins_for_rebuild = true;
+  bool require_no_active_pins_for_salvage = true;
+  bool allow_filespace_move = false;
+  bool page_agent_relocation_complete_for_move = false;
+  bool startup_open_safe_for_move = false;
+  bool allow_filespace_merge = false;
+  bool page_agent_merge_complete_for_merge = false;
+  bool startup_open_safe_for_merge = false;
+  bool allow_filespace_repair = false;
+  bool repair_plan_authorized = false;
+  bool repair_evidence_preserved = false;
+  bool allow_filespace_rebuild = false;
+  bool rebuild_source_verified = false;
+  bool page_agent_rebuild_complete = false;
+  bool startup_open_safe_for_rebuild = false;
+  bool allow_filespace_salvage = false;
+  bool salvage_review_authorized = false;
+  bool salvage_output_quarantined = false;
+  bool allow_physical_filespace_delete = false;
+  bool physical_delete_retention_satisfied = false;
+  bool physical_delete_legal_hold_clear = false;
+  bool physical_delete_cleanup_horizon_authoritative = false;
   bool evidence_before_success = true;
   bool require_physical_header_for_attach = true;
   bool require_physical_header_for_promote = false;
@@ -189,6 +227,7 @@ struct FilespaceOperationRequest {
   FilespaceOperation operation = FilespaceOperation::verify_filespace;
   TypedUuid database_uuid;
   TypedUuid filespace_uuid;
+  TypedUuid merge_target_filespace_uuid;
   std::string path;
   FilespaceRole role = FilespaceRole::secondary_data;
   u32 page_size = static_cast<u32>(scratchbird::storage::disk::PageSizeProfile::profile_16k);
@@ -214,6 +253,7 @@ struct FilespaceOperationResult {
   bool durable_state_changed = false;
   bool cache_invalidation_required = false;
   bool metrics_emitted = false;
+  bool physical_file_removed = false;
 
   bool ok() const {
     return status.ok();

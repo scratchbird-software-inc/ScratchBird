@@ -40,6 +40,16 @@ struct EngineRollbackTransactionRequest : EngineApiRequest {};
 struct EngineRollbackTransactionResult : EngineApiResult {};
 EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTransactionRequest& request);
 
+struct EngineCleanupTemporarySessionRequest : EngineApiRequest {};
+struct EngineCleanupTemporarySessionResult : EngineApiResult {
+  EngineApiU64 temporary_deleted_rows = 0;
+  EngineApiU64 temporary_reclaimed_large_values = 0;
+  EngineApiU64 temporary_retired_private_metadata = 0;
+  EngineApiU64 cleanup_local_transaction_id = 0;
+};
+EngineCleanupTemporarySessionResult EngineCleanupTemporarySessionState(
+    const EngineCleanupTemporarySessionRequest& request);
+
 struct EnginePrepareTransactionRequest : EngineApiRequest {};
 struct EnginePrepareTransactionResult : EngineApiResult {};
 EnginePrepareTransactionResult EnginePrepareTransaction(const EnginePrepareTransactionRequest& request);

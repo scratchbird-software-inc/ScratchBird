@@ -136,6 +136,35 @@ std::vector<byte> UuidV7Payload(const IndexKeyEncodingComponent& component) {
                            component.uuid_v7_value.value.bytes.end());
 }
 
+void AppendU32(std::vector<byte>* out, u32 value) {
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    out->push_back(static_cast<byte>((value >> shift) & 0xffu));
+  }
+}
+
+void AppendU64(std::vector<byte>* out, u64 value) {
+  for (int shift = 56; shift >= 0; shift -= 8) {
+    out->push_back(static_cast<byte>((value >> shift) & 0xffu));
+  }
+}
+
+void AppendTypedUuid(std::vector<byte>* out, const TypedUuid& uuid) {
+  out->push_back(static_cast<byte>(uuid.kind));
+  out->insert(out->end(), uuid.value.bytes.begin(), uuid.value.bytes.end());
+}
+
+void AppendComponentDescriptorIdentity(
+    std::vector<byte>* out,
+    const IndexKeyEncodingComponent& component) {
+  AppendU32(out, static_cast<u32>(component.kind));
+  AppendTypedUuid(out, component.type_descriptor_uuid);
+  AppendU64(out, component.type_descriptor_epoch);
+  out->push_back(component.collation_uuid.valid() ? byte{1} : byte{0});
+  if (component.collation_uuid.valid()) {
+    AppendTypedUuid(out, component.collation_uuid);
+  }
+}
+
 IndexKeyEncodingResult RefuseEncoding(std::string code,
                                       std::string key,
                                       std::string detail = {}) {
@@ -207,10 +236,16 @@ IndexKeyPrefixBoundsResult BuildEncodedPrefixBoundsInternal(
                           "index.key_prefix.type_uuid_missing",
                           std::to_string(component.ordinal));
     }
+    if (component.type_descriptor_epoch == 0) {
+      return RefusePrefix("SB-INDEX-KEY-PREFIX-TYPE-EPOCH-MISSING",
+                          "index.key_prefix.type_epoch_missing",
+                          std::to_string(component.ordinal));
+    }
 
     result.lossy = result.lossy || component.lossy;
     result.requires_recheck = result.requires_recheck || component.lossy;
     result.matcher_prefix.push_back(NullRankFor(component));
+    AppendComponentDescriptorIdentity(&result.matcher_prefix, component);
     if (component.is_null) {
       continue;
     }
@@ -294,6 +329,11 @@ IndexKeyEncodingResult EncodeIndexKey(const std::vector<IndexKeyEncodingComponen
                             "index.key_encoding.type_uuid_missing",
                             std::to_string(component.ordinal));
     }
+    if (component.type_descriptor_epoch == 0) {
+      return RefuseEncoding("SB-INDEX-KEY-ENCODING-TYPE-EPOCH-MISSING",
+                            "index.key_encoding.type_epoch_missing",
+                            std::to_string(component.ordinal));
+    }
 
     if (component.kind == IndexKeyComponentKind::uuid_v7 && !component.is_null) {
       if (!component.uuid_v7_value.valid()) {
@@ -318,6 +358,7 @@ IndexKeyEncodingResult EncodeIndexKey(const std::vector<IndexKeyEncodingComponen
     result.lossy = result.lossy || component.lossy;
     result.requires_recheck = result.requires_recheck || component.lossy;
     result.encoded.push_back(NullRankFor(component));
+    AppendComponentDescriptorIdentity(&result.encoded, component);
     if (!component.is_null) {
       const IndexKeyEncodingComponent payload_component =
           component.kind == IndexKeyComponentKind::uuid_v7
@@ -330,6 +371,9 @@ IndexKeyEncodingResult EncodeIndexKey(const std::vector<IndexKeyEncodingComponen
       const auto payload = ComparablePayloadForSort(payload_component);
       result.encoded.insert(result.encoded.end(), payload.begin(), payload.end());
     }
+    result.evidence.push_back("index_key_descriptor_identity_bound=true");
+    result.evidence.push_back("index_key_descriptor_epoch=" +
+                              std::to_string(component.type_descriptor_epoch));
   }
   return result;
 }

@@ -52,6 +52,7 @@
 #include "management/config_api.hpp"
 #include "management/index_management_api.hpp"
 #include "management/management_api.hpp"
+#include "management/memory_management_api.hpp"
 #include "management/support_bundle_api.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "nosql/document_api.hpp"
@@ -346,6 +347,39 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
       return entry->opcode.c_str();
     }
   }
+  if (operation_id.starts_with("memory.")) {
+    if (const auto* entry = LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("storage_tier.")) {
+    if (const auto* entry = LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("filespace.discovery.")) {
+    if (const auto* entry = LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("filespace.package.")) {
+    if (const auto* entry = LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("shard_placement.")) {
+    if (const auto* entry = LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
+  if (operation_id.starts_with("security.encryption_key.") ||
+      operation_id.starts_with("security.protected_material") ||
+      operation_id == "security.encrypted_filespace.open" ||
+      operation_id == "security.request_protected_material") {
+    if (const auto* entry = LookupSblrOperation(operation_id)) {
+      return entry->opcode.c_str();
+    }
+  }
   if (operation_id == "ddl.create_database") return "SBLR_DDL_CREATE_DATABASE";
   if (operation_id == "ddl.create_schema") return "SBLR_DDL_CREATE_SCHEMA";
   if (operation_id == "ddl.create_table") return "SBLR_DDL_CREATE_TABLE";
@@ -574,7 +608,34 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "nosql.vector_search") return "SBLR_NOSQL_VECTOR_SEARCH";
   if (operation_id == "nosql.vector_collection_op") return "SBLR_NOSQL_VECTOR_COLLECTION_OP";
   if (operation_id == "nosql.search_query") return "SBLR_NOSQL_SEARCH_QUERY";
+  if (operation_id == "filespace.create") return "SBLR_FILESPACE_CREATE";
   if (operation_id == "filespace.preallocate") return "SBLR_FILESPACE_PREALLOCATE";
+  if (operation_id == "filespace.attach") return "SBLR_FILESPACE_ATTACH";
+  if (operation_id == "filespace.detach") return "SBLR_FILESPACE_DETACH";
+  if (operation_id == "filespace.disconnect") return "SBLR_FILESPACE_DISCONNECT";
+  if (operation_id == "filespace.move") return "SBLR_FILESPACE_MOVE";
+  if (operation_id == "filespace.merge") return "SBLR_FILESPACE_MERGE";
+  if (operation_id == "filespace.promote") return "SBLR_FILESPACE_PROMOTE";
+  if (operation_id == "filespace.verify") return "SBLR_FILESPACE_VERIFY";
+  if (operation_id == "filespace.compact") return "SBLR_FILESPACE_COMPACT";
+  if (operation_id == "filespace.fence") return "SBLR_FILESPACE_FENCE";
+  if (operation_id == "filespace.release") return "SBLR_FILESPACE_RELEASE";
+  if (operation_id == "filespace.archive") return "SBLR_FILESPACE_ARCHIVE";
+  if (operation_id == "filespace.quarantine") return "SBLR_FILESPACE_QUARANTINE";
+  if (operation_id == "filespace.snapshot.create") return "SBLR_FILESPACE_SNAPSHOT_CREATE";
+  if (operation_id == "filespace.snapshot.refresh") return "SBLR_FILESPACE_SNAPSHOT_REFRESH";
+  if (operation_id == "filespace.snapshot.validate") return "SBLR_FILESPACE_SNAPSHOT_VALIDATE";
+  if (operation_id == "filespace.snapshot.retire") return "SBLR_FILESPACE_SNAPSHOT_RETIRE";
+  if (operation_id == "filespace.shadow.create") return "SBLR_FILESPACE_SHADOW_CREATE";
+  if (operation_id == "filespace.shadow.refresh") return "SBLR_FILESPACE_SHADOW_REFRESH";
+  if (operation_id == "filespace.shadow.validate") return "SBLR_FILESPACE_SHADOW_VALIDATE";
+  if (operation_id == "filespace.shadow.promote") return "SBLR_FILESPACE_SHADOW_PROMOTE";
+  if (operation_id == "filespace.truncate") return "SBLR_FILESPACE_TRUNCATE";
+  if (operation_id == "filespace.drop") return "SBLR_FILESPACE_DROP";
+  if (operation_id == "filespace.delete_physical") return "SBLR_FILESPACE_DELETE_PHYSICAL";
+  if (operation_id == "filespace.repair") return "SBLR_FILESPACE_REPAIR";
+  if (operation_id == "filespace.rebuild") return "SBLR_FILESPACE_REBUILD";
+  if (operation_id == "filespace.salvage") return "SBLR_FILESPACE_SALVAGE";
   if (operation_id == "storage.manage_operation") return "SBLR_STORAGE_MANAGEMENT_OPERATION";
   return nullptr;
 }
@@ -640,6 +701,48 @@ bool IsManagementRuntimeInspectOperation(std::string_view operation_id) {
          operation_id == "op.show.management.servers" ||
          operation_id == "op.show.management.support_bundle_safety" ||
          operation_id == "op.show.management.support_bundles";
+}
+
+bool IsMemoryManagementOperation(std::string_view operation_id) {
+  return operation_id.starts_with("memory.");
+}
+
+bool IsMemoryManagementControlOperation(std::string_view operation_id) {
+  return operation_id == "memory.profile.set" ||
+         operation_id == "memory.cache.flush" ||
+         operation_id == "memory.cache.invalidate" ||
+         operation_id == "memory.scavenge" ||
+         operation_id == "memory.grant_feedback.reset" ||
+         operation_id == "memory.stream_policy.set" ||
+         operation_id == "memory.udr_limit.set" ||
+         operation_id == "memory.dump_policy.set" ||
+         operation_id == "memory.optimizer.set" ||
+         operation_id == "memory.optimizer.run" ||
+         operation_id == "memory.object_residency.set" ||
+         operation_id == "memory.rate_limit.set" ||
+         operation_id == "memory.policy_migration.plan";
+}
+
+bool IsStorageTierMigrationOperation(std::string_view operation_id) {
+  return operation_id.starts_with("storage_tier.");
+}
+
+bool IsFilespaceDiscoveryOperation(std::string_view operation_id) {
+  return operation_id.starts_with("filespace.discovery.");
+}
+
+bool IsFilespacePackageOperation(std::string_view operation_id) {
+  return operation_id.starts_with("filespace.package.");
+}
+
+bool IsShardPlacementDescriptorOperation(std::string_view operation_id) {
+  return operation_id.starts_with("shard_placement.");
+}
+
+bool IsStorageTierMigrationControlOperation(std::string_view operation_id) {
+  return operation_id == "storage_tier.stage_migration" ||
+         operation_id == "storage_tier.commit_migration" ||
+         operation_id == "storage_tier.rollback_migration";
 }
 
 bool IsMigrationControlOperation(std::string_view operation_id) {
@@ -742,6 +845,601 @@ double DispatchOptionDouble(const api::EngineApiRequest& request, const std::str
   } catch (...) {
     return 0.0;
   }
+}
+
+api::EngineMemoryManagementOperation MemoryOperationForSblrOperation(
+    std::string_view operation_id) {
+  if (operation_id == "memory.policy.validate") {
+    return api::EngineMemoryManagementOperation::validate_governance;
+  }
+  if (operation_id == "memory.cache.flush" ||
+      operation_id == "memory.cache.invalidate" ||
+      operation_id == "memory.scavenge" ||
+      operation_id == "memory.grant_feedback.reset") {
+    return api::EngineMemoryManagementOperation::plan_cache_control;
+  }
+  if (operation_id == "memory.pressure.show") {
+    return api::EngineMemoryManagementOperation::plan_pressure_response;
+  }
+  if (operation_id == "memory.report.create" ||
+      operation_id == "memory.incident.bundle") {
+    return api::EngineMemoryManagementOperation::create_report;
+  }
+  if (operation_id == "memory.optimizer.show") {
+    return api::EngineMemoryManagementOperation::review_recommendation;
+  }
+  if (operation_id == "memory.optimizer.set" ||
+      operation_id == "memory.optimizer.run") {
+    return api::EngineMemoryManagementOperation::apply_safe_recommendation;
+  }
+  if (operation_id == "memory.object_residency.show") {
+    return api::EngineMemoryManagementOperation::inspect_object_residency;
+  }
+  if (operation_id == "memory.object_residency.set") {
+    return api::EngineMemoryManagementOperation::set_object_residency;
+  }
+  if (operation_id == "memory.rate_limit.show") {
+    return api::EngineMemoryManagementOperation::inspect_rate_limit;
+  }
+  if (operation_id == "memory.rate_limit.set") {
+    return api::EngineMemoryManagementOperation::set_rate_limit;
+  }
+  if (operation_id == "memory.policy_upgrade.plan") {
+    return api::EngineMemoryManagementOperation::plan_policy_upgrade;
+  }
+  if (operation_id == "memory.policy_migration.plan" ||
+      operation_id == "memory.profile.set" ||
+      operation_id == "memory.stream_policy.set" ||
+      operation_id == "memory.udr_limit.set" ||
+      operation_id == "memory.dump_policy.set") {
+    return api::EngineMemoryManagementOperation::plan_policy_migration;
+  }
+  return api::EngineMemoryManagementOperation::inspect_governance;
+}
+
+scratchbird::core::memory::MemoryPolicyConfig DefaultMemoryPolicyConfig() {
+  scratchbird::core::memory::MemoryPolicyConfig config;
+  config.policy_name = "sblr_public_memory_descriptor_policy";
+  config.hard_limit_bytes = 256ull * 1024ull * 1024ull;
+  config.soft_limit_bytes = 192ull * 1024ull * 1024ull;
+  config.per_context_limit_bytes = 64ull * 1024ull * 1024ull;
+  config.page_buffer_pool_limit_bytes = 64ull * 1024ull * 1024ull;
+  config.enable_platform_memory_probe = false;
+  config.policy_generation = 7;
+  return config;
+}
+
+void FillMemoryGovernanceDescriptor(api::EngineMemoryManagementRequest* request) {
+  request->governance.profile_uuid.canonical = "019f1000-0000-7000-8000-000000000010";
+  request->governance.policy_config = DefaultMemoryPolicyConfig();
+  request->governance.expected_policy_generation = 7;
+  request->governance.observed_policy_generation = 7;
+  request->governance.profile_resolved = true;
+  request->governance.memory_tree_snapshot_present = true;
+  request->governance.cache_governor_registered = true;
+  request->governance.cache_flush_or_invalidation_requested = true;
+  request->governance.pressure_observation_present = true;
+  request->governance.grant_feedback_surface_present = true;
+  request->governance.parser_front_door_limit_surface_present = true;
+  request->governance.udr_limit_surface_present = true;
+  request->governance.streaming_window_surface_present = true;
+  request->governance.maintenance_budget_surface_present = true;
+  request->governance.dump_swap_policy_present = true;
+  request->governance.allocator_scavenging_surface_present = true;
+  request->governance.platform_capability_matrix_present = true;
+  request->governance.protected_material_redaction_validated = true;
+  request->governance.activation_timing_declared = true;
+  request->governance.current_snapshot.current_bytes = 128ull * 1024ull * 1024ull;
+  request->governance.pressure_observation.route_label = "sblr.public.memory.management";
+  request->governance.pressure_observation.operation_id = request->operation_id;
+  request->governance.pressure_observation.current_bytes = 900;
+  request->governance.pressure_observation.soft_limit_bytes = 700;
+  request->governance.pressure_observation.hard_limit_bytes = 1000;
+  request->governance.pressure_observation.unified_budget_bytes = 900;
+  request->governance.pressure_observation.unified_budget_limit_bytes = 1000;
+  request->governance.pressure_observation.spill_supported = true;
+  request->governance.pressure_observation.page_cache_shrink_supported = true;
+  request->governance.pressure_observation.background_cleanup_supported = true;
+  request->governance.pressure_observation.cancellation_supported = true;
+  request->governance.pressure_observation.engine_mga_authoritative = true;
+}
+
+void FillMemoryAutomationDescriptor(api::EngineMemoryManagementRequest* request) {
+  request->automation.recommendation_uuid.canonical =
+      "019f1000-0000-7000-8000-000000000020";
+  request->automation.report_generation = 3;
+  request->automation.recommendation_generation = 4;
+  request->automation.report_bounded = true;
+  request->automation.report_redaction_validated = true;
+  request->automation.metrics_contract_present = true;
+  request->automation.recommendation_explainable = true;
+  request->automation.recommend_only_default = true;
+  request->automation.safe_apply_requested = true;
+  request->automation.maintenance_window_bound = true;
+  request->automation.audit_enabled = true;
+  request->automation.guardrail_policy_resolved = true;
+}
+
+void FillMemoryObjectResidencyDescriptor(api::EngineMemoryManagementRequest* request) {
+  request->object_residency.object_uuid.canonical =
+      request->target_object.uuid.canonical.empty()
+          ? "019f1000-0000-7000-8000-000000000030"
+          : request->target_object.uuid.canonical;
+  request->object_residency.filespace_uuid.canonical =
+      "019f1000-0000-7000-8000-000000000031";
+  request->object_residency.object_kind =
+      request->target_object.object_kind.empty() ? "table" : request->target_object.object_kind;
+  request->object_residency.residency_class =
+      api::EngineMemoryObjectResidencyClass::warm_on_open;
+  request->object_residency.page_types = {
+      scratchbird::storage::disk::PageType::row_data,
+      scratchbird::storage::disk::PageType::index_btree_leaf};
+  request->object_residency.expected_policy_generation = 7;
+  request->object_residency.observed_policy_generation = 7;
+  request->object_residency.warmup_budget_bytes = 16ull * 1024ull * 1024ull;
+  request->object_residency.profile_resolved = true;
+  request->object_residency.object_resolved = true;
+  request->object_residency.filespace_placement_validated = true;
+  request->object_residency.security_scope_validated = true;
+  request->object_residency.cluster_placement_validated = true;
+  request->object_residency.heat_history_derivative_only = true;
+}
+
+void FillMemoryRateLimitDescriptor(api::EngineMemoryManagementRequest* request) {
+  request->rate_limit.limit_class = api::EngineMemoryRateLimitClass::cache_flush_abuse;
+  request->rate_limit.action = api::EngineMemoryRateLimitAction::throttle;
+  request->rate_limit.limit_per_window = 4;
+  request->rate_limit.window_seconds = 60;
+  request->rate_limit.policy_generation = 7;
+  request->rate_limit.policy_resolved = true;
+  request->rate_limit.audit_enabled = true;
+}
+
+void FillMemoryPolicyMigrationDescriptor(api::EngineMemoryManagementRequest* request) {
+  request->migration.profile_uuid.canonical =
+      "019f1000-0000-7000-8000-000000000040";
+  request->migration.policy_uuid.canonical =
+      "019f1000-0000-7000-8000-000000000041";
+  request->migration.source_policy_version = 2;
+  request->migration.target_policy_version = 3;
+  request->migration.source_schema_version = 2;
+  request->migration.target_schema_version = 3;
+  request->migration.policy_schema_validated = true;
+  request->migration.grant_feedback_migration_declared = true;
+  request->migration.heat_history_migration_declared = true;
+  request->migration.derivative_state_audit_enabled = true;
+  request->migration.discard_incompatible_derivative_state_allowed = true;
+}
+
+api::EngineMemoryManagementRequest TypedMemoryManagementRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineMemoryManagementRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.memory_operation = MemoryOperationForSblrOperation(base.operation_id);
+  if (typed.target_object.uuid.canonical.empty()) {
+    typed.target_object.uuid.canonical =
+        "019f1000-0000-7000-8000-0000000000ff";
+  }
+  if (typed.target_object.object_kind.empty()) {
+    typed.target_object.object_kind = "memory_policy";
+  }
+  FillMemoryGovernanceDescriptor(&typed);
+  FillMemoryAutomationDescriptor(&typed);
+  FillMemoryObjectResidencyDescriptor(&typed);
+  FillMemoryRateLimitDescriptor(&typed);
+  FillMemoryPolicyMigrationDescriptor(&typed);
+  typed.cluster_scoped =
+      api::SecurityOptionBool(base, "cluster_scoped:", false);
+  typed.parser_memory_authority = false;
+  typed.transaction_finality_authority = false;
+  typed.visibility_authority = false;
+  typed.recovery_authority = false;
+  typed.donor_or_wal_recovery_authority = false;
+  typed.private_provider_dispatch_requested = false;
+  return typed;
+}
+
+api::EngineStorageTierMigrationOperation StorageTierOperationForSblrOperation(
+    std::string_view operation_id) {
+  if (operation_id == "storage_tier.validate") {
+    return api::EngineStorageTierMigrationOperation::validate;
+  }
+  if (operation_id == "storage_tier.plan_migration") {
+    return api::EngineStorageTierMigrationOperation::plan_migration;
+  }
+  if (operation_id == "storage_tier.stage_migration") {
+    return api::EngineStorageTierMigrationOperation::stage_migration;
+  }
+  if (operation_id == "storage_tier.commit_migration") {
+    return api::EngineStorageTierMigrationOperation::commit_migration;
+  }
+  if (operation_id == "storage_tier.rollback_migration") {
+    return api::EngineStorageTierMigrationOperation::rollback_migration;
+  }
+  return api::EngineStorageTierMigrationOperation::inspect;
+}
+
+api::EngineStorageTierMigrationRequest TypedStorageTierMigrationRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineStorageTierMigrationRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.tier_operation = StorageTierOperationForSblrOperation(base.operation_id);
+  if (typed.target_object.uuid.canonical.empty()) {
+    typed.target_object.uuid.canonical =
+        "019f2000-0000-7000-8000-000000000020";
+  }
+  if (typed.target_object.object_kind.empty()) {
+    typed.target_object.object_kind = "filespace";
+  }
+  typed.descriptor.storage_tier_policy_uuid.canonical =
+      "019f2000-0000-7000-8000-000000000010";
+  typed.descriptor.source_tier_uuid.canonical =
+      "019f2000-0000-7000-8000-000000000011";
+  typed.descriptor.target_tier_uuid.canonical =
+      "019f2000-0000-7000-8000-000000000012";
+  typed.descriptor.source_tier_class = api::EngineStorageTierClass::hot;
+  typed.descriptor.target_tier_class = api::EngineStorageTierClass::cold;
+  typed.descriptor.target_filespace_role =
+      scratchbird::storage::filespace::FilespaceRole::secondary_data;
+  typed.descriptor.page_types = {
+      scratchbird::storage::disk::PageType::row_data,
+      scratchbird::storage::disk::PageType::blob};
+  const auto catalog_generation =
+      typed.context.catalog_generation_id == 0 ? 12 : typed.context.catalog_generation_id;
+  const auto policy_generation =
+      typed.context.resource_epoch == 0 ? 34 : typed.context.resource_epoch;
+  typed.descriptor.expected_catalog_generation = catalog_generation;
+  typed.descriptor.observed_catalog_generation = catalog_generation;
+  typed.descriptor.expected_policy_generation = policy_generation;
+  typed.descriptor.observed_policy_generation = policy_generation;
+  typed.descriptor.storage_tier_policy_resolved = true;
+  typed.descriptor.filespace_role_known = true;
+  typed.descriptor.page_family_eligibility_validated = true;
+  typed.descriptor.typed_dependency_manifest_validated = false;
+  typed.descriptor.cluster_scoped =
+      api::SecurityOptionBool(base, "cluster_scoped:", false);
+  typed.descriptor.physical_data_movement_requested = false;
+  return typed;
+}
+
+api::EngineFilespaceDiscoveryScope FilespaceDiscoveryScopeForSblrOperation(
+    std::string_view operation_id) {
+  if (operation_id == "filespace.discovery.orphan_scan") {
+    return api::EngineFilespaceDiscoveryScope::orphan_only;
+  }
+  if (operation_id == "filespace.discovery.stale_scan") {
+    return api::EngineFilespaceDiscoveryScope::stale_only;
+  }
+  return api::EngineFilespaceDiscoveryScope::all;
+}
+
+api::EngineFilespaceDiscoveryRequest TypedFilespaceDiscoveryRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineFilespaceDiscoveryRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.discovery_scope = FilespaceDiscoveryScopeForSblrOperation(base.operation_id);
+  typed.runtime_filesystem_scan_requested = false;
+  typed.parser_filesystem_authority = false;
+  typed.parser_storage_authority = false;
+  typed.transaction_finality_authority = false;
+  typed.recovery_authority = false;
+  typed.donor_or_wal_recovery_authority = false;
+  typed.mutation_requested = false;
+  return typed;
+}
+
+api::EngineFilespacePackageAction FilespacePackageActionForSblrOperation(
+    std::string_view operation_id) {
+  if (operation_id == "filespace.package.export_manifest") {
+    return api::EngineFilespacePackageAction::export_manifest;
+  }
+  if (operation_id == "filespace.package.import_to_quarantine") {
+    return api::EngineFilespacePackageAction::import_to_quarantine;
+  }
+  if (operation_id == "filespace.package.admit") {
+    return api::EngineFilespacePackageAction::admit;
+  }
+  if (operation_id == "filespace.package.reject") {
+    return api::EngineFilespacePackageAction::reject;
+  }
+  return api::EngineFilespacePackageAction::inspect_manifest;
+}
+
+api::EngineFilespacePackageRequest TypedFilespacePackageRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineFilespacePackageRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.package_operation = FilespacePackageActionForSblrOperation(base.operation_id);
+  typed.runtime_package_file_io_requested = false;
+  typed.parser_file_io_authority = false;
+  typed.parser_storage_authority = false;
+  typed.transaction_finality_authority = false;
+  typed.recovery_authority = false;
+  typed.donor_or_wal_recovery_authority = false;
+  typed.private_provider_dispatch_requested = false;
+  return typed;
+}
+
+std::string ShardPlacementActionForSblrOperation(std::string_view operation_id) {
+  constexpr std::string_view kPrefix = "shard_placement.";
+  if (operation_id.starts_with(kPrefix)) {
+    return std::string(operation_id.substr(kPrefix.size()));
+  }
+  return {};
+}
+
+api::EngineShardPlacementDescriptor DefaultShardPlacementDescriptor(
+    std::string shard_suffix,
+    std::uint64_t generation) {
+  api::EngineShardPlacementDescriptor descriptor;
+  descriptor.shard_uuid =
+      "019f4000-0000-7000-8000-000000000" + std::move(shard_suffix);
+  descriptor.source_filespace_uuid = "019f4000-0000-7000-8000-000000000101";
+  descriptor.target_filespace_uuid = "019f4000-0000-7000-8000-000000000102";
+  descriptor.range_begin = "0000000000000000";
+  descriptor.range_end = "ffffffffffffffff";
+  descriptor.placement_epoch = 41;
+  descriptor.placement_generation = generation;
+  descriptor.state = "planned";
+  return descriptor;
+}
+
+api::EngineShardPlacementOperationRequest TypedShardPlacementDescriptorRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineShardPlacementOperationRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  typed.placement_operation = ShardPlacementActionForSblrOperation(base.operation_id);
+  typed.descriptor = DefaultShardPlacementDescriptor("201", 7);
+  typed.merge_inputs = {
+      DefaultShardPlacementDescriptor("211", 5),
+      DefaultShardPlacementDescriptor("212", 5),
+  };
+  typed.operator_authorized = true;
+  typed.physical_data_movement_requested = false;
+  return typed;
+}
+
+constexpr std::string_view kEncryptionRouteDatabaseUuid =
+    "019f5000-0000-7000-8000-000000000001";
+constexpr std::string_view kEncryptionRouteFilespaceUuid =
+    "019f5000-0000-7000-8000-000000000002";
+constexpr std::string_view kEncryptionRouteKeyUuid =
+    "019f5000-0000-7000-8000-000000000003";
+constexpr std::string_view kEncryptionRouteReplacementKeyUuid =
+    "019f5000-0000-7000-8000-000000000004";
+constexpr std::string_view kEncryptionRouteProtectedMaterialUuid =
+    "019f5000-0000-7000-8000-000000000005";
+constexpr std::string_view kEncryptionRouteProtectedMaterialVersionUuid =
+    "019f5000-0000-7000-8000-000000000006";
+constexpr std::string_view kEncryptionRouteProtectedMaterialNextVersionUuid =
+    "019f5000-0000-7000-8000-000000000007";
+
+void FillProtectedMaterialTargetDatabase(api::EngineApiRequest* request) {
+  if (request == nullptr) return;
+  if (request->target_database.uuid.canonical.empty()) {
+    request->target_database.uuid.canonical =
+        request->context.database_uuid.canonical.empty()
+            ? std::string(kEncryptionRouteDatabaseUuid)
+            : request->context.database_uuid.canonical;
+  }
+  if (request->target_database.object_kind.empty()) {
+    request->target_database.object_kind = "database";
+  }
+}
+
+api::EngineProtectedMaterialPolicySet ProtectedMaterialRoutePolicy() {
+  api::EngineProtectedMaterialPolicySet policy;
+  policy.retention_policy_uuid = "019f5000-0000-7000-8000-000000000101";
+  policy.access_policy_uuid = "019f5000-0000-7000-8000-000000000102";
+  policy.release_policy_uuid = "019f5000-0000-7000-8000-000000000103";
+  policy.purge_policy_uuid = "019f5000-0000-7000-8000-000000000104";
+  policy.audit_policy_uuid = "019f5000-0000-7000-8000-000000000105";
+  policy.release_purposes = {"filespace.open"};
+  return policy;
+}
+
+api::EngineAdmitEncryptionKeyRequest TypedAdmitEncryptionKeyRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineAdmitEncryptionKeyRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.key_uuid = std::string(kEncryptionRouteKeyUuid);
+  typed.key_label = "filespace-key-redacted";
+  typed.filespace_uuid = std::string(kEncryptionRouteFilespaceUuid);
+  typed.secret_evidence = "wrapped-reference:v1:route";
+  typed.cache_ttl_millis = 300000;
+  return typed;
+}
+
+api::EngineRotateEncryptionKeyRequest TypedRotateEncryptionKeyRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineRotateEncryptionKeyRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.key_uuid = std::string(kEncryptionRouteKeyUuid);
+  typed.replacement_key_uuid = std::string(kEncryptionRouteReplacementKeyUuid);
+  typed.replacement_secret_evidence = "wrapped-reference:v1:route-replacement";
+  typed.rotation_reason = "public-route-rekey";
+  typed.cache_ttl_millis = 300000;
+  return typed;
+}
+
+api::EngineInspectProtectedMaterialCacheRequest TypedInspectProtectedMaterialCacheRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineInspectProtectedMaterialCacheRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  return typed;
+}
+
+api::EnginePurgeProtectedMaterialRequest TypedPurgeProtectedMaterialRequest(
+    const SblrDispatchRequest& request) {
+  api::EnginePurgeProtectedMaterialRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.purge_reason = "public-route-cache-purge";
+  return typed;
+}
+
+api::EngineShutdownProtectedMaterialRequest TypedShutdownProtectedMaterialRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineShutdownProtectedMaterialRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.shutdown_reason = "public-route-shutdown-purge";
+  return typed;
+}
+
+api::EngineOpenEncryptedFilespaceRequest TypedOpenEncryptedFilespaceRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineOpenEncryptedFilespaceRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.database_uuid = typed.target_database.uuid.canonical;
+  typed.filespace_uuid = std::string(kEncryptionRouteFilespaceUuid);
+  typed.key_uuid = std::string(kEncryptionRouteKeyUuid);
+  typed.encrypted_filespace = true;
+  typed.decryption_required = true;
+  return typed;
+}
+
+api::EngineRequestProtectedMaterialRequest TypedRequestProtectedMaterialRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineRequestProtectedMaterialRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.purpose = "filespace.open";
+  return typed;
+}
+
+api::EnginePurgeProtectedMaterialVersionRequest TypedPurgeProtectedMaterialVersionRequest(
+    const SblrDispatchRequest& request) {
+  api::EnginePurgeProtectedMaterialVersionRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
+  typed.protected_material_version_uuid =
+      std::string(kEncryptionRouteProtectedMaterialVersionUuid);
+  typed.purge_reason = "public-route-cryptographic-erase";
+  return typed;
+}
+
+api::EngineCreateProtectedMaterialRequest TypedCreateProtectedMaterialRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineCreateProtectedMaterialRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
+  typed.object_class = "filespace_encryption_key";
+  typed.owner_scope_uuid = std::string(kEncryptionRouteFilespaceUuid);
+  typed.purpose_class = "encryption_use";
+  typed.storage_class = "wrapped";
+  typed.policy = ProtectedMaterialRoutePolicy();
+  typed.initial_version_uuid = std::string(kEncryptionRouteProtectedMaterialVersionUuid);
+  typed.protected_reference = "kms-ref:v1:protected-material-route";
+  typed.envelope_reference = "kms-envelope:v1:protected-material-route";
+  typed.payload_hash =
+      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  return typed;
+}
+
+api::EngineAddProtectedMaterialVersionRequest TypedAddProtectedMaterialVersionRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineAddProtectedMaterialVersionRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
+  typed.protected_material_version_uuid =
+      std::string(kEncryptionRouteProtectedMaterialNextVersionUuid);
+  typed.protected_reference = "kms-ref:v1:protected-material-route-rotation";
+  typed.envelope_reference = "kms-envelope:v1:protected-material-route-rotation";
+  typed.payload_hash =
+      "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  typed.storage_class = "wrapped";
+  typed.rotation_reason = "public-route-protected-material-version";
+  typed.policy_override = ProtectedMaterialRoutePolicy();
+  return typed;
+}
+
+api::EngineResolveProtectedMaterialRequest TypedResolveProtectedMaterialRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineResolveProtectedMaterialRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
+  typed.purpose = "filespace.open";
+  return typed;
+}
+
+api::EngineReleaseProtectedMaterialRequest TypedReleaseProtectedMaterialRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineReleaseProtectedMaterialRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
+  typed.protected_material_version_uuid =
+      std::string(kEncryptionRouteProtectedMaterialVersionUuid);
+  typed.purpose = "filespace.open";
+  return typed;
+}
+
+api::EngineInspectProtectedMaterialCatalogRequest TypedInspectProtectedMaterialCatalogRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineInspectProtectedMaterialCatalogRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
+  typed.include_versions = true;
+  typed.include_audit = true;
+  return typed;
+}
+
+api::EngineExportProtectedMaterialPackageRequest TypedExportProtectedMaterialPackageRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineExportProtectedMaterialPackageRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.protected_material_uuid = std::string(kEncryptionRouteProtectedMaterialUuid);
+  typed.include_versions = true;
+  typed.include_audit = true;
+  typed.export_reason = "public-route-protected-material-package-export";
+  return typed;
+}
+
+api::EngineImportProtectedMaterialPackageRequest TypedImportProtectedMaterialPackageRequest(
+    const SblrDispatchRequest& request) {
+  api::EngineImportProtectedMaterialPackageRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  FillProtectedMaterialTargetDatabase(&typed);
+  typed.encoded_package = api::SecurityOptionValue(base, "encoded_package:");
+  typed.expected_package_digest =
+      api::SecurityOptionValue(base, "expected_package_digest:");
+  typed.import_authorized =
+      api::SecurityOptionBool(base,
+                              "protected_material_package_import_authorized:",
+                              false);
+  typed.import_reason = "public-route-protected-material-package-import";
+  return typed;
 }
 
 api::EngineTypedValue DispatchTypedValueOption(const api::EngineApiRequest& request,
@@ -2679,6 +3377,11 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (IsNativeCompileInspectOperation(op)) result.api_result = api::EngineInspectNativeCompile(TypedRequest<api::EngineInspectNativeCompileRequest>(request));
   else if (IsManagementRuntimeControlOperation(op)) result.api_result = api::EngineControlManagementRuntime(TypedRequest<api::EngineControlManagementRuntimeRequest>(request));
   else if (IsManagementRuntimeInspectOperation(op)) result.api_result = api::EngineInspectManagementRuntime(TypedRequest<api::EngineInspectManagementRuntimeRequest>(request));
+  else if (IsMemoryManagementOperation(op)) result.api_result = api::EnginePlanMemoryManagementOperation(TypedMemoryManagementRequest(request));
+  else if (IsStorageTierMigrationOperation(op)) result.api_result = api::EnginePlanStorageTierMigrationOperation(TypedStorageTierMigrationRequest(request));
+  else if (IsFilespaceDiscoveryOperation(op)) result.api_result = api::EngineDiscoverFilespaceAnomalies(TypedFilespaceDiscoveryRequest(request));
+  else if (IsFilespacePackageOperation(op)) result.api_result = api::EngineFilespacePackageOperation(TypedFilespacePackageRequest(request));
+  else if (IsShardPlacementDescriptorOperation(op)) result.api_result = api::EnginePlanShardPlacementOperation(TypedShardPlacementDescriptorRequest(request));
   else if (IsMigrationControlOperation(op)) {
     if (op == "op.migration.begin_from_donor") {
       result.api_result = api::EngineBeginMigration(TypedRequest<api::EngineBeginMigrationRequest>(request));
@@ -2791,7 +3494,21 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (op == "security.sync_external_groups") result.api_result = api::EngineSyncExternalGroups(TypedRequest<api::EngineSyncExternalGroupsRequest>(request));
   else if (op == "security.explain_membership") result.api_result = api::EngineExplainMembership(TypedRequest<api::EngineExplainMembershipRequest>(request));
   else if (op == "security.emit_audit_event") result.api_result = api::EngineEmitAuditEvent(TypedRequest<api::EngineEmitAuditEventRequest>(request));
-  else if (op == "security.request_protected_material") result.api_result = api::EngineRequestProtectedMaterial(TypedRequest<api::EngineRequestProtectedMaterialRequest>(request));
+  else if (op == "security.encryption_key.admit") result.api_result = api::EngineAdmitEncryptionKey(TypedAdmitEncryptionKeyRequest(request));
+  else if (op == "security.encryption_key.rotate") result.api_result = api::EngineRotateEncryptionKey(TypedRotateEncryptionKeyRequest(request));
+  else if (op == "security.protected_material_cache.inspect") result.api_result = api::EngineInspectProtectedMaterialCache(TypedInspectProtectedMaterialCacheRequest(request));
+  else if (op == "security.protected_material_cache.purge") result.api_result = api::EnginePurgeProtectedMaterial(TypedPurgeProtectedMaterialRequest(request));
+  else if (op == "security.protected_material_cache.shutdown") result.api_result = api::EngineShutdownProtectedMaterial(TypedShutdownProtectedMaterialRequest(request));
+  else if (op == "security.encrypted_filespace.open") result.api_result = api::EngineOpenEncryptedFilespace(TypedOpenEncryptedFilespaceRequest(request));
+  else if (op == "security.request_protected_material") result.api_result = api::EngineRequestProtectedMaterial(TypedRequestProtectedMaterialRequest(request));
+  else if (op == "security.protected_material.create") result.api_result = api::EngineCreateProtectedMaterial(TypedCreateProtectedMaterialRequest(request));
+  else if (op == "security.protected_material.version.add") result.api_result = api::EngineAddProtectedMaterialVersion(TypedAddProtectedMaterialVersionRequest(request));
+  else if (op == "security.protected_material.resolve") result.api_result = api::EngineResolveProtectedMaterial(TypedResolveProtectedMaterialRequest(request));
+  else if (op == "security.protected_material.release") result.api_result = api::EngineReleaseProtectedMaterial(TypedReleaseProtectedMaterialRequest(request));
+  else if (op == "security.protected_material.version.purge") result.api_result = api::EnginePurgeProtectedMaterialVersion(TypedPurgeProtectedMaterialVersionRequest(request));
+  else if (op == "security.protected_material.catalog.inspect") result.api_result = api::EngineInspectProtectedMaterialCatalog(TypedInspectProtectedMaterialCatalogRequest(request));
+  else if (op == "security.protected_material.package.export") result.api_result = api::EngineExportProtectedMaterialPackage(TypedExportProtectedMaterialPackageRequest(request));
+  else if (op == "security.protected_material.package.import") result.api_result = api::EngineImportProtectedMaterialPackage(TypedImportProtectedMaterialPackageRequest(request));
   else if (op == "security.evaluate_udr_trust") result.api_result = api::EngineEvaluateUdrTrust(TypedRequest<api::EngineEvaluateUdrTrustRequest>(request));
   else if (op == "security.evaluate_manager_admission") result.api_result = api::EngineEvaluateManagerAdmission(TypedRequest<api::EngineEvaluateManagerAdmissionRequest>(request));
   else if (op == "security.seed_standard_bundles") result.api_result = api::EngineSeedStandardSecurityBundles(TypedRequest<api::EngineSeedStandardSecurityBundlesRequest>(request));
@@ -2831,6 +3548,11 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (op == "management.inspect_runtime") result.api_result = api::EngineInspectManagementRuntime(TypedRequest<api::EngineInspectManagementRuntimeRequest>(request));
   else if (op == "management.control_runtime") result.api_result = api::EngineControlManagementRuntime(TypedRequest<api::EngineControlManagementRuntimeRequest>(request));
   else if (op == "management.prepare_support_bundle") result.api_result = api::EnginePrepareSupportBundle(TypedRequest<api::EnginePrepareSupportBundleRequest>(request));
+  else if (IsMemoryManagementOperation(op)) result.api_result = api::EnginePlanMemoryManagementOperation(TypedMemoryManagementRequest(request));
+  else if (IsStorageTierMigrationOperation(op)) result.api_result = api::EnginePlanStorageTierMigrationOperation(TypedStorageTierMigrationRequest(request));
+  else if (IsFilespaceDiscoveryOperation(op)) result.api_result = api::EngineDiscoverFilespaceAnomalies(TypedFilespaceDiscoveryRequest(request));
+  else if (IsFilespacePackageOperation(op)) result.api_result = api::EngineFilespacePackageOperation(TypedFilespacePackageRequest(request));
+  else if (IsShardPlacementDescriptorOperation(op)) result.api_result = api::EnginePlanShardPlacementOperation(TypedShardPlacementDescriptorRequest(request));
   else if (op.starts_with("index.")) result.api_result = api::EngineIndexManagementOperation(TypedRequest<api::EngineIndexManagementRequest>(request));
   else if (op == "lifecycle.create_database") result.api_result = api::EngineCreateLifecycle(TypedRequest<api::EngineCreateLifecycleRequest>(request));
   else if (op == "lifecycle.open_database") result.api_result = api::EngineOpenLifecycle(TypedRequest<api::EngineOpenLifecycleRequest>(request));
@@ -2904,6 +3626,33 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (op == "extensibility.inspect_gpu_capability") result.api_result = api::EngineInspectGpuCapability(TypedRequest<api::EngineInspectGpuCapabilityRequest>(request));
   else if (op == "extensibility.compile_llvm_module") result.api_result = api::EngineCompileLlvmModule(TypedRequest<api::EngineCompileLlvmModuleRequest>(request));
   else if (op == "filespace.preallocate") result.api_result = api::EngineFilespacePreallocate(TypedRequest<api::EngineFilespacePreallocateRequest>(request));
+  else if (op == "filespace.create" ||
+           op == "filespace.attach" ||
+           op == "filespace.detach" ||
+           op == "filespace.disconnect" ||
+           op == "filespace.move" ||
+           op == "filespace.merge" ||
+           op == "filespace.promote" ||
+           op == "filespace.verify" ||
+           op == "filespace.compact" ||
+           op == "filespace.fence" ||
+           op == "filespace.release" ||
+           op == "filespace.archive" ||
+           op == "filespace.quarantine" ||
+           op == "filespace.snapshot.create" ||
+           op == "filespace.snapshot.refresh" ||
+           op == "filespace.snapshot.validate" ||
+           op == "filespace.snapshot.retire" ||
+           op == "filespace.shadow.create" ||
+           op == "filespace.shadow.refresh" ||
+           op == "filespace.shadow.validate" ||
+           op == "filespace.shadow.promote" ||
+           op == "filespace.truncate" ||
+           op == "filespace.drop" ||
+           op == "filespace.delete_physical" ||
+           op == "filespace.repair" ||
+           op == "filespace.rebuild" ||
+           op == "filespace.salvage") result.api_result = api::EngineFilespaceLifecycleOperation(TypedRequest<api::EngineFilespaceLifecycleRequest>(request));
   else if (op == "storage.manage_operation") result.api_result = api::EngineStorageManagementOperation(TypedRequest<api::EngineStorageManagementRequest>(request));
   else if (op == "extensibility.register_udr_package") result.api_result = api::EngineRegisterUdrPackage(TypedRequest<api::EngineRegisterUdrPackageRequest>(request));
   else if (op == "extensibility.load_udr_package") result.api_result = api::EngineLoadUdrPackage(TypedRequest<api::EngineLoadUdrPackageRequest>(request));

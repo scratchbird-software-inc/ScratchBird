@@ -39,6 +39,8 @@ using scratchbird::core::platform::UuidKind;
 
 constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
 constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000e300ff";
+constexpr std::string_view kCursorProcedureSql =
+    "CREATE PROCEDURE replay_cursor_procedure(route_cursor cursor);";
 
 struct Case {
   std::string_view sql;
@@ -143,15 +145,19 @@ struct PipelineArtifacts {
   SblrVerifierResult verifier;
 };
 
-PipelineArtifacts RunPipeline(const Case& route) {
+PipelineArtifacts RunPipeline(std::string_view sql) {
   PipelineArtifacts artifacts;
   const auto session = ParserSession();
-  artifacts.cst = BuildCst(route.sql);
+  artifacts.cst = BuildCst(sql);
   artifacts.ast = BuildAst(artifacts.cst);
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session, {});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
+}
+
+PipelineArtifacts RunPipeline(const Case& route) {
+  return RunPipeline(route.sql);
 }
 
 void RequireRegistryEvidence(const Case& route) {
@@ -286,6 +292,94 @@ void RequireServerAdmission(const Case& route, const SblrEnvelope& envelope) {
           "CREATE executable opcode registry security context drifted");
   Require(opcode_entry->requires_transaction_context,
           "CREATE executable opcode registry transaction context drifted");
+}
+
+void RequireCursorRoutineArgumentRoute() {
+  const Case route{kCursorProcedureSql,
+                   "SBSQL-13F5A8364A50",
+                   "create_procedure_stmt",
+                   "SBSQL-SURFACE-515475BB02FD",
+                   "ddl.create_procedure",
+                   "SBLR_DDL_CREATE_PROCEDURE",
+                   "procedure",
+                   "sys.catalog.procedure",
+                   "019f0000-0000-7000-8000-000000e30022",
+                   "replay_cursor_procedure",
+                   "SBSQL-B5E9C0943E63",
+                   "procedure_signature",
+                   "SBSQL-SURFACE-1C3307CC7B4E"};
+  const auto artifacts = RunPipeline(route.sql);
+  PrintMessages(artifacts.cst.messages);
+  PrintMessages(artifacts.ast.messages);
+  PrintMessages(artifacts.bound.messages);
+  PrintMessages(artifacts.envelope.messages);
+  PrintMessages(artifacts.verifier.messages);
+  Require(!artifacts.cst.messages.has_errors(), "cursor routine CST failed");
+  Require(!artifacts.ast.messages.has_errors(), "cursor routine AST failed");
+  Require(artifacts.bound.bound, "cursor routine bind failed");
+  Require(artifacts.verifier.admitted, "cursor routine verifier rejected exact route");
+  Require(artifacts.envelope.operation_family == kFamily,
+          "cursor routine operation family mismatch");
+  Require(artifacts.envelope.operation_id == route.operation_id,
+          "cursor routine operation id mismatch");
+  Require(artifacts.envelope.engine_api_operation_id == route.operation_id,
+          "cursor routine engine API operation id mismatch");
+  Require(artifacts.envelope.sblr_opcode == route.opcode,
+          "cursor routine SBLR opcode mismatch");
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.engine.ddl_create_executable_object_api_required"),
+          "cursor routine engine DDL authority step missing");
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.parser.no_sql_text_execution"),
+          "cursor routine parser no-SQL-execution authority step missing");
+  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.routine.parameter_descriptor"),
+          "cursor routine parameter descriptor ref missing");
+  Require(HasValue(artifacts.envelope.descriptor_refs, "sys.server.cursor_descriptor"),
+          "cursor routine cursor descriptor ref missing");
+  Require(HasValue(artifacts.envelope.descriptor_refs,
+                   "sys.routine.cursor_parameter_descriptor"),
+          "cursor routine cursor parameter descriptor ref missing");
+  Require(!artifacts.envelope.parser_executes_sql,
+          "cursor routine lowering allowed parser SQL execution");
+  Require(!artifacts.envelope.real_file_effects,
+          "cursor routine lowering allowed donor/file effects");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"signature_descriptor_embedded\":true"),
+          "cursor routine payload did not embed signature descriptor");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"routine_parameter_descriptor_present\":true"),
+          "cursor routine payload missing parameter descriptor");
+  Require(Contains(artifacts.envelope.payload, "\"routine_parameter_count\":1"),
+          "cursor routine payload missing parameter count");
+  Require(Contains(artifacts.envelope.payload, "\"routine_parameter_0_type\":\"cursor\""),
+          "cursor routine payload missing cursor parameter type");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"routine_parameter_0_descriptor_kind\":\"cursor_handle\""),
+          "cursor routine payload missing cursor handle descriptor kind");
+  Require(Contains(artifacts.envelope.payload, "\"routine_cursor_argument\":true"),
+          "cursor routine payload missing cursor argument flag");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"routine_cursor_argument_binding\":\"descriptor.cursor_handle.session_registry\""),
+          "cursor routine payload missing cursor binding authority");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"routine_cursor_argument_parser_executes_cursor\":false"),
+          "cursor routine payload overclaimed parser cursor execution");
+  Require(Contains(artifacts.envelope.payload, "SBSQL-0B00DEA678E2") &&
+              Contains(artifacts.envelope.payload, "SBSQL-C5D151D17944") &&
+              Contains(artifacts.envelope.payload, "SBSQL-1D1D3395F617") &&
+              Contains(artifacts.envelope.payload, "SBSQL-02CE40320417"),
+          "cursor routine payload missing parameter/cursor surface evidence");
+  Require(!Contains(artifacts.envelope.payload, "route_cursor") &&
+              !Contains(artifacts.envelope.payload, route.object_name) &&
+              !Contains(artifacts.envelope.payload, route.sql),
+          "cursor routine payload embedded SQL text or identifier names as authority");
+  Require(!Contains(artifacts.envelope.payload, "donor"),
+          "cursor routine payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "WAL") &&
+              !Contains(artifacts.envelope.payload, "wal") &&
+              !Contains(artifacts.envelope.payload, "recovery"),
+          "cursor routine payload carried WAL/recovery authority");
+  RequireServerAdmission(route, artifacts.envelope);
 }
 
 std::uint64_t CurrentUnixMillis() {
@@ -459,6 +553,7 @@ int main() {
     RequireExactLowering(route, artifacts);
     RequireServerAdmission(route, artifacts.envelope);
   }
+  RequireCursorRoutineArgumentRoute();
   RequireEngineDispatch();
   std::cout << "sbsql_create_executable_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;

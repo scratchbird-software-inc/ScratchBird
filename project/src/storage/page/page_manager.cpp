@@ -63,7 +63,12 @@ bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
 }
 
 bool IsExpectedSkeletonBodyUnavailable(const PageSkeletonClassification& classification) {
-  return classification.diagnostic.diagnostic_code == "SB-PAGE-SKELETON-BODY-PARSER-UNAVAILABLE";
+  if (classification.diagnostic.diagnostic_code == "SB-PAGE-SKELETON-BODY-PARSER-UNAVAILABLE") {
+    return true;
+  }
+  return classification.manager_classification.descriptor.reserved &&
+         classification.manager_classification.descriptor.page_type == PageType::bootstrap_reserved &&
+         classification.diagnostic.diagnostic_code == "SB_DIAG_PAGE_TYPE_STATUS_UNSUPPORTED";
 }
 
 bool AddWouldOverflow(u64 lhs, u64 rhs) {

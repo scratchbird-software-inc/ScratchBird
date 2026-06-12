@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-// SEARCH_KEY: SB_SERVER_PRODUCT_SKELETON_CLI
+// SEARCH_KEY: SB_SERVER_PRODUCT_CLI
 
 #include "cli.hpp"
 

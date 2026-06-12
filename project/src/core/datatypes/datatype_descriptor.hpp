@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "scratchbird/engine/execution_type_descriptor.hpp"
+
 #include "runtime_capabilities.hpp"
 #include "runtime_platform.hpp"
 
@@ -19,8 +21,10 @@ namespace scratchbird::core::datatypes {
 using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::RuntimeCapabilityManifest;
 using scratchbird::core::platform::Status;
+using scratchbird::core::platform::TypedUuid;
 using scratchbird::core::platform::u16;
 using scratchbird::core::platform::u32;
+using scratchbird::core::platform::u64;
 
 enum class TypeFamily : u16 {
   null_type,
@@ -184,6 +188,33 @@ struct DatatypeCapabilityCheck {
   }
 };
 
+struct CatalogExecutionTypeMetadata {
+  TypedUuid descriptor_uuid;
+  u64 descriptor_epoch = 0;
+  u32 precision = 0;
+  u32 scale = 0;
+  u32 length = 0;
+  u32 vector_dimensions = 0;
+  u32 container_rank = 0;
+  TypedUuid domain_uuid;
+  std::vector<TypedUuid> domain_stack;
+  TypedUuid charset_uuid;
+  TypedUuid collation_uuid;
+  TypedUuid timezone_uuid;
+  TypedUuid element_descriptor_uuid;
+  TypedUuid security_policy_uuid;
+};
+
+struct ExecutionTypeDescriptorResult {
+  Status status;
+  scratchbird::engine::ExecutionTypeDescriptor descriptor;
+  DiagnosticRecord diagnostic;
+
+  bool ok() const {
+    return status.ok();
+  }
+};
+
 const char* TypeFamilyName(TypeFamily family);
 const char* CanonicalTypeName(CanonicalTypeId type_id);
 const char* TypeWidthClassName(TypeWidthClass width_class);
@@ -191,6 +222,12 @@ const std::vector<DatatypeDescriptor>& BuiltinDatatypeDescriptors();
 DatatypeDescriptorResult LookupDatatypeDescriptor(CanonicalTypeId type_id);
 DatatypeDescriptorResult ValidateDatatypeDescriptor(const DatatypeDescriptor& descriptor);
 DatatypeCapabilityCheck CheckDatatypeMandatoryCapabilities(const RuntimeCapabilityManifest& manifest);
+ExecutionTypeDescriptorResult BuildExecutionTypeDescriptorFromCatalog(
+    const DatatypeDescriptor& descriptor,
+    const CatalogExecutionTypeMetadata& metadata);
+ExecutionTypeDescriptorResult LookupExecutionTypeDescriptorFromCatalog(
+    CanonicalTypeId type_id,
+    const CatalogExecutionTypeMetadata& metadata);
 DiagnosticRecord MakeDatatypeDiagnostic(Status status,
                                          std::string diagnostic_code,
                                          std::string message_key,

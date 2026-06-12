@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-// SEARCH_KEY: SB_SERVER_PRODUCT_SKELETON_IDENTITY
+// SEARCH_KEY: SB_SERVER_PRODUCT_IDENTITY
 
 #include "product_identity.hpp"
 
@@ -18,7 +18,7 @@ const ServerProductIdentity& GetServerProductIdentity() {
       "standalone-server",
       "0.1.0",
       "SBPS",
-      "product-skeleton",
+      "public",
   };
   return identity;
 }
@@ -26,7 +26,8 @@ const ServerProductIdentity& GetServerProductIdentity() {
 std::string ProductVersionLine() {
   const auto& identity = GetServerProductIdentity();
   return identity.product_name + " " + identity.product_version + " (" +
-         identity.product_kind + ", " + identity.implementation_stage + ")";
+         identity.product_kind + ", " + identity.protocol_family +
+         ", release_channel=" + identity.release_channel + ")";
 }
 
 }  // namespace scratchbird::server

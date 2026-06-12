@@ -27,7 +27,7 @@ struct FamilyRule {
   bool cluster_private = false;
 };
 
-constexpr std::array<FamilyRule, 53> kServerSblrFamilies{{
+constexpr std::array<FamilyRule, 55> kServerSblrFamilies{{
     {"sblr.acceleration.gpu.v3", "acceleration.gpu.operation", false},
     {"sblr.acceleration.llvm.v3", "extensibility.compile_llvm_module", false},
     {"sblr.archive.operation.v3", "archive.operation", false},
@@ -76,8 +76,10 @@ constexpr std::array<FamilyRule, 53> kServerSblrFamilies{{
     {"sblr.routine.define.v3", "routine.define", false},
     {"sblr.routine.execute.v3", "extensibility.invoke_udr_package", false},
     {"sblr.security.mutation.v3", "security.grant_right", false},
+    {"sblr.security.mutation_or_inspect.v3", "security.authorize", false},
     {"sblr.session.management.v3", "session.prepare_statement", false},
     {"sblr.statement.management.v3", "session.prepare_statement", false},
+    {"sblr.storage.management_operation.v3", "storage.manage_operation", false},
     {"sblr.transaction.control.v3", "transaction.control", false},
     {"sblr.udr.operation.v3", "extensibility.invoke_udr_package", false},
     {"sblr.vector.execution.v3", "nosql.vector_search", false},
@@ -165,6 +167,84 @@ bool IsClusterOperationId(std::string_view operation_id) {
          StartsWith(operation_id, "placement.cluster.");
 }
 
+bool IsMemoryControlOperationId(std::string_view operation_id) {
+  return operation_id == "memory.profile.set" ||
+         operation_id == "memory.cache.flush" ||
+         operation_id == "memory.cache.invalidate" ||
+         operation_id == "memory.scavenge" ||
+         operation_id == "memory.grant_feedback.reset" ||
+         operation_id == "memory.stream_policy.set" ||
+         operation_id == "memory.udr_limit.set" ||
+         operation_id == "memory.dump_policy.set" ||
+         operation_id == "memory.optimizer.set" ||
+         operation_id == "memory.optimizer.run" ||
+         operation_id == "memory.object_residency.set" ||
+         operation_id == "memory.rate_limit.set" ||
+         operation_id == "memory.policy_migration.plan";
+}
+
+bool IsStorageTierMigrationOperationId(std::string_view operation_id) {
+  return StartsWith(operation_id, "storage_tier.");
+}
+
+bool IsFilespaceDiscoveryOperationId(std::string_view operation_id) {
+  return StartsWith(operation_id, "filespace.discovery.");
+}
+
+bool IsFilespacePackageOperationId(std::string_view operation_id) {
+  return StartsWith(operation_id, "filespace.package.");
+}
+
+bool IsFilespaceLifecycleOperationId(std::string_view operation_id) {
+  return operation_id == "filespace.create" ||
+         operation_id == "filespace.preallocate" ||
+         operation_id == "filespace.attach" ||
+         operation_id == "filespace.detach" ||
+         operation_id == "filespace.disconnect" ||
+         operation_id == "filespace.move" ||
+         operation_id == "filespace.merge" ||
+         operation_id == "filespace.promote" ||
+         operation_id == "filespace.verify" ||
+         operation_id == "filespace.compact" ||
+         operation_id == "filespace.fence" ||
+         operation_id == "filespace.release" ||
+         operation_id == "filespace.archive" ||
+         operation_id == "filespace.quarantine" ||
+         operation_id == "filespace.snapshot.create" ||
+         operation_id == "filespace.snapshot.refresh" ||
+         operation_id == "filespace.snapshot.validate" ||
+         operation_id == "filespace.snapshot.retire" ||
+         operation_id == "filespace.shadow.create" ||
+         operation_id == "filespace.shadow.refresh" ||
+         operation_id == "filespace.shadow.validate" ||
+         operation_id == "filespace.shadow.promote" ||
+         operation_id == "filespace.truncate" ||
+         operation_id == "filespace.drop" ||
+         operation_id == "filespace.delete_physical" ||
+         operation_id == "filespace.repair" ||
+         operation_id == "filespace.rebuild" ||
+         operation_id == "filespace.salvage";
+}
+
+bool IsShardPlacementDescriptorOperationId(std::string_view operation_id) {
+  return StartsWith(operation_id, "shard_placement.");
+}
+
+bool IsEncryptionMaintenanceOperationId(std::string_view operation_id) {
+  return operation_id == "security.encryption_key.admit" ||
+         operation_id == "security.encryption_key.rotate" ||
+         operation_id == "security.protected_material_cache.inspect" ||
+         operation_id == "security.protected_material_cache.purge" ||
+         operation_id == "security.protected_material_cache.shutdown" ||
+         operation_id == "security.encrypted_filespace.open" ||
+         operation_id == "security.request_protected_material" ||
+         operation_id == "security.protected_material.version.purge";
+}
+
+bool IsProtectedMaterialOperationId(std::string_view operation_id) {
+  return StartsWith(operation_id, "security.protected_material.");
+}
+
 bool IsPublicExactOperationId(std::string_view operation_id) {
   return operation_id == "op.gpu.artifact_quarantine" ||
          operation_id == "op.gpu.cache_clear" ||
@@ -189,6 +269,14 @@ bool IsPublicExactOperationId(std::string_view operation_id) {
          operation_id == "op.management.instruction.cancel" ||
          operation_id == "op.management.instruction.quarantine" ||
          operation_id == "op.management.support_bundle.create" ||
+         StartsWith(operation_id, "memory.") ||
+         IsStorageTierMigrationOperationId(operation_id) ||
+         IsFilespaceDiscoveryOperationId(operation_id) ||
+         IsFilespacePackageOperationId(operation_id) ||
+         IsFilespaceLifecycleOperationId(operation_id) ||
+         IsShardPlacementDescriptorOperationId(operation_id) ||
+         IsEncryptionMaintenanceOperationId(operation_id) ||
+         IsProtectedMaterialOperationId(operation_id) ||
          operation_id == "op.migration.alter" ||
          operation_id == "op.migration.begin_from_donor" ||
          operation_id == "op.show.aot_artifacts" ||
@@ -317,6 +405,31 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
       StartsWith(operation_id, "op.management.")) {
     return "sblr.management.control.v3";
   }
+  if (StartsWith(operation_id, "memory.")) {
+    return IsMemoryControlOperationId(operation_id) ? "sblr.management.control.v3"
+                                                   : "sblr.management.report.v3";
+  }
+  if (IsStorageTierMigrationOperationId(operation_id)) {
+    return "sblr.storage.management_operation.v3";
+  }
+  if (IsFilespaceDiscoveryOperationId(operation_id)) {
+    return "sblr.filespace.management.v3";
+  }
+  if (IsFilespacePackageOperationId(operation_id)) {
+    return "sblr.filespace.management.v3";
+  }
+  if (IsFilespaceLifecycleOperationId(operation_id)) {
+    return "sblr.filespace.management.v3";
+  }
+  if (IsShardPlacementDescriptorOperationId(operation_id)) {
+    return "sblr.storage.management_operation.v3";
+  }
+  if (IsEncryptionMaintenanceOperationId(operation_id)) {
+    return "sblr.security.mutation_or_inspect.v3";
+  }
+  if (IsProtectedMaterialOperationId(operation_id)) {
+    return "sblr.security.mutation_or_inspect.v3";
+  }
   if (operation_id == "management.inspect_runtime" ||
       operation_id == "op.show.management.config" ||
       operation_id == "op.show.management.drift" ||
@@ -443,6 +556,8 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "management.inspect_runtime" ||
          operation_id == "management.control_runtime" ||
          operation_id == "storage.manage_operation" ||
+         IsStorageTierMigrationOperationId(operation_id) ||
+         StartsWith(operation_id, "filespace.") ||
          operation_id == "extensibility.register_parser_package" ||
          StartsWith(operation_id, "extensibility.register_udr_package") ||
          StartsWith(operation_id, "extensibility.load_udr_package") ||
@@ -870,9 +985,13 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   if (operation_id.starts_with("dml.")) return std::nullopt;
   if (operation_id.starts_with("transaction.")) return "sblr.transaction.control.v3";
   if (operation_id == "storage.manage_operation" ||
+      IsStorageTierMigrationOperationId(operation_id) ||
+      operation_id.starts_with("filespace.") ||
       operation_id.starts_with("storage.filespace.") ||
       operation_id.starts_with("storage.file_space.")) {
-    return "sblr.filespace.management.v3";
+    return IsStorageTierMigrationOperationId(operation_id)
+               ? "sblr.storage.management_operation.v3"
+               : "sblr.filespace.management.v3";
   }
   if (operation_id.starts_with("storage.index.")) return "sblr.index.maintenance.v3";
   if (operation_id.starts_with("storage.database.")) return "sblr.database.management.v3";
@@ -909,6 +1028,13 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
       operation_id == "management.prepare_support_bundle" ||
       operation_id.starts_with("agents.")) {
     return "sblr.management.control.v3";
+  }
+  if (operation_id.starts_with("memory.")) {
+    return IsMemoryControlOperationId(operation_id) ? "sblr.management.control.v3"
+                                                   : "sblr.management.report.v3";
+  }
+  if (operation_id.starts_with("storage_tier.")) {
+    return "sblr.storage.management_operation.v3";
   }
   if (operation_id.starts_with("general.")) {
     return "sblr.management.control.v3";
@@ -1036,6 +1162,13 @@ std::string ReconciledExplicitServerFamily(std::string family,
     const auto resolved_family = FamilyForOperationId(operation_id);
     if (resolved_family.has_value()) return *resolved_family;
   }
+  if (operation_id == "query.plan_operation" &&
+      (family == "sblr.query.values.v3" ||
+       family == "sblr.query.relational.v3" ||
+       family == "sblr.query.multimodel_or_ddl.v3")) {
+    const auto resolved_family = FamilyForOperationId(operation_id);
+    if (resolved_family.has_value()) return *resolved_family;
+  }
   if (prefer_primary_family &&
       (family == "sblr.management.runtime_operation.v3" ||
        family == "sblr.observability.inspect.v3" ||
@@ -1154,9 +1287,14 @@ ServerSblrAdmissionResult AdmitTextOperationEnvelope(std::string_view encoded,
                   "cluster_mapping_unavailable");
   }
   std::string family = TextField(encoded, "sblr_operation_family").value_or("");
+  const bool prefer_primary_family =
+      public_abi_dispatch ||
+      Contains(encoded, "public_sbsql_exact_command=true") ||
+      Contains(encoded, "engine_api_command_route=true") ||
+      Contains(encoded, "cluster_provider_dispatch=true");
   family = ReconciledExplicitServerFamily(std::move(family),
                                           operation_id,
-                                          Contains(encoded, "public_sbsql_exact_command=true"));
+                                          prefer_primary_family);
   if (family.empty()) {
     const auto resolved_family = FamilyForOperationId(operation_id);
     if (!resolved_family.has_value()) {

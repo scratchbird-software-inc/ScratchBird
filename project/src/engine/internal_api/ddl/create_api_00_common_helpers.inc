@@ -23,6 +23,8 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <iterator>
+#include <map>
 #include <set>
 #include <string>
 
@@ -132,9 +134,9 @@ struct CreateIndexSortedBuildResult {
 
 CreateIndexSortedBuildResult BuildCreateIndexSortedBulkArtifact(
     const EngineRequestContext& context,
-    const CrudState& state,
     const CrudIndexRecord& index,
-    const std::string& table_uuid) {
+    const std::string& table_uuid,
+    const std::vector<CrudRowVersionRecord>& rows) {
   CreateIndexSortedBuildResult result;
   const auto family = CoreIndexFamilyForCreateIndex(index);
   if (family == scratchbird::core::index::IndexFamily::unknown) {
@@ -172,8 +174,6 @@ CreateIndexSortedBuildResult BuildCreateIndexSortedBulkArtifact(
   build.metadata.policy_allows_mutation = true;
   build.metadata.leaf_entry_capacity = 128;
 
-  const auto rows =
-      VisibleCrudRows(state, table_uuid, context.local_transaction_id);
   for (std::size_t row_index = 0; row_index < rows.size(); ++row_index) {
     for (const auto& key : CrudIndexKeysForValues(index, rows[row_index].values)) {
       scratchbird::core::index::SortedBulkIndexRowInput input;
@@ -221,7 +221,7 @@ CreateIndexSortedBuildResult BuildCreateIndexSortedBulkArtifact(
 
 struct TemporaryTableOptions {
   bool temporary = false;
-  std::string scope = "session";
+  std::string scope = "private";
   std::string on_commit_action = "delete_rows";
   EngineApiDiagnostic diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 };
@@ -237,9 +237,20 @@ TemporaryTableOptions ResolveTemporaryTableOptions(const EngineCreateTableReques
       options.on_commit_action = "delete_rows";
     } else if (option == "on_commit:preserve_rows" || option == "on_commit_preserve_rows:true") {
       options.on_commit_action = "preserve_rows";
-    } else if (option == "temporary_scope:session") {
-      options.scope = "session";
-    } else if (option.rfind("temporary_scope:", 0) == 0 && option != "temporary_scope:session") {
+    } else if (option.rfind("on_commit:", 0) == 0 ||
+               option.rfind("on_commit_", 0) == 0) {
+      options.diagnostic = MakeEngineApiDiagnostic("SB-MGA-TEMPORARY-ON-COMMIT-UNSUPPORTED",
+                                                   "temporary_object.on_commit_unsupported",
+                                                   option,
+                                                   true);
+      return options;
+    } else if (option == "temporary_scope:global") {
+      options.scope = "global";
+    } else if (option == "temporary_scope:private" ||
+               option == "temporary_scope:session" ||
+               option == "temporary_scope:local") {
+      options.scope = "private";
+    } else if (option.rfind("temporary_scope:", 0) == 0) {
       options.diagnostic = MakeEngineApiDiagnostic("SB-MGA-TEMPORARY-SCOPE-UNSUPPORTED",
                                                    "temporary_object.scope_unsupported",
                                                    option,
@@ -247,7 +258,8 @@ TemporaryTableOptions ResolveTemporaryTableOptions(const EngineCreateTableReques
       return options;
     }
   }
-  if (options.temporary && request.context.session_uuid.canonical.empty()) {
+  if (options.temporary && options.scope != "global" &&
+      request.context.session_uuid.canonical.empty()) {
     options.diagnostic = MakeInvalidRequestDiagnostic("ddl.create_table", "temporary_table_requires_session_uuid");
   }
   return options;

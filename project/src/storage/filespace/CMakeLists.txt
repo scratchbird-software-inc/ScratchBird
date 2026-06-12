@@ -14,8 +14,10 @@ add_library(sb_storage_filespace
   cloud_filespace_provider.cpp
   filespace_header.cpp
   filespace_identity.cpp
+  filespace_discovery.cpp
   filespace_growth.cpp
   filespace_lifecycle.cpp
+  filespace_package.cpp
   filespace_secondary.cpp
   foreign_filespace_quarantine.cpp
 )

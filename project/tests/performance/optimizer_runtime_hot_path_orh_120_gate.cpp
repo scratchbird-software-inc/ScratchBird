@@ -388,6 +388,8 @@ exec::SnapshotSafeCacheKey SnapshotKey() {
   key.redaction_epoch = 123;
   key.mga_visibility_snapshot_class = "repeatable_read:orh120";
   key.provider_generation = 124;
+  key.descriptor_identity_digest = "descriptor:orh120-rowset:v1";
+  key.descriptor_epoch = 125;
   key.result_contract_identity = "orh120.rowset.v1";
   key.result_contract_hash = "sha256:orh120-rowset-contract";
   key.route_compatibility = "embedded";

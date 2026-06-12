@@ -165,6 +165,7 @@ add_library(sb_engine_internal_api
   management/config_api.cpp
   management/index_management_api.cpp
   management/management_api.cpp
+  management/memory_management_api.cpp
   management/migration_management_api.cpp
   management/support_bundle_api.cpp
   mga_relation_store/mga_relation_descriptor.cpp
@@ -273,6 +274,7 @@ target_link_libraries(sb_engine_internal_api PUBLIC
   sb_core_datatypes
   sb_core_hash
   sb_core_agents
+  sb_core_memory
   sb_core_metrics
   sb_core_resources
   sb_core_uuid

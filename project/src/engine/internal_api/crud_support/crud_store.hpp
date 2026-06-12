@@ -63,6 +63,7 @@ struct CrudRowVersionRecord {
   std::string table_uuid;
   std::string row_uuid;
   std::string version_uuid;
+  std::string temporary_session_uuid;
   std::string previous_version_uuid;
   std::uint64_t previous_sequence = 0;
   bool deleted = false;
@@ -265,7 +266,7 @@ EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const CrudState& state,
                                                     const std::string& table_uuid,
                                                     const std::string& row_uuid,
                                                     const std::vector<std::pair<std::string, std::string>>& values,
-                                                    std::uint64_t observer_tx);
+                                                    const EngineRequestContext& context);
 EngineApiDiagnostic AppendCrudIndexEntriesForIndex(const EngineRequestContext& context,
                                                    const CrudIndexRecord& index,
                                                    const std::string& row_uuid,

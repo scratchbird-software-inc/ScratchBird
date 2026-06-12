@@ -187,6 +187,39 @@ const char* PageTypeName(PageType page_type) {
     case PageType::filespace_directory: return "filespace_directory";
     case PageType::config_root: return "config_root";
     case PageType::security_root: return "security_root";
+    case PageType::filespace_lifecycle_state: return "filespace_lifecycle_state";
+    case PageType::filespace_operation_record: return "filespace_operation_record";
+    case PageType::filespace_prealloc_map: return "filespace_prealloc_map";
+    case PageType::filespace_quarantine_fence: return "filespace_quarantine_fence";
+    case PageType::shard_placement_map: return "shard_placement_map";
+    case PageType::shard_extent_map: return "shard_extent_map";
+    case PageType::shard_operation_state: return "shard_operation_state";
+    case PageType::cluster_member_placement: return "cluster_member_placement";
+    case PageType::archive_manifest: return "archive_manifest";
+    case PageType::foreign_import_manifest: return "foreign_import_manifest";
+    case PageType::export_package_manifest: return "export_package_manifest";
+    case PageType::import_reconciliation_map: return "import_reconciliation_map";
+    case PageType::uuid_remap_conflict: return "uuid_remap_conflict";
+    case PageType::snapshot_manifest: return "snapshot_manifest";
+    case PageType::shadow_manifest: return "shadow_manifest";
+    case PageType::protected_material_root: return "protected_material_root";
+    case PageType::protected_material_version: return "protected_material_version";
+    case PageType::protected_material_chunk: return "protected_material_chunk";
+    case PageType::protected_material_policy: return "protected_material_policy";
+    case PageType::audit_chain: return "audit_chain";
+    case PageType::system_journal: return "system_journal";
+    case PageType::repair_manifest: return "repair_manifest";
+    case PageType::rebuild_manifest: return "rebuild_manifest";
+    case PageType::salvage_manifest: return "salvage_manifest";
+    case PageType::damage_map: return "damage_map";
+    case PageType::reachability_map: return "reachability_map";
+    case PageType::typed_payload_dependency: return "typed_payload_dependency";
+    case PageType::type_migration_state: return "type_migration_state";
+    case PageType::resource_dependency_map: return "resource_dependency_map";
+    case PageType::index_resource_state: return "index_resource_state";
+    case PageType::type_statistics_state: return "type_statistics_state";
+    case PageType::derived_structure_manifest: return "derived_structure_manifest";
+    case PageType::name_registry_superseded: return "name_registry_superseded";
     case PageType::reserved_local: return "reserved_local";
     case PageType::cluster_decision: return "cluster_decision";
     case PageType::cluster_route: return "cluster_route";
@@ -257,6 +290,48 @@ bool IsClusterOnlyPageType(PageType page_type) {
     case PageType::cluster_route:
     case PageType::cluster_catalog:
     case PageType::cluster_transaction:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool IsReservedPageType(PageType page_type) {
+  switch (page_type) {
+    case PageType::filespace_lifecycle_state:
+    case PageType::filespace_operation_record:
+    case PageType::filespace_prealloc_map:
+    case PageType::filespace_quarantine_fence:
+    case PageType::shard_placement_map:
+    case PageType::shard_extent_map:
+    case PageType::shard_operation_state:
+    case PageType::cluster_member_placement:
+    case PageType::archive_manifest:
+    case PageType::foreign_import_manifest:
+    case PageType::export_package_manifest:
+    case PageType::import_reconciliation_map:
+    case PageType::uuid_remap_conflict:
+    case PageType::snapshot_manifest:
+    case PageType::shadow_manifest:
+    case PageType::protected_material_root:
+    case PageType::protected_material_version:
+    case PageType::protected_material_chunk:
+    case PageType::protected_material_policy:
+    case PageType::audit_chain:
+    case PageType::system_journal:
+    case PageType::repair_manifest:
+    case PageType::rebuild_manifest:
+    case PageType::salvage_manifest:
+    case PageType::damage_map:
+    case PageType::reachability_map:
+    case PageType::typed_payload_dependency:
+    case PageType::type_migration_state:
+    case PageType::resource_dependency_map:
+    case PageType::index_resource_state:
+    case PageType::type_statistics_state:
+    case PageType::derived_structure_manifest:
+    case PageType::name_registry_superseded:
+    case PageType::reserved_local:
       return true;
     default:
       return false;
@@ -458,7 +533,7 @@ PageClassification ClassifyPageHeader(const SerializedPageHeader& serialized) {
                           {});
   }
 
-  if (header.page_type == PageType::reserved_local || (header.flags & PageHeaderFlag::reserved_no_write) != 0) {
+  if (IsReservedPageType(header.page_type) || (header.flags & PageHeaderFlag::reserved_no_write) != 0) {
     return Classification(PageClassificationKind::reserved_local,
                           header.page_type,
                           true,

@@ -279,6 +279,8 @@ void ProveCompressionVectorStreamingSnapshotClosure(
   lookup.key.redaction_epoch = 1;
   lookup.key.mga_visibility_snapshot_class = "snapshot";
   lookup.key.provider_generation = 1;
+  lookup.key.descriptor_identity_digest = "descriptor:closure-rowset:v1";
+  lookup.key.descriptor_epoch = 1;
   lookup.key.result_contract_identity = "closure.rowset.v1";
   lookup.key.result_contract_hash = "sha256:closure-rowset";
   lookup.key.route_compatibility = "embedded";

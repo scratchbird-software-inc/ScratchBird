@@ -67,12 +67,55 @@ CrudIndexRecord BuildCrudIndexRecord(const EngineIndexDefinition& definition,
   return index;
 }
 
+std::vector<CrudRowVersionRecord> RowsVisibleForCreateIndexBuild(
+    const CrudState& state,
+    const CrudTableRecord& table,
+    const EngineRequestContext& context) {
+  if (!table.temporary || table.temporary_scope != "global") {
+    return VisibleCrudRowsForContext(state, table.table_uuid, context);
+  }
+
+  std::set<std::string> sessions;
+  if (!context.session_uuid.canonical.empty()) {
+    sessions.insert(context.session_uuid.canonical);
+  }
+  for (const auto& row : state.row_versions) {
+    if (row.table_uuid == table.table_uuid && !row.temporary_session_uuid.empty()) {
+      sessions.insert(row.temporary_session_uuid);
+    }
+  }
+
+  std::vector<CrudRowVersionRecord> rows;
+  for (const auto& session_uuid : sessions) {
+    EngineRequestContext session_context = context;
+    session_context.session_uuid.canonical = session_uuid;
+    auto visible = VisibleCrudRowsForContext(state, table.table_uuid, session_context);
+    rows.insert(rows.end(),
+                std::make_move_iterator(visible.begin()),
+                std::make_move_iterator(visible.end()));
+  }
+  return rows;
+}
+
 bool ExistingRowsHaveDuplicateKeys(const CrudState& state,
+                                   const CrudTableRecord& table,
                                    const CrudIndexRecord& index,
-                                   const std::string& table_uuid,
-                                   std::uint64_t observer_tx) {
+                                   const EngineRequestContext& context) {
+  if (table.temporary && table.temporary_scope == "global") {
+    std::map<std::string, std::set<std::string>> seen_by_session;
+    for (const auto& row : RowsVisibleForCreateIndexBuild(state, table, context)) {
+      const std::string session_key = row.temporary_session_uuid.empty()
+                                          ? context.session_uuid.canonical
+                                          : row.temporary_session_uuid;
+      for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
+        if (!seen_by_session[session_key].insert(key).second) { return true; }
+      }
+    }
+    return false;
+  }
+
   std::set<std::string> seen;
-  for (const auto& row : VisibleCrudRows(state, table_uuid, observer_tx)) {
+  for (const auto& row : VisibleCrudRowsForContext(state, table.table_uuid, context)) {
     for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
       if (!seen.insert(key).second) { return true; }
     }

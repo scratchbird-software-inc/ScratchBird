@@ -10,6 +10,7 @@
 
 #include "disk_device.hpp"
 #include "filespace_header.hpp"
+#include "filespace_secondary.hpp"
 #include "metric_contracts.hpp"
 #include "metric_producer.hpp"
 #include "uuid.hpp"
@@ -269,7 +270,8 @@ FilespaceOperationResult ErrorResult(std::string diagnostic_code,
 FilespaceOperationResult SuccessResult(FilespaceDescriptor descriptor,
                                        FilespaceEvidenceRecord evidence,
                                        bool durable_state_changed,
-                                       bool metrics_emitted) {
+                                       bool metrics_emitted,
+                                       bool physical_file_removed = false) {
   FilespaceOperationResult result;
   result.status = FilespaceOkStatus();
   result.descriptor = std::move(descriptor);
@@ -277,6 +279,7 @@ FilespaceOperationResult SuccessResult(FilespaceDescriptor descriptor,
   result.durable_state_changed = durable_state_changed;
   result.cache_invalidation_required = durable_state_changed;
   result.metrics_emitted = metrics_emitted;
+  result.physical_file_removed = physical_file_removed;
   return result;
 }
 
@@ -329,10 +332,94 @@ bool IsPrimaryCapableRole(FilespaceRole role) {
          role == FilespaceRole::primary_candidate;
 }
 
+bool IsSnapshotOrShadowRole(FilespaceRole role) {
+  return role == FilespaceRole::primary_snapshot ||
+         role == FilespaceRole::primary_shadow;
+}
+
 bool IsArchiveRole(FilespaceRole role) {
   return role == FilespaceRole::archive_history ||
          role == FilespaceRole::archive_log ||
          role == FilespaceRole::archive_detached;
+}
+
+bool IsMergeableNonPrimaryRole(FilespaceRole role) {
+  return role == FilespaceRole::secondary_data ||
+         role == FilespaceRole::secondary_index ||
+         role == FilespaceRole::secondary_overflow ||
+         role == FilespaceRole::secondary_history ||
+         role == FilespaceRole::secondary_shard ||
+         role == FilespaceRole::archive_history ||
+         role == FilespaceRole::archive_log ||
+         role == FilespaceRole::temporary;
+}
+
+bool IsPhysicalRepairScopeRole(FilespaceRole role) {
+  return role == FilespaceRole::primary_shadow ||
+         role == FilespaceRole::primary_snapshot ||
+         role == FilespaceRole::primary_candidate ||
+         role == FilespaceRole::secondary_data ||
+         role == FilespaceRole::secondary_index ||
+         role == FilespaceRole::secondary_overflow ||
+         role == FilespaceRole::secondary_history ||
+         role == FilespaceRole::secondary_shard ||
+         role == FilespaceRole::archive_history ||
+         role == FilespaceRole::archive_log ||
+         role == FilespaceRole::archive_detached ||
+         role == FilespaceRole::temporary ||
+         role == FilespaceRole::import_candidate ||
+         role == FilespaceRole::drop_pending;
+}
+
+bool PhysicalPathIsRegularFile(const std::string& path, std::string* detail) {
+  std::error_code status_error;
+  const auto path_status = std::filesystem::symlink_status(path, status_error);
+  if (status_error) {
+    if (detail != nullptr) *detail = status_error.message();
+    return false;
+  }
+  if (!std::filesystem::exists(path_status)) {
+    if (detail != nullptr) *detail = path;
+    return false;
+  }
+  if (!std::filesystem::is_regular_file(path_status)) {
+    if (detail != nullptr) *detail = path;
+    return false;
+  }
+  return true;
+}
+
+bool PhysicalHeaderMatchesDescriptor(const PhysicalFilespaceHeader& header,
+                                     const FilespaceDescriptor& descriptor,
+                                     const FilespaceOperationRequest& request) {
+  return header.database_uuid.value == request.database_uuid.value &&
+         header.filespace_uuid.value == descriptor.filespace_uuid.value &&
+         header.page_size == descriptor.page_size;
+}
+
+PhysicalFilespaceHeader RepairHeaderFromDescriptor(
+    const FilespaceDescriptor& descriptor,
+    const FilespaceOperationRequest& request,
+    FilespaceRole role,
+    FilespaceState state,
+    u64 observed_header_generation) {
+  PhysicalFilespaceHeader header;
+  header.database_uuid = descriptor.database_uuid;
+  header.filespace_uuid = descriptor.filespace_uuid;
+  header.role = role;
+  header.state = state;
+  header.page_size = descriptor.page_size;
+  header.physical_filespace_id = descriptor.physical_filespace_id;
+  header.total_pages = descriptor.total_pages == 0 ? request.total_pages : descriptor.total_pages;
+  header.free_pages = descriptor.free_pages;
+  header.preallocated_pages = descriptor.preallocated_pages;
+  header.allocation_root_page = descriptor.allocation_root_page;
+  header.header_generation = std::max(descriptor.header_generation, observed_header_generation) + 1;
+  header.writer_identity_uuid = request.writer_identity_uuid.valid()
+                                    ? request.writer_identity_uuid
+                                    : descriptor.writer_identity_uuid;
+  header.creation_operation_uuid = request.reason;
+  return header;
 }
 
 struct FilespaceClassDescriptor {
@@ -516,6 +603,12 @@ FilespaceOperationResult ValidateRequest(const FilespaceOperationRequest& reques
                        "storage.filespace.filespace_uuid_must_be_v7",
                        request);
   }
+  if (request.operation == FilespaceOperation::merge_filespace &&
+      !IsTypedEngineIdentity(request.merge_target_filespace_uuid, UuidKind::filespace)) {
+    return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-TARGET-UUID-MUST-BE-V7",
+                       "storage.filespace.merge_target_uuid_must_be_v7",
+                       request);
+  }
   if (!scratchbird::storage::disk::IsSupportedDatabasePageSize(request.page_size)) {
     return ErrorResult("SB-FILESPACE-LIFECYCLE-PAGE-SIZE-INVALID",
                        "storage.filespace.page_size_invalid",
@@ -524,9 +617,14 @@ FilespaceOperationResult ValidateRequest(const FilespaceOperationRequest& reques
   }
   const bool request_writer_required =
       request.operation == FilespaceOperation::create_filespace ||
+      request.operation == FilespaceOperation::create_snapshot_filespace ||
+      request.operation == FilespaceOperation::create_shadow_filespace ||
       (request.operation == FilespaceOperation::attach_filespace &&
        (!request.policy.require_physical_header_for_attach ||
-        request.role == FilespaceRole::active_primary));
+        request.role == FilespaceRole::active_primary)) ||
+      request.operation == FilespaceOperation::repair_filespace ||
+      request.operation == FilespaceOperation::rebuild_filespace ||
+      request.operation == FilespaceOperation::salvage_filespace;
   if (request_writer_required &&
       !IsTypedEngineIdentity(request.writer_identity_uuid, UuidKind::object)) {
     return ErrorResult("SB-FILESPACE-LIFECYCLE-WRITER-UUID-MUST-BE-V7",
@@ -539,7 +637,9 @@ FilespaceOperationResult ValidateRequest(const FilespaceOperationRequest& reques
                        "storage.filespace.writer_uuid_must_be_v7",
                        request);
   }
-  if (request.operation == FilespaceOperation::create_filespace) {
+  if (request.operation == FilespaceOperation::create_filespace ||
+      request.operation == FilespaceOperation::create_snapshot_filespace ||
+      request.operation == FilespaceOperation::create_shadow_filespace) {
     const u64 total_pages = request.total_pages == 0 ? 1 : request.total_pages;
     if (!CapacityWindowValid(total_pages,
                              request.free_pages,
@@ -559,7 +659,14 @@ FilespaceOperationResult ValidateRequest(const FilespaceOperationRequest& reques
                        request);
   }
   if ((request.operation == FilespaceOperation::create_filespace ||
-       request.operation == FilespaceOperation::attach_filespace) &&
+       request.operation == FilespaceOperation::create_snapshot_filespace ||
+       request.operation == FilespaceOperation::create_shadow_filespace ||
+       request.operation == FilespaceOperation::attach_filespace ||
+       request.operation == FilespaceOperation::move_filespace ||
+       request.operation == FilespaceOperation::delete_physical_filespace ||
+       request.operation == FilespaceOperation::repair_filespace ||
+       request.operation == FilespaceOperation::rebuild_filespace ||
+       request.operation == FilespaceOperation::salvage_filespace) &&
       request.path.empty()) {
     return ErrorResult("SB-FILESPACE-LIFECYCLE-PATH-REQUIRED",
                        "storage.filespace.path_required",
@@ -711,6 +818,17 @@ FilespaceOperation ParseOperation(u16 value) {
     case FilespaceOperation::compact_filespace:
     case FilespaceOperation::truncate_filespace:
     case FilespaceOperation::drop_filespace:
+    case FilespaceOperation::create_snapshot_filespace:
+    case FilespaceOperation::create_shadow_filespace:
+    case FilespaceOperation::refresh_snapshot_or_shadow:
+    case FilespaceOperation::retire_snapshot_or_shadow:
+    case FilespaceOperation::quarantine_filespace:
+    case FilespaceOperation::move_filespace:
+    case FilespaceOperation::merge_filespace:
+    case FilespaceOperation::delete_physical_filespace:
+    case FilespaceOperation::repair_filespace:
+    case FilespaceOperation::rebuild_filespace:
+    case FilespaceOperation::salvage_filespace:
       return static_cast<FilespaceOperation>(value);
   }
   return FilespaceOperation::verify_filespace;
@@ -857,6 +975,17 @@ const char* FilespaceOperationName(FilespaceOperation operation) {
     case FilespaceOperation::compact_filespace: return "compact_filespace";
     case FilespaceOperation::truncate_filespace: return "truncate_filespace";
     case FilespaceOperation::drop_filespace: return "drop_filespace";
+    case FilespaceOperation::create_snapshot_filespace: return "create_snapshot_filespace";
+    case FilespaceOperation::create_shadow_filespace: return "create_shadow_filespace";
+    case FilespaceOperation::refresh_snapshot_or_shadow: return "refresh_snapshot_or_shadow";
+    case FilespaceOperation::retire_snapshot_or_shadow: return "retire_snapshot_or_shadow";
+    case FilespaceOperation::quarantine_filespace: return "quarantine_filespace";
+    case FilespaceOperation::move_filespace: return "move_filespace";
+    case FilespaceOperation::merge_filespace: return "merge_filespace";
+    case FilespaceOperation::delete_physical_filespace: return "delete_physical_filespace";
+    case FilespaceOperation::repair_filespace: return "repair_filespace";
+    case FilespaceOperation::rebuild_filespace: return "rebuild_filespace";
+    case FilespaceOperation::salvage_filespace: return "salvage_filespace";
   }
   return "unknown";
 }
@@ -1022,6 +1151,7 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
   const FilespaceDescriptor before = descriptor == nullptr ? FilespaceDescriptor{} : *descriptor;
   FilespaceDescriptor after = before;
   bool durable_state_changed = false;
+  bool physical_file_removed = false;
 
   switch (request.operation) {
     case FilespaceOperation::create_filespace:
@@ -1088,6 +1218,36 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
       durable_state_changed = true;
       break;
     }
+    case FilespaceOperation::create_snapshot_filespace:
+    case FilespaceOperation::create_shadow_filespace: {
+      if (descriptor != nullptr && descriptor->state != FilespaceState::detached && descriptor->state != FilespaceState::dropped) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-ALREADY-ATTACHED",
+                           "storage.filespace.already_attached",
+                           request);
+      }
+      after.database_uuid = request.database_uuid;
+      after.filespace_uuid = request.filespace_uuid;
+      after.path = request.path;
+      after.role = request.operation == FilespaceOperation::create_snapshot_filespace
+                       ? FilespaceRole::primary_snapshot
+                       : FilespaceRole::primary_shadow;
+      after.state = FilespaceState::attached;
+      after.page_size = request.page_size;
+      after.read_only = true;
+      after.active = true;
+      after.first_filespace = false;
+      ApplyRoleDefaults(&after);
+      ApplyRequestCapacityMetadata(&after, request);
+      ++after.generation;
+      if (descriptor == nullptr) {
+        registry->filespaces.push_back(after);
+        descriptor = &registry->filespaces.back();
+      } else {
+        *descriptor = after;
+      }
+      durable_state_changed = true;
+      break;
+    }
     case FilespaceOperation::detach_filespace:
       if (descriptor == nullptr || descriptor->state == FilespaceState::dropped) {
         return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
@@ -1112,7 +1272,7 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
       *descriptor = after;
       durable_state_changed = true;
       break;
-    case FilespaceOperation::promote_filespace:
+    case FilespaceOperation::promote_filespace: {
       if (descriptor == nullptr || descriptor->state == FilespaceState::dropped) {
         return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
                            "storage.filespace.not_found",
@@ -1153,6 +1313,13 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                              request);
         }
       }
+      struct DemotedPrimaryPhysicalHeader {
+        std::string path;
+        TypedUuid filespace_uuid;
+        PhysicalFilespaceHeader header;
+      };
+      std::vector<DemotedPrimaryPhysicalHeader> demoted_primary_headers;
+
       if (!request.policy.allow_primary_replacement) {
         const FilespaceDescriptor* primary = FindPrimary(*registry);
         if (primary != nullptr && primary->filespace_uuid.value != request.filespace_uuid.value) {
@@ -1160,17 +1327,34 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                              "storage.filespace.primary_already_exists",
                              request);
         }
-      } else {
-        for (FilespaceDescriptor& candidate : registry->filespaces) {
+      } else if (request.policy.require_physical_header_for_promote) {
+        for (const FilespaceDescriptor& candidate : registry->filespaces) {
           if (candidate.role == FilespaceRole::active_primary &&
               candidate.filespace_uuid.value != request.filespace_uuid.value) {
-            candidate.role = FilespaceRole::primary_shadow;
-            candidate.startup_authority = false;
-            candidate.catalog_persistence_owner = false;
-            candidate.filespace_manifest_owner = false;
-            candidate.recovery_evidence_owner = false;
-            candidate.read_only = true;
-            ++candidate.generation;
+            const auto physical = ReadPhysicalFilespaceHeader(candidate.path);
+            if (!physical.ok()) {
+              return ErrorResult("SB-FILESPACE-LIFECYCLE-PRIMARY-REPLACEMENT-PHYSICAL-HEADER-INVALID",
+                                 "storage.filespace.primary_replacement_physical_header_invalid",
+                                 request,
+                                 physical.diagnostic.diagnostic_code);
+            }
+            if (!(physical.header.database_uuid.value == request.database_uuid.value) ||
+                !(physical.header.filespace_uuid.value == candidate.filespace_uuid.value) ||
+                physical.header.role != FilespaceRole::active_primary) {
+              return ErrorResult("SB-FILESPACE-LIFECYCLE-PRIMARY-REPLACEMENT-PHYSICAL-HEADER-MISMATCH",
+                                 "storage.filespace.primary_replacement_physical_header_mismatch",
+                                 request,
+                                 candidate.path);
+            }
+            PhysicalFilespaceHeader demoted_header = physical.header;
+            demoted_header.role = FilespaceRole::primary_shadow;
+            demoted_header.state = FilespaceState::read_only;
+            ++demoted_header.header_generation;
+            if (request.writer_identity_uuid.valid()) {
+              demoted_header.writer_identity_uuid = request.writer_identity_uuid;
+            }
+            demoted_header.creation_operation_uuid = request.reason;
+            demoted_primary_headers.push_back({candidate.path, candidate.filespace_uuid, demoted_header});
           }
         }
       }
@@ -1198,6 +1382,38 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                              request,
                              write_promoted_header.diagnostic.diagnostic_code);
         }
+        for (const DemotedPrimaryPhysicalHeader& demoted : demoted_primary_headers) {
+          const auto write_demoted_header = WritePhysicalFilespaceHeader(demoted.path, demoted.header, true);
+          if (!write_demoted_header.ok()) {
+            return ErrorResult("SB-FILESPACE-LIFECYCLE-PRIMARY-REPLACEMENT-PHYSICAL-HEADER-WRITE-FAILED",
+                               "storage.filespace.primary_replacement_physical_header_write_failed",
+                               request,
+                               write_demoted_header.diagnostic.diagnostic_code);
+          }
+        }
+      }
+      if (request.policy.allow_primary_replacement) {
+        for (FilespaceDescriptor& candidate : registry->filespaces) {
+          if (candidate.role == FilespaceRole::active_primary &&
+              candidate.filespace_uuid.value != request.filespace_uuid.value) {
+            candidate.role = FilespaceRole::primary_shadow;
+            candidate.startup_authority = false;
+            candidate.catalog_persistence_owner = false;
+            candidate.filespace_manifest_owner = false;
+            candidate.recovery_evidence_owner = false;
+            candidate.read_only = true;
+            if (request.policy.require_physical_header_for_promote) {
+              for (const DemotedPrimaryPhysicalHeader& demoted : demoted_primary_headers) {
+                if (demoted.filespace_uuid.value == candidate.filespace_uuid.value) {
+                  candidate.header_generation = demoted.header.header_generation;
+                  candidate.writer_identity_uuid = demoted.header.writer_identity_uuid;
+                  break;
+                }
+              }
+            }
+            ++candidate.generation;
+          }
+        }
       }
       after.role = FilespaceRole::active_primary;
       after.state = FilespaceState::attached;
@@ -1217,6 +1433,7 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
       *descriptor = after;
       durable_state_changed = true;
       break;
+    }
     case FilespaceOperation::demote_filespace:
       if (descriptor == nullptr || descriptor->state == FilespaceState::dropped) {
         return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
@@ -1346,8 +1563,506 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                            request);
       }
       break;
-    case FilespaceOperation::drop_filespace:
+    case FilespaceOperation::refresh_snapshot_or_shadow:
       if (descriptor == nullptr || descriptor->state == FilespaceState::dropped) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
+                           "storage.filespace.not_found",
+                           request);
+      }
+      if (!IsSnapshotOrShadowRole(descriptor->role)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SNAPSHOT-SHADOW-ROLE-INVALID",
+                           "storage.filespace.snapshot_shadow_role_invalid",
+                           request,
+                           FilespaceRoleName(descriptor->role));
+      }
+      after.read_only = true;
+      after.active = true;
+      ++after.generation;
+      *descriptor = after;
+      durable_state_changed = true;
+      break;
+    case FilespaceOperation::retire_snapshot_or_shadow:
+      if (descriptor == nullptr || descriptor->state == FilespaceState::dropped) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
+                           "storage.filespace.not_found",
+                           request);
+      }
+      if (!IsSnapshotOrShadowRole(descriptor->role)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SNAPSHOT-SHADOW-ROLE-INVALID",
+                           "storage.filespace.snapshot_shadow_role_invalid",
+                           request,
+                           FilespaceRoleName(descriptor->role));
+      }
+      after.state = FilespaceState::detached;
+      after.active = false;
+      after.read_only = true;
+      ++after.generation;
+      *descriptor = after;
+      durable_state_changed = true;
+      break;
+    case FilespaceOperation::quarantine_filespace:
+      if (descriptor == nullptr || descriptor->state == FilespaceState::dropped ||
+          descriptor->state == FilespaceState::drop_pending) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
+                           "storage.filespace.not_found",
+                           request);
+      }
+      if (descriptor->role == FilespaceRole::active_primary) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-ACTIVE-PRIMARY-QUARANTINE-FORBIDDEN",
+                           "storage.filespace.active_primary_quarantine_forbidden",
+                           request);
+      }
+      if (request.policy.require_no_active_pins_for_quarantine && HasActivePins(*descriptor)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-QUARANTINE-PINNED",
+                           "storage.filespace.quarantine_pinned",
+                           request,
+                           std::to_string(ActivePinCount(*descriptor)));
+      }
+      after.state = FilespaceState::quarantine;
+      after.active = false;
+      after.read_only = true;
+      after.startup_authority = false;
+      after.catalog_persistence_owner = false;
+      after.filespace_manifest_owner = false;
+      after.recovery_evidence_owner = false;
+      after.first_filespace = false;
+      ++after.generation;
+      *descriptor = after;
+      durable_state_changed = true;
+      break;
+    case FilespaceOperation::move_filespace: {
+      if (descriptor == nullptr || descriptor->state == FilespaceState::dropped ||
+          descriptor->state == FilespaceState::drop_pending) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
+                           "storage.filespace.not_found",
+                           request);
+      }
+      if (descriptor->role == FilespaceRole::active_primary) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-ACTIVE-PRIMARY-MOVE-FORBIDDEN",
+                           "storage.filespace.active_primary_move_forbidden",
+                           request);
+      }
+
+      std::vector<FilespaceLifecycleBlocker> blockers;
+      if (request.policy.require_no_active_pins_for_move && HasActivePins(*descriptor)) {
+        blockers.push_back({FilespaceLifecycleBlockerKind::transaction,
+                            "filespace_lifecycle",
+                            "active_pins",
+                            {}});
+      }
+
+      FilespaceMovePlan plan;
+      plan.database_uuid = request.database_uuid;
+      plan.filespace_uuid = request.filespace_uuid;
+      plan.physical_filespace_id = descriptor->physical_filespace_id;
+      plan.source_path = descriptor->path;
+      plan.target_path = request.path;
+      plan.operator_approved = request.policy.allow_filespace_move;
+      plan.page_agent_relocation_complete =
+          request.policy.page_agent_relocation_complete_for_move;
+      plan.startup_open_safe = request.policy.startup_open_safe_for_move;
+
+      const auto move_plan = PlanSecondaryFilespaceMove(plan, blockers);
+      if (move_plan.decision == FilespaceMoveDecision::no_action) {
+        break;
+      }
+      if (!move_plan.ok()) {
+        const std::string code = move_plan.diagnostic.diagnostic_code.empty()
+                                     ? "SB-FILESPACE-LIFECYCLE-MOVE-REFUSED"
+                                     : move_plan.diagnostic.diagnostic_code;
+        const std::string key = move_plan.diagnostic.message_key.empty()
+                                    ? "storage.filespace.move_refused"
+                                    : move_plan.diagnostic.message_key;
+        return ErrorResult(code, key, request);
+      }
+
+      after.path = request.path;
+      after.state = FilespaceState::attached;
+      after.read_only = descriptor->read_only;
+      after.active = descriptor->active;
+      ++after.generation;
+      *descriptor = after;
+      durable_state_changed = true;
+      break;
+    }
+    case FilespaceOperation::merge_filespace: {
+      if (descriptor == nullptr || descriptor->state == FilespaceState::dropped ||
+          descriptor->state == FilespaceState::drop_pending) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
+                           "storage.filespace.not_found",
+                           request);
+      }
+      if (descriptor->filespace_uuid.value == request.merge_target_filespace_uuid.value) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-SAME-FILESPACE",
+                           "storage.filespace.merge_same_filespace",
+                           request);
+      }
+      if (descriptor->role == FilespaceRole::active_primary) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-ACTIVE-PRIMARY-MERGE-FORBIDDEN",
+                           "storage.filespace.active_primary_merge_forbidden",
+                           request);
+      }
+      FilespaceDescriptor* target = FindMutable(registry, request.merge_target_filespace_uuid);
+      if (target == nullptr || target->state == FilespaceState::dropped ||
+          target->state == FilespaceState::drop_pending) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-TARGET-NOT-FOUND",
+                           "storage.filespace.merge_target_not_found",
+                           request);
+      }
+      if (target->database_uuid.value != request.database_uuid.value) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-TARGET-DATABASE-MISMATCH",
+                           "storage.filespace.merge_target_database_mismatch",
+                           request);
+      }
+      if (target->role == FilespaceRole::active_primary) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-TARGET-ACTIVE-PRIMARY-FORBIDDEN",
+                           "storage.filespace.merge_target_active_primary_forbidden",
+                           request);
+      }
+      if (!IsMergeableNonPrimaryRole(descriptor->role) ||
+          !IsMergeableNonPrimaryRole(target->role) ||
+          descriptor->role != target->role) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-ROLE-INCOMPATIBLE",
+                           "storage.filespace.merge_role_incompatible",
+                           request,
+                           std::string(FilespaceRoleName(descriptor->role)) + "->" +
+                               FilespaceRoleName(target->role));
+      }
+      if (!target->active ||
+          target->state == FilespaceState::detached ||
+          target->state == FilespaceState::quarantine ||
+          target->state == FilespaceState::forbidden) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-TARGET-NOT-ACTIVE",
+                           "storage.filespace.merge_target_not_active",
+                           request,
+                           FilespaceStateName(target->state));
+      }
+      if (request.policy.require_no_active_pins_for_merge &&
+          (HasActivePins(*descriptor) || HasActivePins(*target))) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-PINNED",
+                           "storage.filespace.merge_pinned",
+                           request,
+                           std::to_string(ActivePinCount(*descriptor) +
+                                          ActivePinCount(*target)));
+      }
+      if (!request.policy.allow_filespace_merge) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-FORBIDDEN",
+                           "storage.filespace.merge_forbidden",
+                           request);
+      }
+      if (!request.policy.page_agent_merge_complete_for_merge) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-PAGE-AGENT-INCOMPLETE",
+                           "storage.filespace.merge_page_agent_incomplete",
+                           request);
+      }
+      if (!request.policy.startup_open_safe_for_merge) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-MERGE-STARTUP-OPEN-UNSAFE",
+                           "storage.filespace.merge_startup_open_unsafe",
+                           request);
+      }
+
+      after.role = FilespaceRole::drop_pending;
+      after.state = FilespaceState::drop_pending;
+      after.active = false;
+      after.read_only = true;
+      after.startup_authority = false;
+      after.catalog_persistence_owner = false;
+      after.filespace_manifest_owner = false;
+      after.recovery_evidence_owner = false;
+      after.first_filespace = false;
+      ++after.generation;
+      *descriptor = after;
+      ++target->generation;
+      durable_state_changed = true;
+      break;
+    }
+    case FilespaceOperation::repair_filespace: {
+      if (descriptor == nullptr || descriptor->state == FilespaceState::dropped) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
+                           "storage.filespace.not_found",
+                           request);
+      }
+      if (descriptor->role == FilespaceRole::active_primary) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-ACTIVE-PRIMARY-REPAIR-FORBIDDEN",
+                           "storage.filespace.active_primary_repair_forbidden",
+                           request);
+      }
+      if (!IsPhysicalRepairScopeRole(descriptor->role)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REPAIR-ROLE-INVALID",
+                           "storage.filespace.repair_role_invalid",
+                           request,
+                           FilespaceRoleName(descriptor->role));
+      }
+      if (request.policy.require_no_active_pins_for_repair && HasActivePins(*descriptor)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REPAIR-PINNED",
+                           "storage.filespace.repair_pinned",
+                           request,
+                           std::to_string(ActivePinCount(*descriptor)));
+      }
+      if (!request.policy.allow_filespace_repair) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REPAIR-FORBIDDEN",
+                           "storage.filespace.repair_forbidden",
+                           request);
+      }
+      if (!request.policy.repair_plan_authorized) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REPAIR-PLAN-REQUIRED",
+                           "storage.filespace.repair_plan_required",
+                           request);
+      }
+      if (!request.policy.repair_evidence_preserved) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REPAIR-EVIDENCE-REQUIRED",
+                           "storage.filespace.repair_evidence_required",
+                           request);
+      }
+      if (request.path != descriptor->path) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REPAIR-PATH-MISMATCH",
+                           "storage.filespace.repair_path_mismatch",
+                           request);
+      }
+      std::string file_detail;
+      if (!PhysicalPathIsRegularFile(descriptor->path, &file_detail)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REPAIR-PHYSICAL-FILE-INVALID",
+                           "storage.filespace.repair_physical_file_invalid",
+                           request,
+                           file_detail);
+      }
+      const auto physical = ReadPhysicalFilespaceHeader(descriptor->path);
+      if (!physical.ok()) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REPAIR-PHYSICAL-HEADER-INVALID",
+                           "storage.filespace.repair_physical_header_invalid",
+                           request,
+                           physical.diagnostic.diagnostic_code);
+      }
+      if (!PhysicalHeaderMatchesDescriptor(physical.header, *descriptor, request)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REPAIR-PHYSICAL-HEADER-MISMATCH",
+                           "storage.filespace.repair_physical_header_mismatch",
+                           request);
+      }
+      const auto repaired_header = RepairHeaderFromDescriptor(*descriptor,
+                                                              request,
+                                                              descriptor->role,
+                                                              FilespaceState::read_only,
+                                                              physical.header.header_generation);
+      const auto write_header =
+          WritePhysicalFilespaceHeader(descriptor->path, repaired_header, true);
+      if (!write_header.ok()) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REPAIR-PHYSICAL-HEADER-WRITE-FAILED",
+                           "storage.filespace.repair_physical_header_write_failed",
+                           request,
+                           write_header.diagnostic.diagnostic_code);
+      }
+      after.state = FilespaceState::read_only;
+      after.active = true;
+      after.read_only = true;
+      after.header_generation = repaired_header.header_generation;
+      after.writer_identity_uuid = repaired_header.writer_identity_uuid;
+      ++after.generation;
+      *descriptor = after;
+      durable_state_changed = true;
+      break;
+    }
+    case FilespaceOperation::rebuild_filespace: {
+      if (descriptor == nullptr || descriptor->state == FilespaceState::dropped) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
+                           "storage.filespace.not_found",
+                           request);
+      }
+      if (descriptor->role == FilespaceRole::active_primary) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-ACTIVE-PRIMARY-REBUILD-FORBIDDEN",
+                           "storage.filespace.active_primary_rebuild_forbidden",
+                           request);
+      }
+      if (!IsPhysicalRepairScopeRole(descriptor->role)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-ROLE-INVALID",
+                           "storage.filespace.rebuild_role_invalid",
+                           request,
+                           FilespaceRoleName(descriptor->role));
+      }
+      if (request.policy.require_no_active_pins_for_rebuild && HasActivePins(*descriptor)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-PINNED",
+                           "storage.filespace.rebuild_pinned",
+                           request,
+                           std::to_string(ActivePinCount(*descriptor)));
+      }
+      if (!request.policy.allow_filespace_rebuild) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-FORBIDDEN",
+                           "storage.filespace.rebuild_forbidden",
+                           request);
+      }
+      if (!request.policy.repair_plan_authorized) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-PLAN-REQUIRED",
+                           "storage.filespace.rebuild_plan_required",
+                           request);
+      }
+      if (!request.policy.repair_evidence_preserved) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-EVIDENCE-REQUIRED",
+                           "storage.filespace.rebuild_evidence_required",
+                           request);
+      }
+      if (!request.policy.rebuild_source_verified) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-SOURCE-UNVERIFIED",
+                           "storage.filespace.rebuild_source_unverified",
+                           request);
+      }
+      if (!request.policy.page_agent_rebuild_complete) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-PAGE-AGENT-INCOMPLETE",
+                           "storage.filespace.rebuild_page_agent_incomplete",
+                           request);
+      }
+      if (!request.policy.startup_open_safe_for_rebuild) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-STARTUP-OPEN-UNSAFE",
+                           "storage.filespace.rebuild_startup_open_unsafe",
+                           request);
+      }
+      if (request.path != descriptor->path) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-PATH-MISMATCH",
+                           "storage.filespace.rebuild_path_mismatch",
+                           request);
+      }
+      std::string file_detail;
+      if (!PhysicalPathIsRegularFile(descriptor->path, &file_detail)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-PHYSICAL-FILE-INVALID",
+                           "storage.filespace.rebuild_physical_file_invalid",
+                           request,
+                           file_detail);
+      }
+      u64 observed_generation = descriptor->header_generation;
+      const auto physical = ReadPhysicalFilespaceHeader(descriptor->path);
+      if (physical.ok()) {
+        if (!PhysicalHeaderMatchesDescriptor(physical.header, *descriptor, request)) {
+          return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-PHYSICAL-HEADER-MISMATCH",
+                             "storage.filespace.rebuild_physical_header_mismatch",
+                             request);
+        }
+        observed_generation = physical.header.header_generation;
+      }
+      const auto rebuilt_header = RepairHeaderFromDescriptor(*descriptor,
+                                                             request,
+                                                             descriptor->role,
+                                                             FilespaceState::read_only,
+                                                             observed_generation);
+      const auto write_header =
+          WritePhysicalFilespaceHeader(descriptor->path, rebuilt_header, true);
+      if (!write_header.ok()) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-REBUILD-PHYSICAL-HEADER-WRITE-FAILED",
+                           "storage.filespace.rebuild_physical_header_write_failed",
+                           request,
+                           write_header.diagnostic.diagnostic_code);
+      }
+      after.state = FilespaceState::read_only;
+      after.active = true;
+      after.read_only = true;
+      after.header_generation = rebuilt_header.header_generation;
+      after.writer_identity_uuid = rebuilt_header.writer_identity_uuid;
+      ++after.generation;
+      *descriptor = after;
+      durable_state_changed = true;
+      break;
+    }
+    case FilespaceOperation::salvage_filespace: {
+      if (descriptor == nullptr || descriptor->state == FilespaceState::dropped) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
+                           "storage.filespace.not_found",
+                           request);
+      }
+      if (descriptor->role == FilespaceRole::active_primary) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-ACTIVE-PRIMARY-SALVAGE-FORBIDDEN",
+                           "storage.filespace.active_primary_salvage_forbidden",
+                           request);
+      }
+      if (!IsPhysicalRepairScopeRole(descriptor->role)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-ROLE-INVALID",
+                           "storage.filespace.salvage_role_invalid",
+                           request,
+                           FilespaceRoleName(descriptor->role));
+      }
+      if (request.policy.require_no_active_pins_for_salvage && HasActivePins(*descriptor)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-PINNED",
+                           "storage.filespace.salvage_pinned",
+                           request,
+                           std::to_string(ActivePinCount(*descriptor)));
+      }
+      if (!request.policy.allow_filespace_salvage) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-FORBIDDEN",
+                           "storage.filespace.salvage_forbidden",
+                           request);
+      }
+      if (!request.policy.repair_plan_authorized) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-PLAN-REQUIRED",
+                           "storage.filespace.salvage_plan_required",
+                           request);
+      }
+      if (!request.policy.repair_evidence_preserved) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-EVIDENCE-REQUIRED",
+                           "storage.filespace.salvage_evidence_required",
+                           request);
+      }
+      if (!request.policy.salvage_review_authorized) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-REVIEW-REQUIRED",
+                           "storage.filespace.salvage_review_required",
+                           request);
+      }
+      if (!request.policy.salvage_output_quarantined) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-OUTPUT-NOT-QUARANTINED",
+                           "storage.filespace.salvage_output_not_quarantined",
+                           request);
+      }
+      if (request.path != descriptor->path) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-PATH-MISMATCH",
+                           "storage.filespace.salvage_path_mismatch",
+                           request);
+      }
+      std::string file_detail;
+      if (!PhysicalPathIsRegularFile(descriptor->path, &file_detail)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-PHYSICAL-FILE-INVALID",
+                           "storage.filespace.salvage_physical_file_invalid",
+                           request,
+                           file_detail);
+      }
+      const auto physical = ReadPhysicalFilespaceHeader(descriptor->path);
+      if (!physical.ok()) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-PHYSICAL-HEADER-INVALID",
+                           "storage.filespace.salvage_physical_header_invalid",
+                           request,
+                           physical.diagnostic.diagnostic_code);
+      }
+      if (!PhysicalHeaderMatchesDescriptor(physical.header, *descriptor, request)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-PHYSICAL-HEADER-MISMATCH",
+                           "storage.filespace.salvage_physical_header_mismatch",
+                           request);
+      }
+      const auto salvage_header = RepairHeaderFromDescriptor(*descriptor,
+                                                             request,
+                                                             FilespaceRole::archive_detached,
+                                                             FilespaceState::quarantine,
+                                                             physical.header.header_generation);
+      const auto write_header =
+          WritePhysicalFilespaceHeader(descriptor->path, salvage_header, true);
+      if (!write_header.ok()) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-SALVAGE-PHYSICAL-HEADER-WRITE-FAILED",
+                           "storage.filespace.salvage_physical_header_write_failed",
+                           request,
+                           write_header.diagnostic.diagnostic_code);
+      }
+      after.role = FilespaceRole::archive_detached;
+      after.state = FilespaceState::quarantine;
+      after.active = false;
+      after.read_only = true;
+      after.startup_authority = false;
+      after.catalog_persistence_owner = false;
+      after.filespace_manifest_owner = false;
+      after.recovery_evidence_owner = false;
+      after.first_filespace = false;
+      after.header_generation = salvage_header.header_generation;
+      after.writer_identity_uuid = salvage_header.writer_identity_uuid;
+      ++after.generation;
+      *descriptor = after;
+      durable_state_changed = true;
+      break;
+    }
+    case FilespaceOperation::drop_filespace:
+      if (descriptor == nullptr || descriptor->state == FilespaceState::dropped ||
+          descriptor->state == FilespaceState::drop_pending) {
         return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
                            "storage.filespace.not_found",
                            request);
@@ -1358,13 +2073,102 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
                            request,
                            std::to_string(ActivePinCount(*descriptor)));
       }
-      after.state = FilespaceState::dropped;
+      after.state = FilespaceState::drop_pending;
       after.active = false;
       after.read_only = true;
       ++after.generation;
       *descriptor = after;
       durable_state_changed = true;
       break;
+    case FilespaceOperation::delete_physical_filespace: {
+      if (descriptor == nullptr || descriptor->state == FilespaceState::dropped) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-NOT-FOUND",
+                           "storage.filespace.not_found",
+                           request);
+      }
+      if (descriptor->role == FilespaceRole::active_primary) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-ACTIVE-PRIMARY-PHYSICAL-DELETE-FORBIDDEN",
+                           "storage.filespace.active_primary_physical_delete_forbidden",
+                           request);
+      }
+      if (descriptor->active ||
+          (descriptor->state != FilespaceState::drop_pending &&
+           descriptor->state != FilespaceState::quarantine &&
+           descriptor->state != FilespaceState::detached)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PHYSICAL-DELETE-NOT-FENCED",
+                           "storage.filespace.physical_delete_not_fenced",
+                           request,
+                           FilespaceStateName(descriptor->state));
+      }
+      if (request.policy.require_no_active_pins_for_delete_physical &&
+          HasActivePins(*descriptor)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PHYSICAL-DELETE-PINNED",
+                           "storage.filespace.physical_delete_pinned",
+                           request,
+                           std::to_string(ActivePinCount(*descriptor)));
+      }
+      if (!request.policy.allow_physical_filespace_delete) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PHYSICAL-DELETE-FORBIDDEN",
+                           "storage.filespace.physical_delete_forbidden",
+                           request);
+      }
+      if (!request.policy.physical_delete_legal_hold_clear) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PHYSICAL-DELETE-LEGAL-HOLD",
+                           "storage.filespace.physical_delete_legal_hold",
+                           request);
+      }
+      if (!request.policy.physical_delete_retention_satisfied) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PHYSICAL-DELETE-RETENTION",
+                           "storage.filespace.physical_delete_retention",
+                           request);
+      }
+      if (!request.policy.physical_delete_cleanup_horizon_authoritative) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PHYSICAL-DELETE-CLEANUP-HORIZON",
+                           "storage.filespace.physical_delete_cleanup_horizon",
+                           request);
+      }
+      if (request.path != descriptor->path) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PHYSICAL-DELETE-PATH-MISMATCH",
+                           "storage.filespace.physical_delete_path_mismatch",
+                           request);
+      }
+      std::error_code status_error;
+      const auto path_status = std::filesystem::symlink_status(descriptor->path, status_error);
+      if (status_error || !std::filesystem::exists(path_status)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PHYSICAL-DELETE-MISSING",
+                           "storage.filespace.physical_delete_missing",
+                           request,
+                           descriptor->path);
+      }
+      if (!std::filesystem::is_regular_file(path_status)) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PHYSICAL-DELETE-NON-REGULAR",
+                           "storage.filespace.physical_delete_non_regular",
+                           request,
+                           descriptor->path);
+      }
+      std::error_code remove_error;
+      const bool removed = std::filesystem::remove(descriptor->path, remove_error);
+      if (remove_error || !removed) {
+        return ErrorResult("SB-FILESPACE-LIFECYCLE-PHYSICAL-DELETE-FAILED",
+                           "storage.filespace.physical_delete_failed",
+                           request,
+                           remove_error ? remove_error.message() : descriptor->path);
+      }
+      after.state = FilespaceState::dropped;
+      after.active = false;
+      after.read_only = true;
+      after.startup_authority = false;
+      after.catalog_persistence_owner = false;
+      after.filespace_manifest_owner = false;
+      after.recovery_evidence_owner = false;
+      after.first_filespace = false;
+      after.pins.clear();
+      ++after.generation;
+      *descriptor = after;
+      durable_state_changed = true;
+      physical_file_removed = true;
+      break;
+    }
   }
 
   const FilespaceEvidenceRecord evidence = Evidence(registry,
@@ -1376,7 +2180,7 @@ FilespaceOperationResult ApplyFilespaceOperation(FilespaceRegistry* registry,
   EmitLifecycleMetric(FilespaceOperationName(request.operation), "ok", "ok");
   EmitPinMetric(after);
   EmitFilespaceAuthorityMetrics(after);
-  return SuccessResult(after, evidence, durable_state_changed, true);
+  return SuccessResult(after, evidence, durable_state_changed, true, physical_file_removed);
 }
 
 FilespaceSerializeResult SerializeFilespaceRegistry(const FilespaceRegistry& registry) {
