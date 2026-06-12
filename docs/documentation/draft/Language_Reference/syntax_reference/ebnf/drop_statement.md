@@ -8,12 +8,12 @@ Generation task: `ebnf_drop_statement`
 ## Production
 
 ```ebnf
-drop_statement          ::= "DROP" object_kind object_ref drop_behavior? ;
+drop_object_stmt        ::= "DROP" object_kind object_ref drop_behavior? ;
 ```
 
 ## Meaning
 
-`drop_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`drop_object_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

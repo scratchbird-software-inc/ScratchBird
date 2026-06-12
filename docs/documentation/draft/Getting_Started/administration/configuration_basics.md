@@ -35,7 +35,7 @@ If the runtime cannot find the resources it was tested with, the deployment is n
 | Authentication | Which identity source and method are admitted. |
 | Authorization | Grants, roles, schema roots, workareas, and policy. |
 | External access | Whether file, network, or bridge-like external actions are admitted. |
-| Runtime limits | Memory, file handles, frame sizes, timeouts, in-flight bytes, and backpressure. |
+| Runtime limits | Memory, file handles, frame sizes, timeouts, request envelope sizes, and backpressure. |
 | Diagnostics | Log level, message-vector detail, support-bundle scope, and redaction policy. |
 | Lifecycle | Start, stop, drain, restart, stale endpoint handling, and refusal behavior. |
 
@@ -153,7 +153,7 @@ Operational configuration should define limits before the system is under pressu
 Examples include:
 
 - maximum request or frame size;
-- maximum in-flight bytes;
+- maximum request envelope bytes;
 - cursor or stream fetch size;
 - transaction timeout;
 - idle session timeout;

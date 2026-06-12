@@ -7,36 +7,34 @@ Related pages: [Database Lifecycle](../database.md), [Filespace Lifecycle](../fi
 ## Production
 
 ```ebnf
-database_lifecycle_statement ::=
-      create_database_statement
-    | open_database_statement
-    | attach_database_statement
-    | use_database_statement
-    | detach_database_statement
-    | alter_database_statement
-    | maintenance_database_statement
-    | inspect_database_statement
-    | verify_database_statement
-    | repair_database_statement
-    | shutdown_database_statement
-    | drop_database_statement
-    | rename_database_statement
-    | comment_database_statement
-    | recreate_database_statement
-    | show_database_statement
-    | describe_database_statement ;
+database_lifecycle_stmt ::=
+      create_database_stmt
+    | open_database_stmt
+    | attach_database_stmt
+    | use_database_alias
+    | detach_database_stmt
+    | alter_database_stmt
+    | maintenance_database_stmt
+    | inspect_database_stmt
+    | verify_database_stmt
+    | repair_database_stmt
+    | shutdown_database_stmt
+    | drop_database_stmt
+    | rename_database_stmt
+    | show_database_stmt
+    | describe_database_stmt ;
 ```
 
 ```ebnf
-create_database_statement ::= CREATE DATABASE database_name database_create_options? ;
-open_database_statement   ::= OPEN DATABASE database_ref (RESTRICTED OPEN?)? ;
-attach_database_statement ::= ATTACH DATABASE storage_ref AS database_alias attach_options? ;
-use_database_statement    ::= USE DATABASE database_alias | USE database_alias ;
-detach_database_statement ::= DETACH DATABASE database_alias detach_options? ;
+create_database_stmt ::= CREATE DATABASE database_name database_create_options? ;
+open_database_stmt   ::= OPEN DATABASE database_ref (RESTRICTED OPEN?)? ;
+attach_database_stmt ::= ATTACH DATABASE storage_ref AS database_alias attach_options? ;
+use_database_alias   ::= USE DATABASE database_alias | USE database_alias ;
+detach_database_stmt ::= DETACH DATABASE database_alias detach_options? ;
 ```
 
 ```ebnf
-alter_database_statement ::=
+alter_database_stmt ::=
     ALTER DATABASE database_ref alter_database_action+ ;
 
 alter_database_action ::=
@@ -56,30 +54,30 @@ alter_database_action ::=
 ```
 
 ```ebnf
-maintenance_database_statement ::=
+maintenance_database_stmt ::=
       MAINTENANCE DATABASE database_ref maintenance_options?
     | ENTER DATABASE MAINTENANCE database_ref maintenance_options?
     | EXIT DATABASE MAINTENANCE database_ref ;
 
-inspect_database_statement ::=
+inspect_database_stmt ::=
       INSPECT DATABASE database_ref inspect_options?
     | DIAGNOSE DATABASE database_ref inspect_options? ;
 
-verify_database_statement ::= VERIFY DATABASE database_ref verify_options? ;
-repair_database_statement ::= REPAIR DATABASE database_ref repair_options ;
+verify_database_stmt ::= VERIFY DATABASE database_ref verify_options? ;
+repair_database_stmt ::= REPAIR DATABASE database_ref repair_options ;
 ```
 
 ```ebnf
-shutdown_database_statement ::=
+shutdown_database_stmt ::=
       SHUTDOWN DATABASE database_ref shutdown_options?
     | FORCE SHUTDOWN DATABASE database_ref force_shutdown_options
     | ACKNOWLEDGE SHUTDOWN DATABASE database_ref
     | SHUTDOWN ACKNOWLEDGE DATABASE database_ref ;
 
-drop_database_statement ::=
+drop_database_stmt ::=
     DROP DATABASE database_ref drop_database_options? ;
 
-show_database_statement ::=
+show_database_stmt ::=
       SHOW DATABASE database_ref?
     | SHOW DATABASES ;
 ```

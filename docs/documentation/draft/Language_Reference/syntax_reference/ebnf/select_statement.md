@@ -20,7 +20,7 @@ select_statement        ::= "SELECT" select_modifier? projection_list from_claus
 | Parent Production |
 | --- |
 | query_statement |
-| with_statement |
+| with_clause |
 
 ## Child Productions
 

@@ -9,7 +9,7 @@ Parent reference: [COPY Streaming Import And Export](../copy.md)
 ## Production
 
 ```ebnf
-copy_endpoint ::=
+copy_source ::=
       STDIN
     | STDOUT
     | STREAM parameter_ref

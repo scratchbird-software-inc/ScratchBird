@@ -26,8 +26,8 @@ After parsing, the binder and SBLR admission layer must classify the operation a
 
 | Parent production | Purpose |
 | --- | --- |
-| `native_statement` | Allows recognized cluster statements in ordinary SBsql statement streams. |
-| `script_statement` | Allows scripts to receive stable diagnostics for gated cluster surfaces. |
+| `native_statement` (fragment dispatcher) | Allows recognized cluster statements in ordinary SBsql statement streams. |
+| `script_statement` (fragment) | Allows scripts to receive stable diagnostics for gated cluster surfaces. |
 
 ## Child Productions
 

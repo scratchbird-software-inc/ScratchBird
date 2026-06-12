@@ -20,7 +20,7 @@ name_part               ::= regular_identifier | delimited_identifier | localize
 | Parent Production |
 | --- |
 | qualified_name |
-| rename_statement |
+| rename_object_stmt |
 
 ## Child Productions
 

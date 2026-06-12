@@ -50,7 +50,7 @@ flowchart TD
 | A client connects over a listener or requires parser routing for a client protocol. | Standalone server. |
 | Several installations need consistent identity validation, policy conventions, and manager-mediated entry. | Managed group deployment. |
 | You are only trying to learn SBsql syntax. | Use the simplest mode available in your build, then read [First SBsql Session](../using_scratchbird/first_sbsql_session.md). |
-| You are testing a donor parser. | Standalone server, because parser routing and protocol-facing behavior are part of the test. |
+| You are testing a compatibility parser. | Standalone server, because parser routing and protocol-facing behavior are part of the test. |
 
 ## Comparison Table
 

@@ -67,7 +67,7 @@ Read these pages in order if you are evaluating ScratchBird for the first time.
 | [First Database](../using_scratchbird/first_database.md) | Create or open a disposable first database, run a smoke workload, test one controlled refusal, and verify reopen behavior. |
 | [First SBsql Session](../using_scratchbird/first_sbsql_session.md) | Run a first native SBsql session with schema creation, table creation, multi-row insert, query, commit, error handling, and cleanup. |
 | [Schemas, Objects, And Names](../using_scratchbird/schemas_objects_and_names.md) | Understand current schema, home schema, qualified names, durable UUID identity, object lifecycle, comments, and compatibility workareas. |
-| [Donor Database Compatibility](../using_scratchbird/donor_database_compatibility.md) | Understand standalone parser packages, compatibility scope, sandboxing, logical streams, denied physical or low-level actions, and refusal behavior. |
+| [Reference-System Compatibility](../using_scratchbird/reference_system_compatibility.md) | Understand standalone parser packages, compatibility scope, sandboxing, logical streams, denied physical or low-level actions, and refusal behavior. |
 
 ## Administration
 

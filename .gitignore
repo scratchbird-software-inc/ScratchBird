@@ -74,6 +74,18 @@ project/docs/**/*[D]onor*
 project/docs/**/*reference-system*
 project/docs/**/*ReferenceSystem*
 
+# Draft-documentation work products belong in private tracking, not the public
+# release documentation tree. Keep product-facing draft pages trackable.
+docs/documentation/draft/audit_reports/**
+docs/documentation/draft/audit_*.md
+docs/documentation/draft/combined*.md
+docs/documentation/draft/file_listing*.txt
+docs/documentation/draft/**/Notes.md
+docs/documentation/draft/**/MGA.md
+docs/documentation/draft/**/MGA.pdf
+docs/documentation/draft/**/.generation_state.json
+docs/documentation/draft/**/.claude/**
+
 project/tests/reference_regression/reference_release_acquisition/**
 !project/tests/reference_regression/reference_release_acquisition/
 !project/tests/reference_regression/reference_release_acquisition/**/

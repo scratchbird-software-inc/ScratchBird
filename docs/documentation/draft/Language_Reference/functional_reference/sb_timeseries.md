@@ -2,7 +2,7 @@
 
 Generation task: `sb_timeseries`
 
-Package namespace: `sb.timeseries`
+Package namespace: `timeseries`
 
 Time-series bucketing, interpolation, downsampling, and aggregate helper surfaces.
 
@@ -38,7 +38,7 @@ Every operation entry includes:
 
 **Call Forms:**
 
-- `aggregate(aggregate_name, numeric_series)`
+- `timeseries.aggregate(aggregate_name, numeric_series)`
 - Syntax category: `function_call`
 
 **Parameters:**
@@ -68,7 +68,7 @@ The function refuses invalid arity, non-numeric series values, malformed descrip
 **Example:**
 
 ```sql
-select aggregate('avg', '[1,2,3,4]') as average_value;
+select timeseries.aggregate('avg', '[1,2,3,4]') as average_value;
 ```
 
 **Technical Details:**

@@ -30,7 +30,7 @@ Every operation entry includes:
 
 | Kind | Records |
 | --- | ---: |
-| operator | 23 |
+| operator | 24 |
 
 ## Operation Reference
 
@@ -204,6 +204,63 @@ select 6 @> 3 as result_value;
 | Cost class | cpu_operator |
 
 Conformance evidence: `SBSFCOP-array-contains-positive;SBSFCOP-array-contains-negative`.
+
+### `concat`
+
+**Purpose:** Implements the `||` string concatenation operator after descriptor binding selects compatible operand types.
+
+**Call Forms:**
+
+- `concat(...)`
+- Syntax category: `operator_expression, function_call`
+
+**Parameters:**
+
+- `...`: Arguments are selected by the overload and descriptor binding rules.
+- Descriptor rule: descriptor_authoritative text/binary operand arguments bound by the parser/lowering route.
+- Coercion: descriptor implicit cast matrix for text/character operands.
+- NULL handling: operator/function-specific NULL handling follows the conformance fixtures row evidence; null_concat_returns_null dialect parameter controls whether NULL operands propagate NULL or are treated as empty string.
+
+**Returns:**
+
+descriptor-authoritative concatenated character result as implemented by the SBLR expression runtime.
+
+**Behavior:**
+
+- Volatility: immutable.
+- Determinism: foldable when operands are constants and collation/version dependencies are stable.
+- Side effects: none.
+- Collation/charset: uses input descriptor collation/charset for text operands where character semantics apply.
+- Timezone: not applicable.
+- Security and authority: none.
+
+**Errors:**
+
+arity/type/domain errors use builtin error compatibility matrix and the conformance fixtures exact diagnostic row evidence.
+
+**Example:**
+
+```sql
+select 'Hello' || ', ' || 'World' as result_value;
+```
+
+**Technical Details:**
+
+| Field | Value |
+| --- | --- |
+| Builtin ID | sb.operator.concat |
+| UUID | 019dffbb-f000-7977-afb8-130dd8d3b751 |
+| Kind | operator |
+| Syntax forms | operator_expression, function_call |
+| SBLR binding | sblr.expr.operator_concat.v3 |
+| AST binding | ast.operator.operator_concat |
+| Engine entrypoint | operator_concat |
+| Optimizer foldable | True |
+| Index eligible | False |
+| Generated-column eligible | True |
+| Cost class | cpu_operator |
+
+Conformance evidence: `SBSFCOP-concat-text`.
 
 ### `divide`
 

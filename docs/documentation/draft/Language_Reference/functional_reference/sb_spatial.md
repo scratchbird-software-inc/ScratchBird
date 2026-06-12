@@ -95,7 +95,7 @@ Conformance evidence: `SBSFC036-geom-collect;SBSFC036-st-x-invalid`.
 
 **Call Forms:**
 
-- `geom_collect_geometry(...)`
+- `geom_collect(geometry)`
 - Syntax category: `function_call`
 
 **Parameters:**
@@ -124,7 +124,7 @@ invalid arity, type, domain, policy, or descriptor inputs are reported through S
 **Example:**
 
 ```sql
-select geom_collect_geometry(value_1) as result_value from app.sample_values;
+select geom_collect(value_1) as result_value from app.sample_values;
 ```
 
 **Technical Details:**

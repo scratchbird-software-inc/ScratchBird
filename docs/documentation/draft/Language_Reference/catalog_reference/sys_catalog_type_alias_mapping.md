@@ -1,10 +1,10 @@
-# sys.catalog.type_alias_mapping Catalog Reference
+# sys.catalog.reference_type_mapping Catalog Reference
 
 This page documents the authorized catalog surface that maps SBsql-visible type
 spellings, aliases, profiles, and rendering names to canonical descriptors or
 domains.
 
-Generation task: `catalog_sys_catalog_type_alias_mapping`
+Generation task: `catalog_sys_catalog_reference_type_mapping`
 
 Related pages: [Type System Overview](../data_types/type_system_overview.md),
 [sys.catalog.type_descriptor](sys_catalog_type_descriptor.md),
@@ -13,7 +13,7 @@ Related pages: [Type System Overview](../data_types/type_system_overview.md),
 
 ## Role
 
-`sys.catalog.type_alias_mapping` lets SBsql remain context sensitive while the
+`sys.catalog.reference_type_mapping` lets SBsql remain context sensitive while the
 engine remains descriptor-driven. It records which public spelling is accepted
 in which profile, what descriptor or domain it resolves to, and how metadata
 should render that type back to an authorized user.
@@ -80,7 +80,7 @@ Example:
 select visible_type_name,
        representation_class,
        compatibility_mode
-from sys.catalog.type_alias_mapping
+from sys.catalog.reference_type_mapping
 where profile_family = 'sbsql'
 order by visible_type_name;
 ```

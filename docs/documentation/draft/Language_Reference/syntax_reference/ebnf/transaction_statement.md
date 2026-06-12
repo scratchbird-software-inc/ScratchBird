@@ -8,7 +8,7 @@ Generation task: `ebnf_transaction_statement`
 ## Production
 
 ```ebnf
-transaction_statement   ::= begin_transaction | commit_transaction | rollback_transaction | savepoint_statement | set_transaction | show_transaction ;
+transaction_statement   ::= begin_transaction | commit_stmt | rollback_stmt | savepoint_stmt | set_transaction_stmt | show_transaction_runtime ;
 ```
 
 ## Meaning
@@ -28,10 +28,11 @@ Full user-facing semantics for transaction boundaries, autocommit, isolation, sa
 | Child Production |
 | --- |
 | begin_transaction |
-| commit_transaction |
-| rollback_transaction |
-| savepoint_statement |
-| set_transaction |
+| commit_stmt |
+| rollback_stmt |
+| savepoint_stmt |
+| set_transaction_stmt |
+| show_transaction_runtime |
 
 ## Practical Notes
 

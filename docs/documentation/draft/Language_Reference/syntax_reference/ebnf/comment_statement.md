@@ -8,12 +8,12 @@ Generation task: `ebnf_comment_statement`
 ## Production
 
 ```ebnf
-comment_statement       ::= "COMMENT" "ON" object_kind object_ref "IS" string_literal ;
+comment_on_stmt         ::= "COMMENT" "ON" object_kind object_ref "IS" string_literal ;
 ```
 
 ## Meaning
 
-`comment_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`comment_on_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

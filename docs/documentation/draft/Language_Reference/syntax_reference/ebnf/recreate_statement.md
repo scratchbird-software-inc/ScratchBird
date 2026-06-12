@@ -8,7 +8,7 @@ Generation task: `ebnf_recreate_statement`
 ## Production
 
 ```ebnf
-recreate_statement      ::= "RECREATE" create_statement ;
+recreate_statement      ::= "RECREATE" create_object ;
 ```
 
 ## Meaning
@@ -19,13 +19,13 @@ recreate_statement      ::= "RECREATE" create_statement ;
 
 | Parent Production |
 | --- |
-| ddl_statement |
+| ddl_catalog (statement family) |
 
 ## Child Productions
 
 | Child Production |
 | --- |
-| create_statement |
+| create_object |
 
 ## Practical Notes
 

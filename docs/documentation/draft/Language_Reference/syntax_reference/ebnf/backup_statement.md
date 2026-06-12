@@ -9,59 +9,33 @@ Parent reference: [Backup, Restore, Replication, And Migration](../backup_restor
 ## Production
 
 ```ebnf
-backup_statement ::=
-    BACKUP backup_target backup_destination backup_option_list? ;
-
-backup_target ::=
-      DATABASE database_ref
-    | SCHEMA schema_ref
-    | TABLE table_ref
-    | QUERY "(" query_statement ")" ;
+backup_stmt ::=
+    BACKUP DATABASE database_ref TO backup_destination backup_options? ;
 
 backup_destination ::=
-      TO STREAM parameter_ref
-    | TO BACKUP SET qualified_name
-    | TO LOCATION location_ref ;
+    manifest_uri ;
 
-backup_option_list ::=
+backup_options ::=
     WITH backup_option ("," backup_option)* ;
-
-backup_option ::=
-      FORMAT LOGICAL
-    | FORMAT NATIVE
-    | SNAPSHOT snapshot_option
-    | INCLUDE DATA
-    | INCLUDE METADATA
-    | INCLUDE SECURITY
-    | INCLUDE STATISTICS
-    | EXCLUDE SECURITY
-    | COMPRESS compression_profile
-    | ENCRYPT WITH key_ref
-    | MANIFEST qualified_name
-    | LABEL string_literal
-    | COMMENT string_literal ;
 ```
 
 ## Meaning
 
-`backup_statement` recognizes an export request. The target may be a database, schema, table, or query rowset. The destination may be a stream parameter, engine-owned backup set, or policy-admitted location. The grammar does not authorize reading data, creating artifacts, or disclosing metadata.
+`backup_stmt` recognizes a database-level logical backup export request. The target is always a DATABASE reference. The destination is a manifest URI (file or location reference). The grammar does not authorize reading data, creating artifacts, or disclosing metadata. Evidence: conformance test SBSQL-01F52A6E564D with sql_fixture `BACKUP DATABASE TO '<manifest>.sblbak'`.
 
 ## Binding Requirements
 
 | Element | Binding requirement |
 | --- | --- |
-| Target | Authorized catalog scope or query result descriptor. |
-| Destination | Stream handle, backup set name, or location descriptor admitted by policy. |
-| Format | Logical or native route supported by the running product profile. |
-| Snapshot | Engine-owned snapshot descriptor. |
-| Security options | Privileges for including security metadata and protected references. |
-| Manifest | Manifest descriptor and write privilege where requested. |
+| Target | Authorized database UUID from session context. |
+| Destination | Manifest URI descriptor admitted by policy. |
+| Options | Archive-level options where admitted. |
 
 ## Used By
 
 | Parent production | Purpose |
 | --- | --- |
-| `archive_replication_migration_statement` | Places `BACKUP` in the administrative data-movement family. |
+| `archive_replication_stmt` | Places `BACKUP` in the administrative data-movement family. |
 
 ## Admission Notes
 

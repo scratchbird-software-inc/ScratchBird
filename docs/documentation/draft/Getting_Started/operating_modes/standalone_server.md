@@ -37,7 +37,7 @@ Standalone server mode is the right page to read when you are evaluating:
 - network-facing client access;
 - listener startup and shutdown;
 - parser selection and parser pool behavior;
-- donor-style client or tool experiments where a parser exists;
+- compatibility client or tool experiments where a parser exists;
 - native SBsql over a listener route;
 - protocol negotiation and refusal behavior;
 - end-to-end client/server smoke tests.
@@ -108,7 +108,7 @@ It should not:
 - write storage directly;
 - grant access outside its configured workarea;
 - treat physical page-copy data as logical restore input;
-- perform low-level repair or verification through a donor route;
+- perform low-level repair or verification through a compatibility route;
 - claim unsupported features by returning success without doing the work.
 
 It should:
@@ -186,7 +186,7 @@ Standalone server mode does not automatically provide:
 - [Choosing A Mode Summary](choosing_a_mode_summary.md)
 - [Single-Node IPC Server](single_node_ipc_server.md)
 - [Managed Group Deployment](group_deployment.md)
-- [Donor Database Compatibility](../using_scratchbird/donor_database_compatibility.md)
+- [Reference-System Compatibility](../using_scratchbird/reference_system_compatibility.md)
 - [Engine Parser Boundary](../architecture/engine_parser_boundary.md)
 - [Configuration Basics](../administration/configuration_basics.md)
 - [Diagnostics And Support Bundles](../administration/diagnostics_and_support_bundles.md)

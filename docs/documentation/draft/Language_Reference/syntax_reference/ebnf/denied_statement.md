@@ -8,18 +8,18 @@ Generation task: `ebnf_denied_statement`
 ## Production
 
 ```ebnf
-denied_statement        ::= denied_token_sequence ;
+refusal_stmt            ::= denied_token_sequence ;
 ```
 
 ## Meaning
 
-`denied_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`refusal_stmt` is an SBsql grammar production (registry canonical name `refusal_stmt`). It is part of contextual parsing only; it does not by itself authorize execution.
 
 ## Used By
 
 | Parent Production |
 | --- |
-| refusal_statement |
+| native_statement |
 
 ## Child Productions
 

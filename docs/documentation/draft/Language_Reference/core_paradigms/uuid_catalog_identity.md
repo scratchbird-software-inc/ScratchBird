@@ -410,6 +410,7 @@ An identity proof should demonstrate:
 
 - [Intro And MGA](intro_and_mga.md)
 - [Parser To SBLR Pipeline](parser_to_sblr_pipeline.md)
+- [SBsql Language Profiles](sbsql_language_profiles.md)
 - [Transactions And Recovery](transactions_and_recovery.md)
 - [Security And Sandboxing](security_and_sandboxing.md)
 - [Schema Tree And Name Resolution](../syntax_reference/schema_tree_and_name_resolution.md)

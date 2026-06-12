@@ -2209,7 +2209,6 @@ add_test(
           ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/investor_readiness_surface_gate.py
           --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..
           --project-root ${CMAKE_CURRENT_SOURCE_DIR}/../..
-          --exclude docs/documentation/draft
           --output ${CMAKE_CURRENT_BINARY_DIR}/investor_readiness_surface_gate/investor_readiness_surface_gate.json
 )
 set_tests_properties(investor_readiness_surface_gate PROPERTIES

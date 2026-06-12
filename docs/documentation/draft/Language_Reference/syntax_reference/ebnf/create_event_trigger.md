@@ -7,12 +7,11 @@ Related pages: [Trigger Lifecycle](../trigger.md), [Procedural SQL Triggers And 
 ## Production
 
 ```ebnf
-create_event_trigger ::=
+create_event_trigger_stmt ::=
     CREATE EVENT TRIGGER qualified_name
     ON event_trigger_event
     event_trigger_filter?
     event_trigger_audit_clause?
-    trigger_ordering?
     trigger_security?
     AS routine_body ;
 ```

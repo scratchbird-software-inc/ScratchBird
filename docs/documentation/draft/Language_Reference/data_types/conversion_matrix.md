@@ -110,7 +110,7 @@ Explicit casts state user intent and make conversion auditable.
 ```sql
 select cast(:amount_text as decimal(18,2)) as amount;
 
-select cast(:event_text as timestamp(6) with time zone) as event_at;
+select cast(:event_text as timestamptz) as event_at;
 
 select cast(:id_text as uuid) as object_id;
 ```
@@ -143,11 +143,11 @@ fences, or operation admission failures.
 | Decimal to lower precision/scale | Refuse unless explicit cast policy admits rounding. |
 | Approximate real to exact numeric | Refuse for non-exact values, NaN, infinity, or out-of-range values. |
 | Timestamp to lower precision | Refuse unless explicit cast policy admits precision loss. |
-| Timestamp with timezone to timestamp without timezone | Refuse unless timezone-loss policy is explicit. |
+| `timestamptz` to `timestamp` | Refuse unless timezone-loss policy is explicit. |
 | Text to shorter text | Refuse unless explicit truncation function is used. |
 | Text charset conversion with unrepresentable characters | Refuse unless explicit replacement policy is used. |
 | Binary to text with invalid encoded bytes | Refuse. |
-| Vector float32 to int8 | Refuse unless quantization policy is explicit. |
+| Vector `real32` element to `int8` element | Refuse unless quantization policy is explicit. |
 | Document number to lower-precision numeric | Refuse unless explicit cast policy admits the loss. |
 
 ## Domain Conversion
@@ -189,8 +189,8 @@ treated as text without conversion.
 | Conversion | Rule |
 | --- | --- |
 | Text to date/time/timestamp/interval | Explicit cast or target context required. Invalid fields are diagnostic. |
-| Timestamp to timestamp with timezone | Requires timezone rule. |
-| Timestamp with timezone to timestamp | Requires explicit timezone-loss rule. |
+| Timestamp to `timestamptz` | Requires timezone rule. |
+| `timestamptz` to timestamp | Requires explicit timezone-loss rule. |
 | Date to timestamp | Admitted when default time-of-day policy is explicit. |
 | Timestamp to date | Refuses time loss unless explicit cast policy admits it. |
 | Interval to numeric | Requires explicit operation defining units. |

@@ -26,16 +26,16 @@ result shape.
 
 | Canonical Type | Family | Payload | Primary Operations | Required Recheck |
 | --- | --- | --- | --- | --- |
-| `json` | document | Text-preserving document value. | JSON extraction, path predicates, rendering. | Path, scalar type, predicate, MGA, and security. |
-| `jsonb` | document | Normalized binary document value. | Containment, path extraction, comparison where admitted, indexing. | Path, scalar type, predicate, MGA, and security. |
+| `json_document` | document | Text-preserving JSON document value. | JSON extraction, path predicates, rendering. | Path, scalar type, predicate, MGA, and security. |
+| `binary_json_document` | document | Normalized binary JSON document value. | Containment, path extraction, comparison where admitted, indexing. | Path, scalar type, predicate, MGA, and security. |
 | `document` | document | Document payload plus schema/profile metadata. | Document insert, update, query, patch, path indexes. | Document identity, path semantics, MGA, and policy. |
 | `array<T>` | collection | Ordered homogeneous elements. | Element access, unnesting, containment, assignment. | Element descriptor and bounds. |
 | `multiset<T>` | collection | Unordered homogeneous elements with multiplicity. | Bag operations and aggregate-style element operations. | Element descriptor and multiplicity. |
 | `row(...)` | structured | Named or positional field descriptors. | Row constructors, function returns, result descriptors. | Field descriptor and null policy. |
 | `record(...)` | structured | Runtime record shape. | Procedural variables, cursor rows, dynamic rowsets. | Shape descriptor and policy. |
-| `vector<float32,n>` | vector | `4 * n` bytes plus descriptor metadata. | Vector search and vector functions. | Exact vector, metric, MGA, security, and predicate. |
-| `vector<float16,n>` | vector | `2 * n` bytes plus descriptor metadata. | Vector search where fp16 is admitted. | Exact source vector or quantization proof, plus MGA/security. |
-| `vector<int8,n>` | vector | `n` bytes plus descriptor metadata. | Quantized vector search where admitted. | Quantization proof, exact rerank where required, MGA/security. |
+| `vector` (element type `real32`) | vector | `4 * n` bytes plus descriptor metadata. | Vector search and vector functions. | Exact vector, metric, MGA, security, and predicate. |
+| `vector` (element type `real16`/`bfloat16`) | vector | `2 * n` bytes plus descriptor metadata. | Vector search where fp16 is admitted. | Exact source vector or quantization proof, plus MGA/security. |
+| `vector` (element type `int8`) | vector | `n` bytes plus descriptor metadata. | Quantized vector search where admitted. | Quantization proof, exact rerank where required, MGA/security. |
 | `geometry` | spatial | Geometry payload plus spatial reference/profile metadata. | Spatial predicates and indexes. | Exact geometry predicate and visibility. |
 | `geography` | spatial | Geodetic payload plus spatial reference/profile metadata. | Geodetic predicates and indexes. | Exact geodetic predicate and visibility. |
 | `graph` | graph | Graph container or traversal payload. | Node, edge, path, and traversal operations. | Node/edge/path identity, traversal order, MGA/security. |
@@ -63,7 +63,7 @@ Example:
 
 ```sql
 select document_id,
-       cast(payload->>'created_at' as timestamp(6) with time zone) as created_at
+       cast(payload->>'created_at' as timestamptz) as created_at
 from app.ingest_document
 where payload @? '$.status == "ready"';
 ```
@@ -227,9 +227,9 @@ multimodel_type         ::= document_type
 ```
 
 ```ebnf
-document_type           ::= "json"
-                          | "jsonb"
-                          | "document" ;
+document_type           ::= "document"
+                          | "json_document"
+                          | "binary_json_document" ;
 ```
 
 ```ebnf
@@ -240,8 +240,7 @@ collection_type         ::= "array" "<" data_type ">"
 ```
 
 ```ebnf
-vector_type             ::= ("vector" | "embedding") "<" vector_element_type "," dimension ">" ;
-vector_element_type     ::= "float32" | "float16" | "int8" ;
+vector_type             ::= "vector" ;
 ```
 
 ```ebnf

@@ -12,6 +12,8 @@ Collects general-purpose scalar, aggregate, window, context, catalog, diagnostic
 
 Each entry below is written for a user reading SBsql, not for a registry maintainer. The technical fields are retained so an operator can connect the language surface to SBLR and engine diagnostics when troubleshooting.
 
+Technical identifiers and localized helper entries are diagnostic release-evidence fields, not independent authority. A function is release-supported only when the active build, resource manifest, and admission gates include that exact surface.
+
 Privileges, policy admission, sandboxing, and descriptor compatibility are still checked by the surrounding statement. A function being listed here does not grant access to catalog objects, protected material, files, network targets, or external services.
 
 Some entries in this package are diagnostic, refusal, context, or compatibility surfaces rather than ordinary scalar functions. Those entries say so explicitly in their purpose and example text.
@@ -6444,12 +6446,13 @@ Conformance evidence: `SBSFC056-accept-marker`.
 
 **Call Forms:**
 
-- `accept(SQL:2016—fitstime-series)`
+- `accept_sql2016_timeseries()`
+- `accept_sql2016_timeseries(feature_text)`
 - Syntax category: `function_call`
 
 **Parameters:**
 
-- `SQL:2016—fitstime-series`: Bound using the declared descriptor rules for this overload.
+- `feature_text`: Optional feature descriptor string. When omitted, returns a text marker. When supplied, returns a boolean (1 if non-empty, 0 if empty).
 - Descriptor rule: feature descriptor.
 - Coercion: bounded SBsql expression-runtime descriptor coercion only.
 - NULL handling: NULL inputs preserve SQL NULL where the surface semantics require it.

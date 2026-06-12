@@ -7,7 +7,7 @@ Generation task: `ebnf_alter_function`
 ## Production
 
 ```ebnf
-alter_function ::=
+alter_routine_stmt ::=
     "ALTER" "FUNCTION" function_ref alter_function_action ;
 
 alter_function_action ::=
@@ -29,7 +29,7 @@ function_argument_descriptor_list ::=
 
 ## Meaning
 
-`alter_function` changes admitted function metadata without changing durable identity. Signature-changing edits require a recreate route because overload identity, dependency graph, and executable representation must be rebound as a unit.
+`alter_routine_stmt` changes admitted function metadata without changing durable identity. Signature-changing edits require a recreate route because overload identity, dependency graph, and executable representation must be rebound as a unit.
 
 ## Used By
 

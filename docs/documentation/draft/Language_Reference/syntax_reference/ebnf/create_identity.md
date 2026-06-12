@@ -8,12 +8,12 @@ Generation task: `ebnf_create_identity`
 ## Production
 
 ```ebnf
-create_identity         ::= "CREATE" ("USER" | "ROLE" | "GROUP") principal_ref identity_option_list? ;
+create_principal_stmt   ::= "CREATE" ("USER" | "ROLE" | "GROUP") principal_ref identity_option_list? ;
 ```
 
 ## Meaning
 
-`create_identity` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`create_principal_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

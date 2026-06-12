@@ -20,7 +20,7 @@ Descriptors and domains are related but separate.
 
 | Object | Owns | Typical Use |
 | --- | --- | --- |
-| Type descriptor | Carrier representation and base operation behavior. | `int64`, `decimal(18,2)`, `varchar(200)`, `timestamp with time zone`, `json`, `vector<float32,768>`. |
+| Type descriptor | Carrier representation and base operation behavior. | `bigint`, `decimal(18,2)`, `varchar(200)`, `timestamptz`, `json`, `vector<float32,768>`. |
 | Domain | A named policy layer over a descriptor or another domain. | `app.email_text`, `app.positive_amount`, `app.customer_code`. |
 | Domain stack | Ordered domain layers plus the base descriptor. | Assignment validation, defaults, masks, constraints, and operation preservation rules. |
 

@@ -83,13 +83,13 @@ The exact variables and commands used to inspect these values are described in t
 The current schema is the default location for unqualified object names.
 
 ```sql
-set schema app;
+show schema path;
 
 select note_id, note_text
 from notes;
 ```
 
-If `notes` is visible in `app`, the unqualified name can resolve to `app.notes`.
+If the current schema is `app` and `notes` is visible in `app`, the unqualified name can resolve to `app.notes`. The command used to change the current schema is release-specific; consult the Language Reference for the current build.
 
 Unqualified names are convenient in scripts, but they can also hide mistakes. When writing administrative scripts, migrations, or examples intended for other users, prefer qualified names where clarity matters.
 
@@ -304,7 +304,7 @@ That tree separates application data, audit records, and policy-related objects.
 ## Where To Go Next
 
 - [First SBsql Session](first_sbsql_session.md)
-- [Donor Database Compatibility](donor_database_compatibility.md)
+- [Reference-System Compatibility](reference_system_compatibility.md)
 - [Recursive Schema Tree](../architecture/recursive_schema_tree.md)
 - [Schema Tree And Name Resolution](../../Language_Reference/syntax_reference/schema_tree_and_name_resolution.md)
 - [Schema Statements](../../Language_Reference/syntax_reference/schema.md)

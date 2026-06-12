@@ -1,20 +1,20 @@
-# sys.catalog.protected_material_policy_binding Catalog Reference
+# sys.security.protected_material_policy_binding Catalog Reference
 
 This page documents the authorized catalog surface that binds protected
 material or protected-material versions to retention, access, release, purge,
 audit, diagnostic, redaction, backup, restore, replication, migration, and
 support policies.
 
-Generation task: `catalog_sys_catalog_protected_material_policy_binding`
+Generation task: `catalog_sys_security_protected_material_policy_binding`
 
-Related pages: [sys.catalog.protected_material](sys_catalog_protected_material.md),
-[sys.catalog.protected_material_version](sys_catalog_protected_material_version.md),
-[sys.security.catalog.protected_material_audit_event](sys_security_catalog_protected_material_audit_event.md), and
+Related pages: [sys.security.protected_material_catalog](sys_catalog_protected_material.md),
+[sys.security.protected_material_version](sys_catalog_protected_material_version.md),
+[sys.security.protected_material_audit](sys_security_catalog_protected_material_audit_event.md), and
 [Security And Sandboxing](../core_paradigms/security_and_sandboxing.md).
 
 ## Role
 
-`sys.catalog.protected_material_policy_binding` records which policies control
+`sys.security.protected_material_policy_binding` records which policies control
 protected material. A material can have material-level policies and
 version-level policies. Version-level policy can narrow or override behavior
 only where the policy model admits it.
@@ -33,8 +33,8 @@ Primary key: `binding_uuid`
 | `protected_material_uuid` | UUID | Bound protected material. |
 | `protected_material_version_uuid` | nullable UUID | Bound version, or null for material-level binding. |
 | `policy_uuid` | UUID | Policy object that controls the behavior. |
-| `policy_kind` | enum | `retention`, `access`, `release`, `purge`, `audit`, `diagnostic`, `redaction`, `backup_restore`, `replication`, `migration`, or `support_bundle`. |
-| `diagnostic_state` | enum/text | `active`, `disabled_by_policy`, `security_redacted`, `purge_blocked`, `release_blocked`, or `archived`. |
+| `policy_kind` | enum/text | `retention`, `access`, `release`, `purge`, or `audit`. |
+| `diagnostic_state` | enum/text | Engine-assigned diagnostic policy state for the binding. |
 | `catalog_generation_id` | uint64 | Visible catalog generation. |
 | `security_epoch` | uint64 | Security epoch for visibility and release. |
 
@@ -47,12 +47,6 @@ Primary key: `binding_uuid`
 | `release` | Who can obtain raw material for a specific admitted purpose. |
 | `purge` | When protected-reference reachability can be destroyed. |
 | `audit` | Which events must be recorded and how long evidence is retained. |
-| `diagnostic` | What can appear in diagnostics and message vectors. |
-| `redaction` | Which fields are hidden, masked, hashed, or summarized. |
-| `backup_restore` | Whether material, references, or redacted metadata can enter backup/restore streams. |
-| `replication` | Whether material can be included in change streams or replication routes. |
-| `migration` | Whether material can be transformed or mapped during migration. |
-| `support_bundle` | Which redacted evidence may be collected for support. |
 
 ## Resolution Rules
 
@@ -86,7 +80,7 @@ select protected_material_uuid,
        policy_kind,
        diagnostic_state,
        security_epoch
-from sys.catalog.protected_material_policy_binding
+from sys.security.protected_material_policy_binding
 where protected_material_uuid = :protected_material_uuid
 order by policy_kind;
 ```

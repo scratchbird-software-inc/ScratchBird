@@ -24,8 +24,8 @@ types when the instant matters.
 | `date` | none | Day ordinal under descriptor calendar policy. | Calendar date without time of day or timezone. |
 | `time(p)` | `time` | Time of day with fractional precision `p`. | Clock time without date or timezone. |
 | `time(p) with time zone` | `time with time zone` | Time of day plus timezone or offset descriptor data. | Clock time with timezone rendering/comparison policy. |
-| `timestamp(p)` | `timestamp without time zone` | Date plus time fields with fractional precision `p`. | Timestamp fields without timezone normalization. |
-| `timestamp(p) with time zone` | `timestamp_tz` | Instant plus timezone rendering policy. | Stored and compared as an instant; rendered through session/profile timezone policy. |
+| `timestamp(p)` | none | Date plus time fields with fractional precision `p`. | Timestamp fields without timezone normalization. |
+| `timestamptz` | `timestamp_tz` | Instant plus timezone rendering policy. | Stored and compared as an instant; rendered through session/profile timezone policy. |
 | `interval` | `interval year to month`, `interval day to second` | Duration fields selected by descriptor. | Duration, not a calendar instant. |
 
 The portable fractional-second precision is `0` through `6`. Higher precision
@@ -41,12 +41,11 @@ bind-time diagnostic.
 | `time(p)` | No date and no timezone component. |
 | `time(p) with time zone` | Includes timezone or offset behavior defined by descriptor policy. |
 | `timestamp(p)` | Stores date/time fields without timezone normalization. Session timezone does not change the stored value. |
-| `timestamp(p) with time zone` | Represents an instant. Session timezone affects rendering, not stored instant identity. |
+| `timestamptz` | Represents an instant. Session timezone affects rendering, not stored instant identity. |
 | `interval` | Has no timezone; it is applied to a temporal value according to arithmetic rules. |
 
-Use `timestamp with time zone` when the value must represent a real instant
-across sessions. Use `timestamp` when the stored date/time fields are intended
-to remain local fields.
+Use `timestamptz` when the value must represent a real instant across sessions.
+Use `timestamp` when the stored date/time fields are intended to remain local fields.
 
 ## Precision
 
@@ -72,7 +71,7 @@ select cast('2026-06-08 14:30:00.123456' as timestamp(6))
        as local_event_time;
 
 select cast('2026-06-08 14:30:00.123456-04:00'
-            as timestamp(6) with time zone)
+            as timestamptz)
        as event_instant;
 ```
 
@@ -101,7 +100,7 @@ display clock as engine authority.
 | --- | --- |
 | `date + interval` | Produces a date or timestamp according to interval fields and target descriptor. |
 | `timestamp + interval` | Produces a timestamp descriptor compatible with the input timestamp. |
-| `timestamp with time zone + interval` | Produces an instant descriptor with timezone rendering policy preserved. |
+| `timestamptz + interval` | Produces an instant descriptor with timezone rendering policy preserved. |
 | `date - date` | Produces an interval or integer day count according to operator descriptor. |
 | `timestamp - timestamp` | Produces an interval descriptor. |
 | `time - time` | Produces an interval descriptor where admitted. |
@@ -139,7 +138,7 @@ group by date_trunc('day', created_at);
 | `time` | Compare time-of-day under descriptor precision. |
 | `time with time zone` | Compare according to descriptor timezone policy. |
 | `timestamp` | Compare stored date/time fields without timezone conversion. |
-| `timestamp with time zone` | Compare instants. Rendering timezone does not change ordering. |
+| `timestamptz` | Compare instants. Rendering timezone does not change ordering. |
 | `interval` | Compare only where the interval descriptor admits a total ordering. |
 
 Temporal indexes use the same comparison rule as expression evaluation. Indexes
@@ -185,10 +184,9 @@ date_type               ::= "date" ;
 ```
 
 ```ebnf
-time_type               ::= "time" precision_clause? timezone_clause? ;
-timestamp_type          ::= "timestamp" precision_clause? timezone_clause? ;
-timezone_clause         ::= "with" "time" "zone"
-                          | "without" "time" "zone" ;
+time_type               ::= "time" precision_clause? ;
+timestamp_type          ::= "timestamp" precision_clause?
+                          | "timestamptz" ;
 ```
 
 ```ebnf
@@ -211,8 +209,7 @@ The temporal proof suite should demonstrate:
 - fractional precision is enforced;
 - text literals require context or explicit cast;
 - invalid dates, times, and timezones are refused;
-- `timestamp` and `timestamp with time zone` differ in storage and comparison
-  behavior;
+- `timestamp` and `timestamptz` differ in storage and comparison behavior;
 - session timezone affects rendering where documented and not stored instant
   identity;
 - temporal arithmetic uses documented result descriptors;

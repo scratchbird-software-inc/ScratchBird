@@ -90,7 +90,7 @@ A function returns a single scalar, row, rowset, or admitted structured descript
 
 ```sql
 execute block (p_customer_id uuid = :customer_id)
-returns (order_count int64)
+returns (order_count bigint)
 as
 begin
   select count(*)
