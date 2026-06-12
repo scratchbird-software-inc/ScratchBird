@@ -6,7 +6,7 @@ Owning slice: `FSPE-012E`
 
 ## Summary
 
-FSPE-012E materialized `sbsql_locale_charset_collation_timezone_gate` as a parser, engine-name, resource-seed, donor temporal wire, and SBLR i18n/time CTest gate.
+FSPE-012E materialized `sbsql_locale_charset_collation_timezone_gate` as a parser, engine-name, resource-seed, reference temporal wire, and SBLR i18n/time CTest gate.
 
 The gate verifies:
 
@@ -14,7 +14,7 @@ The gate verifies:
 - Engine name registry preserves default language fallback, profile-specific unquoted case folding, quoted exact-match behavior, UTF-8 display names, and resource/name authority epochs.
 - Initial resource seed pack loads from repo-local resources and exposes charset, charset alias, collation, timezone, transition, and leap-second rows.
 - Charset, collation, and timezone aliases resolve from seed-pack authority, including `utf8mb4 -> UTF-8`, `c.utf8 -> C.utf8`, `US/Eastern -> America/New_York`, and `Etc/UTC`.
-- Donor temporal wire profiles normalize offset timestamps, use timezone seed authority for named zones, and fail closed when timezone seed authority is absent or a date-only profile includes a timezone.
+- Reference temporal wire profiles normalize offset timestamps, use timezone seed authority for named zones, and fail closed when timezone seed authority is absent or a date-only profile includes a timezone.
 - SBLR string and temporal runtime preserve charset/collation metadata, enforce collation mismatch refusal, perform case-insensitive text matching when collation requires it, normalize timestamp arithmetic to UTC, and normalize ISO intervals to seconds.
 
 ## Gate
@@ -34,4 +34,4 @@ The gate does not make the parser the authority for locale, charset, collation, 
 
 ## Result
 
-Locale, charset, collation, timezone, donor temporal wire, and parser UTF-8 regression behavior now have a runnable validation gate and are included in the full parser-worker CTest label.
+Locale, charset, collation, timezone, reference temporal wire, and parser UTF-8 regression behavior now have a runnable validation gate and are included in the full parser-worker CTest label.

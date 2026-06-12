@@ -135,7 +135,7 @@ u16 ModeIndex(MGALockMode mode) {
 bool DeadlineExpired(const MGALockRequest& request, u64 now_millis) {
   if (request.wait_policy == MGAWaitPolicy::no_wait) { return true; }
   if (request.wait_policy != MGAWaitPolicy::wait_timeout &&
-      request.wait_policy != MGAWaitPolicy::donor_compatible_wait &&
+      request.wait_policy != MGAWaitPolicy::reference_compatible_wait &&
       request.wait_policy != MGAWaitPolicy::maintenance_window_wait) {
     return false;
   }
@@ -894,7 +894,7 @@ const char* MGAWaitPolicyName(MGAWaitPolicy policy) {
     case MGAWaitPolicy::wait_until_transaction_end: return "wait_until_transaction_end";
     case MGAWaitPolicy::wait_with_deadlock_detection: return "wait_with_deadlock_detection";
     case MGAWaitPolicy::wait_with_priority: return "wait_with_priority";
-    case MGAWaitPolicy::donor_compatible_wait: return "donor_compatible_wait";
+    case MGAWaitPolicy::reference_compatible_wait: return "reference_compatible_wait";
     case MGAWaitPolicy::maintenance_window_wait: return "maintenance_window_wait";
     case MGAWaitPolicy::unknown: return "unknown";
   }

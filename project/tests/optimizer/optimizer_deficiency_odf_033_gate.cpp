@@ -432,7 +432,7 @@ void UnsafeRoutesFailClosed() {
     request.input_rows.push_back(Row("1", "amy", "unsafe"));
     request.option_envelopes.push_back("odf033.disable_mga_visibility_recheck=true");
     request.option_envelopes.push_back("odf033.disable_security_recheck=true");
-    request.option_envelopes.push_back("odf033.parser_or_donor_authority=true");
+    request.option_envelopes.push_back("odf033.parser_or_reference_authority=true");
     request.option_envelopes.push_back("odf033.observed_stats_epoch=39");
     request.option_envelopes.push_back("odf033.current_stats_epoch=40");
     const auto refused = api::EngineInsertRows(request);
@@ -457,8 +457,8 @@ void UnsafeRoutesFailClosed() {
             "ODF-033 missing security recheck refusal evidence missing");
     Require(EvidenceContains(refused.evidence,
                              "insert_unique_preflight_refusal",
-                             "unsafe parser/donor authority"),
-            "ODF-033 parser/donor authority refusal evidence missing");
+                             "unsafe parser/reference authority"),
+            "ODF-033 parser/reference authority refusal evidence missing");
     Require(EvidenceContains(refused.evidence,
                              "insert_unique_preflight_refusal",
                              "stale catalog epoch"),

@@ -27,6 +27,6 @@ ctest --test-dir build/sbsql_parser_worker_validation -L sbsql_parser_worker --o
 
 ## Boundary Statement
 
-ScratchBird engine execution remains SBLR/internal-procedure only. The parser cache and server prepared-SBLR paths remain untrusted until server admission and engine authority checks validate UUID, descriptor, security, transaction, and epoch state. No SQL text, donor command text, parser AST, or parser-owned authority is introduced by FSPE-011E.
+ScratchBird engine execution remains SBLR/internal-procedure only. The parser cache and server prepared-SBLR paths remain untrusted until server admission and engine authority checks validate UUID, descriptor, security, transaction, and epoch state. No SQL text, reference command text, parser AST, or parser-owned authority is introduced by FSPE-011E.
 
 MGA remains the transaction and recovery authority. No WAL/write-ahead recovery behavior and no spin or busy-wait loop is introduced by this slice.

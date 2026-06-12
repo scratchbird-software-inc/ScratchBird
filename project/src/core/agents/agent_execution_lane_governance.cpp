@@ -24,7 +24,7 @@ bool AuthorityClean(const AgentSystemProfileForbiddenAuthority& authority) {
          !authority.authorization_security_authority &&
          !authority.recovery_authority &&
          !authority.parser_authority &&
-         !authority.donor_authority &&
+         !authority.reference_authority &&
          !authority.wal_authority &&
          !authority.benchmark_authority &&
          !authority.optimizer_plan_authority &&
@@ -69,7 +69,7 @@ std::vector<std::string> BaseEvidence(const AgentExecutionLaneRequest& request) 
       "authorization_security_authority=false",
       "recovery_authority=false",
       "parser_authority=false",
-      "donor_authority=false",
+      "reference_authority=false",
       "wal_authority=false",
       "benchmark_authority=false",
       "optimizer_plan_authority=false",

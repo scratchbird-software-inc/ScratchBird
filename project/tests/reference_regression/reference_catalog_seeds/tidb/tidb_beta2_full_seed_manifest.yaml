@@ -1,0 +1,1548 @@
+{
+  "seed_manifest_uuid": "3b8c2561-76dd-50ed-9e11-18a6d7efa626",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "tidb-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_REFERENCE_CATALOG_SEED_TIDB_BETA2_FULL",
+  "seed_manifest_status": "profile_derived_private_seed_manifest",
+  "reference_family": "tidb",
+  "reference_version_profile_id": "tidb_beta2_full",
+  "reference_version_profile_uuid": "64fdcc85-484d-5bb6-8cd1-ea394b0983b3",
+  "reference_exact_version": "TiDB beta2-full compatibility profile",
+  "new_database_recipe_id": "tidb_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-05-10T00:00:00Z",
+  "extraction_tool_ref": "docs/specifications/registries/reference-catalog-source-derived-seed-rows.yaml",
+  "normalization_profile_ref": "embedded:SB_REFERENCE_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "information_schema_schemata",
+      "reference_catalog_object_name": "information_schema.SCHEMATA",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_schemata",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_tables",
+      "reference_catalog_object_name": "information_schema.TABLES",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_tables",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_columns",
+      "reference_catalog_object_name": "information_schema.COLUMNS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_columns",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_column_statistics",
+      "reference_catalog_object_name": "information_schema.COLUMN_STATISTICS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_column_statistics",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_statistics",
+      "reference_catalog_object_name": "information_schema.STATISTICS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_statistics",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_character_sets",
+      "reference_catalog_object_name": "information_schema.CHARACTER_SETS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_character_sets",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_collations",
+      "reference_catalog_object_name": "information_schema.COLLATIONS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_collations",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_files",
+      "reference_catalog_object_name": "information_schema.FILES",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_files",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_profiling",
+      "reference_catalog_object_name": "information_schema.PROFILING",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_profiling",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_partitions",
+      "reference_catalog_object_name": "information_schema.PARTITIONS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_partitions",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_key_column_usage",
+      "reference_catalog_object_name": "information_schema.KEY_COLUMN_USAGE",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_key_column_usage",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_referential_constraints",
+      "reference_catalog_object_name": "information_schema.REFERENTIAL_CONSTRAINTS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_referential_constraints",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_plugins",
+      "reference_catalog_object_name": "information_schema.PLUGINS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_plugins",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_table_constraints",
+      "reference_catalog_object_name": "information_schema.TABLE_CONSTRAINTS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_table_constraints",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_triggers",
+      "reference_catalog_object_name": "information_schema.TRIGGERS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_triggers",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_user_privileges",
+      "reference_catalog_object_name": "information_schema.USER_PRIVILEGES",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_user_privileges",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_schema_privileges",
+      "reference_catalog_object_name": "information_schema.SCHEMA_PRIVILEGES",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_schema_privileges",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_table_privileges",
+      "reference_catalog_object_name": "information_schema.TABLE_PRIVILEGES",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_table_privileges",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_column_privileges",
+      "reference_catalog_object_name": "information_schema.COLUMN_PRIVILEGES",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_column_privileges",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_engines",
+      "reference_catalog_object_name": "information_schema.ENGINES",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_engines",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_views",
+      "reference_catalog_object_name": "information_schema.VIEWS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_views",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_routines",
+      "reference_catalog_object_name": "information_schema.ROUTINES",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_routines",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_parameters",
+      "reference_catalog_object_name": "information_schema.PARAMETERS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_parameters",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_events",
+      "reference_catalog_object_name": "information_schema.EVENTS",
+      "reference_catalog_object_kind": "virtual_system_table",
+      "namespace_kind": "infoschema_virtual_tables",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tidb_information_schema_events",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "diagnostic_code": "REFERENCE.TIDB.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "column_id": "information_schema_schemata_object_name",
+      "object_ref": "information_schema_schemata",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "970530bfc6a92a1715fdfd0f9161c908a8024ca5ca69d49832907cdbdbc968ae"
+    },
+    {
+      "column_id": "information_schema_schemata_object_kind",
+      "object_ref": "information_schema_schemata",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "cc2d62cd05f44cc4ebe54d0c21c302ad57292cd06f3901715713eda3777577ef"
+    },
+    {
+      "column_id": "information_schema_schemata_source_ref",
+      "object_ref": "information_schema_schemata",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "607ecc73d25ca23488d4e30c236aadd68a9d95c0055b5010517006aba77e107f"
+    },
+    {
+      "column_id": "information_schema_tables_object_name",
+      "object_ref": "information_schema_tables",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b04c3f30ef12607dafcfe2d4cacbd11f3444a0d6a8a66c5b3c3532f92a5cf816"
+    },
+    {
+      "column_id": "information_schema_tables_object_kind",
+      "object_ref": "information_schema_tables",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "a5e0ad6c759e0d3fe75526438a9f7be31e7309eedcfe2f838ffdab10a1450e16"
+    },
+    {
+      "column_id": "information_schema_tables_source_ref",
+      "object_ref": "information_schema_tables",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "eb40aa89c49ac4081dc3ac42e09ce51c4b262b235bae44784afdbd5bafdd69bf"
+    },
+    {
+      "column_id": "information_schema_columns_object_name",
+      "object_ref": "information_schema_columns",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "8c68cf2a622fa2276db1a3dfa24a49d08bd30c863845912b9c8639f3fe958ac2"
+    },
+    {
+      "column_id": "information_schema_columns_object_kind",
+      "object_ref": "information_schema_columns",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "1205fe557986a29075c52f7ca55af5ccd32b8b2a476a2f06365888bb989ca53d"
+    },
+    {
+      "column_id": "information_schema_columns_source_ref",
+      "object_ref": "information_schema_columns",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "0f4babe5b5246ecfec79545ea39932a1d7dc0b705d2f352498bcdca3584a947d"
+    },
+    {
+      "column_id": "information_schema_column_statistics_object_name",
+      "object_ref": "information_schema_column_statistics",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6c31368199e909f9e1aa114f39beb1bce023d5988e19a766d80f2f786f6a6508"
+    },
+    {
+      "column_id": "information_schema_column_statistics_object_kind",
+      "object_ref": "information_schema_column_statistics",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "5312d853e9c51f06aa3a4e3c62b652c90ded918b39fab9ed1dd2d0c3370e91ee"
+    },
+    {
+      "column_id": "information_schema_column_statistics_source_ref",
+      "object_ref": "information_schema_column_statistics",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "44c550e6513511ed02f428c8d14f70cb3ccf62c182b5660226a6caf743a3f3bc"
+    },
+    {
+      "column_id": "information_schema_statistics_object_name",
+      "object_ref": "information_schema_statistics",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6439f845e7f8f36b17eca0577874bed5699b99730171da1cb6fe9fd33fc1ce66"
+    },
+    {
+      "column_id": "information_schema_statistics_object_kind",
+      "object_ref": "information_schema_statistics",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "f3245413a8c2e8c07b5cf51339210f4499e53d03e5ccdac045a8d8abbce76c7d"
+    },
+    {
+      "column_id": "information_schema_statistics_source_ref",
+      "object_ref": "information_schema_statistics",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "22b9ec508609ce412694e8064f73ebab28d6c0a3ccb86f0e4d3682b2cc152464"
+    },
+    {
+      "column_id": "information_schema_character_sets_object_name",
+      "object_ref": "information_schema_character_sets",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "046f05cb3fbb353acc6caa444c1952fe28d96bdfe7fe4d25a142a1e9904afb10"
+    },
+    {
+      "column_id": "information_schema_character_sets_object_kind",
+      "object_ref": "information_schema_character_sets",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "028817bc60417b9765bf9e913edb513808cbb4c862184a954e095d37d351751d"
+    },
+    {
+      "column_id": "information_schema_character_sets_source_ref",
+      "object_ref": "information_schema_character_sets",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "28ee90e12e01643da1d76720d46ca39cbd1f002acc0fdda7c0225ac3cc7d2d0c"
+    },
+    {
+      "column_id": "information_schema_collations_object_name",
+      "object_ref": "information_schema_collations",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "a764436533b8c10f1697fec8de581dbe6e89b129c9edeb9383a242dd0db0e10c"
+    },
+    {
+      "column_id": "information_schema_collations_object_kind",
+      "object_ref": "information_schema_collations",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7d34d4023663e704cf3e5030cef31d234bf16b71b132a3c565b355bf94d2f6f4"
+    },
+    {
+      "column_id": "information_schema_collations_source_ref",
+      "object_ref": "information_schema_collations",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "2b6e1130f3230fc81dbdc0e4b3c0ca87eaea94938d019ccf735e56edb3acec2e"
+    },
+    {
+      "column_id": "information_schema_files_object_name",
+      "object_ref": "information_schema_files",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2b57921f248bc010c17c2f70b2c5d5082b5c88771eac01b6cd51e0793c741d92"
+    },
+    {
+      "column_id": "information_schema_files_object_kind",
+      "object_ref": "information_schema_files",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "a73e1a5c5aa263c042760c1993c2840697bb042e824ff0c629359df4be859da3"
+    },
+    {
+      "column_id": "information_schema_files_source_ref",
+      "object_ref": "information_schema_files",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "4bd54eca7dbfe88ab012208ffef8854766de5a71b60114bf14208eb281316d30"
+    },
+    {
+      "column_id": "information_schema_profiling_object_name",
+      "object_ref": "information_schema_profiling",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "216dcbbc8de9314105025c534e782fc8b1a6a4d42805dfe0718f4bccc9a0ee2e"
+    },
+    {
+      "column_id": "information_schema_profiling_object_kind",
+      "object_ref": "information_schema_profiling",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "999b35991c16f76afc62f38b31c0ccf3f382761e221fcbd86698d94877a36721"
+    },
+    {
+      "column_id": "information_schema_profiling_source_ref",
+      "object_ref": "information_schema_profiling",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "ab70e543b507f05a95256ab83e2e8678dbb702cb88d9a73909a9ee69ac5a7794"
+    },
+    {
+      "column_id": "information_schema_partitions_object_name",
+      "object_ref": "information_schema_partitions",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "26408daeb1186b1611e36081ebed62dbe2faf35f3233c40f6fb53fe69a070b0b"
+    },
+    {
+      "column_id": "information_schema_partitions_object_kind",
+      "object_ref": "information_schema_partitions",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "7be603d79fad7eeb54e5268215ea5187ecf3f5a27aa2dbff3ca56c2ee7839c05"
+    },
+    {
+      "column_id": "information_schema_partitions_source_ref",
+      "object_ref": "information_schema_partitions",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "7f2905c0b598cfa16200b358555241c34bcb58286f0fe193c16f1b70a935ae90"
+    },
+    {
+      "column_id": "information_schema_key_column_usage_object_name",
+      "object_ref": "information_schema_key_column_usage",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "f068a5be2eceefa8cc85a710638cae02e3a3805d794b64e7bda5d1fab4842efe"
+    },
+    {
+      "column_id": "information_schema_key_column_usage_object_kind",
+      "object_ref": "information_schema_key_column_usage",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "3a6cb21ff256c7e41f6196f13e84598f39e40cc470801f76d11bf1db14ffcd3f"
+    },
+    {
+      "column_id": "information_schema_key_column_usage_source_ref",
+      "object_ref": "information_schema_key_column_usage",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "ff24c7a35e7f758093d90b34648d01cc1e9c9fa9ac36ba209a50d7f305429a4c"
+    },
+    {
+      "column_id": "information_schema_referential_constraints_object_name",
+      "object_ref": "information_schema_referential_constraints",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "a97da52bdbf847fe00e394a8ab4c8fa8ce1f31287b1d6a2a48d8b8772ce7c9f7"
+    },
+    {
+      "column_id": "information_schema_referential_constraints_object_kind",
+      "object_ref": "information_schema_referential_constraints",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "56e3906b3285bdac13eb96c1403b6a17117e04bfe5f768ec80e2b6b8e8d8a554"
+    },
+    {
+      "column_id": "information_schema_referential_constraints_source_ref",
+      "object_ref": "information_schema_referential_constraints",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "74b4a822e975e155ca3654d3ba0154fed574d74e2cb5b9d530c9f5f4cec44d8e"
+    },
+    {
+      "column_id": "information_schema_plugins_object_name",
+      "object_ref": "information_schema_plugins",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "8326c16173e65010d494babbf1e0ba66362bec91e5d88ca393f18827446d715e"
+    },
+    {
+      "column_id": "information_schema_plugins_object_kind",
+      "object_ref": "information_schema_plugins",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "fd00c4ad65c817b9f13b748cfde24113f3fe5103534cf27969b6d36612f9ab1d"
+    },
+    {
+      "column_id": "information_schema_plugins_source_ref",
+      "object_ref": "information_schema_plugins",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "0feb66ac5e20f8f3167193f34d2dc6b7e29ff7ae14872ae60293d1d982bb5b44"
+    },
+    {
+      "column_id": "information_schema_table_constraints_object_name",
+      "object_ref": "information_schema_table_constraints",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "ccf8b6263776bf26bb78c2b891f86da58b7717219ab7918ed60a0422f29db936"
+    },
+    {
+      "column_id": "information_schema_table_constraints_object_kind",
+      "object_ref": "information_schema_table_constraints",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "8f121f84547e27952e383b223bbdd236931fcbe7e2e0cab8023bad407838a4e8"
+    },
+    {
+      "column_id": "information_schema_table_constraints_source_ref",
+      "object_ref": "information_schema_table_constraints",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "8420e053d016ac1954a03d3acd4886043391f0fd324fa041e059adfa25c8ec20"
+    },
+    {
+      "column_id": "information_schema_triggers_object_name",
+      "object_ref": "information_schema_triggers",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d8bcdb253bd2315358034a9cb79b7232601b8e4b9620579f5e028f11f6bd8784"
+    },
+    {
+      "column_id": "information_schema_triggers_object_kind",
+      "object_ref": "information_schema_triggers",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "ada4701c7534e4fa32f1bd29515e36b809dde0290611e4092cc44ba5939b7fba"
+    },
+    {
+      "column_id": "information_schema_triggers_source_ref",
+      "object_ref": "information_schema_triggers",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "caabc9ec83c6253a04f593cf5dfd4decddd4c86310895d5f05caefec7a7503b8"
+    },
+    {
+      "column_id": "information_schema_user_privileges_object_name",
+      "object_ref": "information_schema_user_privileges",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "269b6453c9296757906fcd0d94cb33f8ec03ba11863ce477ab03598a14a25c78"
+    },
+    {
+      "column_id": "information_schema_user_privileges_object_kind",
+      "object_ref": "information_schema_user_privileges",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "01fefc440006949ce016e32bbf62dd9a0b4159e6f4bf63caf97882eb36c092b6"
+    },
+    {
+      "column_id": "information_schema_user_privileges_source_ref",
+      "object_ref": "information_schema_user_privileges",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "ef69b51b2424fe18ec9510107a4e7a04ecab8a04fa531a6d4932c9f008e82819"
+    },
+    {
+      "column_id": "information_schema_schema_privileges_object_name",
+      "object_ref": "information_schema_schema_privileges",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "73583d2094614bb3aa34f0afe416f21779ec3c0b54988dbb6ab9ca0985783dcb"
+    },
+    {
+      "column_id": "information_schema_schema_privileges_object_kind",
+      "object_ref": "information_schema_schema_privileges",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "55c8f00d89287b822b1bbf78b5c5729ca17689b3eb410210e9ad5862212a1da9"
+    },
+    {
+      "column_id": "information_schema_schema_privileges_source_ref",
+      "object_ref": "information_schema_schema_privileges",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "a38796384cd6645e058b839ee8cd01abd737181eb1013ed3e00eeb26e0070569"
+    },
+    {
+      "column_id": "information_schema_table_privileges_object_name",
+      "object_ref": "information_schema_table_privileges",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "0697ba2570ef2ea8a241c0962e41a5f1cf64a708e1bb37aaec204521c9c8213e"
+    },
+    {
+      "column_id": "information_schema_table_privileges_object_kind",
+      "object_ref": "information_schema_table_privileges",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "365e95947509d10342cb796ce1e45a4f4357708b7fb2d26623154e4ededce03f"
+    },
+    {
+      "column_id": "information_schema_table_privileges_source_ref",
+      "object_ref": "information_schema_table_privileges",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "d903a76ac33fd04da9fd008267a745988822ebf24d2bfc862bc19b86a1a79f6c"
+    },
+    {
+      "column_id": "information_schema_column_privileges_object_name",
+      "object_ref": "information_schema_column_privileges",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "02a3e2876132f0965852e8f82da7ef5dfb2ca6cae16fc4b7aeee0398ecc3e124"
+    },
+    {
+      "column_id": "information_schema_column_privileges_object_kind",
+      "object_ref": "information_schema_column_privileges",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "521c5330ff5ccbe67ba9c6aed969104ac1f7a52099ee33cfdf3333175e228a55"
+    },
+    {
+      "column_id": "information_schema_column_privileges_source_ref",
+      "object_ref": "information_schema_column_privileges",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "bfb6c91a13283ba4d45630b7bfc83b774c9a44a3e3348595ae1101deaf817570"
+    },
+    {
+      "column_id": "information_schema_engines_object_name",
+      "object_ref": "information_schema_engines",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "ca4d216b01348d1e45bc9ef61d986c9320834a2bb913e29a4d9e6125dd8d0d9b"
+    },
+    {
+      "column_id": "information_schema_engines_object_kind",
+      "object_ref": "information_schema_engines",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "0bd644cd40453e0ae2296849e5333c99b615f17193e381d4b4bec5c7ab6c9a17"
+    },
+    {
+      "column_id": "information_schema_engines_source_ref",
+      "object_ref": "information_schema_engines",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "565e52e6ff244a3b79e6a7d0cf7813b1d830ec58bee2f88481834ea4cf0c8e53"
+    },
+    {
+      "column_id": "information_schema_views_object_name",
+      "object_ref": "information_schema_views",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "658bed5b56342724ccaee0b999b4ef8d29b125842f284e09479f1dc502233a72"
+    },
+    {
+      "column_id": "information_schema_views_object_kind",
+      "object_ref": "information_schema_views",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "28137278450ba9cc4efe7fa2038bd51586003c88472328df484085646ffb7215"
+    },
+    {
+      "column_id": "information_schema_views_source_ref",
+      "object_ref": "information_schema_views",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "606aadca1f61f0ece3c7a6021afe7d2ac6ada69d04ebeb600c617dd97f52a6ba"
+    },
+    {
+      "column_id": "information_schema_routines_object_name",
+      "object_ref": "information_schema_routines",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "3207800746fe4d9b3b06395a1be6fd2099f195f650fd30ea7588280d25d88a88"
+    },
+    {
+      "column_id": "information_schema_routines_object_kind",
+      "object_ref": "information_schema_routines",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "cfa68bfff8387734e2f35cb81549abce8cd7e6fe1f24fab47c2dcbee64c247ca"
+    },
+    {
+      "column_id": "information_schema_routines_source_ref",
+      "object_ref": "information_schema_routines",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "6b522ec72cd9358e8146871a6291c5019addea71db3cf6ecd28ed01e51201866"
+    },
+    {
+      "column_id": "information_schema_parameters_object_name",
+      "object_ref": "information_schema_parameters",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "e61bd98751d91d77b4fc5c57429e253925f8969df87948198054289ceb3c91c0"
+    },
+    {
+      "column_id": "information_schema_parameters_object_kind",
+      "object_ref": "information_schema_parameters",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "17a44820bb69fd29412b49365fc44d3f2f7bcaa23b803a884db7ec24c80c267c"
+    },
+    {
+      "column_id": "information_schema_parameters_source_ref",
+      "object_ref": "information_schema_parameters",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "0b0a8f950e7ccbfa257168a15f3167cb6ddeb75dc050a4d8761c52e5b7dd2f0c"
+    },
+    {
+      "column_id": "information_schema_events_object_name",
+      "object_ref": "information_schema_events",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4a4a186f73ad75f8dddb35c39fae7b587bfc981e01fb2b1929c44dc0615f2278"
+    },
+    {
+      "column_id": "information_schema_events_object_kind",
+      "object_ref": "information_schema_events",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "5594940644e2e9063316a56a145fc3851cb85177e5dc8c9a56a3236afedd812c"
+    },
+    {
+      "column_id": "information_schema_events_source_ref",
+      "object_ref": "information_schema_events",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "8b20a7aca4496b0a9e5e2e6c34cd296c6d53036ce4069b83ff8ce2d470fbf1f5"
+    }
+  ],
+  "default_row_set": [
+    {
+      "row_id": "tidb.seed.information_schema_schemata",
+      "reference_object_ref": "information_schema_schemata",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.SCHEMATA",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "9bb4ec181c33bdfd8af29c7485d87ee19d3fa5bdb43826fb2b9ff18b1848f46e"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_tables",
+      "reference_object_ref": "information_schema_tables",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.TABLES",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "69921e5ae78c0aca555a1136f69101a314d3aaea2f30202ad61532b042f369f5"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_columns",
+      "reference_object_ref": "information_schema_columns",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.COLUMNS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "c395da4f5a3c2d01ce423c85b8285cc493a7206d896917eca954d53383aaa808"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_column_statistics",
+      "reference_object_ref": "information_schema_column_statistics",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.COLUMN_STATISTICS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "d0560806222fd748bb9fc5ae527351123ab6d3c1978d9c9aa249c83b28ae5deb"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_statistics",
+      "reference_object_ref": "information_schema_statistics",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.STATISTICS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "3c31322bc904b6b843bc5a5a2bc1a7695af2481b7074fd40ec5d86ae36cd4424"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_character_sets",
+      "reference_object_ref": "information_schema_character_sets",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.CHARACTER_SETS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "5b9729e210179c63e6eccf30d7682f273b07e71f9da9313ff23fc93ebff5ae2d"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_collations",
+      "reference_object_ref": "information_schema_collations",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.COLLATIONS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "74f1ae02205d622d23dbc0952e5238293f6649cdecb03a4eb02411ef9a5efc04"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_files",
+      "reference_object_ref": "information_schema_files",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.FILES",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "3c0d58d34ac5464d79156ec1852197e1565c11a8f056e1a0186f90ec6b031192"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_profiling",
+      "reference_object_ref": "information_schema_profiling",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.PROFILING",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "3051d261c3f966bc15950c8238d6fa1ab23895600c1b5af1da4ee94b5f65279d"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_partitions",
+      "reference_object_ref": "information_schema_partitions",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.PARTITIONS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "bb678f5c6dccafc403ee40fc8f797286b8db6cae02bd4ecac0a125a806aa7f22"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_key_column_usage",
+      "reference_object_ref": "information_schema_key_column_usage",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.KEY_COLUMN_USAGE",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "884869779ec8110906bbcb1c2f34429e6415382ece86bd646a10df96d2b2b546"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_referential_constraints",
+      "reference_object_ref": "information_schema_referential_constraints",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.REFERENTIAL_CONSTRAINTS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "0ffbebcfd4d46a0483c1aefe62a82c85677744220e1f50bc4d3500dfee3c91bf"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_plugins",
+      "reference_object_ref": "information_schema_plugins",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.PLUGINS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "7c7fbeb34607abc2ebc48e46d566af7f4db6d8d66546c77d67651eacb1409d1a"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_table_constraints",
+      "reference_object_ref": "information_schema_table_constraints",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.TABLE_CONSTRAINTS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "ec257c45dbc2f4207b793b22391e0e3c6841fe677f9d4d977912a3805b53978b"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_triggers",
+      "reference_object_ref": "information_schema_triggers",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.TRIGGERS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "4eef14cb33b2bd973f5b83cc5d0c49a1b6c66d56ae6bcc63017a14bca42bcdcb"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_user_privileges",
+      "reference_object_ref": "information_schema_user_privileges",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.USER_PRIVILEGES",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "61c4af3fbaf7b4b0ede746df58b9301cc66330923a0293b5c0afd619ec72c18c"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_schema_privileges",
+      "reference_object_ref": "information_schema_schema_privileges",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.SCHEMA_PRIVILEGES",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "962311bb64b61d4c484307436ed9d3451b70f0f2394ef60beddaeb1c48d50b11"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_table_privileges",
+      "reference_object_ref": "information_schema_table_privileges",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.TABLE_PRIVILEGES",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "32b7c51dc8ab8079cb8422014091864f9833347b9d6e2f43297d37635108efc9"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_column_privileges",
+      "reference_object_ref": "information_schema_column_privileges",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.COLUMN_PRIVILEGES",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "c94520d26dc489085d608a169d6f5e77a4fefbf4a3b1786492161a0b2c7e9d19"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_engines",
+      "reference_object_ref": "information_schema_engines",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.ENGINES",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "3bcc0d18e55b880fe8a934c9da9f50952748a5cf02a63fc6c286e136c7ef3c9e"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_views",
+      "reference_object_ref": "information_schema_views",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.VIEWS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "7aecc460b1c86fcbf051b4ea341013f7bbfa0d3c851a76e74d581185d4951369"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_routines",
+      "reference_object_ref": "information_schema_routines",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.ROUTINES",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "5c7c1d83c7236f8b6e8c5f5fa99dd0e5fe5baf75b869fbead972ff7522d0abea"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_parameters",
+      "reference_object_ref": "information_schema_parameters",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.PARAMETERS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "6ddc5d5997276891550b36bad5e90a28012c4d0618ab7c78644be9e06b473bc2"
+    },
+    {
+      "row_id": "tidb.seed.information_schema_events",
+      "reference_object_ref": "information_schema_events",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.EVENTS",
+      "definition_source_ref": "reference_source_reference:tidb/pkg/infoschema/tables.go",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "2b9d9db0e59ed9834a13c7e955fc62dc7e13f23bde85cfa94e5b4b92586e4a0f"
+    }
+  ],
+  "default_metadata_set": [],
+  "default_security_row_set": [
+    {
+      "row_id": "tidb.security.default_visibility_policy",
+      "principal": "PUBLIC",
+      "secret_material": "redacted_not_applicable",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "row_hash": "c10f399e547e90939e50c7f9c188eacc83fbfe00ae31364268c48ca3d5845608"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "value_id": "tidb.runtime.database_identity",
+      "value_class": "instance_generated_uuid",
+      "emulation_rule": "generate ScratchBird UUIDv7 at database/profile create and expose only reference-compatible rendering",
+      "row_hash": "3f1d6bef1a54c663c6f1067aef16507afa34fa74225cf3f7d7468bd76d43be30"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "rule_id": "grant_filtered_metadata",
+      "rule": "visible only through reference metadata policy and ScratchBird engine authorization"
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "rule_id": "raw_secret_forbidden",
+      "rule": "raw secrets are never stored in reference seed manifests"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "rule_id": "report_only",
+      "rule": "catalog seed rows are report-only; mutation routes through UUID-backed ScratchBird catalog APIs"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_tidb_information_schema_schemata",
+      "reference_object_ref": "information_schema_schemata",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "5253c659-262d-5e0d-9bb5-d5111918ab45",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_tables",
+      "reference_object_ref": "information_schema_tables",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "b33ba89d-9356-5ac0-b761-e4e549de64a9",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_columns",
+      "reference_object_ref": "information_schema_columns",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a969fdb9-57e2-5bab-bbeb-2b862a1c92f5",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_column_statistics",
+      "reference_object_ref": "information_schema_column_statistics",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "e093df4f-b654-5d95-8c62-590e37e2061e",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_statistics",
+      "reference_object_ref": "information_schema_statistics",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "f6ddfc0a-ccd7-501f-86f2-0ec09e1356ba",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_character_sets",
+      "reference_object_ref": "information_schema_character_sets",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "0a662e73-2404-5ef3-9a3f-530a239e1ecf",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_collations",
+      "reference_object_ref": "information_schema_collations",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "242cac13-6c61-5939-90d0-b1ab6e03a568",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_files",
+      "reference_object_ref": "information_schema_files",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "689d88c7-22fa-598d-9bed-585f25420baf",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_profiling",
+      "reference_object_ref": "information_schema_profiling",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "9c304ddd-6975-5c28-9db4-0f2e35fc358a",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_partitions",
+      "reference_object_ref": "information_schema_partitions",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a1e3d02d-fb79-5979-b706-90fc48e77822",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_key_column_usage",
+      "reference_object_ref": "information_schema_key_column_usage",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "f84c1133-edec-5066-85b5-028b598ce18d",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_referential_constraints",
+      "reference_object_ref": "information_schema_referential_constraints",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "bc222211-d967-5ad1-a14b-e9a48c4e5cbe",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_plugins",
+      "reference_object_ref": "information_schema_plugins",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "29ef1058-2b44-5993-9645-ca88a384cfc9",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_table_constraints",
+      "reference_object_ref": "information_schema_table_constraints",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d31efe80-c113-594e-8f6d-bd187ca9c339",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_triggers",
+      "reference_object_ref": "information_schema_triggers",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "35643cf5-a5e0-57bd-9250-b1b8d1388d61",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_user_privileges",
+      "reference_object_ref": "information_schema_user_privileges",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a5a4605e-9288-565e-9330-26f0f6932bdc",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_schema_privileges",
+      "reference_object_ref": "information_schema_schema_privileges",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "35c06f60-5250-5291-be4c-462a907be12f",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_table_privileges",
+      "reference_object_ref": "information_schema_table_privileges",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "f2e90b7a-7f73-5689-ba36-27200a4e0b05",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_column_privileges",
+      "reference_object_ref": "information_schema_column_privileges",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "9cdad90b-6f82-547d-ab72-570b23b980ea",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_engines",
+      "reference_object_ref": "information_schema_engines",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "ffa7a32c-9612-5735-a5d0-8865c30cc14b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_views",
+      "reference_object_ref": "information_schema_views",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "c1de4989-5d31-5380-9272-b27a1bb424e9",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_routines",
+      "reference_object_ref": "information_schema_routines",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d2cdc765-0db5-543f-9b6d-4ade43d87ba7",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_parameters",
+      "reference_object_ref": "information_schema_parameters",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "bffe7e4f-75af-504e-9848-d547d0edf2c9",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tidb_information_schema_events",
+      "reference_object_ref": "information_schema_events",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "bd3225fe-0690-5e74-87e4-f1f6534f5409",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "REFERENCE.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "REFERENCE.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "REFERENCE.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "REFERENCE.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "REFERENCE.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "REFERENCE.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "REFERENCE.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "rowset_hashes": {
+    "catalog_object_set": "612cecfa7c2a407ed17e95de31553ef0f96702d2f0481f12e22d2d12a21e1bd0",
+    "catalog_column_set": "0daa0552752697676839c0ddd7b2ea0ddf6a4b61ed28f46a007b831fc37a1e10",
+    "default_row_set": "96a43318b707164f09f7d768937840bc33364068884b83ce90d98d3bf5dc827f",
+    "default_metadata_set": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "default_security_row_set": "1ad192ef9f018b4e9a25f04b62ab02957a215a0871619e8670ca013cbc626dd4",
+    "default_runtime_generated_value_set": "4ce40d97dafddb8274f14425bbc5f4ce8edee551b2dc4399b24c2d4d0bd29a82",
+    "visibility_rule_set": "e3d11affebfa8ba62fe7e7f0c2014ac363d6d1ac1ccaa3f47aafd18109cdd20c",
+    "redaction_rule_set": "c081d87b2dadb71687177f97c210a024f823fba2383d3e299998c66deee46f2f",
+    "mutation_rule_set": "8b806b0d95bbd92e3c2aeb3d7d4ecd0fd0abc1aaf9c6a14639f8966080719fed",
+    "scratchbird_mapping_set": "310ae21353daeee491e5e93954082458db6b51a4319115cea51213a9f244dd9c"
+  },
+  "manifest_hash": "c99e31d3a2688f56bdd4688b8f9816c5a5225d7882fa0bcfd273d825d4916e4f"
+}

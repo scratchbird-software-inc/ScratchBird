@@ -223,11 +223,11 @@ void TestFallbacks() {
                   "external_finality_authority_full_scan",
                   "DPC-013 parser finality claim was not refused");
 
-  auto donor_authority = metadata;
-  donor_authority.donor_finality_authority_claimed = true;
-  RequireFallback(Plan({donor_authority}),
+  auto reference_authority = metadata;
+  reference_authority.reference_finality_authority_claimed = true;
+  RequireFallback(Plan({reference_authority}),
                   "external_finality_authority_full_scan",
-                  "DPC-013 donor finality claim was not refused");
+                  "DPC-013 reference finality claim was not refused");
 
   auto write_ahead_authority = metadata;
   write_ahead_authority.write_ahead_log_finality_authority_claimed = true;
@@ -413,8 +413,8 @@ void TestManagementAndSupportBundleSurface() {
   Require(!Contains(result.management_api_json, "docs" "/execution-plans") &&
               !Contains(result.support_bundle_json, "docs" "/execution-plans"),
           "DPC-013 observability surface depends on execution_plan artifacts");
-  Require(!result.parser_finality_authority && !result.donor_finality_authority,
-          "DPC-013 management surface claimed parser or donor finality");
+  Require(!result.parser_finality_authority && !result.reference_finality_authority,
+          "DPC-013 management surface claimed parser or reference finality");
 
   auto invalid = snapshot;
   invalid.summary_prune_pages_scanned = 7;

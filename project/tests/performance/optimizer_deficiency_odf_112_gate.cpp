@@ -712,8 +712,8 @@ void AssertStrictFinalityEvidence(const api::EngineApiResult& result) {
           "ODF-112 MGA finality authority evidence missing");
   Require(HasEvidence(result.evidence, "parser_finality_authority", "false"),
           "ODF-112 parser finality authority evidence missing");
-  Require(HasEvidence(result.evidence, "donor_finality_authority", "false"),
-          "ODF-112 donor finality authority evidence missing");
+  Require(HasEvidence(result.evidence, "reference_finality_authority", "false"),
+          "ODF-112 reference finality authority evidence missing");
   Require(EvidenceIndex(result.evidence,
                         "strict_bulk_load_state",
                         "finalize_evidence_durable") <
@@ -866,7 +866,7 @@ ScenarioEvidence CopyFailFastDirectPreallocationScenario() {
   AddProof(&scenario, "strict_bulk_load_state", "published_visible");
   AddProof(&scenario, "mga_finality_authority", "engine_transaction_inventory");
   AddProof(&scenario, "parser_finality_authority", "false");
-  AddProof(&scenario, "donor_finality_authority", "false");
+  AddProof(&scenario, "reference_finality_authority", "false");
   FinalizeScenario(&scenario);
   Rollback(context);
   return scenario;
@@ -901,8 +901,8 @@ ScenarioEvidence NativeApiDirectLaneScenario() {
           "ODF-112 native API delegated to import execution");
   Require(HasEvidence(result.evidence, "parser_finality_authority", "false"),
           "ODF-112 native parser finality evidence missing");
-  Require(HasEvidence(result.evidence, "donor_finality_authority", "false"),
-          "ODF-112 native donor finality evidence missing");
+  Require(HasEvidence(result.evidence, "reference_finality_authority", "false"),
+          "ODF-112 native reference finality evidence missing");
   AssertDirectCounters(result, "4");
   RequireNoForbiddenEvidence(result.evidence, "native API");
 
@@ -918,7 +918,7 @@ ScenarioEvidence NativeApiDirectLaneScenario() {
   AddProof(&scenario, "native_bulk_ingest_lane", "direct_physical");
   AddProof(&scenario, "native_bulk_ingest_delegate", "none");
   AddProof(&scenario, "parser_finality_authority", "false");
-  AddProof(&scenario, "donor_finality_authority", "false");
+  AddProof(&scenario, "reference_finality_authority", "false");
   FinalizeScenario(&scenario);
   Rollback(context);
   return scenario;

@@ -22,7 +22,7 @@ namespace scratchbird::engine::gpu_acceleration {
 // SIMD/GPU scoring kernels are optional accelerators over materialized,
 // authorized executor batches. Exact scalar executor evaluation remains the
 // authority for results, transaction finality, MGA visibility, security,
-// redaction, parser boundaries, donor compatibility, recovery, pages, and
+// redaction, parser boundaries, reference compatibility, recovery, pages, and
 // catalog state.
 
 enum class ScoringKernelKind {
@@ -111,7 +111,7 @@ struct ScoringKernelProviderManifest {
   bool claims_visibility_authority = false;
   bool claims_security_policy_authority = false;
   bool claims_redaction_policy_authority = false;
-  bool claims_parser_or_donor_authority = false;
+  bool claims_parser_or_reference_authority = false;
   bool claims_recovery_authority = false;
   bool claims_page_or_catalog_authority = false;
 };

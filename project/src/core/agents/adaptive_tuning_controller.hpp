@@ -11,7 +11,7 @@
 // SEARCH_KEY: SB_AGENT_ADAPTIVE_TUNING_CONTROLLER_ODF_101
 // Agent-owned adaptive tuning is advisory/resource-governance only. It selects
 // bounded semantics-neutral knob values from metric and policy evidence and
-// never owns transaction finality, visibility, parser execution, donor/provider
+// never owns transaction finality, visibility, parser execution, reference/provider
 // authority, client autocommit, or recovery.
 
 #include "adaptive_tuning_metrics_evidence.hpp"
@@ -61,7 +61,7 @@ struct AdaptiveTuningSafetyPolicy {
   bool allow_decrease = true;
   bool allow_reset = true;
   bool allow_default = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool provider_transaction_finality_authority = false;
   bool provider_visibility_authority = false;
   bool client_autocommit_authority = false;

@@ -35,7 +35,7 @@ struct NameRegistryEntry {
   std::string parent_schema_uuid;
   std::string language_tag = "en";
   std::string name_class = "primary";
-  std::string donor_id;
+  std::string reference_id;
   std::string dialect_profile_uuid;
   std::string identifier_profile_uuid = "sbsql_v3";
   std::string case_fold_profile_uuid;

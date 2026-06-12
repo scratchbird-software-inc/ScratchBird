@@ -93,7 +93,7 @@ opt::CachedOptimizerPlan EnterprisePlan(const opt::OptimizerPlanCacheKeyInput& i
   plan.metadata_only = true;
   plan.mga_visibility_recheck_required = true;
   plan.security_recheck_required = true;
-  plan.parser_or_donor_finality_authority = false;
+  plan.parser_or_reference_finality_authority = false;
   return plan;
 }
 

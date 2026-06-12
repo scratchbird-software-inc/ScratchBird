@@ -48,7 +48,7 @@ struct ReservedMemoryClaimRequest {
   bool authoritative_base_input_present = false;
   bool exact_diagnostics_required = true;
   bool parser_or_client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool sparse_file_claimed_as_physical_reservation = false;
 };

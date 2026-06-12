@@ -31,7 +31,7 @@ REQUIRED_COMPONENTS = {
     "transformation_memo_coverage",
     "workload_regression_budgets",
     "driver_visible_explain",
-    "donor_comparison_artifacts",
+    "reference_comparison_artifacts",
     "memory_feedback",
     "index_readiness_coupling",
     "llvm_memory_accounting",
@@ -201,7 +201,7 @@ def main() -> int:
         )
 
         authority_drift = load(generated)
-        authority_drift["components"][8]["donor_authority_claimed"] = True
+        authority_drift["components"][8]["reference_authority_claimed"] = True
         authority_drift["components"][8]["benchmark_dominance_claimed"] = True
         authority_path = temp_dir / "authority_drift.yaml"
         write(authority_path, authority_drift)

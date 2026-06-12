@@ -164,7 +164,7 @@ bool MetadataCaseOk(const DomainRow& row) {
   const auto metadata = RenderWireDriverMetadata(DescriptorForRow(row), "native_v3", row.domain_area);
   return metadata.domain_descriptor && !metadata.domain_uuid.empty() &&
          metadata.base_canonical_type_name == "character" && !metadata.driver_display_type.empty() &&
-         metadata.donor_label_alias_only;
+         metadata.reference_label_alias_only;
 }
 
 bool PersistenceCaseOk(const DomainRow& row) {
@@ -177,8 +177,8 @@ bool PersistenceCaseOk(const DomainRow& row) {
   record.transport_scope = "backup";
   record.descriptor = descriptor;
   record.value = value;
-  record.donor_dialect = "native_v3";
-  record.donor_label = row.domain_area;
+  record.compatibility_dialect = "native_v3";
+  record.reference_label = row.domain_area;
   const auto encoded = EncodeDatatypeTransportRecord(record);
   const auto decoded = encoded.ok ? DecodeDatatypeTransportRecord(encoded.encoded_envelope)
                                   : EngineDatatypeTransportDecodeResult{};

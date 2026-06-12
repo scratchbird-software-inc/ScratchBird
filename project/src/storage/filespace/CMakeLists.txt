@@ -15,6 +15,7 @@ add_library(sb_storage_filespace
   filespace_header.cpp
   filespace_identity.cpp
   filespace_discovery.cpp
+  final_deferred_storage_workflows.cpp
   filespace_growth.cpp
   filespace_lifecycle.cpp
   filespace_package.cpp

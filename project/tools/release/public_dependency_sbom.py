@@ -149,8 +149,12 @@ def source_inputs(repo_root: Path, project_root: Path) -> list[dict[str, Any]]:
     required = [
         repo_root / "LICENSE",
         repo_root / "NOTICE",
-        repo_root / "LICENSES" / "Business-Source-License-1.1.md",
-        repo_root / "LICENSES" / "ScratchBird-BSL-1.1.txt",
+        repo_root / "SECURITY.md",
+        repo_root / "KNOWN_LIMITATIONS.md",
+        repo_root / "RELEASE_TERMS.md",
+        repo_root / "THIRD_PARTY_NOTICES.md",
+        repo_root / "SBOM.json",
+        repo_root / "REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md",
         project_root / "CMakeLists.txt",
         project_root / "cmake" / "OptimizerLlvmConfigureGate.cmake",
         project_root / "cmake" / "SUPPORTED_PLATFORM_TOOLCHAIN_MATRIX.md",
@@ -160,8 +164,6 @@ def source_inputs(repo_root: Path, project_root: Path) -> list[dict[str, Any]]:
         project_root / "drivers" / "driver" / "odbc" / "LICENSE",
         project_root / "drivers" / "driver" / "r" / "LICENSE",
     ]
-    for platform_id in REQUIRED_RELEASE_PLATFORMS:
-        required.append(repo_root / "release" / platform_id / "ENGINE_BINARY_LAYOUT.json")
     return [require_file(path, repo_root) for path in required]
 
 
@@ -204,17 +206,28 @@ def release_layouts(repo_root: Path) -> list[dict[str, Any]]:
     release_root = repo_root / "release"
     for platform_id in REQUIRED_RELEASE_PLATFORMS:
         layout = release_root / platform_id / "ENGINE_BINARY_LAYOUT.json"
-        record = require_file(layout, repo_root)
-        payload = json.loads(layout.read_text(encoding="utf-8"))
-        layouts.append(
-            {
-                "platform": platform_id,
-                "path": record["path"],
-                "sha256": record["sha256"],
-                "first_release_binary_scope": "engine_only",
-                "layout_schema_version": payload.get("schema_version"),
-            }
-        )
+        if layout.is_file():
+            record = require_file(layout, repo_root)
+            payload = json.loads(layout.read_text(encoding="utf-8"))
+            layouts.append(
+                {
+                    "platform": platform_id,
+                    "path": record["path"],
+                    "sha256": record["sha256"],
+                    "first_release_binary_scope": "engine_only",
+                    "layout_schema_version": payload.get("schema_version"),
+                    "status": "checked_in_layout",
+                }
+            )
+        else:
+            layouts.append(
+                {
+                    "platform": platform_id,
+                    "first_release_binary_scope": "engine_only",
+                    "layout_schema_version": None,
+                    "status": "pending_generated_release_bundle",
+                }
+            )
     for out_of_scope in ("macos", "darwin"):
         if (release_root / out_of_scope).exists():
             fail(f"macos_release_layout_present:{out_of_scope}")
@@ -225,14 +238,14 @@ def license_inventory(repo_root: Path, project_root: Path) -> list[dict[str, Any
     return [
         {
             "component_id": "scratchbird_core_engine",
-            "license": "LicenseRef-ScratchBird-BSL-1.1",
-            "license_file": rel(repo_root / "LICENSES" / "ScratchBird-BSL-1.1.txt", repo_root),
+            "license": "MPL-2.0",
+            "license_file": rel(repo_root / "LICENSE", repo_root),
             "classification": "first_release_engine_source",
         },
         {
             "component_id": "sbl_numeric",
-            "license": "LicenseRef-ScratchBird-BSL-1.1",
-            "license_file": rel(repo_root / "LICENSES" / "ScratchBird-BSL-1.1.txt", repo_root),
+            "license": "MPL-2.0",
+            "license_file": rel(repo_root / "LICENSE", repo_root),
             "classification": "engine_library_source",
         },
         {
@@ -410,7 +423,7 @@ def validate_evidence(evidence: dict[str, Any]) -> None:
     if layout_platforms != set(REQUIRED_RELEASE_PLATFORMS):
         fail("release_layout_platform_set_mismatch")
 
-    if len(evidence.get("source_inputs", [])) < 12:
+    if len(evidence.get("source_inputs", [])) < 16:
         fail("too_few_source_inputs")
     if not evidence.get("generated_artifact_inventory"):
         fail("generated_artifact_inventory_missing")

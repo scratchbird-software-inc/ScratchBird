@@ -53,7 +53,7 @@ void RequireFrameEvidence(const std::vector<std::string>& evidence) {
           "MMCH-050 page-cache frame ownership evidence missing");
   Require(EvidenceHas(
               evidence,
-              "page_cache.frame_authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"),
+              "page_cache.frame_authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"),
           "MMCH-050 page-cache authority boundary evidence missing");
 }
 
@@ -196,7 +196,7 @@ void FrameAllocationFailureFailsClosed() {
 
 int main() {
   std::cout << "MMCH-050 authority_note=page_cache_frame_ownership_evidence_only;"
-               "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+               "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   AdmissionAndEvictionOwnFrames();
   PinnedDirtyPagesRemainProtected();

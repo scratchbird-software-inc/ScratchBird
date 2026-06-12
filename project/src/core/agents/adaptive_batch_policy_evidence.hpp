@@ -19,7 +19,7 @@ namespace scratchbird::core::agents {
 // Agents provide workload, resource, backlog, and policy evidence only. The
 // optimizer controller remains advisory/resource-governance only and agents do
 // not own transaction finality, visibility, parser execution, client
-// autocommit, provider, donor, or recovery authority.
+// autocommit, provider, reference, or recovery authority.
 struct AdaptiveBatchPolicyEvidence {
   std::string family_label;
   std::string policy_id = "adaptive_batch_policy_v1";
@@ -41,7 +41,7 @@ struct AdaptiveBatchPolicyEvidence {
   bool grants_proven = false;
   bool mga_recheck_required = true;
   bool security_recheck_required = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool provider_transaction_finality_authority = false;
   bool provider_visibility_authority = false;
   bool client_autocommit_authority = false;
@@ -68,7 +68,7 @@ struct AdaptiveBatchPolicyEvidenceRequest {
   bool grants_proven = true;
   bool mga_recheck_required = true;
   bool security_recheck_required = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool provider_transaction_finality_authority = false;
   bool provider_visibility_authority = false;
   bool client_autocommit_authority = false;

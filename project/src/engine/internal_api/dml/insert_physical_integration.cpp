@@ -1660,7 +1660,7 @@ void AddDirectLaneBaseEvidence(const DirectPhysicalBulkAppendRequest& request,
   result->evidence.push_back({"direct_physical_bulk_batch_consumed_by",
                               "engine.dml.direct_physical_bulk_append"});
   result->evidence.push_back({"parser_finality_authority", "false"});
-  result->evidence.push_back({"donor_finality_authority", "false"});
+  result->evidence.push_back({"reference_finality_authority", "false"});
   result->evidence.push_back({"mga_finality_authority", "engine_transaction_inventory"});
 }
 

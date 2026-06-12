@@ -71,7 +71,7 @@ bool AuthorityClean(const AgentSystemProfileForbiddenAuthority& authority) {
          !authority.authorization_security_authority &&
          !authority.recovery_authority &&
          !authority.parser_authority &&
-         !authority.donor_authority &&
+         !authority.reference_authority &&
          !authority.wal_authority &&
          !authority.benchmark_authority &&
          !authority.optimizer_plan_authority &&
@@ -89,7 +89,7 @@ void AppendAuthorityDigestFields(std::ostringstream* payload,
            << (a.authorization_security_authority ? "1" : "0") << '\n'
            << (a.recovery_authority ? "1" : "0") << '\n'
            << (a.parser_authority ? "1" : "0") << '\n'
-           << (a.donor_authority ? "1" : "0") << '\n'
+           << (a.reference_authority ? "1" : "0") << '\n'
            << (a.wal_authority ? "1" : "0") << '\n'
            << (a.benchmark_authority ? "1" : "0") << '\n'
            << (a.optimizer_plan_authority ? "1" : "0") << '\n'
@@ -328,7 +328,7 @@ std::vector<std::string> BaseEvidenceFields(
       "authorization_security_authority=false",
       "recovery_authority=false",
       "parser_authority=false",
-      "donor_authority=false",
+      "reference_authority=false",
       "wal_authority=false",
       "benchmark_authority=false",
       "optimizer_plan_authority=false",

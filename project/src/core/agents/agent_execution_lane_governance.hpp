@@ -13,7 +13,7 @@
 // Enterprise execution lane, SLO, and cost-governance admission for
 // noncluster operational agents. Lane evidence is an admission/control-plane
 // record only; it is not transaction finality, visibility,
-// authorization/security, recovery, parser execution, donor behavior, WAL
+// authorization/security, recovery, parser execution, reference behavior, WAL
 // recovery, benchmark truth, optimizer plan authority, index finality,
 // provider finality, cluster authority, memory authority, or agent action
 // authority.

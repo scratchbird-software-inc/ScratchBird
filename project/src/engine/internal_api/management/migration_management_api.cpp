@@ -37,8 +37,8 @@ void AddMigrationAuthorityEvidence(EngineApiResult* result,
   AddApiBehaviorEvidence(result, "engine_migration_authority", "local_node_management_api");
   AddApiBehaviorEvidence(result, "parser_executes_sql", "false");
   AddApiBehaviorEvidence(result, "parser_finality_authority", "false");
-  AddApiBehaviorEvidence(result, "donor_storage_authority_accepted", "false");
-  AddApiBehaviorEvidence(result, "donor_finality_accepted", "false");
+  AddApiBehaviorEvidence(result, "reference_storage_authority_accepted", "false");
+  AddApiBehaviorEvidence(result, "reference_finality_accepted", "false");
   AddApiBehaviorEvidence(result, "cluster_provider_dispatch", "false");
   AddApiBehaviorEvidence(result, "private_cluster_execution", "false");
   AddApiBehaviorEvidence(result, "wal_recovery_authority", "false");
@@ -67,7 +67,7 @@ std::string MigrationPayload(const EngineApiRequest& request, std::string_view o
   if (!payload.empty()) payload.push_back(';');
   payload += "migration_operation=";
   payload += operation_kind;
-  payload += ";donor_storage_authority_accepted=false;donor_finality_accepted=false";
+  payload += ";reference_storage_authority_accepted=false;reference_finality_accepted=false";
   payload += ";mga_authority_boundary=engine_owned";
   return payload;
 }
@@ -92,8 +92,8 @@ void AddMigrationRowsFromRecords(EngineApiResult* result,
                        {"state", record.state},
                        {"operation_id", record.operation_id},
                        {"payload", record.payload},
-                       {"donor_storage_authority_accepted", "false"},
-                       {"donor_finality_accepted", "false"},
+                       {"reference_storage_authority_accepted", "false"},
+                       {"reference_finality_accepted", "false"},
                        {"mga_authority_boundary", "engine_owned"}});
   }
 }
@@ -104,30 +104,30 @@ EngineBeginMigrationResult EngineBeginMigration(const EngineBeginMigrationReques
   if (auto diagnostic = ValidateMigrationSecurity(request); diagnostic.error) {
     return MigrationDiagnostic<EngineBeginMigrationResult>(request, std::move(diagnostic));
   }
-  const std::string donor_profile = OptionValue(request, "donor_profile:");
-  if (donor_profile.empty()) {
+  const std::string reference_profile = OptionValue(request, "reference_profile:");
+  if (reference_profile.empty()) {
     return MigrationDiagnostic<EngineBeginMigrationResult>(
         request,
-        MakeInvalidRequestDiagnostic(request.operation_id, "donor_profile_required"));
+        MakeInvalidRequestDiagnostic(request.operation_id, "reference_profile_required"));
   }
-  if (OptionValue(request, "donor_package:").empty()) {
+  if (OptionValue(request, "reference_package:").empty()) {
     return MigrationDiagnostic<EngineBeginMigrationResult>(
         request,
-        MakeInvalidRequestDiagnostic(request.operation_id, "donor_package_required"));
+        MakeInvalidRequestDiagnostic(request.operation_id, "reference_package_required"));
   }
   auto result = PersistedRecordResultWithPayload<EngineBeginMigrationResult>(
       request,
-      request.operation_id.empty() ? "migration.begin_from_donor" : request.operation_id,
+      request.operation_id.empty() ? "migration.begin_from_reference" : request.operation_id,
       std::string(kMigrationKind),
       true,
       "prepared",
       false,
-      MigrationPayload(request, "begin_from_donor"));
+      MigrationPayload(request, "begin_from_reference"));
   if (result.ok) {
     result.result_shape.result_kind = "rs.migration.status.v1";
-    AddMigrationAuthorityEvidence(&result, request, "begin_from_donor", "EngineBeginMigration");
-    AddApiBehaviorEvidence(&result, "donor_profile", donor_profile);
-    AddApiBehaviorEvidence(&result, "donor_package_capability_validation", "passed_schema_only_no_private_execution");
+    AddMigrationAuthorityEvidence(&result, request, "begin_from_reference", "EngineBeginMigration");
+    AddApiBehaviorEvidence(&result, "reference_profile", reference_profile);
+    AddApiBehaviorEvidence(&result, "reference_package_capability_validation", "passed_schema_only_no_private_execution");
   }
   return result;
 }
@@ -185,8 +185,8 @@ EngineShowMigrationResult EngineShowMigration(const EngineShowMigrationRequest& 
     AddApiBehaviorRow(&result,
                       {{"migration_uuid", migration_ref},
                        {"state", "not_found_or_not_visible"},
-                       {"donor_storage_authority_accepted", "false"},
-                       {"donor_finality_accepted", "false"},
+                       {"reference_storage_authority_accepted", "false"},
+                       {"reference_finality_accepted", "false"},
                        {"mga_authority_boundary", "engine_owned"}});
   }
   result.result_shape.result_kind = "rs.migration.status.v1";
@@ -207,8 +207,8 @@ EngineShowMigrationsResult EngineShowMigrations(const EngineShowMigrationsReques
     AddApiBehaviorRow(&result,
                       {{"migration_count", "0"},
                        {"state", "empty"},
-                       {"donor_storage_authority_accepted", "false"},
-                       {"donor_finality_accepted", "false"},
+                       {"reference_storage_authority_accepted", "false"},
+                       {"reference_finality_accepted", "false"},
                        {"mga_authority_boundary", "engine_owned"}});
   }
   result.result_shape.result_kind = "rs.migration.list.v1";

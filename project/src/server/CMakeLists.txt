@@ -84,11 +84,11 @@ if(SB_BUILD_SERVER)
     boundary_guard.cpp
     agent_session_control_route_bridge.cpp
     cli.cpp
+    compatibility_server_authority.cpp
     config.cpp
     config_policy_security_lifecycle.cpp
     database_ownership.cpp
     diagnostics.cpp
-    donor_server_authority.cpp
     engine_host.cpp
     ipc_server.cpp
     lifecycle.cpp

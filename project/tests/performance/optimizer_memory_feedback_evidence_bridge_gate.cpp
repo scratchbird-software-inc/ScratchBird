@@ -69,8 +69,8 @@ int main() {
   Require(accepted.ok(), "valid governed memory feedback rejected");
   Require(accepted.runtime_feedback.advisory_only,
           "optimizer memory feedback must remain advisory");
-  Require(!accepted.runtime_feedback.parser_or_donor_authority,
-          "optimizer memory feedback accepted parser/donor authority");
+  Require(!accepted.runtime_feedback.parser_or_reference_authority,
+          "optimizer memory feedback accepted parser/reference authority");
   Require(accepted.runtime_feedback.transaction_finality_authority ==
               "engine_transaction_inventory",
           "optimizer memory feedback finality authority drifted");
@@ -90,9 +90,9 @@ int main() {
   Require(!synthetic_result.ok(), "synthetic memory feedback accepted");
 
   auto unsafe = ValidFeedback();
-  unsafe.parser_client_or_donor_authority = true;
+  unsafe.parser_client_or_reference_authority = true;
   auto unsafe_result = opt::BuildOptimizerMemoryFeedbackForPlanner(unsafe);
-  Require(!unsafe_result.ok(), "parser/client/donor memory feedback accepted");
+  Require(!unsafe_result.ok(), "parser/client/reference memory feedback accepted");
 
   auto ungoverned = ValidFeedback();
   ungoverned.governed_reservation = false;

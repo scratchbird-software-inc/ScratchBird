@@ -95,7 +95,7 @@ void RequireAuthorityEvidence(const std::vector<std::string>& evidence) {
           "MMCH-030 lifecycle marker missing");
   Require(EvidenceHas(
               evidence,
-              "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"),
+              "resource_reservation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"),
           "MMCH-030 authority scope evidence missing");
 }
 
@@ -204,7 +204,7 @@ void AdmissionAndOwnerValidation() {
 
 int main() {
   std::cout << "MMCH-030 authority_note=resource_reservation_evidence_only;"
-               "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+               "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   AcquireReleaseAndCumulativeRefusal();
   OwnerDisconnectAndTimeoutCleanup();

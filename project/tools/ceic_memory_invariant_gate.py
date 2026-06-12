@@ -45,7 +45,7 @@ SOURCE_SUFFIXES = {
 
 AUTHORITY_BOUNDARY = (
     "memory_evidence_only_not_transaction_finality_visibility_authorization_security_"
-    "recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"
+    "recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"
 )
 
 REQUIRED_LANE_KINDS = {
@@ -194,7 +194,7 @@ LINE_RULES: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         "forbidden_authority_claim",
         "memory_evidence_never_authority",
         re.compile(
-            r"\b(?:transaction_finality|visibility|authorization|security|recovery|parser|donor|wal|"
+            r"\b(?:transaction_finality|visibility|authorization|security|recovery|parser|reference|wal|"
             r"benchmark|optimizer_plan|index_finality|agent_action)_authority\s*=\s*true\b"
         ),
     ),

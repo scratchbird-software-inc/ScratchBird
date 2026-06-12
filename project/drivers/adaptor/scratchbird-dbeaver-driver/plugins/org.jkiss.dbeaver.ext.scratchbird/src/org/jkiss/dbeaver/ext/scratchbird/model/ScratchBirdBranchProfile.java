@@ -472,12 +472,12 @@ public record ScratchBirdBranchProfile(
                     true,
                     true,
                     false,
-                    List.of("donor layout"),
+                    List.of("reference layout"),
                     List.of("listener binding", "publication root", "isolation policy"));
             }
             return profile(
                 "SBBP-EMULATED-LAYOUT",
-                "Donor-layout browser",
+                "Reference-layout browser",
                 "SBDV-FRM-402",
                 false,
                 false,
@@ -486,8 +486,8 @@ public record ScratchBirdBranchProfile(
                 true,
                 true,
                 true,
-                List.of("donor-native object"),
-                List.of("donor metadata", "compatibility state", "published layout"));
+                List.of("reference-native object"),
+                List.of("reference metadata", "compatibility state", "published layout"));
         }
         if (normalized.equals("remote")) {
             return profile(

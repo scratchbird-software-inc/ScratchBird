@@ -399,7 +399,7 @@ struct AgentEvidenceRecord {
   bool key_material_exported = false;
   bool parser_authority = false;
   bool client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool sidecar_authority = false;
   bool transaction_authority = false;
   bool finality_authority = false;

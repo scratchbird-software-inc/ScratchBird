@@ -75,7 +75,7 @@ std::vector<std::string> BaseEvidence() {
           "compressed_bitmap_spill.materialized_row_expansion=false",
           "candidate_stream_only=true",
           "candidate_set_finality_authority=false",
-          "parser_or_donor_authority=false",
+          "parser_or_reference_authority=false",
           "provider_finality_authority=false",
           "wal_recovery_or_finality_authority=false",
           "exact_recheck.required=true",
@@ -251,7 +251,7 @@ bool ValidateCompressedBitmapSpillCandidateSet(const CandidateSet& set) {
       !set.rows.empty() || !set.compressed_ranges.empty() ||
       !set.non_authority_evidence_present ||
       set.candidate_set_finality_authority ||
-      set.parser_or_donor_finality_or_visibility_authority ||
+      set.parser_or_reference_finality_or_visibility_authority ||
       set.provider_finality_or_visibility_authority ||
       set.wal_recovery_or_finality_authority ||
       set.final_rows_authorized ||

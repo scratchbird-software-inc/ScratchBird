@@ -55,7 +55,7 @@ struct IndexReadinessPlanAdmissionEvidence {
   bool policy_default_evidence = false;
   bool synthetic_evidence = false;
   bool test_fixture_evidence = false;
-  bool donor_emulated = false;
+  bool reference_emulated = false;
   bool policy_blocked = false;
   bool contract_only_family = false;
   bool runtime_registry_family_matches = false;
@@ -88,7 +88,7 @@ struct IndexReadinessPlanAdmissionEvidence {
   bool external_cluster_runtime_overclaim = false;
   bool parser_authority = false;
   bool client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool recovery_authority = false;
   bool transaction_finality_authority = false;

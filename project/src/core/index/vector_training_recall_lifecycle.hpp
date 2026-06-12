@@ -107,7 +107,7 @@ struct VectorTrainingRecallLifecycleProfile {
   bool exact_fallback_available = true;
   bool base_row_mga_recheck_required = true;
   bool base_row_security_recheck_required = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool write_ahead_or_finality_authority = false;
   bool vector_metadata_visibility_authority = false;
   bool vector_metadata_finality_authority = false;

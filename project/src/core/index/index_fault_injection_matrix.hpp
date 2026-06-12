@@ -45,11 +45,11 @@ struct IndexFaultInjectionMatrixRow {
   bool corruption_classified = false;
   bool concurrent_mutation_serialized = false;
   bool deterministic_diagnostics = false;
-  bool donor_policy_refused = false;
+  bool reference_policy_refused = false;
   bool cluster_external_provider_only = false;
   bool runtime_dependency_free = true;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool provider_authority = false;
   bool storage_authority = false;
   bool visibility_authority = false;

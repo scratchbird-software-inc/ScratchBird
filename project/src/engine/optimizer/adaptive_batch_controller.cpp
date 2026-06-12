@@ -111,7 +111,7 @@ bool AuthoritySafe(
          evidence.grants_proven &&
          evidence.mga_recheck_required &&
          evidence.security_recheck_required &&
-         !evidence.parser_or_donor_authority &&
+         !evidence.parser_or_reference_authority &&
          !evidence.provider_transaction_finality_authority &&
          !evidence.provider_visibility_authority &&
          !evidence.client_autocommit_authority &&

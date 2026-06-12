@@ -12,7 +12,7 @@
 //
 // Signed typed policy lifecycle validation for operational agents. This surface
 // validates policy evidence only; it does not own transaction finality,
-// visibility, authorization/security, recovery, parser execution, donor
+// visibility, authorization/security, recovery, parser execution, reference
 // behavior, WAL recovery, benchmark truth, optimizer plans, index finality,
 // provider finality, cluster authority, memory authority, or agent actions.
 

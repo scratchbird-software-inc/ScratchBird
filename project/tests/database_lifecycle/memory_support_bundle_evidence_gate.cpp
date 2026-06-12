@@ -113,7 +113,7 @@ void SupportBundleRedactsAndReportsMemoryEvidence() {
           "MMCH-080 evidence marker missing");
   Require(EvidenceHas(
               result.evidence,
-              "memory_support_bundle.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority"),
+              "memory_support_bundle.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority"),
           "MMCH-080 authority boundary evidence missing");
   Require(result.top_context_count == 2 && result.top_category_count == 2,
           "MMCH-080 top context/category counts missing");

@@ -441,8 +441,8 @@ void AddBaseEvidence(HashDurableProviderClosureResult* result,
                  report.max_collision_chain_length);
   AddU64Evidence(result, "report_encoded_key_compare_count",
                  report.encoded_key_compare_count);
-  AddBoolEvidence(result, "donor_local_participation",
-                  request.donor_local_participation);
+  AddBoolEvidence(result, "reference_local_participation",
+                  request.reference_local_participation);
   AddBoolEvidence(result, "policy_local_participation",
                   request.policy_local_participation);
   AddBoolEvidence(result, "cluster_local_participation",
@@ -527,8 +527,8 @@ const char* HashDurableProviderClosureStatusName(
       return "ADMITTED_DURABLE_PROVIDER_EVIDENCE";
     case HashDurableProviderClosureStatus::unsupported_family:
       return "UNSUPPORTED_FAMILY";
-    case HashDurableProviderClosureStatus::donor_policy_cluster_participation:
-      return "DONOR_POLICY_CLUSTER_PARTICIPATION";
+    case HashDurableProviderClosureStatus::reference_policy_cluster_participation:
+      return "REFERENCE_POLICY_CLUSTER_PARTICIPATION";
     case HashDurableProviderClosureStatus::provider_admission_not_admitted:
       return "PROVIDER_ADMISSION_NOT_ADMITTED";
     case HashDurableProviderClosureStatus::mga_recovery_contract_not_admitted:
@@ -581,7 +581,7 @@ bool HashClosureAuthorityBoundaryClear(
          !boundary.security_authority &&
          !boundary.recovery_authority &&
          !boundary.parser_authority &&
-         !boundary.donor_authority &&
+         !boundary.reference_authority &&
          !boundary.wal_authority &&
          !boundary.benchmark_authority &&
          !boundary.optimizer_plan_authority &&
@@ -600,13 +600,13 @@ HashDurableProviderClosureResult AdmitHashDurableProviderClosure(
         HashDurableProviderClosureStatus::unsupported_family,
         "CEIC-035 closes only the physical hash durable provider");
   }
-  if (request.donor_local_participation ||
+  if (request.reference_local_participation ||
       request.policy_local_participation ||
       request.cluster_local_participation) {
     return RefuseClosure(
         request,
-        HashDurableProviderClosureStatus::donor_policy_cluster_participation,
-        "donor policy and cluster paths cannot participate in local hash durable provider closure");
+        HashDurableProviderClosureStatus::reference_policy_cluster_participation,
+        "reference policy and cluster paths cannot participate in local hash durable provider closure");
   }
   if (request.enterprise_ready_claimed ||
       request.all_index_readiness_claimed) {
@@ -627,7 +627,7 @@ HashDurableProviderClosureResult AdmitHashDurableProviderClosure(
     return RefuseClosure(
         request,
         HashDurableProviderClosureStatus::forbidden_authority_claim,
-        "hash provider closure evidence must not claim transaction finality visibility security recovery parser donor WAL provider finality benchmark optimizer plan index finality cluster or agent-action authority");
+        "hash provider closure evidence must not claim transaction finality visibility security recovery parser reference WAL provider finality benchmark optimizer plan index finality cluster or agent-action authority");
   }
   if (!request.provider_admission.ok() ||
       request.provider_admission.admission_status !=

@@ -78,7 +78,7 @@ void ExecutorAndOptimizerUseTypedArenaWorkAreas() {
           "MMCH-061 executor typed arena leaked memory after reset");
   RequireSharedEvidence(
       executor.evidence,
-      "executor_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority");
+      "executor_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority");
 
   opt::OptimizerTypedArenaWorkAreaRequest optimizer_request;
   optimizer_request.memory_manager = &manager;
@@ -93,7 +93,7 @@ void ExecutorAndOptimizerUseTypedArenaWorkAreas() {
           "MMCH-061 optimizer typed arena leaked memory after reset");
   RequireSharedEvidence(
       optimizer.evidence,
-      "optimizer_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority");
+      "optimizer_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority");
 }
 
 void UnsafeRoutesFailClosed() {
@@ -103,7 +103,7 @@ void UnsafeRoutesFailClosed() {
   executor_request.memory_manager = &manager;
   executor_request.route_label = "embedded.sql.select.mmch061";
   executor_request.row_count = 8;
-  executor_request.parser_or_donor_authority = true;
+  executor_request.parser_or_reference_authority = true;
   auto executor = exec::BuildExecutorTypedArenaWorkArea(executor_request);
   Require(!executor.ok() && executor.fail_closed,
           "MMCH-061 executor unsafe authority did not fail closed");

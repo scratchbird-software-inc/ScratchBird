@@ -71,7 +71,7 @@ void RequireCompatibilityEvidence(const mem::MemoryMetadataOpenResult& result,
           "MMCH-044 evidence marker missing");
   Require(EvidenceHas(
               result.evidence,
-              "memory_metadata.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_donor_wal_or_benchmark_authority"),
+              "memory_metadata.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_reference_wal_or_benchmark_authority"),
           "MMCH-044 authority boundary evidence missing");
   Require(EvidenceHas(result.evidence, action), "MMCH-044 action evidence missing");
 }
@@ -147,10 +147,10 @@ void UnsafeMetadataFailsClosed() {
           "MMCH-044 unsafe authority diagnostic changed");
 
   unsafe_authority = RecordFor(mem::MemoryMetadataDomain::memory_policy, 2);
-  unsafe_authority.donor_authority = true;
+  unsafe_authority.reference_authority = true;
   result = mem::ValidateMemoryMetadataOpen(policy, unsafe_authority);
   Require(!result.ok() && result.fail_closed,
-          "MMCH-044 donor authority did not fail closed");
+          "MMCH-044 reference authority did not fail closed");
 
   unsafe_authority = RecordFor(mem::MemoryMetadataDomain::memory_policy, 2);
   unsafe_authority.wal_authority = true;

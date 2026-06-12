@@ -180,15 +180,15 @@ std::string ManagementInventoryJson(std::string_view render_policy) {
   out << "{\"package\":\"sbup_firebird\","
       << "\"package_logical_name\":\"firebird-v5_0\","
       << "\"package_call_name\":\"sbup_firebird\","
-      << "\"donor_family\":\"firebird\","
+      << "\"reference_family\":\"firebird\","
       << "\"management_abi_version\":\"1.0\","
       << "\"routine_count\":" << std::size(kManagementOperations) << ','
       << "\"native_sbsql_excluded\":true,"
       << "\"parser_authority\":false,"
       << "\"engine_authorizes_before_udr\":true,"
       << "\"mga_transaction_authority\":\"scratchbird_engine\","
-      << "\"donor_storage_authority\":false,"
-      << "\"donor_recovery_authority\":false,"
+      << "\"reference_storage_authority\":false,"
+      << "\"reference_recovery_authority\":false,"
       << "\"real_firebird_file_effects\":false,"
       << "\"inventory_detail\":\""
       << (include_details ? "release" : "summary") << "\","
@@ -547,7 +547,7 @@ std::string FirebirdBridgeCapabilitiesJson(std::string_view render_policy) {
       << "\"provider_family\":\"firebird\","
       << "\"package_role\":\"parser_support.firebird\","
       << "\"single_common_abi\":true,"
-      << "\"donor_specialization\":\"firebird\","
+      << "\"compatibility_specialization\":\"firebird\","
       << "\"engine_authorizes_before_udr\":true,"
       << "\"mga_transaction_authority\":\"per_database_engine_mga\","
       << "\"parser_transaction_authority\":false,"
@@ -559,9 +559,9 @@ std::string FirebirdBridgeCapabilitiesJson(std::string_view render_policy) {
       << "\"firebird_only\":true,"
       << "\"logical_backup_restore\":\"remote_stream_only\","
       << "\"physical_page_copy_backup_restore\":\"denied\","
-      << "\"repair_verify_low_level_maintenance\":\"denied_in_donor_parser\","
+      << "\"repair_verify_low_level_maintenance\":\"denied_in_compatibility_parser\","
       << "\"cdc_replication_etl\":\"source_and_target_when_configured\","
-      << "\"donor_rendering\":\"firebird_status_vector\","
+      << "\"compatibility_rendering\":\"firebird_status_vector\","
       << "\"remote_table_query_class\":\"non_cluster_remote_table\","
       << "\"distributed_query_class\":\"cluster_only\","
       << "\"detail\":\"" << (include_detail ? "release" : "summary") << "\","
@@ -638,7 +638,7 @@ UdrResult FirebirdBridgeDispatch(std::string_view request_packet,
       stream_kind == "nbackup" ||
       stream_kind == "server_local_file") {
     return BridgeDiagnostic("UDR.BRIDGE.SANDBOX_DENIED",
-                            "Firebird donor bridge denies nbackup, physical page-copy, and server-local file streams.",
+                            "Firebird compatibility bridge denies nbackup, physical page-copy, and server-local file streams.",
                             {{"provider", "sbu_firebird_parser_support"},
                              {"operation", operation},
                              {"stream_kind", stream_kind}});
@@ -702,7 +702,7 @@ UdrResult FirebirdBridgeDispatch(std::string_view request_packet,
   out << "{\"bridge_abi\":\"sb_universal_bridge_v1\","
       << "\"provider\":\"sbu_firebird_parser_support\","
       << "\"provider_family\":\"firebird\","
-      << "\"donor_legacy_bridge\":true,"
+      << "\"compatibility_legacy_bridge\":true,"
       << "\"firebird_only\":true,"
       << "\"operation\":\"" << EscapeJson(operation) << "\","
       << "\"sblr_opcode\":\"" << EscapeJson(BridgeOpcodeForOperation(operation)) << "\","
@@ -1225,7 +1225,7 @@ UdrResult sbu_firebird_management_package_request(std::string_view operation_nam
   UdrResult failure;
   if (!IsManagementOperation(operation_name)) {
     return Diagnostic("UDR.FIREBIRD.MGMT_OPERATION_UNKNOWN",
-                      "Firebird management package request names must be registered in the standard donor management ABI.");
+                      "Firebird management package request names must be registered in the standard compatibility management ABI.");
   }
   if (!RequireTrustedContext(context_packet, function_name,
                              required_context, failure)) {
@@ -1264,12 +1264,12 @@ UdrResult sbu_firebird_management_package_request(std::string_view operation_nam
           "\"mga_transaction_authority\":\"scratchbird_engine\","
           "\"requires_mga_transaction\":" +
               BoolJson(ManagementOperationMutates(operation_name)) + ","
-          "\"donor_storage_authority\":false,"
-          "\"donor_recovery_authority\":false,"
+          "\"reference_storage_authority\":false,"
+          "\"reference_recovery_authority\":false,"
           "\"real_firebird_file_effects\":false,"
           "\"exact_refusal\":" + BoolJson(refused) + ","
           "\"idempotency_state\":\"engine_request_uuid_bound\","
-          "\"support_evidence_ref\":\"project/tests/donor_regression/firebird/management_package_abi/management_package_abi_manifest.csv\"}",
+          "\"support_evidence_ref\":\"project/tests/reference_regression/firebird/management_package_abi/management_package_abi_manifest.csv\"}",
           scratchbird::parser::firebird::MessageVectorToJson({})};
 }
 

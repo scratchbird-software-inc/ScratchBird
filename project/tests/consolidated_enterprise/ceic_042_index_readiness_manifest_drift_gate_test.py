@@ -85,7 +85,7 @@ def assert_ceic_042_shape(data: dict) -> None:
         raise AssertionError("CEIC-042 drift gate must reject missing family manifests")
     if drift.get("stale_manifest_allowed") is not False:
         raise AssertionError("CEIC-042 drift gate must reject stale manifests")
-    for key in ("donor_dominance_claimed", "all_index_readiness_claimed", "enterprise_readiness_claimed"):
+    for key in ("reference_dominance_claimed", "all_index_readiness_claimed", "enterprise_readiness_claimed"):
         if drift.get(key) is not False:
             raise AssertionError(f"CEIC-042 must not claim {key}")
 
@@ -93,7 +93,7 @@ def assert_ceic_042_shape(data: dict) -> None:
     if not families:
         raise AssertionError("families are required")
     for row in families:
-        if row.get("enum_name") in {"donor_emulated", "policy_blocked"}:
+        if row.get("enum_name") in {"reference_emulated", "policy_blocked"}:
             if row.get("runtime_availability", {}).get("runtime_available_static_input") is not False:
                 raise AssertionError(f"{row.get('family_id')} must remain non-runtime")
             if row.get("readiness_drift_gate_status", {}).get("status") != "blocked":
@@ -106,7 +106,7 @@ def assert_ceic_042_shape(data: dict) -> None:
         if row.get("enterprise_ready") is not False:
             raise AssertionError(f"{row.get('family_id')} must not claim enterprise readiness")
         classification = row.get("family_classification_summary", {})
-        for key in ("all_index_readiness_claimed", "donor_dominance_claimed", "enterprise_readiness_claimed"):
+        for key in ("all_index_readiness_claimed", "reference_dominance_claimed", "enterprise_readiness_claimed"):
             if classification.get(key) is not False:
                 raise AssertionError(f"{row.get('family_id')} must not claim {key}")
 

@@ -36,7 +36,7 @@ struct LatePayloadReference {
   bool protected_payload = false;
   bool redaction_required = false;
   bool unredacted_payload_authorized_by_security = false;
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool wal_recovery_or_finality_authority = false;

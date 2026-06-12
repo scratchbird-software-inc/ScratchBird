@@ -27,7 +27,7 @@ struct IndexRuntimeEngineRecheckProof {
   bool payload_freshness_safe = true;
   bool descriptor_or_map_scan_fallback = false;
   bool full_table_scan_or_materialization = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool index_payload_authority = false;
 };
 
@@ -145,7 +145,7 @@ struct IndexPlanShapeRegressionGuardRequest {
   bool unsupported_physical_family_blocker = false;
   std::string unsupported_physical_family;
   bool benchmark_clean_claim = false;
-  bool donor_dominance_claim = false;
+  bool reference_dominance_claim = false;
 };
 
 struct IndexPlanShapeRegressionGuardResult {

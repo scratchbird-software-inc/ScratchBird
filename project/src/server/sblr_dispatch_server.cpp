@@ -1355,7 +1355,7 @@ const char* CatalogMutationPublicAbiOpcodeForOperation(std::string_view operatio
   if (operation_id == "catalog.mutation.refresh_materialized_view") return "SBLR_CATALOG_MUTATION_REFRESH_MATERIALIZED_VIEW";
   if (operation_id == "catalog.mutation.create_transform") return "SBLR_CATALOG_MUTATION_CREATE_TRANSFORM";
   if (operation_id == "catalog.mutation.create_secret") return "SBLR_CATALOG_MUTATION_CREATE_SECRET";
-  if (operation_id == "catalog.mutation.alter_donor") return "SBLR_CATALOG_MUTATION_ALTER_DONOR";
+  if (operation_id == "catalog.mutation.alter_reference") return "SBLR_CATALOG_MUTATION_ALTER_REFERENCE";
   if (operation_id == "catalog.mutation.create_pipeline") return "SBLR_CATALOG_MUTATION_CREATE_PIPELINE";
   if (operation_id == "catalog.mutation.create_collation") return "SBLR_CATALOG_MUTATION_CREATE_COLLATION";
   if (operation_id == "catalog.mutation.create_type") return "SBLR_CATALOG_MUTATION_CREATE_TYPE";
@@ -1551,7 +1551,7 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "event.delivery.ack") return "SBLR_EVENT_DELIVERY_ACK";
   if (operation_id == "session.notification.unlisten") return "SBLR_EVENT_CHANNEL_UNLISTEN";
   if (operation_id == "session.notification.unlisten_all") return "SBLR_EVENT_CHANNEL_UNLISTEN_ALL";
-  if (operation_id == "op.migration.begin_from_donor") return "SBLR_MIGRATION_BEGIN_FROM_DONOR";
+  if (operation_id == "op.migration.begin_from_reference") return "SBLR_MIGRATION_BEGIN_FROM_REFERENCE";
   if (operation_id == "op.migration.alter") return "SBLR_MIGRATION_ALTER";
   if (operation_id == "op.show.migration") return "SBLR_SHOW_MIGRATION";
   if (operation_id == "op.show.migrations") return "SBLR_SHOW_MIGRATIONS";
@@ -3301,7 +3301,7 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "predicate_kind", "predicate_column", "predicate_value",
         "predicate_value_type", "assignment_column", "assignment_value",
         "assignment_value_type",
-        "strict_bulk_load_requested", "donor_relaxed_semantics_requested",
+        "strict_bulk_load_requested", "reference_relaxed_semantics_requested",
         "duplicate_mode", "insert_mode", "require_generated_row_uuid", "reject_mode",
         "reject_limit_rows", "reject_limit_percent", "reject_payload_policy",
         "native_bulk_ingest_enabled", "native_bulk_ingest",

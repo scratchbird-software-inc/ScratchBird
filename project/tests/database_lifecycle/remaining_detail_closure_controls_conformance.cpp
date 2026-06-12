@@ -89,7 +89,7 @@ std::vector<engine::RemainingDetailClosureSurfaceKind> AllSurfaceKinds() {
           Kind::diagnostic_registry,
           Kind::resource_versioning,
           Kind::parser_sblr_lowering,
-          Kind::donor_matrix_file,
+          Kind::reference_matrix_file,
           Kind::canonical_encoding_example,
           Kind::compatibility_mode,
           Kind::conformance_manifest,
@@ -98,7 +98,7 @@ std::vector<engine::RemainingDetailClosureSurfaceKind> AllSurfaceKinds() {
           Kind::formal_grammar,
           Kind::normative_encoding_example,
           Kind::manifest_inventory,
-          Kind::donor_version_profile,
+          Kind::reference_version_profile,
           Kind::commercial_gate,
           Kind::security,
           Kind::diagnostic,
@@ -150,11 +150,11 @@ std::vector<ControlDefinition> ControlDefinitions() {
        "appendix-parser-sblr-grammar-expansion-tracker.md",
        "parser_sblr",
        {"PSG-GATE-001", "PSG-GATE-002", "PSG-GATE-003"}},
-      {Kind::donor_specific_type_matrices,
+      {Kind::reference_specific_type_matrices,
        "RDC-006",
-       "docs/specifications/chapters/donors/common/"
-       "appendix-donor-specific-type-matrices.md",
-       "donor_compatibility",
+       "docs/specifications/chapters/references/common/"
+       "appendix-reference-specific-type-matrices.md",
+       "reference_compatibility",
        {"DSM-GATE-001", "DSM-GATE-002", "DSM-GATE-003",
         "DSM-GATE-004", "DSM-GATE-005", "DSM-GATE-006",
         "DSM-GATE-007", "DSM-GATE-008", "DSM-GATE-009",
@@ -230,11 +230,11 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "CMI-GATE-004", "CMI-GATE-005", "CMI-GATE-006",
         "CMI-GATE-007", "CMI-GATE-008", "CMI-GATE-009",
         "CMI-GATE-010", "CMI-GATE-011", "CMI-GATE-012"}},
-      {Kind::donor_version_profile_closure,
+      {Kind::reference_version_profile_closure,
        "RDC-015",
-       "docs/specifications/chapters/donors/common/"
-       "appendix-donor-version-profile-closure.md",
-       "donor_compatibility",
+       "docs/specifications/chapters/references/common/"
+       "appendix-reference-version-profile-closure.md",
+       "reference_compatibility",
        {"DVP-GATE-001", "DVP-GATE-002", "DVP-GATE-003",
         "DVP-GATE-004", "DVP-GATE-005", "DVP-GATE-006",
         "DVP-GATE-007", "DVP-GATE-008", "DVP-GATE-009",
@@ -396,11 +396,11 @@ void TestControlSurfaceAndGateFailures() {
 
 void TestAuthorityPolicyDiagnosticAndMetricFailures() {
   auto registry = ValidRegistry();
-  registry.controls[4].donor_sql_not_engine_authority = false;
+  registry.controls[4].reference_sql_not_engine_authority = false;
   RequireStatus(registry,
                 engine::RemainingDetailClosureStatus::
                     parser_authority_violation,
-                "RDC accepted donor SQL as engine authority");
+                "RDC accepted reference SQL as engine authority");
 
   registry = ValidRegistry();
   registry.controls[1].security_policy_enforced = false;

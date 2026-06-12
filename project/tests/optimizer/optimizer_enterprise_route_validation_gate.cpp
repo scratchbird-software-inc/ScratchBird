@@ -63,7 +63,7 @@ bool ProductionGateRejectsUnsafeInputs() {
   unsafe.fixture_statistics_enabled = true;
   unsafe.local_default_statistics_enabled = true;
   unsafe.policy_default_statistics_enabled = true;
-  unsafe.donor_produced_evidence_enabled = true;
+  unsafe.reference_produced_evidence_enabled = true;
   unsafe.relaxed_benchmark_clean_paths_enabled = true;
   unsafe.relaxed_metrics_enabled = true;
   unsafe.placeholder_runtime_evidence_enabled = true;
@@ -93,7 +93,7 @@ bool ProductionGateRejectsUnsafeInputs() {
 
 opt::OptimizerBenchmarkRouteLaneEvidence BenchmarkLane(std::string lane,
                                                        std::string phase,
-                                                       std::string donor) {
+                                                       std::string reference) {
   opt::OptimizerBenchmarkRouteLaneEvidence evidence;
   evidence.lane_id = std::move(lane);
   evidence.route_label = "enterprise/sql/customer_lookup";
@@ -105,11 +105,11 @@ opt::OptimizerBenchmarkRouteLaneEvidence BenchmarkLane(std::string lane,
   evidence.trusted = true;
   evidence.fresh = true;
   evidence.evidence_generation = "oeic-benchmark-gen-081";
-  evidence.donor_comparison_required = true;
-  evidence.donor_comparison_id = "donor:" + donor + ":customer_lookup";
-  evidence.donor_engine = std::move(donor);
-  evidence.donor_oracle_result_hash = "sha256:donor-oracle-result";
-  evidence.donor_reference_only = true;
+  evidence.reference_comparison_required = true;
+  evidence.reference_comparison_id = "reference:" + reference + ":customer_lookup";
+  evidence.reference_engine = std::move(reference);
+  evidence.reference_oracle_result_hash = "sha256:reference-oracle-result";
+  evidence.reference_reference_only = true;
   evidence.diagnostic_code = "SB_OEIC_BENCHMARK_ROUTE_EVIDENCE.OK";
   return evidence;
 }
@@ -134,9 +134,9 @@ std::vector<opt::BenchmarkMethodologyRunEvidence> ScaleRuns() {
       run.profiler_source_labels = {"engine_runtime_metrics", "support_bundle"};
       run.latest_scratchbird_baseline_id = "sb-baseline:" + tier;
       run.latest_scratchbird_baseline_p50_us = 160.0;
-      run.donor_equivalent_baseline_id = "donor-baseline:postgresql:" + tier;
-      run.donor_equivalent_engine = "postgresql";
-      run.donor_equivalent_baseline_p50_us = 150.0;
+      run.reference_equivalent_baseline_id = "reference-baseline:postgresql:" + tier;
+      run.reference_equivalent_engine = "postgresql";
+      run.reference_equivalent_baseline_p50_us = 150.0;
       run.methodology_only = false;
       run.performance_proof = true;
       run.benchmark_clean_claim = true;
@@ -147,7 +147,7 @@ std::vector<opt::BenchmarkMethodologyRunEvidence> ScaleRuns() {
   return runs;
 }
 
-std::vector<std::string> DonorEngines() {
+std::vector<std::string> ReferenceEngines() {
   return {"scratchbird", "firebird", "mysql", "postgresql", "sqlite",
           "mariadb", "oracle", "sqlserver", "db2", "sybase", "informix",
           "teradata", "snowflake", "bigquery", "redshift", "clickhouse",
@@ -155,29 +155,29 @@ std::vector<std::string> DonorEngines() {
           "elasticsearch", "solr", "cockroachdb"};
 }
 
-std::vector<opt::BenchmarkMethodEvidence> DonorMethodEvidence() {
+std::vector<opt::BenchmarkMethodEvidence> ReferenceMethodEvidence() {
   std::vector<opt::BenchmarkMethodEvidence> methods;
-  for (const auto& engine : DonorEngines()) {
+  for (const auto& engine : ReferenceEngines()) {
     opt::BenchmarkMethodEvidence method;
     method.engine = engine;
     method.logical_task = "customer_lookup";
     method.workload_family = "oltp_point_lookup";
     method.method = engine == "scratchbird" ? "scratchbird_best_route"
-                                             : "donor_native_best_route";
+                                             : "reference_native_best_route";
     method.best_normal_method = true;
     method.native_bulk_or_best_engine_path = true;
     method.prepared_or_warmed = true;
     method.output_suppressed = true;
     method.result_materialization_policy = "binary_frame_equivalent";
-    method.transaction_policy = "engine_mga_or_donor_native_reference_only";
+    method.transaction_policy = "engine_mga_or_reference_native_reference_only";
     method.data_generator_id = "oeic083-generator-v1";
     method.scale_profile = "10k_100k_1m_gb";
     method.skew_profile = "zipf_1_1_uniform_tenant_mix";
     method.resource_budget_profile = "enterprise-standard";
     method.constraint_policy = "same_constraints_or_exact_noncomparable_reason";
-    method.donor_reference_only = engine != "scratchbird";
-    method.uses_donor_storage_or_finality_for_scratchbird = false;
-    method.diagnostic_code = "SB_OEIC_DONOR_METHOD.OK";
+    method.reference_reference_only = engine != "scratchbird";
+    method.uses_reference_storage_or_finality_for_scratchbird = false;
+    method.diagnostic_code = "SB_OEIC_REFERENCE_METHOD.OK";
     methods.push_back(method);
   }
   return methods;
@@ -217,17 +217,17 @@ bool BenchmarkCleanAndScaleProofPass() {
     return false;
   }
 
-  // SEARCH_KEY: OEIC_SCALE_DONOR_COMPARISON_SUITE
+  // SEARCH_KEY: OEIC_SCALE_REFERENCE_COMPARISON_SUITE
   const auto methodology =
       opt::ValidateBenchmarkMethodologyEvidence(ScaleRuns());
   if (!Require(methodology.ok && methodology.benchmark_clean,
                "scale methodology evidence was rejected")) {
     return false;
   }
-  const auto donor =
-      opt::ValidateBestMethodBenchmarkEquivalence(DonorMethodEvidence(),
-                                                  DonorEngines());
-  return Require(donor.ok, "24 donor method equivalence evidence was rejected");
+  const auto reference =
+      opt::ValidateBestMethodBenchmarkEquivalence(ReferenceMethodEvidence(),
+                                                  ReferenceEngines());
+  return Require(reference.ok, "24 reference method equivalence evidence was rejected");
 }
 
 opt::CrossRouteResultEvidence Route(std::string route) {

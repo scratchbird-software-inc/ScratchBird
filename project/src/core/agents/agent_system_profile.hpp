@@ -12,7 +12,7 @@
 //
 // Durable public claim-level profile for operational agents. This profile is
 // evidence only: it never owns transaction finality, visibility, recovery,
-// parser execution, donor behavior, optimizer plans, memory authority, cluster
+// parser execution, reference behavior, optimizer plans, memory authority, cluster
 // authority, provider finality, security authorization, or agent actions.
 
 #include "agent_production_classification.hpp"
@@ -56,7 +56,7 @@ struct AgentSystemProfileForbiddenAuthority {
   bool authorization_security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;

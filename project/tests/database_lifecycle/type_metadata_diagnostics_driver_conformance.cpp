@@ -110,11 +110,11 @@ engine::DriverTypeMetadataDescriptor DriverRow(
   row.exposure_class = engine::TypeMetadataExposureClass::driver_rendered;
   row.diagnostic_policy_ref = Uuid(seed + 1);
   row.definition_hash = "driver.metadata.definition";
-  if (family == engine::DriverMetadataFamily::donor_specific) {
-    row.donor_family = "sqlserver";
-    row.donor_version_profile = "2022";
+  if (family == engine::DriverMetadataFamily::reference_specific) {
+    row.reference_family = "sqlserver";
+    row.reference_version_profile = "2022";
     row.type_name = "int";
-    row.exposure_class = engine::TypeMetadataExposureClass::donor_rendered;
+    row.exposure_class = engine::TypeMetadataExposureClass::reference_rendered;
   }
   return row;
 }
@@ -190,16 +190,16 @@ engine::TypeTestingCorpusDescriptor TestingCorpus(
   engine::TypeTestingCorpusDescriptor corpus;
   corpus.corpus_uuid = Uuid(0xa0);
   corpus.descriptor_uuid = descriptor_uuid;
-  corpus.donor_mapping_uuid = Uuid(0xa1);
+  corpus.reference_mapping_uuid = Uuid(0xa1);
   corpus.conformance_manifest_hash = "tmd.corpus.manifest";
-  corpus.implemented_donor_mapping = true;
+  corpus.implemented_reference_mapping = true;
   return corpus;
 }
 
 std::vector<std::string> RequiredMetricNames() {
   return {"sys.metrics.type_metadata.catalog_query_count",
           "sys.metrics.type_metadata.driver_metadata_query_count",
-          "sys.metrics.type_metadata.donor_metadata_query_count",
+          "sys.metrics.type_metadata.reference_metadata_query_count",
           "sys.metrics.type_metadata.hidden_row_count",
           "sys.metrics.type_metadata.redacted_field_count",
           "sys.metrics.type_metadata.unsupported_type_count",
@@ -233,7 +233,7 @@ engine::TypeMetadataDiagnosticsDriverContract ValidContract() {
   contract.driver_metadata_rows.push_back(
       DriverRow(engine::DriverMetadataFamily::native, descriptor, 0x2c));
   contract.driver_metadata_rows.push_back(
-      DriverRow(engine::DriverMetadataFamily::donor_specific, descriptor,
+      DriverRow(engine::DriverMetadataFamily::reference_specific, descriptor,
                 0x30));
   contract.diagnostic_payloads.push_back(
       Diagnostic(descriptor.descriptor_uuid,
@@ -288,32 +288,32 @@ void TestCatalogAndDriverFailures() {
                 "TMD accepted catalog exposure missing driver metadata");
 
   contract = ValidContract();
-  contract.catalog_exposure.donor_views_do_not_create_authority = false;
+  contract.catalog_exposure.reference_views_do_not_create_authority = false;
   RequireStatus(contract,
                 engine::TypeMetadataDiagnosticsStatus::
                     catalog_false_authority_guard_missing,
-                "TMD accepted donor catalog false authority");
+                "TMD accepted reference catalog false authority");
 
   contract = ValidContract();
   contract.driver_metadata_rows.pop_back();
   RequireStatus(contract,
                 engine::TypeMetadataDiagnosticsStatus::
                     driver_family_coverage_missing,
-                "TMD accepted missing donor-specific driver metadata");
+                "TMD accepted missing reference-specific driver metadata");
 
   contract = ValidContract();
-  contract.driver_metadata_rows[4].donor_family.clear();
+  contract.driver_metadata_rows[4].reference_family.clear();
   RequireStatus(contract,
                 engine::TypeMetadataDiagnosticsStatus::
-                    driver_donor_family_required,
-                "TMD accepted donor driver row without donor identity");
+                    driver_reference_family_required,
+                "TMD accepted reference driver row without reference identity");
 
   contract = ValidContract();
-  contract.driver_metadata_rows[0].donor_name_not_authority = false;
+  contract.driver_metadata_rows[0].reference_name_not_authority = false;
   RequireStatus(contract,
                 engine::TypeMetadataDiagnosticsStatus::
                     driver_false_authority_guard_missing,
-                "TMD accepted driver row using donor name as authority");
+                "TMD accepted driver row using reference name as authority");
 }
 
 void TestDiagnosticProfileAndUnsupportedFailures() {
@@ -380,7 +380,7 @@ void TestCorpusCacheAndMetricFailures() {
   RequireStatus(contract,
                 engine::TypeMetadataDiagnosticsStatus::
                     testing_corpus_case_missing,
-                "TMD accepted donor mapping corpus missing cast case");
+                "TMD accepted reference mapping corpus missing cast case");
 
   contract = ValidContract();
   contract.cache_key.parser_family_untrusted_context_only = false;

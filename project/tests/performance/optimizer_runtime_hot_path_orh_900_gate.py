@@ -104,7 +104,7 @@ def validate_blocker_artifact(artifact: dict) -> None:
         "runtime_consumed",
         "optimized_path_consumed",
         "mga_security_evidence",
-        "parser_client_donor_authority",
+        "parser_client_reference_authority",
         "benchmark_clean_overclaim",
     }:
         require(field in fields, f"required evidence field missing: {field}")
@@ -150,8 +150,8 @@ def validate_blocker_artifact(artifact: dict) -> None:
             "blocked lane must not fabricate MGA/security evidence",
         )
         require(
-            lane.get("parser_client_donor_authority") is False,
-            "blocked lane must reject parser/client/donor authority",
+            lane.get("parser_client_reference_authority") is False,
+            "blocked lane must reject parser/client/reference authority",
         )
 
     negative_codes = {

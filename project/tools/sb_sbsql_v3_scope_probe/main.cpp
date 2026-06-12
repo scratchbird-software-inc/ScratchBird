@@ -91,7 +91,7 @@ bool IsAllowedStatus(const std::string& status) {
       "cluster_deferred",
       "enterprise_deferred",
       "unsupported_by_design",
-      "donor_only",
+      "reference_only",
   };
   return allowed.contains(status);
 }

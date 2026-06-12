@@ -156,8 +156,8 @@ void TestContainerSelection() {
           "inspection materialization refusal evidence missing");
   Require(HasEvidence(inspection, "candidate_set_finality_authority=false"),
           "candidate-set non-finality evidence missing");
-  Require(HasEvidence(inspection, "parser_or_donor_authority=false"),
-          "parser/donor non-authority evidence missing");
+  Require(HasEvidence(inspection, "parser_or_reference_authority=false"),
+          "parser/reference non-authority evidence missing");
 }
 
 void TestSerializationRoundTripAndCorruption() {
@@ -248,11 +248,11 @@ void TestFailClosedInputsAndAuthority() {
           "duplicate row ordinals accepted");
 
   auto unsafe = authority;
-  unsafe.parser_or_donor_finality_or_visibility_authority = true;
+  unsafe.parser_or_reference_finality_or_visibility_authority = true;
   refused =
       idx::MakeCompressedBitmapCandidateSetFromRowOrdinals({1, 2}, unsafe);
   Require(!refused.ok() && refused.fail_closed,
-          "parser/donor authority drift accepted");
+          "parser/reference authority drift accepted");
 
   unsafe = authority;
   unsafe.row_mga_recheck_required = false;

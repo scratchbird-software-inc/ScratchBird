@@ -146,7 +146,7 @@ bool AnyAuthorityCached(const SnapshotSafeCacheStoreRequest& request) {
          request.transaction_finality_authority_cached ||
          request.recovery_authority_cached ||
          request.parser_execution_authority_cached ||
-         request.donor_behavior_authority_cached ||
+         request.reference_behavior_authority_cached ||
          request.durability_log_authority_cached;
 }
 
@@ -157,7 +157,7 @@ bool AnyAuthorityCached(const SnapshotSafeCacheLookupRequest& request) {
          request.transaction_finality_authority_cached ||
          request.recovery_authority_cached ||
          request.parser_execution_authority_cached ||
-         request.donor_behavior_authority_cached ||
+         request.reference_behavior_authority_cached ||
          request.durability_log_authority_cached;
 }
 
@@ -217,7 +217,7 @@ SnapshotSafeCacheDecision BaseDecision(const SnapshotSafeCacheKey& key,
   Add(&decision.evidence, "cache_transaction_finality_authority=false");
   Add(&decision.evidence, "cache_recovery_authority=false");
   Add(&decision.evidence, "cache_parser_execution_authority=false");
-  Add(&decision.evidence, "cache_donor_behavior_authority=false");
+  Add(&decision.evidence, "cache_reference_behavior_authority=false");
   Add(&decision.evidence, "cache_durability_log_authority=false");
   Add(&decision.evidence, "support_bundle_ready=true");
   return decision;
@@ -388,7 +388,7 @@ SnapshotSafeCacheDecision SnapshotSafeResultCache::Store(
   if (AnyAuthorityCached(request)) {
     return Refuse(std::move(decision),
                   "EXECUTOR.SNAPSHOT_RESULT_CACHE.AUTHORITY_REFUSED",
-                  "cache cannot own storage authorization visibility finality recovery parser donor or durability-log authority");
+                  "cache cannot own storage authorization visibility finality recovery parser reference or durability-log authority");
   }
   if (request.entry.cached_result_digest.empty() ||
       request.entry.cached_mga_security_digest.empty()) {
@@ -450,7 +450,7 @@ SnapshotSafeCacheDecision SnapshotSafeResultCache::Lookup(
   if (AnyAuthorityCached(request)) {
     return Refuse(std::move(decision),
                   "EXECUTOR.SNAPSHOT_RESULT_CACHE.AUTHORITY_REFUSED",
-                  "cache cannot own storage authorization visibility finality recovery parser donor or durability-log authority");
+                  "cache cannot own storage authorization visibility finality recovery parser reference or durability-log authority");
   }
   if (!request.ordinary_recompute_available ||
       request.recomputed_result_digest.empty() ||

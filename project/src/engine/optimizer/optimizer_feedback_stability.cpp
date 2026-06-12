@@ -27,7 +27,7 @@ OptimizerFeedbackStabilityResult Refuse(std::string code, std::string evidence) 
 }
 
 bool UnsafeAuthority(const OptimizerFeedbackPlanChoiceObservation& observation) {
-  return observation.parser_or_donor_authority ||
+  return observation.parser_or_reference_authority ||
          observation.metric_finality_or_visibility_authority ||
          observation.cluster_stub_evidence;
 }
@@ -63,7 +63,7 @@ OptimizerFeedbackStabilityResult EvaluateOptimizerFeedbackStability(
     }
     if (UnsafeAuthority(observation)) {
       return Refuse("SB_OPT_FEEDBACK_STABILITY_UNSAFE_AUTHORITY",
-                    "parser_donor_metric_finality_or_cluster_stub_refused");
+                    "parser_reference_metric_finality_or_cluster_stub_refused");
     }
     if (!observation.runtime_consumed ||
         !observation.exact_fallback_available) {
@@ -152,7 +152,7 @@ OptimizerFeedbackStabilityResult EvaluateOptimizerFeedbackStability(
                             std::to_string(switches));
   result.evidence.push_back("feedback_stability.benchmark_clean=" +
                             std::string(benchmark_clean ? "true" : "false"));
-  result.evidence.push_back("feedback_stability.parser_or_donor_authority=false");
+  result.evidence.push_back("feedback_stability.parser_or_reference_authority=false");
   result.evidence.push_back("feedback_stability.metric_finality_or_visibility_authority=false");
   result.evidence.push_back("feedback_stability.cluster_stub_evidence=false");
   return result;

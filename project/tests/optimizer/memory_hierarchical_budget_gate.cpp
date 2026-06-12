@@ -103,7 +103,7 @@ void RequireAuthorityEvidence(const std::vector<std::string>& evidence) {
           "MMCH-017 hierarchical budget marker missing");
   Require(EvidenceHas(
               evidence,
-              "hierarchical_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"),
+              "hierarchical_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"),
           "MMCH-017 authority evidence missing");
 }
 
@@ -209,7 +209,7 @@ void InvalidHierarchyFailsClosed() {
 
 int main() {
   std::cout << "MMCH-017 authority_note=hierarchical_memory_budget_evidence_only;"
-               "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+               "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   ParentChildDebitRelease();
   BackgroundAndOwnerCleanup();

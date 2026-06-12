@@ -9,22 +9,22 @@
   "expected_results": [
     {
       "case_id": "DPR-FIX-007-POS-001",
-      "expected_boundary": "No parser SQL execution, driver-owned authority, donor authority, or MGA finality shortcut is admitted by this fixture.",
+      "expected_boundary": "No parser SQL execution, driver-owned authority, reference authority, or MGA finality shortcut is admitted by this fixture.",
       "expected_status": "cataloged"
     },
     {
       "case_id": "DPR-FIX-007-NEG-001",
-      "expected_boundary": "No parser SQL execution, driver-owned authority, donor authority, or MGA finality shortcut is admitted by this fixture.",
+      "expected_boundary": "No parser SQL execution, driver-owned authority, reference authority, or MGA finality shortcut is admitted by this fixture.",
       "expected_status": "cataloged"
     },
     {
       "case_id": "DPR-FIX-007-NEG-002",
-      "expected_boundary": "No parser SQL execution, driver-owned authority, donor authority, or MGA finality shortcut is admitted by this fixture.",
+      "expected_boundary": "No parser SQL execution, driver-owned authority, reference authority, or MGA finality shortcut is admitted by this fixture.",
       "expected_status": "cataloged"
     },
     {
       "case_id": "DPR-FIX-007-NEG-003",
-      "expected_boundary": "No parser SQL execution, driver-owned authority, donor authority, or MGA finality shortcut is admitted by this fixture.",
+      "expected_boundary": "No parser SQL execution, driver-owned authority, reference authority, or MGA finality shortcut is admitted by this fixture.",
       "expected_status": "cataloged"
     }
   ],

@@ -278,7 +278,7 @@ bool IsPublicExactOperationId(std::string_view operation_id) {
          IsEncryptionMaintenanceOperationId(operation_id) ||
          IsProtectedMaterialOperationId(operation_id) ||
          operation_id == "op.migration.alter" ||
-         operation_id == "op.migration.begin_from_donor" ||
+         operation_id == "op.migration.begin_from_reference" ||
          operation_id == "op.show.aot_artifacts" ||
          operation_id == "op.show.audit" ||
          operation_id == "op.show.buffer_pool" ||
@@ -782,7 +782,7 @@ std::string FamilyForPublicEnvelope(scratchbird::engine::SblrOperationFamily fam
     case SblrOperationFamily::versioned_history:
     case SblrOperationFamily::cluster_placement:
     case SblrOperationFamily::acceleration_management:
-    case SblrOperationFamily::donor_meta: break;
+    case SblrOperationFamily::reference_meta: break;
   }
   return {};
 }

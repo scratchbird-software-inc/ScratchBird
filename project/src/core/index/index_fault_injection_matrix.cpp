@@ -116,10 +116,10 @@ IndexFaultInjectionMatrixRow BaseRow(std::string surface,
   AddEvidence(&row, "scenario_class", row.scenario_class);
   AddEvidence(&row, "ceic_042_readiness_drift_claimed", "false");
   AddEvidence(&row, "all_index_readiness_claimed", "false");
-  AddEvidence(&row, "donor_dominance_claimed", "false");
+  AddEvidence(&row, "reference_dominance_claimed", "false");
   AddEvidence(&row, "enterprise_readiness_claimed", "false");
   AddEvidence(&row, "parser_authority", "false");
-  AddEvidence(&row, "donor_authority", "false");
+  AddEvidence(&row, "reference_authority", "false");
   AddEvidence(&row, "provider_authority", "false");
   AddEvidence(&row, "storage_authority", "false");
   AddEvidence(&row, "visibility_authority", "false");
@@ -429,7 +429,7 @@ bool IsPersistentOrColdStartClaimedFamily(
 }
 
 bool IsBlockedFamily(const IndexFamilyDescriptor& descriptor) {
-  return descriptor.persistence == IndexPersistenceClass::donor_emulated ||
+  return descriptor.persistence == IndexPersistenceClass::reference_emulated ||
          descriptor.persistence == IndexPersistenceClass::policy_blocked;
 }
 
@@ -485,7 +485,7 @@ IndexMGARecoveryContract RecoveryContract(IndexFamily family,
   contract.recovery.replay_idempotent = true;
   contract.recovery.provider_evidence_only = true;
   contract.provider_evidence.push_back(
-      "CEIC-041 evidence only; not finality, visibility, security, parser, donor, WAL, benchmark, optimizer, index-finality, provider-finality, cluster, or agent authority");
+      "CEIC-041 evidence only; not finality, visibility, security, parser, reference, WAL, benchmark, optimizer, index-finality, provider-finality, cluster, or agent authority");
   return contract;
 }
 
@@ -785,20 +785,20 @@ IndexFaultInjectionMatrixRow BlockedFamilyRuntimeRefusalRow(
     u64 salt) {
   auto row = BaseRow("ceic041_blocked_family_runtime_refusal",
                      descriptor.family,
-                     "donor_policy_refusal",
-                     "donor-emulated or policy-blocked family requested as runtime provider",
+                     "reference_policy_refusal",
+                     "reference-emulated or policy-blocked family requested as runtime provider",
                      "fail closed and keep mapping non-authoritative");
   row.concrete_execution_result = true;
   row.recovered = false;
   row.refused = true;
   row.fail_closed = true;
   row.planner_visible = false;
-  row.donor_policy_refused = true;
+  row.reference_policy_refused = true;
   row.deterministic_diagnostics = true;
-  row.diagnostic_code = "INDEX.CEIC_041.DONOR_POLICY_REFUSED";
-  row.message_key = "index.ceic_041.donor_policy_refused";
+  row.diagnostic_code = "INDEX.CEIC_041.REFERENCE_POLICY_REFUSED";
+  row.message_key = "index.ceic_041.reference_policy_refused";
   AddEvidence(&row, "ceic_slice", "CEIC-041");
-  AddEvidence(&row, "donor_policy_refused", "true");
+  AddEvidence(&row, "reference_policy_refused", "true");
   AddEvidence(&row, "nonruntime_non_authority", "true");
   ApplyCapabilityGate(&row, descriptor.family, salt);
   return row;

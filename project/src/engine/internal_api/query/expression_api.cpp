@@ -385,7 +385,7 @@ EngineCastValueResult EngineCastValue(const EngineCastValueRequest& request) {
   cast_request.value.is_null = input.is_null;
   cast_request.target_type_id = TypeFromDescriptor(target);
   cast_request.explicit_cast = request.explicit_cast;
-  cast_request.donor_compatibility_profile = !request.compatibility_profile.names.empty();
+  cast_request.reference_compatibility_profile = !request.compatibility_profile.names.empty();
   const auto cast = dt::CastDatatypeValue(cast_request);
   if (!cast.ok()) {
     return ApiFailure<EngineCastValueResult>(
@@ -557,10 +557,10 @@ EngineCanonicalizeDocumentValueResult EngineCanonicalizeDocumentValue(
   dt::DocumentCanonicalizationRequest document_request;
   document_request.type_id = TypeFromDescriptor(input.descriptor);
   document_request.encoded_value = input.encoded_value;
-  document_request.donor_profile = !request.donor_profile.empty()
-      ? request.donor_profile
-      : OptionValue(request, "document_donor_profile:");
-  if (document_request.donor_profile.empty()) { document_request.donor_profile = OptionValue(request, "donor_profile:"); }
+  document_request.reference_profile = !request.reference_profile.empty()
+      ? request.reference_profile
+      : OptionValue(request, "document_reference_profile:");
+  if (document_request.reference_profile.empty()) { document_request.reference_profile = OptionValue(request, "reference_profile:"); }
   document_request.allow_hstore_domain =
       ParseBoolOption(OptionValue(request, "allow_hstore_domain:"), request.allow_hstore_domain);
 

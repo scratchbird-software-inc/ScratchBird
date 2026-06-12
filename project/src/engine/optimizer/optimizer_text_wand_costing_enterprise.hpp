@@ -54,7 +54,7 @@ struct EnterpriseTextSearchMetric {
   bool exact_rerank_available = false;
   bool exact_fallback_available = false;
   bool wand_topk_exact_equivalence = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_authority = false;
   bool metric_finality_or_visibility_authority = false;
   bool provider_finality_or_visibility_authority = false;

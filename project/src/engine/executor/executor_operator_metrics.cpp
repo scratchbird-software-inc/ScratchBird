@@ -64,7 +64,7 @@ MetricValidationResult RegisterIfMissing(metrics::MetricRegistry* registry,
 }
 
 bool UnsafeAuthority(const ExecutorOperatorMetricAuthority& authority) {
-  return authority.parser_or_donor_authority ||
+  return authority.parser_or_reference_authority ||
          authority.client_supplied_finality ||
          authority.metric_visibility_or_finality_authority ||
          authority.metric_recovery_authority ||

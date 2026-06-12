@@ -230,11 +230,11 @@ void TestBackpressureEngineRoute() {
           "AEIC-027 NoSQL backpressure omitted suppression diagnostic");
 
   auto unsafe = BackpressureRequest();
-  unsafe.parser_or_donor_authority = true;
+  unsafe.parser_or_reference_authority = true;
   const auto refused = api::EnginePlanNoSqlBackpressureDebt(unsafe);
   Require(!refused.ok &&
               HasDiagnostic(refused, impl::kNoSqlBackpressureDebtUnsafeAuthority),
-          "AEIC-027 NoSQL backpressure accepted parser/donor authority");
+          "AEIC-027 NoSQL backpressure accepted parser/reference authority");
 
   auto provider = BackpressureRequest();
   provider.provider_claims_transaction_finality_authority = true;

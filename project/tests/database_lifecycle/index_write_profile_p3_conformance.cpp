@@ -169,7 +169,7 @@ void TestIndexFamilyAndManagementMatrix() {
       "ngram", "sparse_wand", "spatial", "rtree", "gist", "spgist",
       "vector_exact", "vector_hnsw", "vector_ivf", "columnar_zone",
       "document_path", "graph", "temporary_work", "in_memory",
-      "donor_emulated", "advanced_vector_policy_blocked"};
+      "reference_emulated", "advanced_vector_policy_blocked"};
 
   for (const auto& descriptor : index_api::BuiltinIndexFamilyDescriptors()) {
     Require(expected.erase(descriptor.id) == 1, "unexpected or duplicate index family descriptor");

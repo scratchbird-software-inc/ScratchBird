@@ -228,7 +228,7 @@ void ValidatePlanAndReport(const std::filesystem::path& artifact_root,
        {"Status: complete", "DIFFERENTIAL_REPLAY_FIXTURE_INDEX.csv",
         "DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl", "parser_parse_only",
         "udr_sql_to_sblr", "server_admission", "engine_behavior", "full_route",
-        "donor_alias", "diagnostic", "fixture_id", "surface_id", "expected_message_vector",
+        "reference_alias", "diagnostic", "fixture_id", "surface_id", "expected_message_vector",
         "expected_rendered_output", "no SQL text reaches engine"}) {
     CheckText(harness, plan, token, "DIFFERENTIAL_REPLAY_HARNESS_PLAN.md");
   }
@@ -238,7 +238,7 @@ void ValidatePlanAndReport(const std::filesystem::path& artifact_root,
        {"Status: complete", "Total fixtures | 2,617",
         "Unexpected failures | 0", "sbsql_differential_replay_harness_gate",
         "parser_parse_only", "parser_bind_lower", "udr_sql_to_sblr",
-        "server_admission", "engine_behavior", "full_route", "donor_alias",
+        "server_admission", "engine_behavior", "full_route", "reference_alias",
         "diagnostic", "Failure Row Schema"}) {
     CheckText(harness, report, token, "DIFFERENTIAL_REPLAY_HARNESS_REPORT.md");
   }
@@ -275,26 +275,26 @@ void ValidateCommand(const CsvTable& commands, Harness* harness) {
                  "differential replay command evidence incomplete");
 }
 
-std::set<std::string> ReadDonorNativeSurfaceNames(const CsvTable& donor_matrix,
+std::set<std::string> ReadReferenceNativeSurfaceNames(const CsvTable& reference_matrix,
                                                   Harness* harness) {
   std::set<std::string> names;
-  if (!RequireColumns(donor_matrix,
-                      {"donor", "alias_kind", "donor_surface",
+  if (!RequireColumns(reference_matrix,
+                      {"reference", "alias_kind", "reference_surface",
                        "native_sbsql_surface", "mapping_status",
                        "sblr_operation_family"},
                       harness)) {
     return names;
   }
-  for (const auto& row : donor_matrix.rows) {
+  for (const auto& row : reference_matrix.rows) {
     harness->Check(!Field(row, "native_sbsql_surface").empty(),
-                   "donor matrix row has empty native_sbsql_surface");
+                   "reference matrix row has empty native_sbsql_surface");
     names.insert(std::string(Field(row, "native_sbsql_surface")));
   }
   return names;
 }
 
 void ValidateRouteManifest(const CsvTable& route_manifest,
-                           const CsvTable& donor_fixtures,
+                           const CsvTable& reference_fixtures,
                            Harness* harness) {
   if (!RequireColumns(route_manifest,
                       {"route_id", "ctest_label", "route_class", "replay_scope",
@@ -302,7 +302,7 @@ void ValidateRouteManifest(const CsvTable& route_manifest,
                       harness)) {
     return;
   }
-  if (!RequireColumns(donor_fixtures,
+  if (!RequireColumns(reference_fixtures,
                       {"alias_kind", "fixture_root", "ctest_label",
                        "result_metadata_fields", "command_tag_policy",
                        "affected_rows_policy", "warning_error_policy",
@@ -314,7 +314,7 @@ void ValidateRouteManifest(const CsvTable& route_manifest,
   const auto by_route = IndexUnique(route_manifest, "route_id", harness);
   const std::set<std::string> required_routes = {
       "parser_parse_only", "parser_bind_lower", "udr_sql_to_sblr",
-      "server_admission", "engine_behavior", "full_route", "donor_alias",
+      "server_admission", "engine_behavior", "full_route", "reference_alias",
       "diagnostic"};
   for (const auto& route : required_routes) {
     const auto found = by_route.find(route);
@@ -330,23 +330,23 @@ void ValidateRouteManifest(const CsvTable& route_manifest,
                    route + " status is not complete");
   }
 
-  std::set<std::string> donor_alias_kinds;
-  for (const auto& row : donor_fixtures.rows) {
-    donor_alias_kinds.insert(std::string(Field(row, "alias_kind")));
+  std::set<std::string> reference_alias_kinds;
+  for (const auto& row : reference_fixtures.rows) {
+    reference_alias_kinds.insert(std::string(Field(row, "alias_kind")));
     harness->Check(StartsWith(Field(row, "fixture_root"),
-                              "project/tests/sbsql_parser_worker/generated/donor_alias"),
+                              "project/tests/sbsql_parser_worker/generated/reference_alias"),
                    std::string(Field(row, "alias_kind")) +
-                       " donor fixture root is not durable");
+                       " reference fixture root is not durable");
     harness->Check(Field(row, "ctest_label") ==
-                       "sbsql_donor_alias_rendering_conformance",
+                       "sbsql_reference_alias_rendering_conformance",
                    std::string(Field(row, "alias_kind")) +
-                       " donor fixture ctest label mismatch");
+                       " reference fixture ctest label mismatch");
     harness->Check(Field(row, "status") == "ready_for_generation",
                    std::string(Field(row, "alias_kind")) +
-                       " donor fixture status mismatch");
+                       " reference fixture status mismatch");
   }
-  harness->Check(donor_alias_kinds.size() == 13,
-                 "donor alias fixture manifest must cover 13 alias kinds");
+  harness->Check(reference_alias_kinds.size() == 13,
+                 "reference alias fixture manifest must cover 13 alias kinds");
 }
 
 void ValidatePayloads(const std::filesystem::path& payload_path,
@@ -395,7 +395,7 @@ void ValidateReplayIndex(const CsvTable& replay_index,
                          const CsvTable& surface_backlog,
                          const CsvTable& surface_registry,
                          const CsvTable& operation_matrix,
-                         const std::set<std::string>& donor_native_names,
+                         const std::set<std::string>& reference_native_names,
                          const std::filesystem::path& payload_path,
                          Harness* harness) {
   bool schema_ok = true;
@@ -533,9 +533,9 @@ void ValidateReplayIndex(const CsvTable& replay_index,
       harness->Check(Contains(Field(row, "expected_engine_effect"), "no-engine-mutation"),
                      context + " refusal/profile fixture must not mutate engine");
     }
-    if (donor_native_names.contains(std::string(Field(row, "canonical_name")))) {
-      harness->Check(route_set.contains("donor_alias"),
-                     context + " donor native surface missing donor_alias route");
+    if (reference_native_names.contains(std::string(Field(row, "canonical_name")))) {
+      harness->Check(route_set.contains("reference_alias"),
+                     context + " reference native surface missing reference_alias route");
     }
 
     const auto oracle_it = oracle_by_surface.find(surface_id);
@@ -611,7 +611,7 @@ void ValidateReplayIndex(const CsvTable& replay_index,
 
   for (const auto& required :
        {"parser_parse_only", "parser_bind_lower", "udr_sql_to_sblr",
-        "server_admission", "engine_behavior", "full_route", "donor_alias",
+        "server_admission", "engine_behavior", "full_route", "reference_alias",
         "diagnostic"}) {
     harness->Check(route_counts[required] > 0,
                    std::string("replay route has no fixtures: ") + required);
@@ -637,14 +637,14 @@ int main(int argc, char** argv) {
   if (argc != 5) {
     std::cerr << "usage: sbp_sbsql_differential_replay_harness_gate "
                  "<artifact-root> <canonicalization-root> <replay-root> "
-                 "<donor-fixtures>\n";
+                 "<reference-fixtures>\n";
     return 1;
   }
 
   const std::filesystem::path artifact_root(argv[1]);
   const std::filesystem::path canonicalization_root(argv[2]);
   const std::filesystem::path replay_root(argv[3]);
-  const std::filesystem::path donor_fixtures_path(argv[4]);
+  const std::filesystem::path reference_fixtures_path(argv[4]);
   Harness harness;
 
   try {
@@ -652,16 +652,16 @@ int main(int argc, char** argv) {
         ReadCsv(replay_root / "DIFFERENTIAL_REPLAY_ROUTE_MANIFEST.csv");
     const auto replay_index =
         ReadCsv(replay_root / "DIFFERENTIAL_REPLAY_FIXTURE_INDEX.csv");
-    const auto donor_matrix =
-        ReadCsv(canonicalization_root / "DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv");
-    const auto donor_fixtures = ReadCsv(donor_fixtures_path);
-    const auto donor_native_names =
-        ReadDonorNativeSurfaceNames(donor_matrix, &harness);
+    const auto reference_matrix =
+        ReadCsv(canonicalization_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv");
+    const auto reference_fixtures = ReadCsv(reference_fixtures_path);
+    const auto reference_native_names =
+        ReadReferenceNativeSurfaceNames(reference_matrix, &harness);
 
     ValidatePlanAndReport(artifact_root, &harness);
     ValidateCommand(ReadCsv(artifact_root / "VALIDATION_COMMAND_MATERIALIZATION.csv"),
                     &harness);
-    ValidateRouteManifest(route_manifest, donor_fixtures, &harness);
+    ValidateRouteManifest(route_manifest, reference_fixtures, &harness);
     ValidateReplayIndex(replay_index, route_manifest,
                         ReadCsv(artifact_root / "SEMANTIC_ORACLE_AUTHORITY_MAP.csv"),
                         ReadCsv(artifact_root / "BATCH_ROW_MEMBERSHIP.csv"),
@@ -669,7 +669,7 @@ int main(int argc, char** argv) {
                         ReadCsv(canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv"),
                         ReadCsv(canonicalization_root /
                                 "SBSQL_TO_SBLR_OPERATION_MATRIX.csv"),
-                        donor_native_names,
+                        reference_native_names,
                         replay_root / "DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl",
                         &harness);
 

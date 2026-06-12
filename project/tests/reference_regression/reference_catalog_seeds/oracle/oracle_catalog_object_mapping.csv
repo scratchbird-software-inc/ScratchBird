@@ -1,0 +1,2 @@
+artifact_status,scope_correction,controlling_spec,required_replacement
+superseded_not_runtime_authority,Oracle is not emulated; prior emulated dictionary mapping rows are invalid,docs/specifications/chapters/implementation-guidance/appendix-commercial-capability-reference-families.md,Create CommercialCapabilityReferenceRecord rows for selected Oracle capabilities instead of ReferenceCatalogObjectMappingRecord rows.

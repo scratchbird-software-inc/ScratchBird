@@ -112,7 +112,7 @@ std::vector<std::string> RequiredDiagnostics() {
           "SCALAR.CURRENCY_MISMATCH",
           "SCALAR.BACKEND_UNAVAILABLE",
           "SCALAR.RAW_HOST_ENCODING_REFUSED",
-          "SCALAR.DONOR.MAPPING_MISSING",
+          "SCALAR.REFERENCE.MAPPING_MISSING",
           "SCALAR.TRANSPORT.UNSUPPORTED",
           "SCALAR.MERGE.MANUAL_REVIEW_REQUIRED",
           "float128_backend_unavailable",
@@ -137,7 +137,7 @@ std::vector<std::string> RequiredMetrics() {
       "sys.metrics.datatypes.scalar.float128.raw_host_encoding_refusals_total",
       "sys.metrics.datatypes.scalar.money.currency_mismatches_total",
       "sys.metrics.datatypes.scalar.transport.refusals_total",
-      "sys.metrics.datatypes.scalar.donor.mapping_misses_total",
+      "sys.metrics.datatypes.scalar.reference.mapping_misses_total",
       "sys.metrics.datatypes.scalar.merge.manual_review_required_total"};
 }
 
@@ -342,7 +342,7 @@ void AddOperationRule(engine::CanonicalScalarDatatypeRegistry& registry,
   rule.special_value_policy_checked = true;
   rule.currency_policy_checked = true;
   rule.security_policy_checked = true;
-  rule.donor_profile_checked = true;
+  rule.reference_profile_checked = true;
   rule.result_descriptor_declared = true;
   rule.no_silent_fallback = true;
   rule.failure_diagnostic_code =
@@ -353,7 +353,7 @@ void AddOperationRule(engine::CanonicalScalarDatatypeRegistry& registry,
   registry.cast_operation_rules.push_back(rule);
 }
 
-void AddTransportAndDonorProfiles(
+void AddTransportAndReferenceProfiles(
     engine::CanonicalScalarDatatypeRegistry& registry,
     std::uint16_t& uuid_seed) {
   for (const auto& descriptor : registry.descriptors) {
@@ -372,15 +372,15 @@ void AddTransportAndDonorProfiles(
     transport.transport_hash = "transport." + descriptor.descriptor_key;
     registry.transport_profiles.push_back(transport);
 
-    engine::ScalarDonorMappingRecord mapping;
-    mapping.donor_mapping_uuid = Uuid(uuid_seed++);
+    engine::ScalarReferenceMappingRecord mapping;
+    mapping.reference_mapping_uuid = Uuid(uuid_seed++);
     mapping.descriptor_uuid = descriptor.descriptor_uuid;
-    mapping.donor_profile_key = "common.sql.profile";
-    mapping.donor_type_name = "donor_" + descriptor.descriptor_key;
-    mapping.behavior = engine::CanonicalScalarDonorBehavior::exact;
-    mapping.diagnostic_code = "SCALAR.DONOR.MAPPING_MISSING";
-    mapping.mapping_hash = "donor.mapping." + descriptor.descriptor_key;
-    registry.donor_mappings.push_back(mapping);
+    mapping.reference_profile_key = "common.sql.profile";
+    mapping.reference_type_name = "reference_" + descriptor.descriptor_key;
+    mapping.behavior = engine::CanonicalScalarReferenceBehavior::exact;
+    mapping.diagnostic_code = "SCALAR.REFERENCE.MAPPING_MISSING";
+    mapping.mapping_hash = "reference.mapping." + descriptor.descriptor_key;
+    registry.reference_mappings.push_back(mapping);
   }
 }
 
@@ -451,7 +451,7 @@ engine::CanonicalScalarDatatypeRegistry ValidRegistry() {
   AddOperationRule(registry, Family::serialization, Type::float128,
                    Type::float128, Type::float128, uuid_seed);
 
-  AddTransportAndDonorProfiles(registry, uuid_seed);
+  AddTransportAndReferenceProfiles(registry, uuid_seed);
   AddConformanceGates(registry, uuid_seed);
   return registry;
 }
@@ -531,7 +531,7 @@ void TestFloat128AndLiteralBindFailures() {
                 "CSD accepted ambiguous scalar literal guessing");
 }
 
-void TestOperationTransportDonorGateFailures() {
+void TestOperationTransportReferenceGateFailures() {
   auto registry = ValidRegistry();
   registry.cast_operation_rules[0].range_check_declared = false;
   RequireStatus(registry,
@@ -547,10 +547,10 @@ void TestOperationTransportDonorGateFailures() {
                 "CSD accepted scalar delta stream as recovery authority");
 
   registry = ValidRegistry();
-  registry.donor_mappings.erase(registry.donor_mappings.begin());
+  registry.reference_mappings.erase(registry.reference_mappings.begin());
   RequireStatus(registry,
-                engine::CanonicalScalarDatatypeStatus::donor_mapping_missing,
-                "CSD accepted missing donor scalar mapping");
+                engine::CanonicalScalarDatatypeStatus::reference_mapping_missing,
+                "CSD accepted missing reference scalar mapping");
 
   registry = ValidRegistry();
   registry.conformance_gates[0].status =
@@ -575,11 +575,11 @@ void TestDiagnosticMetricAndAuthorityFailures() {
                 "CSD accepted missing scalar metric");
 
   registry = ValidRegistry();
-  registry.donor_names_not_authority = false;
+  registry.reference_names_not_authority = false;
   RequireStatus(registry,
                 engine::CanonicalScalarDatatypeStatus::
                     authority_invariant_violation,
-                "CSD accepted donor scalar names as authority");
+                "CSD accepted reference scalar names as authority");
 
   registry = ValidRegistry();
   registry.cluster_metrics_guarded_by_cluster_governance = false;
@@ -595,7 +595,7 @@ int main() {
   TestValidRegistryCoversAllScalarFamilies();
   TestDescriptorAndNumericContextFailures();
   TestFloat128AndLiteralBindFailures();
-  TestOperationTransportDonorGateFailures();
+  TestOperationTransportReferenceGateFailures();
   TestDiagnosticMetricAndAuthorityFailures();
   std::cout << "canonical_scalar_datatypes_conformance=passed\n";
   return EXIT_SUCCESS;

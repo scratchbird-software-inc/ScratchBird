@@ -51,7 +51,7 @@ FORBIDDEN_LINK_TOKENS = (
     "libtommath",
     "libtomcrypt",
     "firebird-5.0.4-release-src",
-    "donor/firebird",
+    "reference/firebird",
 )
 
 
@@ -70,7 +70,7 @@ def check_implementation_sources(root: Path) -> list[str]:
         text = path.read_text(errors="replace")
         for token in FORBIDDEN_SOURCE_TOKENS:
             if token in text:
-                errors.append(f"forbidden donor provenance token {token!r} in {path}")
+                errors.append(f"forbidden reference provenance token {token!r} in {path}")
     return errors
 
 
@@ -88,7 +88,7 @@ def check_binary(binary: Path) -> list[str]:
     if result.returncode != 0 and "not a dynamic executable" not in output:
         return [f"ldd failed for {binary}: {result.stdout}"]
     return [
-        f"forbidden donor runtime dependency {token} in {binary}"
+        f"forbidden reference runtime dependency {token} in {binary}"
         for token in FORBIDDEN_LINK_TOKENS
         if token in output
     ]

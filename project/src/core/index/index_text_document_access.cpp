@@ -221,8 +221,8 @@ TextDocumentProfileControls Controls(bool analyzer,
   return controls;
 }
 
-TextDocumentSemanticProfileDescriptor Profile(TextDocumentDonor donor,
-                                              TextDocumentDonorIndexType index_type,
+TextDocumentSemanticProfileDescriptor Profile(TextDocumentReference reference,
+                                              TextDocumentReferenceIndexType index_type,
                                               IndexFamily native_family,
                                               const char* native_physical_family,
                                               const char* semantic_profile_id,
@@ -236,7 +236,7 @@ TextDocumentSemanticProfileDescriptor Profile(TextDocumentDonor donor,
                                               const char* metrics_prefix,
                                               const char* diagnostics_key) {
   TextDocumentSemanticProfileDescriptor descriptor;
-  descriptor.donor = donor;
+  descriptor.reference = reference;
   descriptor.index_type = index_type;
   descriptor.native_family = native_family;
   descriptor.native_physical_family = native_physical_family;
@@ -331,38 +331,38 @@ const char* DocumentValuePolicyName(DocumentValuePolicy policy) {
   return "unknown";
 }
 
-const char* TextDocumentDonorName(TextDocumentDonor donor) {
-  switch (donor) {
-    case TextDocumentDonor::native: return "native";
-    case TextDocumentDonor::mongodb: return "mongodb";
-    case TextDocumentDonor::opensearch: return "opensearch";
-    case TextDocumentDonor::neo4j: return "neo4j";
-    case TextDocumentDonor::postgresql: return "postgresql";
-    case TextDocumentDonor::cassandra: return "cassandra";
-    case TextDocumentDonor::mysql: return "mysql";
-    case TextDocumentDonor::mariadb: return "mariadb";
-    case TextDocumentDonor::unknown: return "unknown";
+const char* TextDocumentReferenceName(TextDocumentReference reference) {
+  switch (reference) {
+    case TextDocumentReference::native: return "native";
+    case TextDocumentReference::mongodb: return "mongodb";
+    case TextDocumentReference::opensearch: return "opensearch";
+    case TextDocumentReference::neo4j: return "neo4j";
+    case TextDocumentReference::postgresql: return "postgresql";
+    case TextDocumentReference::cassandra: return "cassandra";
+    case TextDocumentReference::mysql: return "mysql";
+    case TextDocumentReference::mariadb: return "mariadb";
+    case TextDocumentReference::unknown: return "unknown";
   }
   return "unknown";
 }
 
-const char* TextDocumentDonorIndexTypeName(TextDocumentDonorIndexType type) {
+const char* TextDocumentReferenceIndexTypeName(TextDocumentReferenceIndexType type) {
   switch (type) {
-    case TextDocumentDonorIndexType::native_full_text: return "native_full_text";
-    case TextDocumentDonorIndexType::native_inverted: return "native_inverted";
-    case TextDocumentDonorIndexType::native_document_path: return "native_document_path";
-    case TextDocumentDonorIndexType::mongodb_text: return "mongodb_text";
-    case TextDocumentDonorIndexType::mongodb_wildcard: return "mongodb_wildcard";
-    case TextDocumentDonorIndexType::opensearch_text: return "opensearch_text";
-    case TextDocumentDonorIndexType::neo4j_text: return "neo4j_text";
-    case TextDocumentDonorIndexType::neo4j_fulltext: return "neo4j_fulltext";
-    case TextDocumentDonorIndexType::postgresql_gin: return "postgresql_gin";
-    case TextDocumentDonorIndexType::postgresql_tsvector: return "postgresql_tsvector";
-    case TextDocumentDonorIndexType::cassandra_sai_text: return "cassandra_sai_text";
-    case TextDocumentDonorIndexType::cassandra_sasi_text: return "cassandra_sasi_text";
-    case TextDocumentDonorIndexType::mysql_fulltext: return "mysql_fulltext";
-    case TextDocumentDonorIndexType::mariadb_fulltext: return "mariadb_fulltext";
-    case TextDocumentDonorIndexType::unknown: return "unknown";
+    case TextDocumentReferenceIndexType::native_full_text: return "native_full_text";
+    case TextDocumentReferenceIndexType::native_inverted: return "native_inverted";
+    case TextDocumentReferenceIndexType::native_document_path: return "native_document_path";
+    case TextDocumentReferenceIndexType::mongodb_text: return "mongodb_text";
+    case TextDocumentReferenceIndexType::mongodb_wildcard: return "mongodb_wildcard";
+    case TextDocumentReferenceIndexType::opensearch_text: return "opensearch_text";
+    case TextDocumentReferenceIndexType::neo4j_text: return "neo4j_text";
+    case TextDocumentReferenceIndexType::neo4j_fulltext: return "neo4j_fulltext";
+    case TextDocumentReferenceIndexType::postgresql_gin: return "postgresql_gin";
+    case TextDocumentReferenceIndexType::postgresql_tsvector: return "postgresql_tsvector";
+    case TextDocumentReferenceIndexType::cassandra_sai_text: return "cassandra_sai_text";
+    case TextDocumentReferenceIndexType::cassandra_sasi_text: return "cassandra_sasi_text";
+    case TextDocumentReferenceIndexType::mysql_fulltext: return "mysql_fulltext";
+    case TextDocumentReferenceIndexType::mariadb_fulltext: return "mariadb_fulltext";
+    case TextDocumentReferenceIndexType::unknown: return "unknown";
   }
   return "unknown";
 }
@@ -520,7 +520,7 @@ TextQueryPathDecision DecideTextQueryPath(const TextQueryPathRequest& request) {
   TextQueryPathDecision decision;
   decision.status = OkStatus();
   decision.use_term_postings = request.operation != TextQueryOperator::exact_source_recheck;
-  decision.exact_source_recheck = request.lossy_candidates || request.donor_requires_recheck;
+  decision.exact_source_recheck = request.lossy_candidates || request.reference_requires_recheck;
 
   switch (request.operation) {
     case TextQueryOperator::term:
@@ -599,9 +599,9 @@ TextQueryPathDecision DecideTextQueryPath(const TextQueryPathRequest& request) {
 }
 
 GinConsistencyDecision DecideGinExtractionConsistency(const GinConsistencyRequest& request) {
-  if (!request.donor_profile_allows || !request.opclass_known) {
+  if (!request.reference_profile_allows || !request.opclass_known) {
     return GinError("SB-INDEX-TEXT-DOC-GIN-OPCLASS-REFUSED",
-                    "index.donor.postgresql.gin",
+                    "index.reference.postgresql.gin",
                     "policy_block_unknown_opclass",
                     true);
   }
@@ -783,97 +783,97 @@ DocumentPathAccessDecision DecideDocumentPathAccess(const DocumentPathAccessRequ
 
 const std::vector<TextDocumentSemanticProfileDescriptor>& BuiltinTextDocumentSemanticProfiles() {
   static const std::vector<TextDocumentSemanticProfileDescriptor> descriptors = {
-      Profile(TextDocumentDonor::native, TextDocumentDonorIndexType::native_full_text,
+      Profile(TextDocumentReference::native, TextDocumentReferenceIndexType::native_full_text,
               IndexFamily::full_text, "full_text", "native_full_text",
               TextDocumentCompatibilityLevel::exact,
               Controls(true, true, true, true, true, true, true, false, false, true),
               false, false, false, "native_catalog_projection", "refuse_unknown_native_text_option",
               "sys.metrics.index.full_text.profile.native", "index.text_document.native.full_text"),
-      Profile(TextDocumentDonor::native, TextDocumentDonorIndexType::native_inverted,
+      Profile(TextDocumentReference::native, TextDocumentReferenceIndexType::native_inverted,
               IndexFamily::inverted, "full_text", "native_inverted",
               TextDocumentCompatibilityLevel::exact,
               Controls(true, true, true, false, false, false, false, false, false, true),
               false, false, false, "native_catalog_projection", "refuse_unknown_native_inverted_option",
               "sys.metrics.index.full_text.profile.native_inverted", "index.text_document.native.inverted"),
-      Profile(TextDocumentDonor::native, TextDocumentDonorIndexType::native_document_path,
+      Profile(TextDocumentReference::native, TextDocumentReferenceIndexType::native_document_path,
               IndexFamily::document_path, "full_text", "native_document_path",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(false, false, false, false, false, false, false, true, true, true),
               true, true, false, "native_document_path_projection", "refuse_unknown_document_path_option",
               "sys.metrics.index.full_text.profile.native_document_path", "index.text_document.native.document_path"),
-      Profile(TextDocumentDonor::mongodb, TextDocumentDonorIndexType::mongodb_text,
+      Profile(TextDocumentReference::mongodb, TextDocumentReferenceIndexType::mongodb_text,
               IndexFamily::full_text, "full_text", "mongodb_text_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(true, true, true, true, true, true, true, false, false, true),
               true, true, false, "listIndexes_projection", "policy_block_unknown_text_option",
-              "sys.metrics.index.donor.mongodb.text", "index.donor.mongodb.text"),
-      Profile(TextDocumentDonor::mongodb, TextDocumentDonorIndexType::mongodb_wildcard,
+              "sys.metrics.index.reference.mongodb.text", "index.reference.mongodb.text"),
+      Profile(TextDocumentReference::mongodb, TextDocumentReferenceIndexType::mongodb_wildcard,
               IndexFamily::document_path, "full_text", "mongodb_wildcard_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(false, false, true, false, false, false, false, true, true, true),
               true, true, false, "listIndexes_projection", "policy_block_encrypted_range",
-              "sys.metrics.index.donor.mongodb.wildcard", "index.donor.mongodb.wildcard"),
-      Profile(TextDocumentDonor::opensearch, TextDocumentDonorIndexType::opensearch_text,
+              "sys.metrics.index.reference.mongodb.wildcard", "index.reference.mongodb.wildcard"),
+      Profile(TextDocumentReference::opensearch, TextDocumentReferenceIndexType::opensearch_text,
               IndexFamily::full_text, "full_text", "opensearch_text_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(true, true, true, true, true, true, true, false, false, true),
               true, true, false, "mapping_projection", "policy_block_unknown_analyzer",
-              "sys.metrics.index.donor.opensearch.text", "index.donor.opensearch.text"),
-      Profile(TextDocumentDonor::neo4j, TextDocumentDonorIndexType::neo4j_text,
+              "sys.metrics.index.reference.opensearch.text", "index.reference.opensearch.text"),
+      Profile(TextDocumentReference::neo4j, TextDocumentReferenceIndexType::neo4j_text,
               IndexFamily::full_text, "full_text", "neo4j_text_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(true, true, true, false, false, false, false, false, false, true),
               true, true, false, "SHOW_INDEXES_projection", "policy_block_unknown_provider",
-              "sys.metrics.index.donor.neo4j.text", "index.donor.neo4j.text"),
-      Profile(TextDocumentDonor::neo4j, TextDocumentDonorIndexType::neo4j_fulltext,
+              "sys.metrics.index.reference.neo4j.text", "index.reference.neo4j.text"),
+      Profile(TextDocumentReference::neo4j, TextDocumentReferenceIndexType::neo4j_fulltext,
               IndexFamily::full_text, "full_text", "neo4j_fulltext_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(true, true, true, true, true, true, true, false, false, true),
               true, true, false, "SHOW_INDEXES_projection", "policy_block_unknown_provider",
-              "sys.metrics.index.donor.neo4j.fulltext", "index.donor.neo4j.fulltext"),
-      Profile(TextDocumentDonor::postgresql, TextDocumentDonorIndexType::postgresql_gin,
+              "sys.metrics.index.reference.neo4j.fulltext", "index.reference.neo4j.fulltext"),
+      Profile(TextDocumentReference::postgresql, TextDocumentReferenceIndexType::postgresql_gin,
               IndexFamily::gin, "full_text", "postgresql_gin_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(true, true, true, true, true, true, false, false, false, true),
               true, false, false, "pg_catalog_projection", "policy_block_unknown_opclass",
-              "sys.metrics.index.donor.postgresql.gin", "index.donor.postgresql.gin"),
-      Profile(TextDocumentDonor::postgresql, TextDocumentDonorIndexType::postgresql_tsvector,
+              "sys.metrics.index.reference.postgresql.gin", "index.reference.postgresql.gin"),
+      Profile(TextDocumentReference::postgresql, TextDocumentReferenceIndexType::postgresql_tsvector,
               IndexFamily::full_text, "full_text", "postgresql_tsvector_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(true, true, true, true, true, true, true, false, false, true),
               true, false, false, "pg_catalog_projection", "policy_block_unknown_text_config",
-              "sys.metrics.index.donor.postgresql.tsvector", "index.donor.postgresql.tsvector"),
-      Profile(TextDocumentDonor::cassandra, TextDocumentDonorIndexType::cassandra_sai_text,
+              "sys.metrics.index.reference.postgresql.tsvector", "index.reference.postgresql.tsvector"),
+      Profile(TextDocumentReference::cassandra, TextDocumentReferenceIndexType::cassandra_sai_text,
               IndexFamily::full_text, "full_text", "cassandra_sai_text_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(true, true, true, false, false, false, false, false, false, true),
               true, true, false, "system_schema_projection", "policy_block_unknown_sai_analyzer",
-              "sys.metrics.index.donor.cassandra.sai_text", "index.donor.cassandra.sai_text"),
-      Profile(TextDocumentDonor::cassandra, TextDocumentDonorIndexType::cassandra_sasi_text,
+              "sys.metrics.index.reference.cassandra.sai_text", "index.reference.cassandra.sai_text"),
+      Profile(TextDocumentReference::cassandra, TextDocumentReferenceIndexType::cassandra_sasi_text,
               IndexFamily::full_text, "full_text", "cassandra_sasi_text_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(true, true, true, false, false, false, false, false, false, true),
               true, true, false, "system_schema_projection", "policy_block_unknown_sasi_mode",
-              "sys.metrics.index.donor.cassandra.sasi_text", "index.donor.cassandra.sasi_text"),
-      Profile(TextDocumentDonor::mysql, TextDocumentDonorIndexType::mysql_fulltext,
+              "sys.metrics.index.reference.cassandra.sasi_text", "index.reference.cassandra.sasi_text"),
+      Profile(TextDocumentReference::mysql, TextDocumentReferenceIndexType::mysql_fulltext,
               IndexFamily::full_text, "full_text", "mysql_fulltext_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(true, true, true, true, true, true, true, false, false, true),
               true, true, false, "information_schema_projection", "policy_block_engine_only",
-              "sys.metrics.index.donor.mysql.fulltext", "index.donor.mysql.fulltext"),
-      Profile(TextDocumentDonor::mariadb, TextDocumentDonorIndexType::mariadb_fulltext,
+              "sys.metrics.index.reference.mysql.fulltext", "index.reference.mysql.fulltext"),
+      Profile(TextDocumentReference::mariadb, TextDocumentReferenceIndexType::mariadb_fulltext,
               IndexFamily::full_text, "full_text", "mariadb_fulltext_profile",
               TextDocumentCompatibilityLevel::compatible_with_recheck,
               Controls(true, true, true, true, true, true, true, false, false, true),
               true, true, false, "information_schema_projection", "policy_block_engine_only",
-              "sys.metrics.index.donor.mariadb.fulltext", "index.donor.mariadb.fulltext")};
+              "sys.metrics.index.reference.mariadb.fulltext", "index.reference.mariadb.fulltext")};
   return descriptors;
 }
 
-TextDocumentProfileLookupResult FindTextDocumentSemanticProfile(TextDocumentDonor donor,
-                                                                TextDocumentDonorIndexType index_type) {
+TextDocumentProfileLookupResult FindTextDocumentSemanticProfile(TextDocumentReference reference,
+                                                                TextDocumentReferenceIndexType index_type) {
   for (const auto& descriptor : BuiltinTextDocumentSemanticProfiles()) {
-    if (descriptor.donor == donor && descriptor.index_type == index_type) {
+    if (descriptor.reference == reference && descriptor.index_type == index_type) {
       return TextDocumentProfileLookupResult{OkStatus(), &descriptor, {}};
     }
   }
@@ -882,8 +882,8 @@ TextDocumentProfileLookupResult FindTextDocumentSemanticProfile(TextDocumentDono
       nullptr,
       MakeTextDocumentAccessDiagnostic(ErrorStatus(), "SB-INDEX-TEXT-DOC-PROFILE-MISSING",
                                        "index.text_document.profile_missing",
-                                       std::string(TextDocumentDonorName(donor)) + ":" +
-                                           TextDocumentDonorIndexTypeName(index_type))};
+                                       std::string(TextDocumentReferenceName(reference)) + ":" +
+                                           TextDocumentReferenceIndexTypeName(index_type))};
 }
 
 TextDocumentProfileLookupResult FindTextDocumentSemanticProfileById(std::string_view semantic_profile_id) {
@@ -900,14 +900,14 @@ TextDocumentProfileLookupResult FindTextDocumentSemanticProfileById(std::string_
                                        std::string(semantic_profile_id))};
 }
 
-TextDocumentProfileDecision DecideDonorTextDocumentProfile(const TextDocumentProfileDecisionRequest& request) {
-  const auto lookup = FindTextDocumentSemanticProfile(request.donor, request.index_type);
+TextDocumentProfileDecision DecideReferenceTextDocumentProfile(const TextDocumentProfileDecisionRequest& request) {
+  const auto lookup = FindTextDocumentSemanticProfile(request.reference, request.index_type);
   if (!lookup.ok()) {
     return ProfileError(nullptr,
                         "SB-INDEX-TEXT-DOC-PROFILE-MISSING",
                         "index.text_document.profile_missing",
-                        std::string(TextDocumentDonorName(request.donor)) + ":" +
-                            TextDocumentDonorIndexTypeName(request.index_type));
+                        std::string(TextDocumentReferenceName(request.reference)) + ":" +
+                            TextDocumentReferenceIndexTypeName(request.index_type));
   }
 
   const auto* descriptor = lookup.descriptor;

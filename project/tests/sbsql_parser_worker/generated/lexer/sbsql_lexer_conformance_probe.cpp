@@ -137,7 +137,7 @@ bool ValidateCoreTokenClasses() {
   ok &= Require(!meaningful.empty() && meaningful.front().line == 2,
                 "line span was not preserved");
 
-  const auto identifiers = sbsql::Lex(R"SQL("Quoted Name" `donor name` [bracket name] bare_name)SQL");
+  const auto identifiers = sbsql::Lex(R"SQL("Quoted Name" `reference name` [bracket name] bare_name)SQL");
   ok &= Require(!identifiers.messages.has_errors(), "identifier forms produced errors");
   const auto id_tokens = MeaningfulTokens(identifiers);
   ok &= Require(id_tokens.size() == 4, "identifier token count mismatch");

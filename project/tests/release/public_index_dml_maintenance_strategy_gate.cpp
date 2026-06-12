@@ -62,7 +62,7 @@ const char* BoolText(bool value) {
 bool AcceptedFamily(const index::IndexFamilyDescriptor& descriptor) {
   return descriptor.completion ==
              index::IndexCompletionStatus::accepted_requires_full_implementation &&
-         descriptor.persistence != index::IndexPersistenceClass::donor_emulated &&
+         descriptor.persistence != index::IndexPersistenceClass::reference_emulated &&
          descriptor.persistence != index::IndexPersistenceClass::policy_blocked;
 }
 

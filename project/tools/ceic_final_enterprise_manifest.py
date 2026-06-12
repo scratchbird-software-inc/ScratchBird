@@ -99,7 +99,7 @@ AUTHORITY_FLAGS = (
     "security_authority",
     "recovery_authority",
     "parser_authority",
-    "donor_authority",
+    "reference_authority",
     "wal_authority",
     "benchmark_authority",
     "optimizer_plan_authority",
@@ -113,7 +113,7 @@ AUTHORITY_FLAGS = (
 )
 NO_AUTHORITY_TOKEN = (
     "final_manifest_is_audit_evidence_only_not_transaction_finality_visibility_authorization_"
-    "security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_memory_"
+    "security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_memory_"
     "provider_cluster_support_bundle_or_agent_action_authority"
 )
 LOCAL_CLUSTER_POSITIVE_RE = re.compile(
@@ -379,7 +379,7 @@ def authority_boundary() -> dict[str, Any]:
         **{flag: False for flag in AUTHORITY_FLAGS},
         "cluster_production_claim": "blocked_without_signed_external_provider_proof",
         "local_cluster_stub_free": True,
-        "donor_comparison_authority": False,
+        "reference_comparison_authority": False,
         "static_or_descriptor_only_authority": False,
     }
 

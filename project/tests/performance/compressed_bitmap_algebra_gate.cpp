@@ -153,8 +153,8 @@ void RequireCompressedResult(const idx::CandidateSetResult& result,
   Require(HasEvidence(result.evidence, action), "operation action missing");
   Require(HasEvidence(result.evidence, "candidate_set_finality_authority=false"),
           "candidate-set non-authority evidence missing");
-  Require(HasEvidence(result.evidence, "parser_or_donor_authority=false"),
-          "parser/donor non-authority evidence missing");
+  Require(HasEvidence(result.evidence, "parser_or_reference_authority=false"),
+          "parser/reference non-authority evidence missing");
   Require(HasEvidence(result.evidence, "provider_finality_authority=false"),
           "provider non-authority evidence missing");
   Require(HasEvidence(result.evidence,
@@ -328,10 +328,10 @@ void TestFailClosedContractsAndCorruption() {
           "missing MGA recheck contract accepted");
 
   corrupt = left;
-  corrupt.parser_or_donor_finality_or_visibility_authority = true;
+  corrupt.parser_or_reference_finality_or_visibility_authority = true;
   refused = idx::UnionCandidateSets(corrupt, right, authority);
   Require(!refused.ok() && refused.fail_closed,
-          "parser/donor authority drift accepted");
+          "parser/reference authority drift accepted");
 
   corrupt = left;
   corrupt.final_rows_authorized = true;

@@ -349,7 +349,7 @@ void PopulateLocationResult(EngineLocateTransactionResult* result,
                      {"mga_inventory_authority",
                       resolved.local_inventory_authoritative ? "true" : "false"},
                      {"parser_finality_authority", "false"},
-                     {"donor_finality_authority", "false"}});
+                     {"reference_finality_authority", "false"}});
   AddApiBehaviorEvidence(result,
                          "mga_transaction_location",
                          resolved.location_class);
@@ -672,7 +672,7 @@ EngineBeginAuditReadTransactionResult EngineBeginAuditReadTransaction(
                      {"isolation_level", request.isolation_level},
                      {"mga_inventory_authority", "true"},
                      {"parser_finality_authority", "false"},
-                     {"donor_finality_authority", "false"}});
+                     {"reference_finality_authority", "false"}});
   AddApiBehaviorEvidence(&result,
                          "audit_read_transaction",
                          "durable_mga_read_only_transaction");

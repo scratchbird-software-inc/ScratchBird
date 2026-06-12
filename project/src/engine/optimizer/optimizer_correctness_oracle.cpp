@@ -61,7 +61,7 @@ bool HasAuthorityDrift(
          authority.authorization_security_authority ||
          authority.recovery_authority ||
          authority.parser_authority ||
-         authority.donor_authority ||
+         authority.reference_authority ||
          authority.wal_authority ||
          authority.benchmark_authority ||
          authority.optimizer_plan_authority ||
@@ -325,11 +325,11 @@ OptimizerCorrectnessOracleValidation ValidateOptimizerCorrectnessOracleCase(
     AddDiagnostic(&validation, oracle_case,
                   "SB_OPT_CORRECTNESS_ORACLE.MGA_SECURITY_RECHECK_REQUIRED");
   }
-  if (!oracle_case.donor_reference_only ||
-      oracle_case.donor_as_authority ||
-      oracle_case.uses_donor_storage_or_finality_for_scratchbird) {
+  if (!oracle_case.reference_reference_only ||
+      oracle_case.reference_as_authority ||
+      oracle_case.uses_reference_storage_or_finality_for_scratchbird) {
     AddDiagnostic(&validation, oracle_case,
-                  "SB_OPT_CORRECTNESS_ORACLE.DONOR_AUTHORITY_DRIFT");
+                  "SB_OPT_CORRECTNESS_ORACLE.REFERENCE_AUTHORITY_DRIFT");
   }
   if (HasAuthorityDrift(oracle_case.authority)) {
     AddDiagnostic(&validation, oracle_case,

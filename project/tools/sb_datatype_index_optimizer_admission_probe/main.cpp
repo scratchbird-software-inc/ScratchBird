@@ -172,7 +172,7 @@ int main(int argc, char** argv) {
     request.descriptor = DescriptorForRow(row);
     request.support_path = row.support_path;
     request.index_stats_status = row.index_stats_status;
-    request.donor_label = "DONOR_LABEL_" + row.type_group;
+    request.reference_label = "REFERENCE_LABEL_" + row.type_group;
     const auto result = EvaluateDatatypeIndexOptimizerAdmission(request);
     if (!result.optimizer_uses_canonical_descriptor) { optimizer_descriptor_use_ok = false; }
     ++optimizer_descriptor_cases;

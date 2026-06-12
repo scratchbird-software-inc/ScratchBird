@@ -206,6 +206,7 @@ def base_env(ctx: Context) -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("LC_ALL", "C.UTF-8")
     env.setdefault("LANG", "C.UTF-8")
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PIP_CACHE_DIR"] = str(ctx.deps_root / "python" / "pip")
     env["PYTHONPYCACHEPREFIX"] = str(ctx.component_build_root / "pycache")
     env["npm_config_cache"] = str(ctx.deps_root / "npm")

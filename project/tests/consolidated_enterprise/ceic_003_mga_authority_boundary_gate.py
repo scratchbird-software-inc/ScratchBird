@@ -46,7 +46,7 @@ SPEC_REQUIREMENTS = (
         pathlib.Path("public_contract_snapshot"),
         (
             "The durable transaction inventory page family is the authoritative single-node transaction finality structure.",
-            "Parser state, donor syntax, CRUD text events, wall-clock order, UUID order, and file timestamps are forbidden as transaction finality authority.",
+            "Parser state, reference syntax, CRUD text events, wall-clock order, UUID order, and file timestamps are forbidden as transaction finality authority.",
             "WAL/redo/undo is not authoritative recovery for ScratchBird Alpha.",
         ),
     ),
@@ -55,7 +55,7 @@ SPEC_REQUIREMENTS = (
         pathlib.Path("public_contract_snapshot"),
         (
             "No implementation may replace this chain with PostgreSQL-style WAL authority, InnoDB-style redo/undo authority, latest-state replication authority, parser SQL authority, or optional write-after delta authority.",
-            "Donor terms such as WAL, binlog, redo, undo, flashback, temporal history, logical replication, group replication, or certification are compatibility surfaces.",
+            "Reference terms such as WAL, binlog, redo, undo, flashback, temporal history, logical replication, group replication, or certification are compatibility surfaces.",
         ),
     ),
     TextRequirement(
@@ -76,8 +76,8 @@ EXECUTION_PLAN_REQUIREMENTS = (
         (
             "MGA transaction inventory remains transaction finality and visibility",
             "Memory evidence, metrics, support bundles, benchmarks, indexes, optimizer",
-            "authorization, parser, donor, WAL, or recovery authority",
-            "Donor engines may provide comparison artifacts only.",
+            "authorization, parser, reference, WAL, or recovery authority",
+            "Reference engines may provide comparison artifacts only.",
             "WAL must not be introduced as Alpha recovery or transaction finality",
         ),
     ),
@@ -119,14 +119,14 @@ SOURCE_REQUIREMENTS = (
         "memory accounting non-authority",
         pathlib.Path("project/src/core/memory/sharded_memory_accounting_ledger.cpp"),
         (
-            "memory_accounting_event_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_or_support_bundle_authority",
+            "memory_accounting_event_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_or_support_bundle_authority",
         ),
     ),
     TextRequirement(
         "memory support-bundle non-authority",
         pathlib.Path("project/src/core/memory/memory_support_bundle.cpp"),
         (
-            "memory_support_bundle.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority",
+            "memory_support_bundle.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority",
         ),
     ),
     TextRequirement(
@@ -150,7 +150,7 @@ SOURCE_REQUIREMENTS = (
             "mga_visibility_recheck.required=true",
             "security_authorization_recheck.required=true",
             "candidate_set_finality_authority=false",
-            "parser_or_donor_authority=false",
+            "parser_or_reference_authority=false",
             "wal_recovery_or_finality_authority=false",
         ),
     ),
@@ -172,7 +172,7 @@ SOURCE_REQUIREMENTS = (
             "benchmark_clean_admissible",
             "observational_only",
             "parser_authority",
-            "donor_authority",
+            "reference_authority",
             "transaction_finality_authority",
             "visibility_authority",
             "recovery_authority",
@@ -186,7 +186,7 @@ SOURCE_REQUIREMENTS = (
             "runtime_filter.exact_recheck_required=true",
             "runtime_filter.mga_visibility_recheck_required=true",
             "runtime_filter.security_recheck_required=true",
-            "parser_or_donor_finality_or_visibility_authority=false",
+            "parser_or_reference_finality_or_visibility_authority=false",
             "write_ahead_log_finality_or_visibility_authority=false",
         ),
     ),
@@ -194,7 +194,7 @@ SOURCE_REQUIREMENTS = (
         "optimizer runtime feedback is advisory",
         pathlib.Path("project/src/engine/optimizer/optimizer_feedback.cpp"),
         (
-            "runtime_feedback_persistence.authority_scope=advisory_only_not_transaction_finality_visibility_security_recovery_parser_or_donor_authority",
+            "runtime_feedback_persistence.authority_scope=advisory_only_not_transaction_finality_visibility_security_recovery_parser_or_reference_authority",
             "runtime_feedback_persistence.invalidatable=true",
         ),
     ),
@@ -232,17 +232,17 @@ SOURCE_REQUIREMENTS = (
         ),
     ),
     TextRequirement(
-        "donor-emulated indexes are mapping only",
-        pathlib.Path("project/src/core/index/donor_emulated_index_mapping.cpp"),
+        "reference-emulated indexes are mapping only",
+        pathlib.Path("project/src/core/index/reference_emulated_index_mapping.cpp"),
         (
-            "donor_emulated.candidate_only=true",
-            "donor_emulated.final_rows_authorized=false",
-            "donor_emulated.parser_authority=false",
-            "donor_emulated.donor_authority=false",
-            "donor_emulated.visibility_authority=false",
-            "donor_emulated.transaction_finality_authority=false",
-            "donor_emulated.log_finality_authority=false",
-            "donor_emulated.mga_visibility_recheck.required=true",
+            "reference_emulated.candidate_only=true",
+            "reference_emulated.final_rows_authorized=false",
+            "reference_emulated.parser_authority=false",
+            "reference_emulated.reference_authority=false",
+            "reference_emulated.visibility_authority=false",
+            "reference_emulated.transaction_finality_authority=false",
+            "reference_emulated.log_finality_authority=false",
+            "reference_emulated.mga_visibility_recheck.required=true",
         ),
     ),
     TextRequirement(
@@ -279,7 +279,7 @@ FORBIDDEN_SUBJECTS = (
     "agent",
     "benchmark",
     "parser",
-    "donor",
+    "reference",
     "wal",
     "write_ahead_log",
     "write-ahead log",
@@ -351,10 +351,10 @@ def validate_claim_boundary_matrix(repo_root: pathlib.Path) -> list[str]:
         "memory": ("not transaction finality visibility", "recovery authority"),
         "metrics": ("do not authorize rows commits recovery or security",),
         "indexes": ("exact mga security recheck",),
-        "optimizer": ("cannot become row visibility transaction finality donor or parser authority",),
+        "optimizer": ("cannot become row visibility transaction finality reference or parser authority",),
         "agents": ("cannot become transaction recovery security optimizer plan or index finality authority",),
         "support_bundles": ("observability artifacts only",),
-        "donor_comparisons": ("comparison only",),
+        "reference_comparisons": ("comparison only",),
     }
     errors: list[str] = []
     with path.open(newline="", encoding="utf-8") as handle:
@@ -400,7 +400,7 @@ def validate_forbidden_claim_scanner(repo_root: pathlib.Path) -> list[str]:
     errors: list[str] = []
     bad_fixtures = (
         "optimizer payload finality authority=true",
-        "donor comparison is visibility authority",
+        "reference comparison is visibility authority",
         "support_bundle recovery authority source of truth",
         "memory metric owns transaction finality authority",
         "parser WAL visibility authoritative",

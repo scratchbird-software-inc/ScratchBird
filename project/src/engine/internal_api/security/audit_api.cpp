@@ -93,7 +93,7 @@ EngineEmitLifecycleAuditEventResult EngineEmitLifecycleAuditEvent(
                   {"redacted", "true"},
                   {"public_private_shape_separated", "true"},
                   {"parser_finality_authority", "false"},
-                  {"donor_finality_authority", "false"},
+                  {"reference_finality_authority", "false"},
                   {"cache_marker_linked", result.cache_marker_linked ? "true" : "false"}});
   return result;
 }

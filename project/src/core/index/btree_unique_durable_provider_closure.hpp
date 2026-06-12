@@ -25,7 +25,7 @@ using scratchbird::core::platform::u64;
 enum class BtreeUniqueDurableProviderClosureStatus : u32 {
   admitted_durable_provider_evidence = 1,
   unsupported_family = 2,
-  donor_policy_cluster_participation = 3,
+  reference_policy_cluster_participation = 3,
   provider_admission_not_admitted = 4,
   mga_recovery_contract_not_admitted = 5,
   missing_generation_root_identity = 6,
@@ -49,7 +49,7 @@ struct BtreeUniqueClosureAuthorityBoundary {
   bool security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -148,7 +148,7 @@ struct BtreeUniqueDurableProviderClosureRequest {
   BtreeRepairRebuildProof repair_rebuild;
   BtreeConcurrencyEvidenceHooks concurrency;
   BtreeUniqueClosureAuthorityBoundary authority_boundary;
-  bool donor_local_participation = false;
+  bool reference_local_participation = false;
   bool policy_local_participation = false;
   bool cluster_local_participation = false;
   bool durable_provider_evidence_claimed = true;

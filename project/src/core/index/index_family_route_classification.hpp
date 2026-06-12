@@ -34,7 +34,7 @@ enum class IndexFamilyRouteSemantic : u32 {
   summary_segment_prune = 12,
   temporary_work_candidate = 13,
   in_memory_candidate = 14,
-  donor_emulated_non_runtime = 15,
+  reference_emulated_non_runtime = 15,
   policy_blocked_non_runtime = 16,
   unsupported = 17
 };
@@ -43,7 +43,7 @@ enum class IndexRouteClassificationStatus : u32 {
   classified = 1,
   unsupported_family = 2,
   unsupported_route = 3,
-  donor_emulated_non_runtime = 4,
+  reference_emulated_non_runtime = 4,
   policy_blocked_non_runtime = 5,
   route_not_supported = 6,
   forbidden_authority_claim = 7,
@@ -59,7 +59,7 @@ struct IndexRouteClassificationAuthorityClaims {
   bool security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -79,7 +79,7 @@ struct IndexRouteClassificationSuccessorClaims {
   bool ceic_041_crash_matrix_claimed = false;
   bool ceic_042_readiness_drift_claimed = false;
   bool all_index_readiness_claimed = false;
-  bool donor_dominance_claimed = false;
+  bool reference_dominance_claimed = false;
   bool enterprise_readiness_claimed = false;
 };
 
@@ -150,7 +150,7 @@ struct IndexRouteFamilyClassificationResult {
   bool security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -166,7 +166,7 @@ struct IndexRouteFamilyClassificationResult {
   bool ceic_041_crash_matrix_claimed = false;
   bool ceic_042_readiness_drift_claimed = false;
   bool all_index_readiness_claimed = false;
-  bool donor_dominance_claimed = false;
+  bool reference_dominance_claimed = false;
   bool enterprise_readiness_claimed = false;
 
   bool ok() const { return status.ok() && classified && !fail_closed; }

@@ -82,8 +82,8 @@ void RequireNonAuthority(
           "classification must not claim recovery authority");
   Require(!result.parser_authority,
           "classification must not claim parser authority");
-  Require(!result.donor_authority,
-          "classification must not claim donor authority");
+  Require(!result.reference_authority,
+          "classification must not claim reference authority");
   Require(!result.wal_authority,
           "classification must not claim WAL authority");
   Require(!result.benchmark_authority,
@@ -118,8 +118,8 @@ void RequireNoSuccessorOverclaim(
           "CEIC-038 must not claim CEIC-042");
   Require(!result.all_index_readiness_claimed,
           "CEIC-038 must not claim all-index readiness");
-  Require(!result.donor_dominance_claimed,
-          "CEIC-038 must not claim donor dominance");
+  Require(!result.reference_dominance_claimed,
+          "CEIC-038 must not claim reference dominance");
   Require(!result.enterprise_readiness_claimed,
           "CEIC-038 must not claim enterprise readiness");
 }
@@ -334,12 +334,12 @@ void CandidateRankingSeedFamiliesRequireExactProofs() {
   RequireNonAuthority(spatial);
 }
 
-void DonorPolicyAndUnsafeClaimsFailClosed() {
+void ReferencePolicyAndUnsafeClaimsFailClosed() {
   RequireStatus(
       index::ClassifyIndexFamilyRoute(
-          Request(index::IndexFamily::donor_emulated)),
-      index::IndexRouteClassificationStatus::donor_emulated_non_runtime,
-      "donor-emulated classification did not fail closed");
+          Request(index::IndexFamily::reference_emulated)),
+      index::IndexRouteClassificationStatus::reference_emulated_non_runtime,
+      "reference-emulated classification did not fail closed");
 
   RequireStatus(
       index::ClassifyIndexFamilyRoute(
@@ -403,12 +403,12 @@ void DonorPolicyAndUnsafeClaimsFailClosed() {
                     forbidden_authority_claim,
                 "parser authority claim did not fail closed");
 
-  auto donor = Request(index::IndexFamily::btree);
-  donor.authority_claims.donor_authority = true;
-  RequireStatus(index::ClassifyIndexFamilyRoute(donor),
+  auto reference = Request(index::IndexFamily::btree);
+  reference.authority_claims.reference_authority = true;
+  RequireStatus(index::ClassifyIndexFamilyRoute(reference),
                 index::IndexRouteClassificationStatus::
                     forbidden_authority_claim,
-                "donor authority claim did not fail closed");
+                "reference authority claim did not fail closed");
 
   auto wal = Request(index::IndexFamily::btree);
   wal.authority_claims.wal_authority = true;
@@ -511,12 +511,12 @@ void ClusterAndSuccessorOverclaimsFailClosed() {
                     successor_or_enterprise_overclaim,
                 "all-index readiness overclaim did not fail closed");
 
-  auto donor_dominance = Request(index::IndexFamily::btree);
-  donor_dominance.successor_claims.donor_dominance_claimed = true;
-  RequireStatus(index::ClassifyIndexFamilyRoute(donor_dominance),
+  auto reference_dominance = Request(index::IndexFamily::btree);
+  reference_dominance.successor_claims.reference_dominance_claimed = true;
+  RequireStatus(index::ClassifyIndexFamilyRoute(reference_dominance),
                 index::IndexRouteClassificationStatus::
                     successor_or_enterprise_overclaim,
-                "donor dominance overclaim did not fail closed");
+                "reference dominance overclaim did not fail closed");
 
   auto enterprise = Request(index::IndexFamily::btree);
   enterprise.successor_claims.enterprise_readiness_claimed = true;
@@ -532,7 +532,7 @@ int main() {
   ExactFamiliesRemainCandidateOnlyForRows();
   BloomAndSummaryFamiliesArePruneOnly();
   CandidateRankingSeedFamiliesRequireExactProofs();
-  DonorPolicyAndUnsafeClaimsFailClosed();
+  ReferencePolicyAndUnsafeClaimsFailClosed();
   ClusterAndSuccessorOverclaimsFailClosed();
   std::cout << "ceic_038_lossy_pruning_family_classification_gate=pass\n";
   return EXIT_SUCCESS;

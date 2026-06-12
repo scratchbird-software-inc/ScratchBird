@@ -172,7 +172,7 @@ TEST(MMCH090CheckoutLeakDetectorGate, StructuredDiagnosticFieldsAreCheckoutScope
     const auto payload = nlohmann::json::parse(detector.ExportDiagnosticsJson());
     EXPECT_EQ(payload["detector_kind"], "connection_checkout_leak_detector");
     EXPECT_EQ(payload["authority_scope"],
-              "driver_checkout_leak_evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_donor_or_benchmark_authority");
+              "driver_checkout_leak_evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_reference_or_benchmark_authority");
     EXPECT_EQ(payload["heap_leak_detection"], false);
     EXPECT_EQ(payload["active_checkouts"], 1);
     EXPECT_EQ(payload["potential_checkout_leaks"], 1);

@@ -71,7 +71,7 @@ SblrParserHandoffBufferResult Refuse(std::string operation_id,
   result.evidence.push_back(kAnchor);
   result.evidence.push_back("sblr.parser_handoff.fail_closed=true");
   result.evidence.push_back(
-      "sblr.parser_handoff.authority_scope=translation_buffer_only_not_parser_execution_not_transaction_finality_visibility_recovery_donor_benchmark_cluster_or_optimizer_authority");
+      "sblr.parser_handoff.authority_scope=translation_buffer_only_not_parser_execution_not_transaction_finality_visibility_recovery_reference_benchmark_cluster_or_optimizer_authority");
   return result;
 }
 
@@ -82,7 +82,7 @@ SblrParserHandoffBufferResult BuildSblrParserHandoffBuffer(
     std::string operation_id,
     std::string_view payload,
     bool engine_mga_authoritative,
-    bool parser_or_donor_finality_authority,
+    bool parser_or_reference_finality_authority,
     bool debug_or_relaxed_path) {
   if (resource == nullptr || !resource->active()) {
     return Refuse(std::move(operation_id),
@@ -96,12 +96,12 @@ SblrParserHandoffBufferResult BuildSblrParserHandoffBuffer(
                   "sblr.ceic_012.parser_handoff.request_invalid",
                   "operation_id_and_payload_required");
   }
-  if (!engine_mga_authoritative || parser_or_donor_finality_authority ||
+  if (!engine_mga_authoritative || parser_or_reference_finality_authority ||
       debug_or_relaxed_path) {
     return Refuse(std::move(operation_id),
                   "SB_CEIC_012_SBLR_HANDOFF.UNSAFE_AUTHORITY",
                   "sblr.ceic_012.parser_handoff.unsafe_authority",
-                  "engine_mga_required_and_parser_donor_debug_authority_refused");
+                  "engine_mga_required_and_parser_reference_debug_authority_refused");
   }
 
   scratchbird::core::memory::ReservationBackedMemoryAllocationRequest allocation;
@@ -133,7 +133,7 @@ SblrParserHandoffBufferResult BuildSblrParserHandoffBuffer(
                             std::to_string(result.payload_bytes));
   result.evidence.push_back("sblr.parser_handoff.digest=" + result.digest);
   result.evidence.push_back(
-      "sblr.parser_handoff.authority_scope=translation_buffer_only_not_parser_execution_not_transaction_finality_visibility_recovery_donor_benchmark_cluster_or_optimizer_authority");
+      "sblr.parser_handoff.authority_scope=translation_buffer_only_not_parser_execution_not_transaction_finality_visibility_recovery_reference_benchmark_cluster_or_optimizer_authority");
   return result;
 }
 

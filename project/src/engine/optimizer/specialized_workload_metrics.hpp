@@ -20,7 +20,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: OEIC_SPECIALIZED_WORKLOAD_OPTIMIZER_METRICS
 // Live specialized-workload metrics are route-costing and feedback evidence
 // only. They cannot provide transaction finality, visibility, security,
-// parser, donor, recovery, WAL, cluster, or benchmark authority.
+// parser, reference, recovery, WAL, cluster, or benchmark authority.
 
 struct SpecializedWorkloadMetricAuthority {
   bool provider_contract_authoritative = false;
@@ -37,7 +37,7 @@ struct SpecializedWorkloadMetricAuthority {
   bool vector_runtime_authoritative = false;
   bool graph_runtime_authoritative = false;
   bool time_series_runtime_authoritative = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool metric_visibility_or_finality_authority = false;
   bool metric_recovery_authority = false;

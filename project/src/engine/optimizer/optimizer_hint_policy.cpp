@@ -36,7 +36,7 @@ OptimizerHintPolicyAdmission Refuse(const OptimizerHintPolicyRequest& request,
   AddEvidence(&admission, "hint_policy.applied=false");
   AddEvidence(&admission, "hint_policy.advisory_only_required=true");
   AddEvidence(&admission, "hint_policy.parser_execution_authority=false");
-  AddEvidence(&admission, "hint_policy.donor_authority=false");
+  AddEvidence(&admission, "hint_policy.reference_authority=false");
   return admission;
 }
 
@@ -178,12 +178,12 @@ OptimizerHintPolicyAdmission EvaluateOptimizerHintPolicyAdmission(
                   "SB_OPT_HINT_POLICY.PARSER_SQL_REFUSED",
                   "hint_policy.sql_text_or_parser_authority_refused");
   }
-  if (request.donor_or_legacy_authority_claimed ||
+  if (request.reference_or_legacy_authority_claimed ||
       request.name_authority_claimed ||
       request.metric_or_benchmark_authority_claimed) {
     return Refuse(request,
                   "SB_OPT_HINT_POLICY.UNSAFE_AUTHORITY_REFUSED",
-                  "hint_policy.donor_name_metric_or_benchmark_authority_refused");
+                  "hint_policy.reference_name_metric_or_benchmark_authority_refused");
   }
   if (request.normalized_hint_tokens.empty()) {
     return Refuse(request,
@@ -231,7 +231,7 @@ OptimizerHintPolicyAdmission EvaluateOptimizerHintPolicyAdmission(
   AddEvidence(&admission, "hint_policy.advisory_only=true");
   AddEvidence(&admission, "hint_policy.raw_sql_text_present=false");
   AddEvidence(&admission, "hint_policy.parser_execution_authority=false");
-  AddEvidence(&admission, "hint_policy.donor_authority=false");
+  AddEvidence(&admission, "hint_policy.reference_authority=false");
   AddEvidence(&admission, "hint_policy.name_authority=false");
   AddEvidence(&admission, "hint_policy.metric_or_benchmark_authority=false");
   AddEvidence(&admission, "hint_policy.mga_visibility_recheck_required=true");

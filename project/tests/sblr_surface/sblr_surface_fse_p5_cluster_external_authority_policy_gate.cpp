@@ -285,8 +285,8 @@ void VerifyPolicyRows(const std::vector<Row>& policy_rows) {
     const auto& operation_id = Field(row, "operation_id");
     Require(Contains(Field(row, "parser_authority_policy"), "forbidden"),
             "parser authority not forbidden " + source_import_id);
-    Require(Contains(Field(row, "donor_authority_policy"), "forbidden"),
-            "donor authority not forbidden " + source_import_id);
+    Require(Contains(Field(row, "reference_authority_policy"), "forbidden"),
+            "reference authority not forbidden " + source_import_id);
 
     if (Field(row, "source_type") == "cluster_normalization") {
       ++cluster_rows;
@@ -535,7 +535,7 @@ int main(int argc, char** argv) {
        "exact_refusal_policy",
        "local_engine_execution_policy",
        "parser_authority_policy",
-       "donor_authority_policy",
+       "reference_authority_policy",
        "cluster_query_authority_marker",
        "message_vector_policy",
        "proof_test_name",

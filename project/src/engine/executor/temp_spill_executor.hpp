@@ -39,7 +39,7 @@ struct TempSpillAuthorityContext {
   bool security_recheck_required = false;
   bool security_context_bound = false;
   bool exact_recheck_required = false;
-  bool parser_client_or_donor_spill_authority = false;
+  bool parser_client_or_reference_spill_authority = false;
   bool temp_metadata_visibility_or_finality_authority = false;
   bool temp_metadata_recovery_authority = false;
 };
@@ -63,7 +63,7 @@ struct TempSpillRequest {
   bool exact_fallback_available = true;
   std::string expected_result_hash;
   std::uint64_t reopen_runtime_generation = 0;
-  bool benchmark_or_donor_dominance_claim = false;
+  bool benchmark_or_reference_dominance_claim = false;
 };
 
 struct TempSpillResult {

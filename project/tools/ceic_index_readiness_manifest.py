@@ -144,7 +144,7 @@ PENDING_STATUS = {"pending", "planned"}
 AUTHORITY_BOUNDARY_TOKEN = (
     "index_readiness_manifest_is_generated_evidence_only_not_row_truth_result_"
     "finality_transaction_finality_visibility_authorization_security_recovery_"
-    "parser_donor_wal_benchmark_optimizer_plan_index_finality_local_cluster_"
+    "parser_reference_wal_benchmark_optimizer_plan_index_finality_local_cluster_"
     "cluster_action_or_agent_action_authority"
 )
 CEIC_042_SCOPE_PENDING = "future_ci_drift_gate_not_completed_by_CEIC_030"
@@ -583,7 +583,7 @@ def parse_descriptors(source: str, enum_order: list[str]) -> dict[str, FamilyDes
             family_id=family_id,
             canonical_name=family_id,
             persistence_class="policy_blocked",
-            key_model="donor_defined",
+            key_model="reference_defined",
             completion_status="policy_blocked_alpha",
             native_physical_family="policy_blocked",
             default_semantic_profile=match.group("policy"),
@@ -743,7 +743,7 @@ def route_supports_family(route: str, family: str, capability: CapabilityState) 
     if route in {"dml_insert", "dml_update", "dml_delete"}:
         return ordered_write_family(family)
     if route in {"sql_select", "bulk_build", "maintenance", "validate_repair"}:
-        return family not in {"donor_emulated", "policy_blocked"}
+        return family not in {"reference_emulated", "policy_blocked"}
     if route == "nosql_document":
         return family == "document_path"
     if route == "nosql_graph":
@@ -836,8 +836,8 @@ def family_semantic_class(family: str) -> str:
         return "temporary_work_candidate"
     if family == "in_memory":
         return "in_memory_candidate"
-    if family == "donor_emulated":
-        return "donor_emulated_non_runtime"
+    if family == "reference_emulated":
+        return "reference_emulated_non_runtime"
     if family == "policy_blocked":
         return "policy_blocked_non_runtime"
     return "unsupported"
@@ -849,7 +849,7 @@ def family_classification_summary(
 ) -> dict[str, Any]:
     family = descriptor.enum_name
     ceic_038_complete = successor_status_by_slice.get("CEIC-038", "pending") in COMPLETE_STATUS
-    blocked = descriptor.persistence_class in {"donor_emulated", "policy_blocked"}
+    blocked = descriptor.persistence_class in {"reference_emulated", "policy_blocked"}
     return {
         "source": "project/src/core/index/index_family_route_classification.*",
         "gate": "project/tests/consolidated_enterprise/ceic_038_lossy_pruning_family_classification_gate.cpp",
@@ -899,7 +899,7 @@ def family_classification_summary(
         "ceic_041_crash_matrix_claimed": False,
         "ceic_042_readiness_drift_claimed": False,
         "all_index_readiness_claimed": False,
-        "donor_dominance_claimed": False,
+        "reference_dominance_claimed": False,
         "enterprise_readiness_claimed": False,
     }
 
@@ -907,8 +907,8 @@ def family_classification_summary(
 def provider_classification(descriptor: FamilyDescriptor) -> str:
     if descriptor.persistence_class == "policy_blocked":
         return "policy_blocked_non_runtime"
-    if descriptor.persistence_class == "donor_emulated":
-        return "donor_emulated_mapping_non_authority"
+    if descriptor.persistence_class == "reference_emulated":
+        return "reference_emulated_mapping_non_authority"
     if descriptor.persistence_class == "memory_only":
         return "temporary_memory_only"
     if descriptor.persistence_class == "memory_primary_persisted_cold_start":
@@ -959,7 +959,7 @@ def storage_authority_status(
     descriptor: FamilyDescriptor,
     successor_status_by_slice: dict[str, str],
 ) -> dict[str, Any]:
-    if descriptor.persistence_class in {"donor_emulated", "policy_blocked"}:
+    if descriptor.persistence_class in {"reference_emulated", "policy_blocked"}:
         return proof_state(
             "blocked",
             "non_authority",
@@ -978,7 +978,7 @@ def storage_authority_status(
             "complete",
             "CEIC-031..CEIC-042 index readiness evidence chain",
             (),
-            "CEIC-042 verifies CEIC-031 provider evidence, family durable provider proof where applicable, CEIC-040 metrics, CEIC-041 crash/corruption/cleanup proof, route capability, artifact registration, and fresh manifest state without granting row truth, storage finality, all-index readiness, donor dominance, or enterprise readiness",
+            "CEIC-042 verifies CEIC-031 provider evidence, family durable provider proof where applicable, CEIC-040 metrics, CEIC-041 crash/corruption/cleanup proof, route capability, artifact registration, and fresh manifest state without granting row truth, storage finality, all-index readiness, reference dominance, or enterprise readiness",
         )
     if descriptor.enum_name == "hash" and successor_status_by_slice.get("CEIC-035", "pending") in COMPLETE_STATUS:
         return proof_state(
@@ -1025,7 +1025,7 @@ def mga_cow_recovery_status(
     descriptor: FamilyDescriptor,
     successor_status_by_slice: dict[str, str],
 ) -> dict[str, Any]:
-    if descriptor.persistence_class in {"donor_emulated", "policy_blocked", "memory_only"}:
+    if descriptor.persistence_class in {"reference_emulated", "policy_blocked", "memory_only"}:
         return proof_state(
             "not_applicable" if descriptor.persistence_class == "memory_only" else "blocked",
             "MGA authority boundary",
@@ -1071,7 +1071,7 @@ def security_recheck_status(
     descriptor: FamilyDescriptor,
     successor_status_by_slice: dict[str, str],
 ) -> dict[str, Any]:
-    if descriptor.persistence_class in {"donor_emulated", "policy_blocked"}:
+    if descriptor.persistence_class in {"reference_emulated", "policy_blocked"}:
         return proof_state(
             "blocked",
             "non_runtime_family",
@@ -1107,7 +1107,7 @@ def evidence_status(
     ceic_041_crash_matrix_proof_complete: bool,
     ceic_042_readiness_drift_proof_complete: bool,
 ) -> dict[str, Any]:
-    blocked = descriptor.persistence_class in {"donor_emulated", "policy_blocked"}
+    blocked = descriptor.persistence_class in {"reference_emulated", "policy_blocked"}
     return {
         "metric_producer_status": proof_state(
             "blocked" if blocked else "complete" if ceic_040_runtime_metric_proof_complete else "pending",
@@ -1125,7 +1125,7 @@ def evidence_status(
             ()
             if blocked or ceic_042_readiness_drift_proof_complete
             else DRIFT_GATE_SLICES,
-            "CEIC-042 drift gate validates the generated manifest against registry route capability CEIC-031..041 proof inputs focused test registration and non-smoke benchmark evidence; it does not grant enterprise, all-index, donor-dominance, or cluster readiness"
+            "CEIC-042 drift gate validates the generated manifest against registry route capability CEIC-031..041 proof inputs focused test registration and non-smoke benchmark evidence; it does not grant enterprise, all-index, reference-dominance, or cluster readiness"
             if ceic_042_readiness_drift_proof_complete and not blocked
             else "CEIC-030 records benchmark-clean inputs but does not convert static or smoke-only fields into readiness",
         ),
@@ -1203,11 +1203,11 @@ def unique_reservation_protocol_status(
 
 def claim_boundary(descriptor: FamilyDescriptor) -> dict[str, Any]:
     policy = "blocked" if descriptor.persistence_class == "policy_blocked" else "not_policy_blocked"
-    donor = "blocked_non_authority" if descriptor.persistence_class == "donor_emulated" else "not_donor_emulated"
-    runtime = "blocked" if descriptor.persistence_class in {"donor_emulated", "policy_blocked"} else "pending_future_proof"
+    reference = "blocked_non_authority" if descriptor.persistence_class == "reference_emulated" else "not_reference_emulated"
+    runtime = "blocked" if descriptor.persistence_class in {"reference_emulated", "policy_blocked"} else "pending_future_proof"
     return {
         "policy_claim_boundary": policy,
-        "donor_claim_boundary": donor,
+        "reference_claim_boundary": reference,
         "runtime_claim_boundary": runtime,
         "cluster_claim_boundary": "blocked_external_provider_only",
         "transaction_finality_authority": False,
@@ -1216,7 +1216,7 @@ def claim_boundary(descriptor: FamilyDescriptor) -> dict[str, Any]:
         "security_authority": False,
         "recovery_authority": False,
         "parser_authority": False,
-        "donor_authority": False,
+        "reference_authority": False,
         "wal_authority": False,
         "benchmark_authority": False,
         "optimizer_plan_authority": False,
@@ -1268,7 +1268,7 @@ def build_family_row(
         "final_row_authority": False,
         "routes": routes,
     }
-    runtime_blocked = descriptor.persistence_class in {"donor_emulated", "policy_blocked"}
+    runtime_blocked = descriptor.persistence_class in {"reference_emulated", "policy_blocked"}
     blockers = []
     for slice_id, reason in (
         ("CEIC-031", "persistent_provider_api_pending_CEIC_031"),
@@ -1352,7 +1352,7 @@ def build_family_row(
             if specialized_persistent_family(descriptor.enum_name)
             and successor_status_by_slice.get("CEIC-039", "pending") in COMPLETE_STATUS
             else "blocked"
-            if descriptor.persistence_class in {"donor_emulated", "policy_blocked"}
+            if descriptor.persistence_class in {"reference_emulated", "policy_blocked"}
             else "not_applicable"
             if not specialized_persistent_family(descriptor.enum_name)
             else "pending",
@@ -1362,9 +1362,9 @@ def build_family_row(
             and successor_status_by_slice.get("CEIC-039", "pending") in COMPLETE_STATUS
             else ("CEIC-039",)
             if specialized_persistent_family(descriptor.enum_name)
-            and descriptor.persistence_class not in {"donor_emulated", "policy_blocked"}
+            and descriptor.persistence_class not in {"reference_emulated", "policy_blocked"}
             else (),
-            "CEIC-039 specialized provider closure evidence is tracked separately from CEIC-040 runtime metrics CEIC-041 crash/corruption matrix CEIC-042 readiness drift all-index readiness donor dominance and enterprise readiness claims",
+            "CEIC-039 specialized provider closure evidence is tracked separately from CEIC-040 runtime metrics CEIC-041 crash/corruption matrix CEIC-042 readiness drift all-index readiness reference dominance and enterprise readiness claims",
         ),
         "storage_authority_status": storage_authority_status(
             descriptor,
@@ -1405,7 +1405,7 @@ def build_family_row(
             if runtime_blocked
             else "CEIC-042 manifest drift/freshness gate remains pending",
         ),
-        "policy_donor_cluster_claim_boundary": claim_boundary(descriptor),
+        "policy_reference_cluster_claim_boundary": claim_boundary(descriptor),
         "enterprise_ready": False,
         "enterprise_ready_blockers": blockers,
         "auditor_timestamp_utc": generated_at,
@@ -1848,7 +1848,7 @@ def build_manifest(
             "authorization_security_authority": False,
             "recovery_authority": False,
             "parser_authority": False,
-            "donor_authority": False,
+            "reference_authority": False,
             "wal_authority": False,
             "benchmark_authority": False,
             "optimizer_plan_authority": False,
@@ -1865,7 +1865,7 @@ def build_manifest(
         "readiness_policy": {
             "enterprise_ready_source": "generated_manifest_plus_future_provider_runtime_proof",
             "persistent_enterprise_ready_default": "blocked_pending_successor_runtime_proof_through_CEIC_042",
-            "donor_emulated_runtime_claim": "blocked_non_authority",
+            "reference_emulated_runtime_claim": "blocked_non_authority",
             "policy_blocked_runtime_claim": "blocked_non_runtime",
             "cluster_production_claim": "blocked_external_provider_only",
             "ceic_030_scope": "schema_generator_checked_in_manifest_and_focused_gate_only",
@@ -1886,9 +1886,9 @@ def build_manifest(
             "provider_metrics_crash_corruption_required_slices": list(INDEX_FUTURE_SLICES[:-1]),
             "integrated_slices_must_remain_pending": list(INTEGRATED_INDEX_BOUNDARY_SLICES),
             "cluster_production_claim": "blocked_external_provider_only",
-            "donor_emulated_runtime_claim": "blocked_non_authority",
+            "reference_emulated_runtime_claim": "blocked_non_authority",
             "policy_blocked_runtime_claim": "blocked_non_runtime",
-            "donor_dominance_claimed": False,
+            "reference_dominance_claimed": False,
             "all_index_readiness_claimed": False,
             "enterprise_readiness_claimed": False,
         },
@@ -2003,7 +2003,7 @@ def validate_family_semantics(data: dict[str, Any]) -> list[str]:
         "corruption_evidence_status",
         "cleanup_evidence_status",
         "readiness_drift_gate_status",
-        "policy_donor_cluster_claim_boundary",
+        "policy_reference_cluster_claim_boundary",
         "auditor_timestamp_utc",
         "generation_metadata",
         "enterprise_ready",
@@ -2070,17 +2070,17 @@ def validate_family_semantics(data: dict[str, Any]) -> list[str]:
                 ):
                     if row.get(field, {}).get("status") != "complete":
                         errors.append(f"{row.get('family_id')} CEIC-042 requires {field} complete")
-        if row.get("persistence_class") in {"donor_emulated", "policy_blocked"}:
+        if row.get("persistence_class") in {"reference_emulated", "policy_blocked"}:
             if row.get("readiness_drift_gate_status", {}).get("status") != "blocked":
                 errors.append(f"{row.get('family_id')} readiness drift gate status must be blocked")
         if (
             ceic_042_complete
-            and row.get("persistence_class") not in {"donor_emulated", "policy_blocked", "memory_only"}
+            and row.get("persistence_class") not in {"reference_emulated", "policy_blocked", "memory_only"}
         ):
             for field in ("storage_authority_status", "mga_cow_recovery_proof_status"):
                 if row.get(field, {}).get("status") != "complete":
                     errors.append(f"{row.get('family_id')} CEIC-042 requires {field} complete")
-        boundary = row.get("policy_donor_cluster_claim_boundary", {})
+        boundary = row.get("policy_reference_cluster_claim_boundary", {})
         for key in (
             "transaction_finality_authority",
             "visibility_authority",
@@ -2088,7 +2088,7 @@ def validate_family_semantics(data: dict[str, Any]) -> list[str]:
             "security_authority",
             "recovery_authority",
             "parser_authority",
-            "donor_authority",
+            "reference_authority",
             "wal_authority",
             "benchmark_authority",
             "optimizer_plan_authority",
@@ -2113,7 +2113,7 @@ def validate_family_semantics(data: dict[str, Any]) -> list[str]:
             "ceic_041_crash_matrix_claimed",
             "ceic_042_readiness_drift_claimed",
             "all_index_readiness_claimed",
-            "donor_dominance_claimed",
+            "reference_dominance_claimed",
             "enterprise_readiness_claimed",
         ):
             if classification.get(key) is not False:
@@ -2142,13 +2142,13 @@ def validate_family_semantics(data: dict[str, Any]) -> list[str]:
                 errors.append("hash must be equality-only")
             if row.get("route_capability_summary", {}).get("supports_ordered_range") is not False:
                 errors.append("hash must not support ordered ranges")
-        if row.get("enum_name") == "donor_emulated":
-            if row.get("provider_classification") != "donor_emulated_mapping_non_authority":
-                errors.append("donor_emulated classification must remain non-authority")
+        if row.get("enum_name") == "reference_emulated":
+            if row.get("provider_classification") != "reference_emulated_mapping_non_authority":
+                errors.append("reference_emulated classification must remain non-authority")
             if row.get("runtime_availability", {}).get("runtime_available_static_input") is not False:
-                errors.append("donor_emulated runtime availability must be false")
+                errors.append("reference_emulated runtime availability must be false")
             if row.get("storage_authority_status", {}).get("status") != "blocked":
-                errors.append("donor_emulated storage authority must be blocked")
+                errors.append("reference_emulated storage authority must be blocked")
         if row.get("enum_name") == "policy_blocked":
             if row.get("provider_classification") != "policy_blocked_non_runtime":
                 errors.append("policy_blocked classification must remain non-runtime")
@@ -2253,7 +2253,7 @@ def validate_manifest_semantics(data: dict[str, Any]) -> list[str]:
         if drift.get("stale_manifest_allowed") is not False:
             errors.append("CEIC-042 readiness drift gate must not allow stale manifests")
         for key in (
-            "donor_dominance_claimed",
+            "reference_dominance_claimed",
             "all_index_readiness_claimed",
             "enterprise_readiness_claimed",
         ):

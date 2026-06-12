@@ -17,9 +17,9 @@ Firebird source code under `docs/reference/` is read-only behavior evidence. Scr
 
 - Copy Firebird implementation code into `project/src/parsers`, `project/src/udr`, `project/src/server`, or `project/src/engine`.
 - Port Firebird parser functions, runtime functions, storage code, utility code, or generated parser actions directly.
-- Link ScratchBird runtime products against Firebird libraries or donor-native tools.
+- Link ScratchBird runtime products against Firebird libraries or reference-native tools.
 - Treat Firebird source comments as product documentation in ScratchBird implementation files.
 
 ## Required Gate
 
-`firebird_clean_room_provenance_gate` must inspect implementation paths, generated artifacts, and build targets. It fails on copied donor implementation code, runtime link dependency on Firebird libraries, or missing provenance for generated matrices.
+`firebird_clean_room_provenance_gate` must inspect implementation paths, generated artifacts, and build targets. It fails on copied reference implementation code, runtime link dependency on Firebird libraries, or missing provenance for generated matrices.

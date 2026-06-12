@@ -10,7 +10,7 @@
 
 // SEARCH_KEY: ARHC_OPTIMIZER_RECOMMENDATION_EVIDENCE_CONTRACT
 // Agent recommendations consumed by the optimizer are advisory evidence only.
-// They are not optimizer, parser, donor, transaction, visibility, recovery, or
+// They are not optimizer, parser, reference, transaction, visibility, recovery, or
 // security authority.
 
 #include "agent_runtime.hpp"
@@ -55,7 +55,7 @@ struct AgentOptimizerRecommendationEvidence {
   bool protected_material = false;
   bool parser_authority = false;
   bool client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool sidecar_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
@@ -90,14 +90,14 @@ struct AgentIndexReadinessEvidence {
   bool stale_manifest = false;
   bool static_or_smoke_only = false;
   bool placeholder_evidence = false;
-  bool donor_runtime_claim = false;
+  bool reference_runtime_claim = false;
   bool policy_blocked_runtime_claim = false;
   bool all_index_readiness_claimed = false;
   bool enterprise_readiness_claimed = false;
   bool cluster_evidence_present = false;
   bool external_provider_proof = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool transaction_authority = false;
@@ -128,7 +128,7 @@ struct AgentOptimizerReadinessEvidence {
   bool transformation_memo_complete = false;
   bool workload_regression_complete = false;
   bool driver_explain_complete = false;
-  bool donor_comparison_complete = false;
+  bool reference_comparison_complete = false;
   bool memory_feedback_complete = false;
   bool index_readiness_coupling_complete = false;
   bool llvm_memory_accounting_complete = false;
@@ -142,7 +142,7 @@ struct AgentOptimizerReadinessEvidence {
   bool external_cluster_provider_proof = false;
   bool external_cluster_overclaim = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool benchmark_dominance_claimed = false;
@@ -187,7 +187,7 @@ struct AgentIndexOptimizerBoundaryRequest {
   bool transaction_finality_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool provider_finality_authority = false;

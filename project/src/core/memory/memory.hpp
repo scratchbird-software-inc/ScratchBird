@@ -352,7 +352,7 @@ struct ProtectedMemoryEvidence {
   bool no_dump_succeeded = false;
   std::string platform_name = "unknown";
   std::string authority_scope =
-      "protected_memory_evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
+      "protected_memory_evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
 };
 
 struct ProtectedMemoryRequest {

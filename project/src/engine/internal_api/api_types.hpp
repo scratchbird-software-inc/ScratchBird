@@ -36,7 +36,7 @@ struct EngineLocalizedName {
   std::string path;
   std::string name;
   bool default_name = false;
-  std::string donor_id;
+  std::string reference_id;
   std::string dialect_profile_uuid;
   std::string identifier_profile_uuid;
   std::string case_fold_profile_uuid;
@@ -305,7 +305,7 @@ struct EngineRequestContext {
   EngineUuid current_package_uuid;
   std::vector<EngineUuid> search_path_schema_uuids;
   std::string identifier_profile_uuid = "sbsql_v3";
-  std::string donor_profile_uuid;
+  std::string reference_profile_uuid;
   EngineApiU64 catalog_generation_id = 0;
   EngineApiU64 security_epoch = 0;
   EngineApiU64 resource_epoch = 0;

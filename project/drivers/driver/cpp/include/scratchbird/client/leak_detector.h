@@ -50,7 +50,7 @@ static inline struct sb_leak_detection_config sb_leak_detection_config_default()
  * existing driver ABI/source users. The detector is scoped only to connection
  * checkout/checkin lifecycle evidence. It is not a generic heap or memory leak
  * detector and does not claim allocator, transaction finality, visibility,
- * authorization, recovery, parser, donor, or benchmark authority.
+ * authorization, recovery, parser, reference, or benchmark authority.
  */
 
 // Opaque connection-checkout leak detector handle

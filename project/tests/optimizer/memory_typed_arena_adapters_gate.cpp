@@ -184,7 +184,7 @@ void RefusalDiagnosticsAndLeakFreeTeardown() {
     Require(DiagnosticArgEquals(
                 over_capacity.diagnostic,
                 "authority_scope",
-                "typed_arena_evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_donor_wal_or_benchmark_authority"),
+                "typed_arena_evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_reference_wal_or_benchmark_authority"),
             "MMCH-060 typed arena authority boundary diagnostic missing");
   }
 

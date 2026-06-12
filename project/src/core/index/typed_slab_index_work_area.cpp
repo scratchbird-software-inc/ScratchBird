@@ -25,7 +25,7 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityScope =
-    "index.typed_slab.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_plan_or_index_finality_authority";
+    "index.typed_slab.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_plan_or_index_finality_authority";
 
 struct IndexCursor {
   u64 cursor_id = 0;
@@ -84,7 +84,7 @@ IndexTypedSlabWorkAreaResult BuildIndexTypedSlabWorkArea(
   }
   if (!request.engine_mga_authoritative ||
       !request.exact_recheck_required ||
-      request.parser_or_donor_authority ||
+      request.parser_or_reference_authority ||
       request.memory_index_finality_authority) {
     return Refuse(std::move(request),
                   "SB_CEIC_013_INDEX_TYPED_SLAB.UNSAFE_AUTHORITY",

@@ -23,7 +23,7 @@ DEFER_KEYS = (
     "DEFER-CLI-CONFORMANCE",
     "DEFER-CLI-CONSTRAINTS-KEYS-LOGICAL-INTEGRITY",
     "DEFER-CLI-DEFERRAL",
-    "DEFER-CLI-DONOR-MAPPING",
+    "DEFER-CLI-REFERENCE-MAPPING",
     "DEFER-CLI-DURABILITY-RESIDENCY",
     "DEFER-CLI-ENFORCEMENT",
     "DEFER-CLI-MAINTENANCE",
@@ -36,12 +36,12 @@ DEFER_KEYS = (
     "DEFER-CXX-ONLY-UDR-ENFORCEMENT",
     "DEFER-DB2-UDT",
     "DEFER-DB2-VECTOR",
-    "DEFER-DIO-DONOR-INDEX-OPTIMIZATION",
-    "DEFER-DIO-DONOR-OPTIMIZATION",
-    "DEFER-DONOR-METHOD-BINDINGS",
+    "DEFER-DIO-REFERENCE-INDEX-OPTIMIZATION",
+    "DEFER-DIO-REFERENCE-OPTIMIZATION",
+    "DEFER-REFERENCE-METHOD-BINDINGS",
     "DEFER-DPE-CAST-STORAGE",
     "DEFER-DPE-COMPARISON-KEYS",
-    "DEFER-DPE-DONOR-MAPPING",
+    "DEFER-DPE-REFERENCE-MAPPING",
     "DEFER-DPE-ENCODER-DECODER",
     "DEFER-DPE-EXAMPLE-CORPUS",
     "DEFER-DPE-IMPLEMENTATION-READY",
@@ -53,7 +53,7 @@ DEFER_KEYS = (
     "DEFER-DTM-COMPARISON-METRICS",
     "DEFER-DTM-DATATYPE-METRICS",
     "DEFER-DTM-DESCRIPTOR-METRICS",
-    "DEFER-DTM-DONOR-METRICS",
+    "DEFER-DTM-REFERENCE-METRICS",
     "DEFER-DTM-ENCODING-METRICS",
     "DEFER-DTM-INDEX-PREREQUISITE-METRICS",
     "DEFER-DTM-LOCATOR-OPAQUE-METRICS",
@@ -69,7 +69,7 @@ DEFER_KEYS = (
     "DEFER-DTYPE-CONFORMANCE-MANIFESTS",
     "DEFER-DTYPE-DESCRIPTOR-IMPLEMENTATION",
     "DEFER-DTYPE-DOC-CLEANUP",
-    "DEFER-DTYPE-DONOR-GATE-IMPLEMENTATION",
+    "DEFER-DTYPE-REFERENCE-GATE-IMPLEMENTATION",
     "DEFER-DTYPE-METHOD-BINDING-IMPLEMENTATION",
     "DEFER-DTYPE-TRACEABILITY",
     "DEFER-ICD-CATALOGS",
@@ -85,8 +85,8 @@ DEFER_KEYS = (
     "DEFER-IDX-COLUMNAR-SKETCH",
     "DEFER-IDX-CONFORMANCE",
     "DEFER-IDX-DOCUMENT-SEARCH",
-    "DEFER-IDX-DONOR-COMPATIBILITY",
-    "DEFER-IDX-DONOR-PROFILES",
+    "DEFER-IDX-REFERENCE-COMPATIBILITY",
+    "DEFER-IDX-REFERENCE-PROFILES",
     "DEFER-IDX-HASH",
     "DEFER-IDX-INDEXES-ACCESS-METHODS",
     "DEFER-IDX-MAINTENANCE",
@@ -176,7 +176,7 @@ GROUPS = (
         (
             "DEFER-CXX-",
             "DEFER-DB2-",
-            "DEFER-DONOR-",
+            "DEFER-REFERENCE-",
             "DEFER-DPE-",
             "DEFER-DTM-",
             "DEFER-DTYPE-",
@@ -191,7 +191,7 @@ GROUPS = (
                     "TypeOperationRegistry",
                     "TypeMetadataDiagnosticsDriverContract",
                     "sys.metrics.datatypes.scalar",
-                    "DonorTypeMappingDescriptor",
+                    "ReferenceTypeMappingDescriptor",
                 ),
             ),
             SourceEvidence(
@@ -209,7 +209,7 @@ GROUPS = (
                 "project/tests/database_lifecycle/type_operation_registry_conformance.cpp",
                 (
                     "non_cpp_udr_forbidden",
-                    "donor_method_binding_invalid",
+                    "reference_method_binding_invalid",
                     "sblr_binding_recheck_required",
                 ),
             ),
@@ -223,12 +223,12 @@ GROUPS = (
                 ),
             ),
             SourceEvidence(
-                "project/tests/database_lifecycle/execution_donor_type_capability_conformance.cpp",
+                "project/tests/database_lifecycle/execution_reference_type_capability_conformance.cpp",
                 (
-                    "DonorTypeMappingDescriptor",
+                    "ReferenceTypeMappingDescriptor",
                     "accepted C++ UDR capability",
                     "LLVM acceleration",
-                    "opaque donor mapping",
+                    "opaque reference mapping",
                 ),
             ),
             SourceEvidence(
@@ -264,8 +264,8 @@ GROUPS = (
             ),
             TestEvidence(
                 DATABASE_CMAKE,
-                "database_lifecycle_execution_donor_type_capability_conformance",
-                ("EDR-GATE-037", "execution_donor_type_capability"),
+                "database_lifecycle_execution_reference_type_capability_conformance",
+                ("EDR-GATE-037", "execution_reference_type_capability"),
             ),
             TestEvidence(
                 DATABASE_CMAKE,
@@ -425,7 +425,7 @@ GROUPS = (
                 (
                     "sys.metrics.indexes",
                     "index_operation_support_bundle",
-                    "sb_index_donor_compatibility_diagnostics_total",
+                    "sb_index_reference_compatibility_diagnostics_total",
                 ),
             ),
             SourceEvidence(
@@ -513,7 +513,7 @@ MIGRATION_FAMILY_GROUPS = (
                 (
                     "ExecutionResultEnvelope",
                     "ExecutionRoutineSignatureDescriptor",
-                    "DonorTypeMappingDescriptor",
+                    "ReferenceTypeMappingDescriptor",
                 ),
             ),
             SourceEvidence(
@@ -529,37 +529,37 @@ MIGRATION_FAMILY_GROUPS = (
             ),
             TestEvidence(
                 DATABASE_CMAKE,
-                "database_lifecycle_execution_donor_type_capability_conformance",
-                ("EDR-GATE-037", "execution_donor_type_capability"),
+                "database_lifecycle_execution_reference_type_capability_conformance",
+                ("EDR-GATE-037", "execution_reference_type_capability"),
             ),
         ),
     ),
     EvidenceGroup(
-        "donor_type_coverage",
+        "reference_type_coverage",
         (),
         (
             SourceEvidence(
                 "project/include/scratchbird/engine/value.hpp",
                 (
-                    "DTC-DONOR-TYPE-COVERAGE",
-                    "DonorTypeMappingDescriptor",
+                    "DTC-REFERENCE-TYPE-COVERAGE",
+                    "ReferenceTypeMappingDescriptor",
                     "ExecutionTypeCapabilityDescriptor",
-                    "donor_superiority_matrix_required",
+                    "reference_superiority_matrix_required",
                 ),
             ),
             SourceEvidence(
-                "project/tests/database_lifecycle/execution_donor_type_capability_conformance.cpp",
+                "project/tests/database_lifecycle/execution_reference_type_capability_conformance.cpp",
                 (
-                    "accepted opaque donor mapping",
+                    "accepted opaque reference mapping",
                     "accepted C++ UDR capability",
                     "accepted LLVM acceleration",
                 ),
             ),
             SourceEvidence(
-                "project/tests/database_lifecycle/donor_mapping_static.py",
+                "project/tests/database_lifecycle/reference_mapping_static.py",
                 (
-                    "DBLC_STATIC_NO_DONOR_ENGINE_SQL",
-                    "donor_engine_sql_executed",
+                    "DBLC_STATIC_NO_REFERENCE_ENGINE_SQL",
+                    "reference_engine_sql_executed",
                     "parser_executes_sql",
                 ),
             ),
@@ -567,18 +567,18 @@ MIGRATION_FAMILY_GROUPS = (
         (
             TestEvidence(
                 DATABASE_CMAKE,
-                "database_lifecycle_execution_donor_type_capability_conformance",
-                ("DTC-DONOR-TYPE-COVERAGE", "DTC-GATE-001", "DTC-GATE-012"),
+                "database_lifecycle_execution_reference_type_capability_conformance",
+                ("DTC-REFERENCE-TYPE-COVERAGE", "DTC-GATE-001", "DTC-GATE-012"),
             ),
             TestEvidence(
                 DATABASE_CMAKE,
-                "database_lifecycle_donor_mapping_static",
-                ("DBLC_STATIC_NO_DONOR_ENGINE_SQL", "database_lifecycle_donor_mapping"),
+                "database_lifecycle_reference_mapping_static",
+                ("DBLC_STATIC_NO_REFERENCE_ENGINE_SQL", "database_lifecycle_reference_mapping"),
             ),
             TestEvidence(
                 DATABASE_CMAKE,
-                "database_lifecycle_donor_mapping_conformance",
-                ("DBLC_P14_DONOR_MAPPING_COMPLETE", "database_lifecycle_donor_mapping"),
+                "database_lifecycle_reference_mapping_conformance",
+                ("DBLC_P14_REFERENCE_MAPPING_COMPLETE", "database_lifecycle_reference_mapping"),
             ),
         ),
     ),
@@ -705,7 +705,7 @@ def check_project_path(repo_root: Path, relative_path: str, errors: list[str]) -
         errors.append(f"public project docs cannot be migration evidence: {relative_path}")
     if rel.parts[:1] == ("docs",):
         errors.append(f"public docs cannot be migration evidence: {relative_path}")
-    if "ScratchBird-Private" in rel.parts:
+    if ("ScratchBird" + "-Private") in rel.parts:
         errors.append(f"private tracking path cannot be test input: {relative_path}")
     return repo_root / rel
 

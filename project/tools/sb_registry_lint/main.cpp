@@ -60,7 +60,7 @@ const std::vector<std::string> kRequiredRegistryFiles = {
     "registries/sbsql-native-surface-registry.yaml",
     "registries/sbsql-show-command-surface-matrix.yaml",
     "registries/sbsql-management-metrics-cluster-surface-matrix.yaml",
-    "registries/donor-unified-surface-normalization-matrix.yaml",
+    "registries/reference-unified-surface-normalization-matrix.yaml",
     "registries/parser-ast-boundast-node-registry.yaml",
     "registries/sblr-operation-matrix.yaml",
     "registries/result-shape-registry.yaml",
@@ -78,7 +78,7 @@ const std::vector<std::string> kForbiddenPlaceholders = {
     "implementation-defined",
     "parser-defined",
     "executor-defined",
-    "donor-defined",
+    "reference-defined",
     "implied",
     "see-code",
 };

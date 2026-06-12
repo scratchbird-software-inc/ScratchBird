@@ -255,10 +255,10 @@ constexpr Sbsfc016LanguagePolicyRow kSbsfc016MetadataRows[] = {
     {"SBSQL-9487E723F6DB", "sqlerrm", "sb.scalar.sqlerrm", "character", "OK"},
     {"SBSQL-26096EC6FBAF", "not_found", "sb.scalar.not_found", "boolean", "0"},
     {"SBSQL-14D576F7019D", "deprecated_keyword", "sb.scalar.deprecated_keyword", "character", "keyword_class.deprecated"},
-    {"SBSQL-21B3D26B555C", "donor_contextual_keyword", "sb.scalar.donor_contextual_keyword", "character", "keyword_class.donor_contextual"},
+    {"SBSQL-21B3D26B555C", "reference_contextual_keyword", "sb.scalar.reference_contextual_keyword", "character", "keyword_class.reference_contextual"},
     {"SBSQL-7036F89856D2", "reserved_native_keyword", "sb.scalar.reserved_native_keyword", "character", "keyword_class.reserved_native"},
     {"SBSQL-FA8B706E49D0", "contextual_native_keyword", "sb.scalar.contextual_native_keyword", "character", "keyword_class.contextual_native"},
-    {"SBSQL-813817A7EDFD", "donor_reserved_keyword", "sb.scalar.donor_reserved_keyword", "character", "keyword_class.donor_reserved"},
+    {"SBSQL-813817A7EDFD", "reference_reserved_keyword", "sb.scalar.reference_reserved_keyword", "character", "keyword_class.reference_reserved"},
     {"SBSQL-C1E6BF629293", "meta_command_keyword", "sb.scalar.meta_command_keyword", "character", "keyword_class.meta_command"},
     {"SBSQL-92C51F4C0F42", "private_only_keyword", "sb.scalar.private_only_keyword", "character", "keyword_class.private_only"},
     {"SBSQL-2150B810CBA5", "refusal_only_keyword", "sb.scalar.refusal_only_keyword", "character", "keyword_class.refusal_only"},
@@ -285,7 +285,7 @@ constexpr Sbsfc016LanguagePolicyRow kSbsfc016MetadataRows[] = {
     {"SBSQL-80B16048C80F", "refuse", "sb.scalar.refuse", "character", "decision.refuse"},
     {"SBSQL-823D51652BD0", "metrics", "sb.scalar.metrics", "character", "management.metrics"},
     {"SBSQL-85D62227A882", "catalog_read", "sb.scalar.catalog_read", "character", "authority.catalog_read"},
-    {"SBSQL-87F8BED4D9EE", "donor_log_compatibility", "sb.scalar.donor_log_compatibility", "character", "compatibility.donor_log_non_authority"},
+    {"SBSQL-87F8BED4D9EE", "reference_log_compatibility", "sb.scalar.reference_log_compatibility", "character", "compatibility.reference_log_non_authority"},
     {"SBSQL-92C226CF5A7A", "fail_closed", "sb.scalar.fail_closed", "character", "decision.fail_closed"},
     {"SBSQL-980131EAA57E", "requires_new_function", "sb.scalar.requires_new_function", "character", "implementation.requires_new_function"},
     {"SBSQL-A069D1ED14C0", "random_seed_control", "sb.scalar.random_seed_control", "character", "policy.random_seed_control"},
@@ -308,7 +308,7 @@ constexpr Sbsfc016LanguagePolicyRow kSbsfc016MetadataRows[] = {
     {"SBSQL-456D4BF70496", "unsupported", "sb.scalar.unsupported", "character", "decision.unsupported"},
     {"SBSQL-46D0BFB6ED61", "mergetree", "sb.scalar.mergetree", "character", "physical_layout.mergetree"},
     {"SBSQL-6AA173CC38F1", "refused", "sb.scalar.refused", "character", "decision.refused"},
-    {"SBSQL-70117DFD73D9", "innodb", "sb.scalar.innodb", "character", "donor_storage.innodb"},
+    {"SBSQL-70117DFD73D9", "innodb", "sb.scalar.innodb", "character", "reference_storage.innodb"},
     {"SBSQL-902E2EF680C8", "hnsw", "sb.scalar.hnsw", "character", "index_method.hnsw"},
     {"SBSQL-98F7C17D42D9", "sessions", "sb.scalar.sessions", "character", "management.sessions"},
     {"SBSQL-9B1E3F7A4C5F", "asof", "sb.scalar.asof", "character", "temporal.asof"},
@@ -339,7 +339,7 @@ constexpr Sbsfc016LanguagePolicyRow kSbsfc016MetadataRows[] = {
     {"SBSQL-7F00278E0723", "capability_required", "sb.scalar.capability_required", "character", "diagnostic.capability_required"},
     {"SBSQL-882F0BF84BCC", "psql_case_not_found", "sb.scalar.psql_case_not_found", "character", "psql.case_not_found"},
     {"SBSQL-95878BFEDF43", "syntax_parser_only", "sb.scalar.syntax_parser_only", "character", "syntax.parser_only"},
-    {"SBSQL-A371FE7C3BAA", "donor_only_rewrite", "sb.scalar.donor_only_rewrite", "character", "donor.rewrite_only"},
+    {"SBSQL-A371FE7C3BAA", "reference_only_rewrite", "sb.scalar.reference_only_rewrite", "character", "reference.rewrite_only"},
     {"SBSQL-A57396612A09", "object_resolution_failed", "sb.scalar.object_resolution_failed", "character", "diagnostic.object_resolution_failed"},
     {"SBSQL-B8E49C049ECB", "error_diagnostic_uuid", "sb.scalar.error_diagnostic_uuid", "uuid", "019f0000-0000-7000-8000-000000003128"},
     {"SBSQL-91F466E96DE4", "transaction", "sb.scalar.transaction", "character", "fixture.identifier.transaction"},
@@ -448,7 +448,7 @@ constexpr Sbsfc016PolicyRefusalRow kSbsfc016PolicyRefusalRows[] = {
     {"SBSQL-18E22DA52C20", "WITH(READPAST)", "sb.scalar.refusal_with_readpast"},
     {"SBSQL-1CB047ADD7B5", "WITH(NOLOCK)", "sb.scalar.refusal_with_nolock"},
     {"SBSQL-F9144106E9F2", "EXPLAIN(WALTRUE)", "sb.scalar.refusal_explain_waltrue"},
-    {"SBSQL-E9D1FF70EC0D", "EXPLAIN(DONOR_LOG_COMPATIBILITYTRUE)", "sb.scalar.refusal_explain_donor_log_compatibilitytrue"},
+    {"SBSQL-E9D1FF70EC0D", "EXPLAIN(REFERENCE_LOG_COMPATIBILITYTRUE)", "sb.scalar.refusal_explain_reference_log_compatibilitytrue"},
     {"SBSQL-BEB64FF33809", "EXPLAIN(EVIDENCETRUE)", "sb.scalar.refusal_explain_evidencetrue"},
     {"SBSQL-5D9C952A3697", "@@TRANCOUNT", "sb.scalar.refusal_system_variable_trancount"},
     {"SBSQL-511BC12EEF82", "ATOMIC", "sb.scalar.refusal_atomic"},
@@ -481,8 +481,8 @@ constexpr Sbsfc016PolicyRefusalRow kSbsfc027PolicyRefusalRows[] = {
 };
 
 constexpr Sbsfc016PolicyRefusalRow kSbsfc028AntiWalPolicyRefusalRows[] = {
-    {"SBSQL-6637546ABDF0", "donor_log_mode", "sb.scalar.refusal_donor_log_mode"},
-    {"SBSQL-17068E518638", "checkpoint_donor_log", "sb.scalar.refusal_checkpoint_donor_log"},
+    {"SBSQL-6637546ABDF0", "reference_log_mode", "sb.scalar.refusal_reference_log_mode"},
+    {"SBSQL-17068E518638", "checkpoint_reference_log", "sb.scalar.refusal_checkpoint_reference_log"},
 };
 
 void Require(bool condition, std::string_view message) {
@@ -4922,7 +4922,7 @@ void RequireProceduralContextProjectionLowering() {
           "server admission did not require public ABI for procedural/context route");
 }
 
-void RequireSbsfc016DonorSystemVariableProjectionLowering() {
+void RequireSbsfc016ReferenceSystemVariableProjectionLowering() {
   const auto artifacts = RunPipeline(
       "SELECT @@ROWCOUNT AS rowcount_value, @@SPID AS spid_value, "
       "@@VERSION AS version_value, @@global.version AS global_version_value, "
@@ -4930,18 +4930,18 @@ void RequireSbsfc016DonorSystemVariableProjectionLowering() {
       "@@session.time_zone AS session_timezone_value, @@time_zone AS timezone_value, "
       "@@transaction_isolation AS transaction_isolation_value, "
       "@@tx_isolation AS tx_isolation_value");
-  Require(artifacts.bound.bound, "SBSFC-016 donor system variable SELECT did not bind");
+  Require(artifacts.bound.bound, "SBSFC-016 reference system variable SELECT did not bind");
   for (const auto& diagnostic : artifacts.envelope.messages.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
   }
   Require(artifacts.verifier.admitted,
-          "SBSFC-016 donor system variable SELECT SBLR verifier rejected route");
+          "SBSFC-016 reference system variable SELECT SBLR verifier rejected route");
   Require(artifacts.envelope.operation_id == "query.evaluate_projection",
-          "SBSFC-016 donor system variable operation id mismatch");
+          "SBSFC-016 reference system variable operation id mismatch");
   Require(artifacts.envelope.sblr_opcode == "SBLR_QUERY_EVALUATE_PROJECTION",
-          "SBSFC-016 donor system variable opcode mismatch");
+          "SBSFC-016 reference system variable opcode mismatch");
   Require(Contains(artifacts.envelope.payload, "\"projection_count\":\"9\""),
-          "SBSFC-016 donor system variable projection count missing");
+          "SBSFC-016 reference system variable projection count missing");
   for (const auto* function_id : {
            "sb.fn.diagnostic.row_count",
            "sb.session.session_id",
@@ -4951,7 +4951,7 @@ void RequireSbsfc016DonorSystemVariableProjectionLowering() {
        }) {
     Require(Contains(artifacts.envelope.payload,
                      std::string("function_id\":\"") + function_id + "\""),
-            "SBSFC-016 donor system variable canonical id missing");
+            "SBSFC-016 reference system variable canonical id missing");
   }
   for (const auto* surface_id : {
            "SBSQL-DE3C8D86F7F4",
@@ -4970,7 +4970,7 @@ void RequireSbsfc016DonorSystemVariableProjectionLowering() {
            "SBSQL-07BDB01F1458",
        }) {
     Require(Contains(artifacts.envelope.payload, surface_id),
-            "SBSFC-016 donor system variable surface evidence missing");
+            "SBSFC-016 reference system variable surface evidence missing");
   }
   Require(Contains(artifacts.envelope.payload, "\"projection_0_function_arg_count\":\"0\""),
           "SBSFC-016 @@ROWCOUNT route must be nullary");
@@ -4978,16 +4978,16 @@ void RequireSbsfc016DonorSystemVariableProjectionLowering() {
                    "\"projection_8_function_id\":\"sb.scalar.current_isolation_level\""),
           "SBSFC-016 @@tx_isolation alias route missing");
   Require(!Contains(artifacts.envelope.payload, "SELECT @@ROWCOUNT"),
-          "SBSFC-016 donor system variable payload embedded source SQL text");
+          "SBSFC-016 reference system variable payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
       scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
-  Require(admission.admitted, "server admission rejected SBSFC-016 donor system variable route");
+  Require(admission.admitted, "server admission rejected SBSFC-016 reference system variable route");
   Require(admission.requires_public_abi_dispatch,
-          "server admission did not require public ABI for donor system variable route");
+          "server admission did not require public ABI for reference system variable route");
 
   const sblr::SblrDispatchRequest request{
       EngineContext(), EngineEnvelopeFromParserEnvelope(artifacts.envelope),
@@ -5000,16 +5000,16 @@ void RequireSbsfc016DonorSystemVariableProjectionLowering() {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
   Require(result.envelope_validated,
-          "engine SBLR donor system variable envelope did not validate");
-  Require(result.accepted, "engine SBLR dispatch did not accept donor system variable route");
+          "engine SBLR reference system variable envelope did not validate");
+  Require(result.accepted, "engine SBLR dispatch did not accept reference system variable route");
   Require(result.dispatched_to_api,
-          "engine SBLR dispatch did not route donor system variable projection");
-  Require(result.api_result.ok, "engine donor system variable scalar projection API failed");
+          "engine SBLR dispatch did not route reference system variable projection");
+  Require(result.api_result.ok, "engine reference system variable scalar projection API failed");
   Require(result.api_result.result_shape.rows.size() == 1,
-          "engine donor system variable projection did not produce one row");
+          "engine reference system variable projection did not produce one row");
   const auto& row = result.api_result.result_shape.rows.front();
   Require(row.fields.size() == 9,
-          "engine donor system variable projection column count mismatch");
+          "engine reference system variable projection column count mismatch");
   const auto expect_text = [&](std::size_t index,
                                std::string_view name,
                                std::string_view descriptor,
@@ -5017,7 +5017,7 @@ void RequireSbsfc016DonorSystemVariableProjectionLowering() {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
                 row.fields[index].second.encoded_value == expected,
-            std::string("engine donor system variable scalar projection mismatch: ") +
+            std::string("engine reference system variable scalar projection mismatch: ") +
                 std::string(name));
   };
   expect_text(0, "rowcount_value", "uint64", "7");
@@ -5031,7 +5031,7 @@ void RequireSbsfc016DonorSystemVariableProjectionLowering() {
   expect_text(8, "tx_isolation_value", "character", "snapshot");
 }
 
-void RequireSbsfc016DonorContextProjectionLowering() {
+void RequireSbsfc016ReferenceContextProjectionLowering() {
   const auto artifacts = RunPipeline(
       "SELECT RDB$GET_CONTEXT('SYSTEM','CURRENT_USER') AS rdb_current_user, "
       "RDB$GET_CONTEXT('SYSTEM','ENGINE_VERSION') AS rdb_engine_version, "
@@ -5040,18 +5040,18 @@ void RequireSbsfc016DonorContextProjectionLowering() {
       "SYS_CONTEXT('USERENV','CURRENT_USER') AS sys_current_user, "
       "SYS_CONTEXT('USERENV','SESSIONID') AS sys_sessionid, "
       "SYS_CONTEXT('USERENV','SESSION_USER') AS sys_session_user");
-  Require(artifacts.bound.bound, "SBSFC-016 donor context SELECT did not bind");
+  Require(artifacts.bound.bound, "SBSFC-016 reference context SELECT did not bind");
   for (const auto& diagnostic : artifacts.envelope.messages.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
   }
   Require(artifacts.verifier.admitted,
-          "SBSFC-016 donor context SELECT SBLR verifier rejected route");
+          "SBSFC-016 reference context SELECT SBLR verifier rejected route");
   Require(artifacts.envelope.operation_id == "query.evaluate_projection",
-          "SBSFC-016 donor context operation id mismatch");
+          "SBSFC-016 reference context operation id mismatch");
   Require(artifacts.envelope.sblr_opcode == "SBLR_QUERY_EVALUATE_PROJECTION",
-          "SBSFC-016 donor context opcode mismatch");
+          "SBSFC-016 reference context opcode mismatch");
   Require(Contains(artifacts.envelope.payload, "\"projection_count\":\"7\""),
-          "SBSFC-016 donor context projection count missing");
+          "SBSFC-016 reference context projection count missing");
   for (const auto* function_id : {
            "sb.session.current_user",
            "sb.scalar.current_engine_version",
@@ -5062,7 +5062,7 @@ void RequireSbsfc016DonorContextProjectionLowering() {
        }) {
     Require(Contains(artifacts.envelope.payload,
                      std::string("function_id\":\"") + function_id + "\""),
-            "SBSFC-016 donor context canonical id missing");
+            "SBSFC-016 reference context canonical id missing");
   }
   for (const auto* surface_id : {
            "SBSQL-11D5ED7A686F",
@@ -5077,23 +5077,23 @@ void RequireSbsfc016DonorContextProjectionLowering() {
            "SBSQL-FD4E4EFCCC17",
        }) {
     Require(Contains(artifacts.envelope.payload, surface_id),
-            "SBSFC-016 donor context surface evidence missing");
+            "SBSFC-016 reference context surface evidence missing");
   }
   Require(Contains(artifacts.envelope.payload, "\"projection_3_function_arg_count\":\"1\""),
           "SBSFC-016 SYSTEM_VAR recognized setting argument count missing");
   Require(Contains(artifacts.envelope.payload, "\"projection_3_arg_0_value\":\"timezone\""),
           "SBSFC-016 SYSTEM_VAR recognized timezone argument missing");
   Require(!Contains(artifacts.envelope.payload, "RDB$GET_CONTEXT"),
-          "SBSFC-016 donor context payload embedded source SQL text");
+          "SBSFC-016 reference context payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
       scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
-  Require(admission.admitted, "server admission rejected SBSFC-016 donor context route");
+  Require(admission.admitted, "server admission rejected SBSFC-016 reference context route");
   Require(admission.requires_public_abi_dispatch,
-          "server admission did not require public ABI for donor context route");
+          "server admission did not require public ABI for reference context route");
 
   const sblr::SblrDispatchRequest request{
       EngineContext(), EngineEnvelopeFromParserEnvelope(artifacts.envelope),
@@ -5106,16 +5106,16 @@ void RequireSbsfc016DonorContextProjectionLowering() {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
   Require(result.envelope_validated,
-          "engine SBLR donor context envelope did not validate");
-  Require(result.accepted, "engine SBLR dispatch did not accept donor context route");
+          "engine SBLR reference context envelope did not validate");
+  Require(result.accepted, "engine SBLR dispatch did not accept reference context route");
   Require(result.dispatched_to_api,
-          "engine SBLR dispatch did not route donor context projection");
-  Require(result.api_result.ok, "engine donor context scalar projection API failed");
+          "engine SBLR dispatch did not route reference context projection");
+  Require(result.api_result.ok, "engine reference context scalar projection API failed");
   Require(result.api_result.result_shape.rows.size() == 1,
-          "engine donor context projection did not produce one row");
+          "engine reference context projection did not produce one row");
   const auto& row = result.api_result.result_shape.rows.front();
   Require(row.fields.size() == 7,
-          "engine donor context projection column count mismatch");
+          "engine reference context projection column count mismatch");
   const auto expect_text = [&](std::size_t index,
                                std::string_view name,
                                std::string_view descriptor,
@@ -5123,7 +5123,7 @@ void RequireSbsfc016DonorContextProjectionLowering() {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
                 row.fields[index].second.encoded_value == expected,
-            std::string("engine donor context scalar projection mismatch: ") +
+            std::string("engine reference context scalar projection mismatch: ") +
                 std::string(name));
   };
   expect_text(0, "rdb_current_user", "uuid", "019f0000-0000-7000-8000-000000003123");
@@ -6270,23 +6270,23 @@ void RequireSbsfc028AntiWalPolicyRefusalProjectionLowering() {
   }
 }
 
-void RequireSbsfc016DonorAliasFunctionProjectionLowering() {
+void RequireSbsfc016ReferenceAliasFunctionProjectionLowering() {
   const auto artifacts = RunPipeline(
       "SELECT ceiling(1.2) AS ceiling_value, NVL(NULL, 'fallback') AS nvl_value, "
       "IIF(TRUE, 'yes', 'no') AS iif_value, SYSDATE AS sysdate_value, "
       "gettransactionid AS gettransactionid_value");
-  Require(artifacts.bound.bound, "SBSFC-016 donor alias function SELECT did not bind");
+  Require(artifacts.bound.bound, "SBSFC-016 reference alias function SELECT did not bind");
   for (const auto& diagnostic : artifacts.envelope.messages.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
   }
   Require(artifacts.verifier.admitted,
-          "SBSFC-016 donor alias function SELECT SBLR verifier rejected route");
+          "SBSFC-016 reference alias function SELECT SBLR verifier rejected route");
   Require(artifacts.envelope.operation_id == "query.evaluate_projection",
-          "SBSFC-016 donor alias function operation id mismatch");
+          "SBSFC-016 reference alias function operation id mismatch");
   Require(artifacts.envelope.sblr_opcode == "SBLR_QUERY_EVALUATE_PROJECTION",
-          "SBSFC-016 donor alias function opcode mismatch");
+          "SBSFC-016 reference alias function opcode mismatch");
   Require(Contains(artifacts.envelope.payload, "\"projection_count\":\"5\""),
-          "SBSFC-016 donor alias function projection count missing");
+          "SBSFC-016 reference alias function projection count missing");
   for (const auto* function_id : {
            "sb.scalar.ceil",
            "sb.scalar.ifnull",
@@ -6296,7 +6296,7 @@ void RequireSbsfc016DonorAliasFunctionProjectionLowering() {
        }) {
     Require(Contains(artifacts.envelope.payload,
                      std::string("function_id\":\"") + function_id + "\""),
-            "SBSFC-016 donor alias canonical id missing");
+            "SBSFC-016 reference alias canonical id missing");
   }
   for (const auto* surface_id : {
            "SBSQL-869658452A5F",
@@ -6308,7 +6308,7 @@ void RequireSbsfc016DonorAliasFunctionProjectionLowering() {
            "SBSQL-17B72695FA1A",
        }) {
     Require(Contains(artifacts.envelope.payload, surface_id),
-            "SBSFC-016 donor alias function surface evidence missing");
+            "SBSFC-016 reference alias function surface evidence missing");
   }
   Require(Contains(artifacts.envelope.payload, "\"projection_2_function_arg_count\":\"3\""),
           "SBSFC-016 IIF argument count missing");
@@ -6317,16 +6317,16 @@ void RequireSbsfc016DonorAliasFunctionProjectionLowering() {
   Require(Contains(artifacts.envelope.payload, "\"projection_4_function_arg_count\":\"0\""),
           "SBSFC-016 gettransactionid nullary route missing");
   Require(!Contains(artifacts.envelope.payload, "SELECT ceiling"),
-          "SBSFC-016 donor alias payload embedded source SQL text");
+          "SBSFC-016 reference alias payload embedded source SQL text");
 
   const auto admission = scratchbird::server::AdmitServerSblrEnvelope(
       scratchbird::server::ServerSblrAdmissionRequest{artifacts.envelope.payload, false});
   for (const auto& diagnostic : admission.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
   }
-  Require(admission.admitted, "server admission rejected SBSFC-016 donor alias function route");
+  Require(admission.admitted, "server admission rejected SBSFC-016 reference alias function route");
   Require(admission.requires_public_abi_dispatch,
-          "server admission did not require public ABI for donor alias function route");
+          "server admission did not require public ABI for reference alias function route");
 
   const sblr::SblrDispatchRequest request{
       EngineContext(), EngineEnvelopeFromParserEnvelope(artifacts.envelope),
@@ -6339,16 +6339,16 @@ void RequireSbsfc016DonorAliasFunctionProjectionLowering() {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
   Require(result.envelope_validated,
-          "engine SBLR donor alias function envelope did not validate");
-  Require(result.accepted, "engine SBLR dispatch did not accept donor alias function route");
+          "engine SBLR reference alias function envelope did not validate");
+  Require(result.accepted, "engine SBLR dispatch did not accept reference alias function route");
   Require(result.dispatched_to_api,
-          "engine SBLR dispatch did not route donor alias function projection");
-  Require(result.api_result.ok, "engine donor alias function scalar projection API failed");
+          "engine SBLR dispatch did not route reference alias function projection");
+  Require(result.api_result.ok, "engine reference alias function scalar projection API failed");
   Require(result.api_result.result_shape.rows.size() == 1,
-          "engine donor alias function projection did not produce one row");
+          "engine reference alias function projection did not produce one row");
   const auto& row = result.api_result.result_shape.rows.front();
   Require(row.fields.size() == 5,
-          "engine donor alias function projection column count mismatch");
+          "engine reference alias function projection column count mismatch");
   const auto expect_text = [&](std::size_t index,
                                std::string_view name,
                                std::string_view descriptor,
@@ -6356,13 +6356,13 @@ void RequireSbsfc016DonorAliasFunctionProjectionLowering() {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == descriptor &&
                 row.fields[index].second.encoded_value == expected,
-            std::string("engine donor alias function scalar projection mismatch: ") +
+            std::string("engine reference alias function scalar projection mismatch: ") +
                 std::string(name));
   };
   Require(row.fields[0].first == "ceiling_value" &&
               row.fields[0].second.descriptor.canonical_type_name == "real64" &&
               std::fabs(std::stod(row.fields[0].second.encoded_value) - 2.0) < 1e-6,
-          "engine donor alias function scalar projection mismatch: ceiling_value");
+          "engine reference alias function scalar projection mismatch: ceiling_value");
   expect_text(1, "nvl_value", "text", "fallback");
   expect_text(2, "iif_value", "text", "yes");
   expect_text(3, "sysdate_value", "timestamp_tz", "2026-05-12T14:23:46Z");
@@ -10184,8 +10184,8 @@ int main() {
   RequireTemporalFieldArithmeticProjectionLowering();
   RequireTemporalDateTimeBatchProjectionLowering();
   RequireProceduralContextProjectionLowering();
-  RequireSbsfc016DonorSystemVariableProjectionLowering();
-  RequireSbsfc016DonorContextProjectionLowering();
+  RequireSbsfc016ReferenceSystemVariableProjectionLowering();
+  RequireSbsfc016ReferenceContextProjectionLowering();
   RequireSbsfc016PolicyRefusalProjectionLowering();
   RequireSbsfc027PolicyRefusalProjectionLowering();
   RequireSbsfc028UuidCompatHelperProjectionLowering();
@@ -10199,7 +10199,7 @@ int main() {
   RequireSbsfc038SpatialTailScalarHelperProjectionLowering();
   RequireSbsfc039XmlDocumentQueryScalarHelperProjectionLowering();
   RequireSbsfc028AntiWalPolicyRefusalProjectionLowering();
-  RequireSbsfc016DonorAliasFunctionProjectionLowering();
+  RequireSbsfc016ReferenceAliasFunctionProjectionLowering();
   RequireSbsfc016FixedPolicyLimitProjectionLowering();
   RequireSbsfc016LanguagePolicyProjectionLowering();
   RequireSbsfc016MetadataProjectionLowering();

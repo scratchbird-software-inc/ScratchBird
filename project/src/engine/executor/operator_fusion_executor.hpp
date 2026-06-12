@@ -89,7 +89,7 @@ struct OperatorFusionPipelinePlan {
   bool security_barrier_crossed = false;
   bool security_barrier_proven = true;
 
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool write_ahead_log_finality_or_visibility_authority = false;
@@ -110,7 +110,7 @@ struct OperatorFusionProviderResult {
   bool security_recheck_evidence_present = false;
   bool provider_authority_evidence_present = false;
   bool redaction_or_security_violation = false;
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool write_ahead_log_finality_or_visibility_authority = false;

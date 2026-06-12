@@ -43,7 +43,7 @@ MemoryObservabilityOverheadResult MeasureMemoryObservabilityOverhead(
   MemoryObservabilityOverheadResult result;
   result.evidence.push_back("MMCH_MEMORY_OBSERVABILITY_OVERHEAD_BUDGET");
   result.evidence.push_back(
-      "memory_observability.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority");
+      "memory_observability.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority");
   const u64 sample_count = std::max<u64>(1, policy.sample_count);
   std::vector<u64> timings;
   timings.reserve(static_cast<std::size_t>(sample_count));

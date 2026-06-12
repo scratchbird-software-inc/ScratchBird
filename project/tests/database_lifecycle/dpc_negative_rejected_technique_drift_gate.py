@@ -129,10 +129,10 @@ ALLOWED_CLUSTER_BOUNDARY_FILES = {
 }
 
 AUTHORITY_ACTORS_RE = re.compile(
-    r"\b(parser|client|driver|donor|timestamp|uuid|uuidv[0-9]+|event[-_ ]?stream)\b",
+    r"\b(parser|client|driver|reference|timestamp|uuid|uuidv[0-9]+|event[-_ ]?stream)\b",
     re.I,
 )
-AUTHORITY_ACTOR = r"(?:parser|client|driver|donor|timestamp|uuid|uuidv[0-9]+|event[-_ ]?stream)"
+AUTHORITY_ACTOR = r"(?:parser|client|driver|reference|timestamp|uuid|uuidv[0-9]+|event[-_ ]?stream)"
 AUTHORITY_TARGET = (
     r"(?:commit|committed|rollback|visibility|visible|cleanup|recovery|recover|"
     r"finality|durable|durability|source[-_ ]?of[-_ ]?truth|authority|authoritative)"
@@ -222,7 +222,7 @@ NEGATIVE_RE = re.compile(
     r"\b(must not|must_not|never|forbid|forbidden|refus|reject|not authority|"
     r"not authoritative|no[_ -]?wal|anti[-_ ]?wal|without wal|does not|"
     r"non[-_ ]authority|fail[-_ ]closed|unavailable|false|"
-    r"not parser|not client|not driver|not donor|no parser|no donor|"
+    r"not parser|not client|not driver|not reference|no parser|no reference|"
     r"no wal|no write[-_ ]ahead|do not|cannot|without|invalid|diagnostic[-_ ]?only)\b|"
     r"\b(?:not|no|without|does not|do not|cannot)\b.{0,100}\b(authority|finality|execution|benchmark evidence)\b",
     re.I,
@@ -360,7 +360,7 @@ def scan_text(rel_path: Path, text: str) -> list[Finding]:
                 continue
             findings.append(
                 Finding(rel_path, line_no, "external_finality_authority",
-                        "parser/client/driver/donor/timestamp/UUID/event-stream authority drift")
+                        "parser/client/driver/reference/timestamp/UUID/event-stream authority drift")
             )
 
         if (
@@ -418,7 +418,7 @@ def detector_self_check() -> list[str]:
         ("wal_recovery_authority", "WAL is required recovery authority"),
         ("wal_recovery_authority", "redo finality authority is diagnostic truth"),
         ("external_finality_authority", "parser owns commit finality for cleanup"),
-        ("external_finality_authority", "donor visibility authority is required"),
+        ("external_finality_authority", "reference visibility authority is required"),
         (
             "hard_coded_catalog_object_uuid",
             f'catalog object_uuid = "{synthetic_uuid_literal()}"',

@@ -264,7 +264,7 @@ api::DmlRowLocatorStreamRequest BaseStreamRequest(
   request.durable_mga_inventory_proof = true;
   request.mga_visibility_recheck_planned = true;
   request.security_recheck_planned = true;
-  request.parser_or_donor_authority = false;
+  request.parser_or_reference_authority = false;
   request.index_or_cache_finality_authority = false;
   return request;
 }
@@ -309,8 +309,8 @@ void RequireLocatorAuthorityEvidence(
                       "mga_finality_authority",
                       "engine_transaction_inventory"),
           std::string(context) + " missing engine finality authority");
-  Require(HasEvidence(result.evidence, "parser_or_donor_authority", "false"),
-          std::string(context) + " allowed parser/donor authority");
+  Require(HasEvidence(result.evidence, "parser_or_reference_authority", "false"),
+          std::string(context) + " allowed parser/reference authority");
   Require(HasEvidence(result.evidence,
                       "index_or_cache_finality_authority",
                       "false"),
@@ -327,8 +327,8 @@ void RequireWriteAuthorityEvidence(
                       "mga_finality_authority",
                       "engine_transaction_inventory"),
           std::string(context) + " missing MGA finality authority");
-  Require(HasEvidence(result.evidence, "parser_or_donor_authority", "false"),
-          std::string(context) + " allowed parser/donor authority");
+  Require(HasEvidence(result.evidence, "parser_or_reference_authority", "false"),
+          std::string(context) + " allowed parser/reference authority");
   Require(HasEvidence(result.evidence,
                       "tree_mutation_finality_authority",
                       "false"),
@@ -515,14 +515,14 @@ void TestFailClosedLocatorAndRouteLimits() {
   auto safe_plan = IndexPlan(table_uuid, index_uuid, "scalar_eq", false);
   stream = BaseStreamRequest(api::DmlRowLocatorStreamConsumer::delete_row,
                              safe_plan);
-  stream.parser_or_donor_authority = true;
+  stream.parser_or_reference_authority = true;
   stream_result = api::BuildDmlRowLocatorStream(stream);
   Require(!stream_result.ok,
-          "parser/donor-authoritative locator stream was admitted");
+          "parser/reference-authoritative locator stream was admitted");
   Require(HasEvidence(stream_result.evidence,
                       "dml_row_locator_stream_refusal",
-                      "parser_or_donor_authority_forbidden"),
-          "parser/donor authority refusal evidence missing");
+                      "parser_or_reference_authority_forbidden"),
+          "parser/reference authority refusal evidence missing");
 
   const auto* hash_select = idx::FindBuiltinIndexRouteCapabilityState(
       idx::IndexRouteKind::sql_select, idx::IndexFamily::hash);
@@ -532,10 +532,10 @@ void TestFailClosedLocatorAndRouteLimits() {
   Require(!hash_select->supports_ordered_range,
           "hash route was incorrectly treated as ordered range");
 
-  const auto* donor_update = idx::FindBuiltinIndexRouteCapabilityState(
-      idx::IndexRouteKind::dml_update, idx::IndexFamily::donor_emulated);
-  Require(donor_update != nullptr && !donor_update->route_complete(),
-          "donor-emulated DML update route was benchmark-clean");
+  const auto* reference_update = idx::FindBuiltinIndexRouteCapabilityState(
+      idx::IndexRouteKind::dml_update, idx::IndexFamily::reference_emulated);
+  Require(reference_update != nullptr && !reference_update->route_complete(),
+          "reference-emulated DML update route was benchmark-clean");
   const auto* policy_update = idx::FindBuiltinIndexRouteCapabilityState(
       idx::IndexRouteKind::dml_update, idx::IndexFamily::policy_blocked);
   Require(policy_update != nullptr && !policy_update->route_complete(),
@@ -564,31 +564,31 @@ void TestFailClosedLocatorAndRouteLimits() {
   Require(write_result.ok && write_result.secondary_delta_ledger_appends == 2,
           "hash family was not admitted to deferred DML update ledger route");
 
-  auto donor = Index(index_uuid,
+  auto reference = Index(index_uuid,
                      table_uuid,
-                     api::kCrudIndexFamilyDonorEmulated,
+                     api::kCrudIndexFamilyReferenceEmulated,
                      "name");
-  auto donor_update_event =
-      BaseEvent(api::DmlIndexWriteOperation::update, donor, 4);
-  donor_update_event.has_old_row = true;
-  donor_update_event.old_row =
+  auto reference_update_event =
+      BaseEvent(api::DmlIndexWriteOperation::update, reference, 4);
+  reference_update_event.has_old_row = true;
+  reference_update_event.old_row =
       Row(row_uuid,
           UuidText(platform::UuidKind::row, 1702300205000ull, 0x46),
           "1",
-          "donor-old");
-  donor_update_event.has_new_row = true;
-  donor_update_event.new_row =
+          "reference-old");
+  reference_update_event.has_new_row = true;
+  reference_update_event.new_row =
       Row(row_uuid,
           UuidText(platform::UuidKind::row, 1702300206000ull, 0x47),
           "1",
-          "donor-new");
-  auto donor_tree = MakeTree(index_uuid);
-  write_result = ApplyWriteBatch({donor_update_event}, &donor_tree);
-  Require(!write_result.ok, "donor-emulated DML update was admitted");
+          "reference-new");
+  auto reference_tree = MakeTree(index_uuid);
+  write_result = ApplyWriteBatch({reference_update_event}, &reference_tree);
+  Require(!write_result.ok, "reference-emulated DML update was admitted");
   Require(HasEvidence(write_result.evidence,
                       "dml_index_family_fail_closed",
-                      "donor_emulated"),
-          "donor-emulated fail-closed evidence missing");
+                      "reference_emulated"),
+          "reference-emulated fail-closed evidence missing");
 
   auto candidate = Index(index_uuid,
                          table_uuid,

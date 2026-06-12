@@ -1515,11 +1515,11 @@
     return MakeFunctionSuccess(request, {MakeTextValue("character", "keyword_class.deprecated")});
   }
 
-  if (IdIs(id, {"data.scalar.donor_contextual_keyword",
-                "sb.scalar.donor_contextual_keyword",
-                "donor_contextual_keyword"})) {
-    if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "donor_contextual_keyword expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("character", "keyword_class.donor_contextual")});
+  if (IdIs(id, {"data.scalar.reference_contextual_keyword",
+                "sb.scalar.reference_contextual_keyword",
+                "reference_contextual_keyword"})) {
+    if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "reference_contextual_keyword expects no arguments");
+    return MakeFunctionSuccess(request, {MakeTextValue("character", "keyword_class.reference_contextual")});
   }
 
   if (IdIs(id, {"data.scalar.reserved_native_keyword",
@@ -1536,11 +1536,11 @@
     return MakeFunctionSuccess(request, {MakeTextValue("character", "keyword_class.contextual_native")});
   }
 
-  if (IdIs(id, {"data.scalar.donor_reserved_keyword",
-                "sb.scalar.donor_reserved_keyword",
-                "donor_reserved_keyword"})) {
-    if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "donor_reserved_keyword expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("character", "keyword_class.donor_reserved")});
+  if (IdIs(id, {"data.scalar.reference_reserved_keyword",
+                "sb.scalar.reference_reserved_keyword",
+                "reference_reserved_keyword"})) {
+    if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "reference_reserved_keyword expects no arguments");
+    return MakeFunctionSuccess(request, {MakeTextValue("character", "keyword_class.reference_reserved")});
   }
 
   if (IdIs(id, {"data.scalar.meta_command_keyword",
@@ -1688,11 +1688,11 @@
     return MakeFunctionSuccess(request, {MakeTextValue("character", "authority.catalog_read")});
   }
 
-  if (IdIs(id, {"data.scalar.donor_log_compatibility",
-                "sb.scalar.donor_log_compatibility",
-                "donor_log_compatibility"})) {
-    if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "donor_log_compatibility expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("character", "compatibility.donor_log_non_authority")});
+  if (IdIs(id, {"data.scalar.reference_log_compatibility",
+                "sb.scalar.reference_log_compatibility",
+                "reference_log_compatibility"})) {
+    if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "reference_log_compatibility expects no arguments");
+    return MakeFunctionSuccess(request, {MakeTextValue("character", "compatibility.reference_log_non_authority")});
   }
 
   if (IdIs(id, {"data.scalar.fail_closed", "sb.scalar.fail_closed", "fail_closed"})) {
@@ -1816,7 +1816,7 @@
 
   if (IdIs(id, {"data.scalar.innodb", "sb.scalar.innodb", "innodb"})) {
     if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "innodb expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("character", "donor_storage.innodb")});
+    return MakeFunctionSuccess(request, {MakeTextValue("character", "reference_storage.innodb")});
   }
 
   if (IdIs(id, {"data.scalar.hnsw", "sb.scalar.hnsw", "hnsw"})) {
@@ -1969,9 +1969,9 @@
     return MakeFunctionSuccess(request, {MakeTextValue("character", "syntax.parser_only")});
   }
 
-  if (IdIs(id, {"data.scalar.donor_only_rewrite", "sb.scalar.donor_only_rewrite", "donor_only_rewrite"})) {
-    if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "donor_only_rewrite expects no arguments");
-    return MakeFunctionSuccess(request, {MakeTextValue("character", "donor.rewrite_only")});
+  if (IdIs(id, {"data.scalar.reference_only_rewrite", "sb.scalar.reference_only_rewrite", "reference_only_rewrite"})) {
+    if (!request.arguments.empty()) return RefuseFunctionInvalidInput(request, "reference_only_rewrite expects no arguments");
+    return MakeFunctionSuccess(request, {MakeTextValue("character", "reference.rewrite_only")});
   }
 
   if (IdIs(id, {"data.scalar.object_resolution_failed", "sb.scalar.object_resolution_failed", "object_resolution_failed"})) {

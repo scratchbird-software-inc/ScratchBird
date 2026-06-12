@@ -380,7 +380,7 @@ void FailClosedForUnsafePlansAndProviders() {
                  "SB_OPERATOR_FUSION.SECURITY_BARRIER_REQUIRED");
 
   plan = Plan(exec::OperatorFusionPipelineKind::kIndexVisibilityProject);
-  plan.parser_or_donor_finality_or_visibility_authority = true;
+  plan.parser_or_reference_finality_or_visibility_authority = true;
   RequireRefusal(plan, PrimaryProvider, "SB_OPERATOR_FUSION.UNSAFE_AUTHORITY");
 
   plan = Plan(exec::OperatorFusionPipelineKind::kIndexVisibilityProject);

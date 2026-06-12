@@ -7,7 +7,7 @@ Search key: `FSPE_010B8_VALIDATION_RESULT`
 
 This artifact closes `FSPE-010B8`: timeout, cancellation, drain, disconnect, and parser-kill finality for active streams. It does not close the parent `FSPE-010B`; `FSPE-010B9` remains for completion-gate evidence and parent status updates.
 
-The implemented path records server-owned cursor finality. It does not allow SQL text, donor command text, parser AST, or BoundAST to become engine authority.
+The implemented path records server-owned cursor finality. It does not allow SQL text, reference command text, parser AST, or BoundAST to become engine authority.
 
 ## Validated Coverage
 

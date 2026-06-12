@@ -206,7 +206,7 @@ HistoricalAuditSnapshotResult CreateHistoricalAuditSnapshot(
   result.fail_closed = false;
   result.writes_refused = true;
   result.parser_finality_authority = false;
-  result.donor_finality_authority = false;
+  result.reference_finality_authority = false;
   result.snapshot.reader_transaction = reader->identity.local_id;
   result.snapshot.visible_through_local_transaction = target->identity.local_id;
   result.snapshot.transaction_start_visible_through_local_transaction =

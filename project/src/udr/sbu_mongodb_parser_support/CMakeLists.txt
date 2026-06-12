@@ -11,7 +11,7 @@ if(NOT TARGET sb_udr_runtime)
 endif()
 
 if(NOT TARGET sbl_mongodb_parser_pipeline)
-  add_subdirectory(${PROJECT_SOURCE_DIR}/src/parsers/donor/mongodb ${CMAKE_CURRENT_BINARY_DIR}/mongodb_parser_for_udr)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/parsers/compatibility/mongodb ${CMAKE_CURRENT_BINARY_DIR}/mongodb_parser_for_udr)
 endif()
 
 add_library(sbu_mongodb_parser_support STATIC
@@ -21,7 +21,7 @@ add_library(sbu_mongodb_parser_support STATIC
 target_compile_features(sbu_mongodb_parser_support PUBLIC cxx_std_23)
 target_include_directories(sbu_mongodb_parser_support PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
-  ${PROJECT_SOURCE_DIR}/src/parsers/donor/mongodb
+  ${PROJECT_SOURCE_DIR}/src/parsers/compatibility/mongodb
 )
 target_link_libraries(sbu_mongodb_parser_support PUBLIC
   sb_udr_runtime

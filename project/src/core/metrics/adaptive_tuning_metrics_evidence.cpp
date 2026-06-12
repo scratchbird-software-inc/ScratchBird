@@ -53,7 +53,7 @@ AdaptiveTuningMetricEvidence BuildAdaptiveTuningMetricEvidence(
   evidence.evidence_authoritative = request.evidence_authoritative;
   evidence.benchmark_clean = request.benchmark_clean;
   evidence.hard_backlog_refusal = request.hard_backlog_refusal;
-  evidence.parser_or_donor_authority = request.parser_or_donor_authority;
+  evidence.parser_or_reference_authority = request.parser_or_reference_authority;
   evidence.provider_transaction_finality_authority =
       request.provider_transaction_finality_authority;
   evidence.provider_visibility_authority =
@@ -122,8 +122,8 @@ SerializeAdaptiveTuningMetricEvidence(
       "hard_backlog_refusal",
       BoolText(evidence.hard_backlog_refusal));
   Add(&fields,
-      "parser_or_donor_authority",
-      BoolText(evidence.parser_or_donor_authority));
+      "parser_or_reference_authority",
+      BoolText(evidence.parser_or_reference_authority));
   Add(&fields,
       "provider_transaction_finality_authority",
       BoolText(evidence.provider_transaction_finality_authority));

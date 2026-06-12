@@ -49,7 +49,7 @@ void RequireEvidenceHygiene(const std::vector<std::string>& evidence) {
          {"docs/", "execution-plans", "findings", "contracts", "references",
           "provider_finality_or_visibility_authority=true",
           "client_finality_or_visibility_authority=true",
-          "parser_or_donor_finality_or_visibility_authority=true",
+          "parser_or_reference_finality_or_visibility_authority=true",
           "write_ahead_log_recovery_or_finality_authority=true",
           "finality_authority=true", "visibility_authority=true",
           "security_authority=true", "mga_visibility_authority=true"}) {
@@ -304,7 +304,7 @@ void RefusalsFailClosed() {
        {"parser", "client", "provider", "write_after_log"}) {
     auto unsafe = AllFamilyDescriptors();
     if (std::string_view(authority_case) == "parser") {
-      unsafe.front().parser_or_donor_finality_or_visibility_authority = true;
+      unsafe.front().parser_or_reference_finality_or_visibility_authority = true;
     } else if (std::string_view(authority_case) == "client") {
       unsafe.front().client_finality_or_visibility_authority = true;
     } else if (std::string_view(authority_case) == "provider") {

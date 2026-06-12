@@ -66,7 +66,7 @@ const idx::IndexFaultInjectionMatrixRow& FindRow(
 
 void RequireNoAuthority(const idx::IndexFaultInjectionMatrixRow& row) {
   Require(!row.parser_authority, row.surface + " claimed parser authority");
-  Require(!row.donor_authority, row.surface + " claimed donor authority");
+  Require(!row.reference_authority, row.surface + " claimed reference authority");
   Require(!row.provider_authority, row.surface + " claimed provider authority");
   Require(!row.storage_authority, row.surface + " claimed storage authority");
   Require(!row.visibility_authority,
@@ -109,10 +109,10 @@ void RequireCapabilityBlocker(
   Require(!row.recovered, row.surface + " incomplete family counted recovered");
   Require(!row.planner_visible,
           row.surface + " incomplete family became planner visible");
-  if (family.descriptor->persistence == idx::IndexPersistenceClass::donor_emulated) {
+  if (family.descriptor->persistence == idx::IndexPersistenceClass::reference_emulated) {
     Require(row.diagnostic_code ==
-                "IRC.INDEX_REPAIR.DONOR_EMULATED.NON_AUTHORITY_MAPPING",
-            row.surface + " donor diagnostic mismatch");
+                "IRC.INDEX_REPAIR.REFERENCE_EMULATED.NON_AUTHORITY_MAPPING",
+            row.surface + " reference diagnostic mismatch");
     return;
   }
   Require(row.diagnostic_code == state->blocker_diagnostic_code,

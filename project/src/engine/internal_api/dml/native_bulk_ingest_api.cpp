@@ -31,7 +31,7 @@ void AddNativeBulkIngestEvidence(EngineExecuteNativeBulkIngestResult* result,
   result->evidence.push_back({"native_bulk_ingest_batch_format",
                               "engine_binary_row_batch"});
   result->evidence.push_back({"parser_finality_authority", "false"});
-  result->evidence.push_back({"donor_finality_authority", "false"});
+  result->evidence.push_back({"reference_finality_authority", "false"});
   result->evidence.push_back({"native_bulk_ingest_cluster_private", "false"});
 }
 

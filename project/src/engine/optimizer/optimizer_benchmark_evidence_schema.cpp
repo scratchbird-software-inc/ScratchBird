@@ -72,9 +72,9 @@ std::string SamplePrefix(
                                     : sample.cache_phase;
 }
 
-std::string DonorPrefix(
-    const OptimizerBenchmarkDonorMethodologyEvidence& donor) {
-  return donor.donor_engine.empty() ? "unnamed_donor" : donor.donor_engine;
+std::string ReferencePrefix(
+    const OptimizerBenchmarkReferenceMethodologyEvidence& reference) {
+  return reference.reference_engine.empty() ? "unnamed_reference" : reference.reference_engine;
 }
 
 bool HasAuthorityDrift(
@@ -84,7 +84,7 @@ bool HasAuthorityDrift(
          authority.authorization_security_authority ||
          authority.recovery_authority ||
          authority.parser_authority ||
-         authority.donor_authority ||
+         authority.reference_authority ||
          authority.wal_authority ||
          authority.benchmark_authority ||
          authority.optimizer_plan_authority ||
@@ -186,41 +186,41 @@ void ValidateSampleGroup(
   }
 }
 
-void ValidateDonorMethodology(
+void ValidateReferenceMethodology(
     PersistedOptimizerBenchmarkEvidenceValidation* validation,
-    const OptimizerBenchmarkDonorMethodologyEvidence& donor) {
-  const auto prefix = DonorPrefix(donor);
-  if (donor.donor_engine.empty() || donor.donor_version.empty() ||
-      donor.donor_native_method.empty()) {
+    const OptimizerBenchmarkReferenceMethodologyEvidence& reference) {
+  const auto prefix = ReferencePrefix(reference);
+  if (reference.reference_engine.empty() || reference.reference_version.empty() ||
+      reference.reference_native_method.empty()) {
     AddDiagnostic(validation,
-                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.DONOR_IDENTITY_MISSING");
+                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.REFERENCE_IDENTITY_MISSING");
   }
-  if (donor.dataset_schema_mapping_digest.empty() ||
-      donor.workload_mapping_digest.empty() ||
-      donor.route_equivalence_contract_hash.empty() ||
-      donor.donor_result_hash.empty()) {
+  if (reference.dataset_schema_mapping_digest.empty() ||
+      reference.workload_mapping_digest.empty() ||
+      reference.route_equivalence_contract_hash.empty() ||
+      reference.reference_result_hash.empty()) {
     AddDiagnostic(validation,
-                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.DONOR_MAPPING_MISSING");
+                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.REFERENCE_MAPPING_MISSING");
   }
-  if (donor.donor_transaction_policy.empty() ||
-      donor.donor_timing_policy.empty()) {
+  if (reference.reference_transaction_policy.empty() ||
+      reference.reference_timing_policy.empty()) {
     AddDiagnostic(validation,
-                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.DONOR_METHOD_MISSING");
+                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.REFERENCE_METHOD_MISSING");
   }
-  if (donor.comparable_status != "comparable" &&
-      donor.comparable_status != "non_comparable") {
+  if (reference.comparable_status != "comparable" &&
+      reference.comparable_status != "non_comparable") {
     AddDiagnostic(validation,
-                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.DONOR_COMPARABILITY_INVALID");
+                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.REFERENCE_COMPARABILITY_INVALID");
   }
-  if (donor.comparable_status == "non_comparable" &&
-      donor.non_comparable_reason.empty()) {
+  if (reference.comparable_status == "non_comparable" &&
+      reference.non_comparable_reason.empty()) {
     AddDiagnostic(validation,
                   prefix + ":SB_OPT_BENCHMARK_SCHEMA.NON_COMPARABLE_REASON_MISSING");
   }
-  if (!donor.donor_reference_only || donor.donor_as_authority ||
-      donor.uses_donor_storage_or_finality_for_scratchbird) {
+  if (!reference.reference_reference_only || reference.reference_as_authority ||
+      reference.uses_reference_storage_or_finality_for_scratchbird) {
     AddDiagnostic(validation,
-                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.DONOR_AUTHORITY_DRIFT");
+                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.REFERENCE_AUTHORITY_DRIFT");
   }
 }
 
@@ -352,12 +352,12 @@ ValidatePersistedOptimizerBenchmarkEvidenceRecord(
                   prefix + ":SB_OPT_BENCHMARK_SCHEMA.COLD_WARM_REQUIRED");
   }
 
-  if (record.donor_methodology.empty()) {
+  if (record.reference_methodology.empty()) {
     AddDiagnostic(&validation,
-                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.DONOR_METHODOLOGY_MISSING");
+                  prefix + ":SB_OPT_BENCHMARK_SCHEMA.REFERENCE_METHODOLOGY_MISSING");
   }
-  for (const auto& donor : record.donor_methodology) {
-    ValidateDonorMethodology(&validation, donor);
+  for (const auto& reference : record.reference_methodology) {
+    ValidateReferenceMethodology(&validation, reference);
   }
 
   validation.ok = validation.missing_fields.empty() &&

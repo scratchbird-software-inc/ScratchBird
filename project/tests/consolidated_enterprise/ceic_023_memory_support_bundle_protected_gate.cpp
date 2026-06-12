@@ -201,7 +201,7 @@ void LowMemoryBundleIsBoundedRedactedAndNonAuthoritative() {
           "CEIC-023 protected review evidence anchor missing");
   Require(EvidenceHas(
               bundle.evidence,
-              "memory_support_bundle.authority_scope=evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"),
+              "memory_support_bundle.authority_scope=evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority"),
           "CEIC-023 expanded authority boundary missing");
   Require(RowKeyHas(bundle, "pressure_transition.0.new_state"),
           "CEIC-023 pressure transition row absent");

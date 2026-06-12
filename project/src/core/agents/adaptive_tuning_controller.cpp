@@ -80,12 +80,12 @@ bool AuthoritySafe(const AdaptiveTuningSafetyPolicy& safety,
          safety.grants_proven &&
          safety.mga_recheck_required &&
          safety.security_recheck_required &&
-         !safety.parser_or_donor_authority &&
+         !safety.parser_or_reference_authority &&
          !safety.provider_transaction_finality_authority &&
          !safety.provider_visibility_authority &&
          !safety.client_autocommit_authority &&
          !safety.wal_recovery_authority &&
-         !metrics.parser_or_donor_authority &&
+         !metrics.parser_or_reference_authority &&
          !metrics.provider_transaction_finality_authority &&
          !metrics.provider_visibility_authority &&
          !metrics.client_autocommit_authority &&

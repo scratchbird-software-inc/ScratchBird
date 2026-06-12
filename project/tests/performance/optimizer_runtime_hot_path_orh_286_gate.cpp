@@ -281,8 +281,8 @@ void VerifyAcceptedRoute(
           "MGA recheck evidence missing");
   Require(HasEvidence(physical.evidence, "security_recheck", "required"),
           "security recheck evidence missing");
-  Require(HasEvidence(physical.evidence, "parser_or_donor_authority", "false"),
-          "parser/donor non-authority evidence missing");
+  Require(HasEvidence(physical.evidence, "parser_or_reference_authority", "false"),
+          "parser/reference non-authority evidence missing");
 
   auto request = GuardRequest(route_label, required_path, &physical);
   request.late_materialization_result = late;
@@ -418,15 +418,15 @@ void NegativeRegressions() {
       request,
       "SB-IRC062-BLOCKED-MISSING-MGA-SECURITY-REDACTION-PROOF");
 
-  auto donor_authority = BaseIndexedRequest(
+  auto reference_authority = BaseIndexedRequest(
       exec::IndexedPhysicalOperatorKind::point_lookup, fixture);
-  donor_authority.encoded_point_key = EncodedKey(fixture.index_uuid, "alpha");
-  donor_authority.parser_or_donor_authority = true;
-  blocked = exec::ExecuteIndexedPhysicalOperator(donor_authority);
-  Require(!blocked.ok, "parser/donor authority was accepted");
+  reference_authority.encoded_point_key = EncodedKey(fixture.index_uuid, "alpha");
+  reference_authority.parser_or_reference_authority = true;
+  blocked = exec::ExecuteIndexedPhysicalOperator(reference_authority);
+  Require(!blocked.ok, "parser/reference authority was accepted");
   Require(blocked.diagnostic_code ==
-              "SB-IRC060-PARSER-DONOR-AUTHORITY-FORBIDDEN",
-          "parser/donor authority diagnostic mismatch");
+              "SB-IRC060-PARSER-REFERENCE-AUTHORITY-FORBIDDEN",
+          "parser/reference authority diagnostic mismatch");
 
   request = GuardRequest("orh286.missing_exact_blocker",
                          exec::IndexPlanShapeRequiredPath::indexed_point_lookup,
@@ -440,11 +440,11 @@ void NegativeRegressions() {
   request.benchmark_clean_claim = true;
   ExpectGuardRefusal(request, "SB-IRC062-BENCHMARK-CLEAN-CLAIM-FORBIDDEN");
 
-  request = GuardRequest("orh286.donor_dominance_overclaim",
+  request = GuardRequest("orh286.reference_dominance_overclaim",
                          exec::IndexPlanShapeRequiredPath::indexed_range_scan,
                          &range);
-  request.donor_dominance_claim = true;
-  ExpectGuardRefusal(request, "SB-IRC062-DONOR-DOMINANCE-CLAIM-FORBIDDEN");
+  request.reference_dominance_claim = true;
+  ExpectGuardRefusal(request, "SB-IRC062-REFERENCE-DOMINANCE-CLAIM-FORBIDDEN");
 }
 
 void InvalidRouteFamilyAndStaleCapability() {
@@ -459,10 +459,10 @@ void InvalidRouteFamilyAndStaleCapability() {
               hash_for_dml->requires_exact_recheck,
           "hash family was not admitted for DML ledger mutation route");
 
-  const auto* donor = idx::FindBuiltinIndexRouteCapabilityState(
-      idx::IndexRouteKind::sql_select, idx::IndexFamily::donor_emulated);
-  Require(donor != nullptr && !donor->route_complete(),
-          "donor emulated family became route authority");
+  const auto* reference = idx::FindBuiltinIndexRouteCapabilityState(
+      idx::IndexRouteKind::sql_select, idx::IndexFamily::reference_emulated);
+  Require(reference != nullptr && !reference->route_complete(),
+          "reference emulated family became route authority");
 
   auto stale = GuardRequest("orh286.stale_route_capability",
                             exec::IndexPlanShapeRequiredPath::indexed_point_lookup,

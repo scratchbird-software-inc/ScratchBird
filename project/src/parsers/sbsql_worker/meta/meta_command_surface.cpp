@@ -172,7 +172,7 @@ Diagnostic MetaCommandRefusalDiagnostic(const MetaCommandSurfaceRecord& record,
   } else if (record.surface_class == MetaCommandSurfaceClass::kUnsafeLocalShell) {
     message = "meta-command would require client local file or shell effects and is refused";
   } else if (record.refusal_diagnostic == "SBSQL.META.PROFILE_REQUIRED") {
-    message = "meta-command requires a donor/tool parser profile and is refused by SBSQL";
+    message = "meta-command requires a reference/tool parser profile and is refused by SBSQL";
   }
   return MakeDiagnostic(
       std::string(record.refusal_diagnostic),

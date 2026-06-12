@@ -100,7 +100,7 @@ def validate_cross_child_counts(root: Path) -> None:
     sbsql = read_csv(root, CHILDREN["sbsql"] / "SBSQL_TO_SBLR_PROOF_MATRIX.csv")
     roundtrip = read_csv(root, CHILDREN["proof"] / "SBLR_SBSQL_ROUNDTRIP_PROOF_MATRIX.csv")
     parser_audit = read_csv(root, CHILDREN["parser"] / "PARSER_DIALECT_ISOLATION_AUDIT.csv")
-    cluster = read_csv(root, CHILDREN["cluster"] / "NORMALIZED_DONOR_CLUSTER_COMMAND_SET.csv")
+    cluster = read_csv(root, CHILDREN["cluster"] / "NORMALIZED_REFERENCE_CLUSTER_COMMAND_SET.csv")
     require(len(sblr) == 2760, "SBLR proof count drift")
     require(len(sbsql) == 2760, "SBsql proof count drift")
     require(len(roundtrip) == 2760, "roundtrip proof count drift")

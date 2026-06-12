@@ -77,7 +77,7 @@ struct InvertedSearchSegmentDescriptor {
   bool timestamp_finality_authority_claimed = false;
   bool uuid_ordering_finality_authority_claimed = false;
   bool event_stream_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
 };
 
@@ -103,7 +103,7 @@ struct InvertedSearchSegmentEvidenceRow {
   bool timestamp_ordering_authority = false;
   bool uuid_ordering_authority = false;
   bool event_stream_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool write_ahead_authority = false;
   std::string diagnostic_code;
   std::string diagnostic_detail;
@@ -128,7 +128,7 @@ struct InvertedSearchSegmentBuildRequest {
   bool timestamp_ordering_authority = false;
   bool uuid_ordering_authority = false;
   bool event_stream_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool write_ahead_authority = false;
 };
 

@@ -19,7 +19,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: SB_OPTIMIZER_HINT_POLICY_ADMISSION
 // Hint policy reaches the optimizer only as normalized engine/SBLR policy
 // tokens. It is advisory optimizer guidance and never SQL text, parser
-// execution, donor behavior, name authority, benchmark evidence, transaction
+// execution, reference behavior, name authority, benchmark evidence, transaction
 // finality, visibility, security, or recovery authority.
 struct OptimizerHintPolicyRequest {
   std::string policy_uuid;
@@ -59,7 +59,7 @@ struct OptimizerHintPolicyRequest {
   bool raw_sql_text_present = false;
   bool parser_execution_authority_claimed = false;
   bool parser_session_directive_unbound = false;
-  bool donor_or_legacy_authority_claimed = false;
+  bool reference_or_legacy_authority_claimed = false;
   bool name_authority_claimed = false;
   bool metric_or_benchmark_authority_claimed = false;
   OptimizerBarrierInput barriers;

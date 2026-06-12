@@ -41,7 +41,7 @@ struct IndexCompactAuthorityContext {
   bool uuidv7_order_equivalence_proven = true;
   bool mga_visibility_recheck_required = true;
   bool security_recheck_required = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool provider_authority = false;
   bool wal_or_finality_authority = false;
   bool uuid_order_finality_authority = false;

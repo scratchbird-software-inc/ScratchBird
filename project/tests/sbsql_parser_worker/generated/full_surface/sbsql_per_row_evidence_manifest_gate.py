@@ -15,8 +15,8 @@ canonical registry and strict ledger, and that rows claiming a final state carry
 specific evidence instead of family-only or blocked placeholders.
 
 Architecture invariant compliance: read-only consistency check; no parser,
-engine, server, storage, donor, cluster, or MGA behavior is modified. The gate
-does not introduce WAL, donor-backed storage, or parser-side execution authority.
+engine, server, storage, reference, cluster, or MGA behavior is modified. The gate
+does not introduce WAL, reference-backed storage, or parser-side execution authority.
 """
 
 from __future__ import annotations

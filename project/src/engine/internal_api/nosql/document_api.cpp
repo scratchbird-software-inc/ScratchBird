@@ -588,7 +588,7 @@ void AddDocumentPathEvidence(EngineApiResult* result,
   AddApiBehaviorEvidence(result, "parser_transaction_finality_authority", "false");
   AddApiBehaviorEvidence(result, "client_autocommit_authority", "false");
   AddApiBehaviorEvidence(result, "document_path_provider_candidate_evidence_only", "true");
-  AddApiBehaviorEvidence(result, "donor_finality_authority", "false");
+  AddApiBehaviorEvidence(result, "reference_finality_authority", "false");
   AddApiBehaviorEvidence(result, "provider_finality_authority", "false");
   AddApiBehaviorEvidence(result, "write_ahead_log_finality_authority", "false");  // wal-not-authority
   AddApiBehaviorEvidence(result,

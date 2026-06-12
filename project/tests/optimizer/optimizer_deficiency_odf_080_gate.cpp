@@ -263,12 +263,12 @@ void AllSixFamiliesBenchmarkAndSelectSafeFilters() {
 
 void UnsafeAuthorityAndMissingRecheckFailClosed() {
   auto request = BaseRequest();
-  request.parser_or_donor_authority = true;
+  request.parser_or_reference_authority = true;
   auto result = opt::EvaluateNoSqlApproxFilterDecision(request);
-  Require(!result.ok, "ODF-080 parser/donor authority was accepted");
-  Require(result.fail_closed, "ODF-080 parser/donor refusal did not fail closed");
+  Require(!result.ok, "ODF-080 parser/reference authority was accepted");
+  Require(result.fail_closed, "ODF-080 parser/reference refusal did not fail closed");
   Require(result.diagnostic_code == "SB_NOSQL_APPROX_FILTER.UNSAFE_AUTHORITY",
-          "ODF-080 parser/donor authority diagnostic changed");
+          "ODF-080 parser/reference authority diagnostic changed");
 
   request = BaseRequest();
   request.provider_claims_transaction_finality_authority = true;

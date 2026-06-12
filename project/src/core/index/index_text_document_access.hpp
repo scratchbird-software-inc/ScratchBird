@@ -136,7 +136,7 @@ struct TextQueryPathRequest {
   bool phrase_profile_enabled = true;
   bool ranking_profile_enabled = true;
   bool lossy_candidates = false;
-  bool donor_requires_recheck = false;
+  bool reference_requires_recheck = false;
 };
 
 struct TextQueryPathDecision {
@@ -164,7 +164,7 @@ struct GinConsistencyRequest {
   bool consistency_may_be_lossy = true;
   bool tri_consistent_available = false;
   bool exact_recheck_available = false;
-  bool donor_profile_allows = false;
+  bool reference_profile_allows = false;
 };
 
 struct GinConsistencyDecision {
@@ -279,7 +279,7 @@ struct DocumentPathAccessDecision {
   bool ok() const { return status.ok(); }
 };
 
-enum class TextDocumentDonor : u32 {
+enum class TextDocumentReference : u32 {
   native,
   mongodb,
   opensearch,
@@ -291,7 +291,7 @@ enum class TextDocumentDonor : u32 {
   unknown
 };
 
-enum class TextDocumentDonorIndexType : u32 {
+enum class TextDocumentReferenceIndexType : u32 {
   native_full_text,
   native_inverted,
   native_document_path,
@@ -332,8 +332,8 @@ struct TextDocumentProfileControls {
 };
 
 struct TextDocumentSemanticProfileDescriptor {
-  TextDocumentDonor donor = TextDocumentDonor::unknown;
-  TextDocumentDonorIndexType index_type = TextDocumentDonorIndexType::unknown;
+  TextDocumentReference reference = TextDocumentReference::unknown;
+  TextDocumentReferenceIndexType index_type = TextDocumentReferenceIndexType::unknown;
   IndexFamily native_family = IndexFamily::unknown;
   std::string native_physical_family;
   std::string semantic_profile_id;
@@ -357,8 +357,8 @@ struct TextDocumentProfileLookupResult {
 };
 
 struct TextDocumentProfileDecisionRequest {
-  TextDocumentDonor donor = TextDocumentDonor::unknown;
-  TextDocumentDonorIndexType index_type = TextDocumentDonorIndexType::unknown;
+  TextDocumentReference reference = TextDocumentReference::unknown;
+  TextDocumentReferenceIndexType index_type = TextDocumentReferenceIndexType::unknown;
   bool profile_policy_allowed = true;
   bool resource_epochs_current = true;
   bool exact_recheck_available = true;
@@ -399,8 +399,8 @@ const char* TextQueryOperatorName(TextQueryOperator op);
 const char* TextQueryPathName(TextQueryPath path);
 const char* TextHelperProfileKindName(TextHelperProfileKind kind);
 const char* DocumentValuePolicyName(DocumentValuePolicy policy);
-const char* TextDocumentDonorName(TextDocumentDonor donor);
-const char* TextDocumentDonorIndexTypeName(TextDocumentDonorIndexType type);
+const char* TextDocumentReferenceName(TextDocumentReference reference);
+const char* TextDocumentReferenceIndexTypeName(TextDocumentReferenceIndexType type);
 const char* TextDocumentCompatibilityLevelName(TextDocumentCompatibilityLevel level);
 
 bool IsTextDocumentIndexFamily(IndexFamily family);
@@ -413,10 +413,10 @@ TextHelperProfileDecision DecideTextHelperProfile(const TextHelperProfileRequest
 DocumentPathAccessDecision DecideDocumentPathAccess(const DocumentPathAccessRequest& request);
 
 const std::vector<TextDocumentSemanticProfileDescriptor>& BuiltinTextDocumentSemanticProfiles();
-TextDocumentProfileLookupResult FindTextDocumentSemanticProfile(TextDocumentDonor donor,
-                                                                TextDocumentDonorIndexType index_type);
+TextDocumentProfileLookupResult FindTextDocumentSemanticProfile(TextDocumentReference reference,
+                                                                TextDocumentReferenceIndexType index_type);
 TextDocumentProfileLookupResult FindTextDocumentSemanticProfileById(std::string_view semantic_profile_id);
-TextDocumentProfileDecision DecideDonorTextDocumentProfile(const TextDocumentProfileDecisionRequest& request);
+TextDocumentProfileDecision DecideReferenceTextDocumentProfile(const TextDocumentProfileDecisionRequest& request);
 
 DiagnosticRecord MakeTextDocumentAccessDiagnostic(Status status,
                                                   std::string diagnostic_code,

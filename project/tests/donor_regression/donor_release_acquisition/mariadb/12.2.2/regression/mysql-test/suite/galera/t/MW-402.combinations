@@ -1,5 +1,0 @@
-[binlogon]
-log-bin
-log-slave-updates=ON
-
-[binlogoff]

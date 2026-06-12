@@ -31,9 +31,9 @@ struct TimezoneSeedAuthority {
   std::vector<std::string> timezone_names;
 };
 
-struct DonorTemporalWireProfileRequest {
-  std::string donor_engine;
-  std::string donor_type_or_family;
+struct ReferenceTemporalWireProfileRequest {
+  std::string reference_engine;
+  std::string reference_type_or_family;
   std::string wire_profile;
   std::string encoded_value;
   TimezoneSeedAuthority timezone_seed;
@@ -41,7 +41,7 @@ struct DonorTemporalWireProfileRequest {
   bool require_timezone_seed = true;
 };
 
-struct DonorTemporalWireProfileResult {
+struct ReferenceTemporalWireProfileResult {
   Status status;
   CanonicalTypeId canonical_type_id = CanonicalTypeId::unknown;
   std::string normalized_value;
@@ -55,7 +55,7 @@ struct DonorTemporalWireProfileResult {
   }
 };
 
-DonorTemporalWireProfileResult ValidateDonorTemporalWireProfile(const DonorTemporalWireProfileRequest& request);
+ReferenceTemporalWireProfileResult ValidateReferenceTemporalWireProfile(const ReferenceTemporalWireProfileRequest& request);
 DiagnosticRecord MakeTemporalWireDiagnostic(Status status,
                                             std::string diagnostic_code,
                                             std::string message_key,

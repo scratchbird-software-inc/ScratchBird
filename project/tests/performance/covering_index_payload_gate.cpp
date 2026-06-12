@@ -334,7 +334,7 @@ void FailClosedCasesAreExact() {
                           });
   ExpectValidationBlocker(record, "covering_payload_unsafe_authority",
                           "unsafe authority drift was not refused", [](auto& r) {
-                            r.parser_or_donor_finality_authority = true;
+                            r.parser_or_reference_finality_authority = true;
                           });
   ExpectValidationBlocker(record, "covering_payload_redaction_policy_unsafe",
                           "unsafe redaction policy was not refused", [](auto& r) {

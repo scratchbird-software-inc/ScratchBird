@@ -19,7 +19,7 @@ using scratchbird::core::platform::u32;
 enum class IndexLocalizedTextClass : u32 {
   name = 1,
   comment = 2,
-  donor_catalog_label = 3,
+  reference_catalog_label = 3,
   diagnostic_label = 4
 };
 

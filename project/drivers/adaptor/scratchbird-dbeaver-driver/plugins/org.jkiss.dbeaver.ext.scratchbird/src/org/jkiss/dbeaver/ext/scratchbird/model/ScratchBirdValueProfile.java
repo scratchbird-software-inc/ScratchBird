@@ -150,7 +150,7 @@ public record ScratchBirdValueProfile(
                 HandlerRoute.STRUCTURED_CONTENT,
                 true,
                 MimeTypes.APPLICATION_JSON,
-                "canonical donor-compatible document text");
+                "canonical reference-compatible document text");
         }
         if (XML_TYPES.contains(key)) {
             return new ScratchBirdValueProfile(
@@ -190,7 +190,7 @@ public record ScratchBirdValueProfile(
                 HandlerRoute.STRUCTURED_TEXT,
                 true,
                 MimeTypes.TEXT_PLAIN,
-                "canonical donor-compatible range text");
+                "canonical reference-compatible range text");
         }
         if (NETWORK_TYPES.contains(key)) {
             return new ScratchBirdValueProfile(
@@ -250,7 +250,7 @@ public record ScratchBirdValueProfile(
                 HandlerRoute.STRUCTURED_CONTENT,
                 true,
                 MimeTypes.TEXT_PLAIN,
-                "stable donor-compatible composite text");
+                "stable reference-compatible composite text");
         }
         if (ENUM_TYPES.contains(key)) {
             return new ScratchBirdValueProfile(

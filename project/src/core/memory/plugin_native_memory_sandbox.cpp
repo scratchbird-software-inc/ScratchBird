@@ -25,7 +25,7 @@ using scratchbird::core::platform::Subsystem;
 constexpr const char* kEvidenceAnchor =
     "CEIC-027_PLUGIN_NATIVE_MEMORY_SANDBOX";
 constexpr const char* kAuthorityScope =
-    "plugin_native_memory_sandbox.authority_scope=memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority";
+    "plugin_native_memory_sandbox.authority_scope=memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -102,7 +102,7 @@ bool SafeProvenance(const HierarchicalMemoryBudgetProvenance& provenance,
     *reason = "engine_mga_and_memory_evidence_only_provenance_required";
     return false;
   }
-  if (provenance.parser_authority || provenance.donor_authority ||
+  if (provenance.parser_authority || provenance.reference_authority ||
       provenance.transaction_finality_authority ||
       provenance.visibility_authority || provenance.recovery_authority ||
       provenance.authorization_authority || provenance.benchmark_authority ||
@@ -130,7 +130,7 @@ bool SafeAuthority(const ForeignMemoryAuthority& authority, std::string* reason)
   }
   if (authority.transaction_finality_authority || authority.visibility_authority ||
       authority.recovery_authority || authority.parser_authority ||
-      authority.donor_authority || authority.wal_authority ||
+      authority.reference_authority || authority.wal_authority ||
       authority.benchmark_authority || authority.support_bundle_authority ||
       authority.optimizer_plan_authority || authority.index_finality_authority ||
       authority.agent_action_authority || authority.authorization_authority ||
@@ -1284,7 +1284,7 @@ void PluginNativeMemorySandboxManager::AttachBaseEvidence(
   evidence->push_back("plugin_native_memory_sandbox.no_authority.visibility=true");
   evidence->push_back("plugin_native_memory_sandbox.no_authority.authorization_security=true");
   evidence->push_back("plugin_native_memory_sandbox.no_authority.recovery=true");
-  evidence->push_back("plugin_native_memory_sandbox.no_authority.parser_donor_wal=true");
+  evidence->push_back("plugin_native_memory_sandbox.no_authority.parser_reference_wal=true");
   evidence->push_back("plugin_native_memory_sandbox.no_authority.benchmark_optimizer_index_agent=true");
   evidence->push_back("plugin_native_memory_sandbox.cluster_boundary=external_provider_only_fail_closed");
   for (const auto& entry : request.evidence) {

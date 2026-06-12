@@ -152,9 +152,9 @@ AllocatorHotPathResult ExecuteAllocatorHotPath(
                   "exact fallback is required before allocator hot-path "
                   "admission");
   }
-  if (request.authority.parser_client_or_donor_allocator_authority) {
+  if (request.authority.parser_client_or_reference_allocator_authority) {
     return Refuse(request, "ORH_ALLOCATOR_LIFETIME_UNSAFE_AUTHORITY",
-                  "parser, client, and donor allocator authority is refused");
+                  "parser, client, and reference allocator authority is refused");
   }
   if (request.authority.allocator_visibility_or_finality_authority ||
       request.authority.allocator_recovery_authority ||

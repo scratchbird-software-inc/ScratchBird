@@ -12,7 +12,7 @@
 // Engine-owned resource governance for accelerator, cache, bulk, and parallel
 // admission paths. The route accepts only runtime policy descriptors, requires
 // bounded quotas for every resource dimension, and never delegates MGA,
-// security, finality, visibility, recovery, parser, or donor authority.
+// security, finality, visibility, recovery, parser, or reference authority.
 
 #include "agent_runtime.hpp"
 
@@ -89,7 +89,7 @@ struct ResourceGovernanceQuotaDescriptor {
   bool runtime_dependency_present = false;
   bool engine_mga_authoritative = true;
   bool security_authoritative = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool provider_transaction_finality_authority = false;
   bool provider_visibility_authority = false;
   bool provider_recovery_authority = false;

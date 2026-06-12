@@ -296,8 +296,8 @@ void RequireParserLoweringAndAdmission(const LifecycleRouteCase& route) {
                    "authority.parser.no_storage_or_finality"),
           "database lifecycle parser finality guard missing");
   Require(HasValue(artifacts.envelope.required_authority_steps,
-                   "authority.donor_filesystem_effects_forbidden"),
-          "database lifecycle donor filesystem guard missing");
+                   "authority.reference_filesystem_effects_forbidden"),
+          "database lifecycle reference filesystem guard missing");
   if (route.requires_security_context) {
     Require(HasValue(artifacts.envelope.required_authority_steps,
                      "authority.server.security_policy_context_required"),

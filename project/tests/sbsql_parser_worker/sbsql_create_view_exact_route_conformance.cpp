@@ -195,7 +195,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!artifacts.envelope.parser_executes_sql,
           "CREATE VIEW lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "CREATE VIEW lowering allowed donor/file effects");
+          "CREATE VIEW lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload,
                    "\"catalog_envelope_kind\":\"create_view_ddl\""),
           "CREATE VIEW payload missing catalog envelope kind");
@@ -227,8 +227,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!Contains(artifacts.envelope.payload, "active_customer_ids") &&
               !Contains(artifacts.envelope.payload, std::string(kSql)),
           "CREATE VIEW payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "CREATE VIEW payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "CREATE VIEW payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

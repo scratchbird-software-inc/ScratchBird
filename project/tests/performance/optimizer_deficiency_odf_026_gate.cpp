@@ -126,7 +126,7 @@ bool SummaryRefusalReasonsAreExact() {
   input.summary_format_compatible = false;
   input.base_row_mga_recheck_planned = false;
   input.base_row_security_recheck_planned = false;
-  input.parser_or_donor_authority = true;
+  input.parser_or_reference_authority = true;
   input.mga_compatible = false;
   input.summary_present = false;
   input.estimated_rewrite_cost = input.estimated_base_cost;
@@ -169,8 +169,8 @@ bool SummaryRefusalReasonsAreExact() {
                  "volatile term refusal missing") &&
          Require(Has(decision.diagnostics, "SB_OPT_REWRITE_SIDE_EFFECTING_TERM"),
                  "side-effecting term refusal missing") &&
-         Require(Has(decision.diagnostics, "SB_OPT_REWRITE_UNSAFE_PARSER_DONOR_AUTHORITY"),
-                 "parser/donor authority refusal missing") &&
+         Require(Has(decision.diagnostics, "SB_OPT_REWRITE_UNSAFE_PARSER_REFERENCE_AUTHORITY"),
+                 "parser/reference authority refusal missing") &&
          Require(Has(decision.diagnostics, "SB_OPT_REWRITE_NO_BENEFIT"),
                  "no-benefit refusal missing") &&
          Require(Has(decision.diagnostics, "SB_OPT_REWRITE_MGA_INCOMPATIBLE_STATE"),
@@ -180,7 +180,7 @@ bool SummaryRefusalReasonsAreExact() {
 bool CseRefusalReasonsAreExact() {
   auto input = BaseCseInput();
   input.equivalence_proven = false;
-  input.parser_or_donor_authority = true;
+  input.parser_or_reference_authority = true;
   input.unsafe_state = true;
   input.base_row_mga_recheck_planned = false;
   input.base_row_security_recheck_planned = false;
@@ -200,8 +200,8 @@ bool CseRefusalReasonsAreExact() {
   return Require(!decision.applied, "unsafe CSE rewrite was selected") &&
          Require(Has(decision.diagnostics, "SB_OPT_REWRITE_EQUIVALENCE_PROOF_MISSING"),
                  "CSE missing equivalence proof refusal missing") &&
-         Require(Has(decision.diagnostics, "SB_OPT_REWRITE_UNSAFE_PARSER_DONOR_AUTHORITY"),
-                 "CSE parser/donor authority refusal missing") &&
+         Require(Has(decision.diagnostics, "SB_OPT_REWRITE_UNSAFE_PARSER_REFERENCE_AUTHORITY"),
+                 "CSE parser/reference authority refusal missing") &&
          Require(Has(decision.diagnostics, "SB_OPT_REWRITE_MGA_INCOMPATIBLE_STATE"),
                  "CSE MGA-incompatible state refusal missing") &&
          Require(Has(decision.diagnostics, "SB_OPT_REWRITE_BASE_ROW_MGA_RECHECK_MISSING"),

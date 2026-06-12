@@ -1,0 +1,2244 @@
+{
+  "seed_manifest_uuid": "307e4bc5-8899-546a-b838-262149221e3b",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "mongodb-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_REFERENCE_CATALOG_SEED_MONGODB_BETA2_FULL",
+  "seed_manifest_status": "actual_private_seed_manifest",
+  "reference_family": "mongodb",
+  "reference_version_profile_id": "mongodb_beta2_full",
+  "reference_version_profile_uuid": "089a6a7f-2a91-5d61-ae8d-d7a8e69b89cc",
+  "reference_exact_version": "MongoDB 8 beta2-full compatibility profile",
+  "new_database_recipe_id": "mongodb_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-04-27T00:00:00Z",
+  "extraction_tool_ref": null,
+  "normalization_profile_ref": "embedded:SB_REFERENCE_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "admin_system_users",
+      "reference_catalog_object_name": "admin.system.users",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "superuser_only_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_admin_system_users",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "reference_catalog_object_name": "admin.system.roles",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_admin_system_roles",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "config_databases",
+      "reference_catalog_object_name": "config.databases",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_config_databases",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "config_collections",
+      "reference_catalog_object_name": "config.collections",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_config_collections",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "config_indexes",
+      "reference_catalog_object_name": "config.indexes",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_config_indexes",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "admin_system_version",
+      "reference_catalog_object_name": "admin.system.version",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_admin_system_version",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "reference_catalog_object_name": "local.oplog.rs",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_local_oplog_rs",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "reference_catalog_object_name": "config.system.sessions",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_config_system_sessions",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "config_shards",
+      "reference_catalog_object_name": "config.shards",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_config_shards",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "listcollections",
+      "reference_catalog_object_name": "listCollections",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_listcollections",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "listindexes",
+      "reference_catalog_object_name": "listIndexes",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "read_only_overlay",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_mongodb_listindexes",
+      "diagnostic_code": "REFERENCE.MONGODB.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "object_id": "admin_system_users",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "admin_system_users",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "admin_system_users",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "admin_system_users",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "admin_system_users",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "admin_system_users",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "admin_system_users",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "admin_system_users",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "admin_system_users",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "config_databases",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "config_databases",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "config_databases",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "config_databases",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "config_databases",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "config_databases",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "config_databases",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "config_databases",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "config_databases",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "config_collections",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "config_collections",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "config_collections",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "config_collections",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "config_collections",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "config_collections",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "config_collections",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "config_collections",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "config_collections",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "config_indexes",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "config_indexes",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "config_indexes",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "config_indexes",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "config_indexes",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "config_indexes",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "config_indexes",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "config_indexes",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "config_indexes",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "admin_system_version",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "admin_system_version",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "admin_system_version",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "admin_system_version",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "admin_system_version",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "admin_system_version",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "admin_system_version",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "admin_system_version",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "admin_system_version",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "config_shards",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "config_shards",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "config_shards",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "config_shards",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "config_shards",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "config_shards",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "config_shards",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "config_shards",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "config_shards",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "listcollections",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "listcollections",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "listcollections",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "listcollections",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "listcollections",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "listcollections",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "listcollections",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "listcollections",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "listcollections",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "listindexes",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "listindexes",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "listindexes",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "listindexes",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "listindexes",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "listindexes",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "listindexes",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "listindexes",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "listindexes",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    }
+  ],
+  "default_row_set": [
+    {
+      "object_id": "admin_system_users",
+      "row_ordinal": 1,
+      "row_key": "mongodb:admin_system_users:default",
+      "values": {
+        "reference_name": "admin.system.users",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_admin_system_users",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "superuser_only_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "redacted_metadata"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "404054e97be6d0f05dd9c1dcb04af84c0766035c3a1b8902c1b2576a1defe9f9"
+    },
+    {
+      "object_id": "admin_system_roles",
+      "row_ordinal": 2,
+      "row_key": "mongodb:admin_system_roles:default",
+      "values": {
+        "reference_name": "admin.system.roles",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_admin_system_roles",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "1d18c68705dd6b5d3f795d673b668660d9d0cc061a55e8d1dccaee10a1f3055a"
+    },
+    {
+      "object_id": "config_databases",
+      "row_ordinal": 3,
+      "row_key": "mongodb:config_databases:default",
+      "values": {
+        "reference_name": "config.databases",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_config_databases",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "f4dbe674746163aadebf813f766e1e44a3a53885e0481deb1881de12a14e9103"
+    },
+    {
+      "object_id": "config_collections",
+      "row_ordinal": 4,
+      "row_key": "mongodb:config_collections:default",
+      "values": {
+        "reference_name": "config.collections",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_config_collections",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "3d0c24d7d7541c233227be4ec9298430fc4dc2dd1fb0d24ca63a52fe2ad6f29f"
+    },
+    {
+      "object_id": "config_indexes",
+      "row_ordinal": 5,
+      "row_key": "mongodb:config_indexes:default",
+      "values": {
+        "reference_name": "config.indexes",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_config_indexes",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "afa2905c0c9e197fdaaf91542bd4ccaaa17538b7db5a23bdd6150ed57f0dc9b1"
+    },
+    {
+      "object_id": "admin_system_version",
+      "row_ordinal": 6,
+      "row_key": "mongodb:admin_system_version:default",
+      "values": {
+        "reference_name": "admin.system.version",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_admin_system_version",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "e6cf661e14b330cba4c1cedba0a01efe84fc6bcd54671dc14be197f0975950d6"
+    },
+    {
+      "object_id": "local_oplog_rs",
+      "row_ordinal": 7,
+      "row_key": "mongodb:local_oplog_rs:default",
+      "values": {
+        "reference_name": "local.oplog.rs",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_local_oplog_rs",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "77f9ba515fec3de5c737d4ef794f1a9092d27692f4db4d872856bb06e3684d6f"
+    },
+    {
+      "object_id": "config_system_sessions",
+      "row_ordinal": 8,
+      "row_key": "mongodb:config_system_sessions:default",
+      "values": {
+        "reference_name": "config.system.sessions",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_config_system_sessions",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "2ced9794442e6c62f8f661fd1162cc786459bda6d7f800a2ba1ef85a1aeb8733"
+    },
+    {
+      "object_id": "config_shards",
+      "row_ordinal": 9,
+      "row_key": "mongodb:config_shards:default",
+      "values": {
+        "reference_name": "config.shards",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_config_shards",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "1ed0b6193429277fc489b0b2bed6d90c1184989ad108d745b6ef7674aec8b339"
+    },
+    {
+      "object_id": "listcollections",
+      "row_ordinal": 10,
+      "row_key": "mongodb:listcollections:default",
+      "values": {
+        "reference_name": "listCollections",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_listcollections",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "203a3df1b01c548980e05af084ed29902cd34f90b7e207812f85041b91e36aab"
+    },
+    {
+      "object_id": "listindexes",
+      "row_ordinal": 11,
+      "row_key": "mongodb:listindexes:default",
+      "values": {
+        "reference_name": "listIndexes",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_mongodb_listindexes",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "grant_filtered_metadata",
+        "mutation_class": "read_only_overlay",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "object_id",
+        "collection_uuid",
+        "cluster_id"
+      ],
+      "row_hash": "f1e457a60614562f96981bcefb2b18c7611ace62dcce69936c7edfb60e150b91"
+    }
+  ],
+  "default_metadata_set": [
+    {
+      "metadata_row_key": "mongodb:admin_system_users:metadata",
+      "object_id": "admin_system_users",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "superuser_only_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "8de4c57192a33c337c1b840d863fb67ed8e4fa77368799478b0c93148bd84854"
+    },
+    {
+      "metadata_row_key": "mongodb:admin_system_roles:metadata",
+      "object_id": "admin_system_roles",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "7fb3b64749e8fcb9eed0e1601a67dd699b52eac9555d60573721f3d760da3310"
+    },
+    {
+      "metadata_row_key": "mongodb:config_databases:metadata",
+      "object_id": "config_databases",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "223197e8d9f1c2929a45712b7bcb49af5df7bc8b301fe25862fa5f6a00daf3c6"
+    },
+    {
+      "metadata_row_key": "mongodb:config_collections:metadata",
+      "object_id": "config_collections",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "df99700409969cd310dc2d60790b9ac8d8fa93af50f911d946a4cce037f121ba"
+    },
+    {
+      "metadata_row_key": "mongodb:config_indexes:metadata",
+      "object_id": "config_indexes",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "e960a30a027ec63a3d7931d7db189d7ed89ba32797daecd70b3284036f277bc9"
+    },
+    {
+      "metadata_row_key": "mongodb:admin_system_version:metadata",
+      "object_id": "admin_system_version",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "36db0d3015f03b76895f74b58625d3489f81b2074fedd8438771a025ccc22898"
+    },
+    {
+      "metadata_row_key": "mongodb:local_oplog_rs:metadata",
+      "object_id": "local_oplog_rs",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "a9351a24ee9c3dce21680ca02018d554afee2b36c6e2667265958ad323773484"
+    },
+    {
+      "metadata_row_key": "mongodb:config_system_sessions:metadata",
+      "object_id": "config_system_sessions",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "da93a4d30b10320c19130e914d12f0920f82685a9a78bb06436d1d51de02c1b3"
+    },
+    {
+      "metadata_row_key": "mongodb:config_shards:metadata",
+      "object_id": "config_shards",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "c87966b16326d5bb91023ef219f3447653e7b730292978f07a7e093c9be6d57d"
+    },
+    {
+      "metadata_row_key": "mongodb:listcollections:metadata",
+      "object_id": "listcollections",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "e51ed337bd4176408a3812edef4932be952cebb5e4692be5916b99ba14d12784"
+    },
+    {
+      "metadata_row_key": "mongodb:listindexes:metadata",
+      "object_id": "listindexes",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "grant_filtered_metadata",
+        "default_mutation_rule": "read_only_overlay",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "f40359f75073dc2ea7bac71aecbead0ff84e6cbfe2912209ac77e3bf1b41f881"
+    }
+  ],
+  "default_security_row_set": [
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "mongodb:security:1",
+      "values": {
+        "security_seed_name": "SCRAM credential redacted",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "80c6c7324b03d8f550117a427055d14be4a7a2b218f391921cafeee0c31f50a5"
+    },
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "mongodb:security:2",
+      "values": {
+        "security_seed_name": "keyfile secret_ref",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "7f7da89c4438e8642681ef09ae32b8f7f4f5f231aedcc1b2622523eb92e2be6f"
+    },
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "mongodb:security:3",
+      "values": {
+        "security_seed_name": "x509 certificate secret_ref",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "f08109bd02c11b0111ce712a6607571d36cc6937d7a7e5822f8da7dd21c0f8f4"
+    },
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "mongodb:security:4",
+      "values": {
+        "security_seed_name": "connection string redacted",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "e3c46f915c2e336da28f2e428228549854f9d22651f0b2f95e063c6b9afad95b"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "runtime_value_id": "object_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "object_id",
+      "reference_behavior": "object_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "collection_uuid",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "collection_uuid",
+      "reference_behavior": "collection_uuid is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "cluster_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "cluster_id",
+      "reference_behavior": "cluster_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "replica_set_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "replica_set_id",
+      "reference_behavior": "replica_set_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "election_term",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "election_term",
+      "reference_behavior": "election_term is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "optime",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "optime",
+      "reference_behavior": "optime is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "session_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "session_id",
+      "reference_behavior": "session_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "timestamp",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "timestamp",
+      "reference_behavior": "timestamp is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "computed_on_read",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "storage_stat",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "storage_stat",
+      "reference_behavior": "storage_stat is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "computed_on_read",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "creation_timestamp",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "creation_timestamp",
+      "reference_behavior": "creation_timestamp is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "computed_on_read",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "visibility_rule_id": "public_metadata",
+      "rule": "public",
+      "security_authority": "sys.security local policy; cluster.sys.security only when cluster exists",
+      "applies_to": [
+        "non-secret built-in metadata"
+      ]
+    },
+    {
+      "visibility_rule_id": "grant_filtered_metadata",
+      "rule": "grant_filtered",
+      "security_authority": "effective user grants, roles, and external group UUID cache",
+      "applies_to": [
+        "user objects and privilege-dependent metadata"
+      ]
+    },
+    {
+      "visibility_rule_id": "session_filtered_metadata",
+      "rule": "session_filtered",
+      "security_authority": "attachment/session policy",
+      "applies_to": [
+        "monitoring, command, task, connection, and status surfaces"
+      ]
+    },
+    {
+      "visibility_rule_id": "superuser_only_metadata",
+      "rule": "superuser_only",
+      "security_authority": "SysArch/root/superuser equivalent policy",
+      "applies_to": [
+        "security catalogs and privileged settings"
+      ]
+    },
+    {
+      "visibility_rule_id": "redacted_metadata",
+      "rule": "redacted",
+      "security_authority": "redaction_rule_set",
+      "applies_to": [
+        "secret-bearing rows and fields"
+      ]
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "redaction_rule_id": "raw_secret_forbidden",
+      "rule": "raw passwords, password hashes, tokens, certificates, private keys, replication secrets, and host secrets are never stored raw",
+      "replacement": "secret_ref or redacted sentinel",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN"
+    },
+    {
+      "redaction_rule_id": "host_path_redaction",
+      "rule": "host paths and file-system locations are redacted unless policy explicitly exposes them",
+      "replacement": "redacted_path",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN"
+    },
+    {
+      "redaction_rule_id": "network_endpoint_redaction",
+      "rule": "host names, peer addresses, node ids, and topology values are redacted when policy marks topology sensitive",
+      "replacement": "redacted_endpoint",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN"
+    },
+    {
+      "redaction_rule_id": "generated_secret_ref",
+      "rule": "setup-generated credentials are represented by generated_at_setup secret refs",
+      "replacement": "secret_ref:generated_at_setup",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "mutation_rule_id": "read_only_overlay",
+      "rule": "read_only",
+      "write_path": "none",
+      "rollback_behavior": "none"
+    },
+    {
+      "mutation_rule_id": "reference_ddl_translation",
+      "rule": "reference_compatible_write",
+      "write_path": "parser_overlay_to_native_v3_catalog",
+      "rollback_behavior": "transactional"
+    },
+    {
+      "mutation_rule_id": "native_v3_only",
+      "rule": "native_v3_only",
+      "write_path": "native_v3_command",
+      "rollback_behavior": "transactional"
+    },
+    {
+      "mutation_rule_id": "migration_only",
+      "rule": "migration_only",
+      "write_path": "migration_stage",
+      "rollback_behavior": "transactional"
+    },
+    {
+      "mutation_rule_id": "report_only",
+      "rule": "report_only",
+      "write_path": "none",
+      "rollback_behavior": "none"
+    },
+    {
+      "mutation_rule_id": "explicitly_unsupported",
+      "rule": "explicitly_unsupported",
+      "write_path": "none",
+      "rollback_behavior": "none"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_mongodb_admin_system_users",
+      "reference_object_ref": "admin_system_users",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "0e1f3be8-65d5-5eb7-a23a-642816f1300f",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_mongodb_admin_system_roles",
+      "reference_object_ref": "admin_system_roles",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "de15185e-30d9-573a-8802-6bd061a82c8b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_mongodb_config_databases",
+      "reference_object_ref": "config_databases",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d19b8cfc-9708-5dde-88f7-3ca3ff1dbf0a",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_mongodb_config_collections",
+      "reference_object_ref": "config_collections",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "1d033351-f3ca-5172-9cb2-60f5ec30dda2",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_mongodb_config_indexes",
+      "reference_object_ref": "config_indexes",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a9f6e8ee-9779-5959-8e14-39803dbfeb6b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_mongodb_admin_system_version",
+      "reference_object_ref": "admin_system_version",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "57de5feb-7136-552a-80b6-29917e03a589",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_mongodb_local_oplog_rs",
+      "reference_object_ref": "local_oplog_rs",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "6cffc981-9ac1-5507-80c5-951adf165355",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_mongodb_config_system_sessions",
+      "reference_object_ref": "config_system_sessions",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "47f4c43a-67da-5965-9d26-6d44fcede041",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_mongodb_config_shards",
+      "reference_object_ref": "config_shards",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "1173d747-173b-58e8-9e08-70e3fd2e21ce",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_mongodb_listcollections",
+      "reference_object_ref": "listcollections",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "4022569f-e476-5baa-bbfc-7834a0090aa9",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_mongodb_listindexes",
+      "reference_object_ref": "listindexes",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "4af3c78b-63e9-5aa1-87fc-965db9e3c026",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "rowset_hashes": {
+    "catalog_object_set": "23e4ff867a76248a424b4b6185af668f82e9ff6b0615d0b9d528e226deceaf50",
+    "catalog_column_set": "a053d52f663ac778220de1a2050a1e45362b07be94ab8e9a7932a9e6f299f727",
+    "default_row_set": "ff239ab05a37eed7714a0e4002f5bb7d316c27e574cdba15341983566891a8a7",
+    "default_metadata_set": "e9592cd7bed0806d1c0a6b9c3a94a65ca67dcf89b521b59a97d8a6242ba5cbd6",
+    "default_security_row_set": "39ab10141611458f810a2ebd335bf5fe66324629347cc50cc17b8828f80068bb",
+    "default_runtime_generated_value_set": "0a34371bb9b6db7b578404356725d76a630f83bfc80c6331e5b3feb4fad4e845",
+    "visibility_rule_set": "a4ff62809b18a5598c9c433aaf85518e9b890ab27281c2a10c835bdf3e4b4ebb",
+    "redaction_rule_set": "19c1ee9c4c8a2c3b8a0284f1b8e67a0979c7b8f758b983f9f98df014c737cbc3",
+    "mutation_rule_set": "1a4c0ffc820a04116da2585f61eafa9c5e9f6a383bd54b9e1ce8bde110bf90ba",
+    "scratchbird_mapping_set": "890a3974d23104a0cad24f03fd322a30e6aa71578c97abd9050dd3086b9ba3cc"
+  },
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "REFERENCE.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "REFERENCE.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "REFERENCE.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "REFERENCE.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "REFERENCE.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "REFERENCE.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "REFERENCE.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "manifest_hash": "ea31950d98c5d5ce5fc49dc720e0632ab9505cd92835348f2755b94dc781d3ac"
+}

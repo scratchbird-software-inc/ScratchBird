@@ -93,7 +93,7 @@ OptimizedStructureLifecycleResult BaseOptimizedResult(
                            : "missing_or_unproven");
   AddOptimizedEvidence(&result, "authoritative_wal", "false");
   AddOptimizedEvidence(&result, "parser_finality_authority", "false");
-  AddOptimizedEvidence(&result, "donor_finality_authority", "false");
+  AddOptimizedEvidence(&result, "reference_finality_authority", "false");
   return result;
 }
 

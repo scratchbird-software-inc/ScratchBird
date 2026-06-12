@@ -14,7 +14,7 @@ Scope boundary:
   retry policy, failure summaries, and deterministic regeneration rules.
 - FSPE-011A does not claim every semantic fixture has already been generated or
   executed.
-- Donor rendering, independent semantic oracle completion, persistence,
+- Reference rendering, independent semantic oracle completion, persistence,
   concurrency, and replay remain owned by FSPE-011B through FSPE-011F.
 
 ## Validation Commands

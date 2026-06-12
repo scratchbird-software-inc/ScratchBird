@@ -54,7 +54,7 @@ bool UnsafePlanAdmissionAuthority(
     const IndexReadinessPlanAdmissionEvidence& evidence) {
   return evidence.parser_authority ||
          evidence.client_authority ||
-         evidence.donor_authority ||
+         evidence.reference_authority ||
          evidence.wal_authority ||
          evidence.recovery_authority ||
          evidence.transaction_finality_authority ||
@@ -168,7 +168,7 @@ IndexOptimizerPlan ValidateReadinessPlanAdmission(
             ";family=" + IndexFamilyName(request.family),
         "readiness_route_family_mismatch_fail_closed");
   }
-  if (evidence->donor_emulated ||
+  if (evidence->reference_emulated ||
       evidence->policy_blocked ||
       evidence->contract_only_family) {
     return MakeOptimizerRefusal(
@@ -184,7 +184,7 @@ IndexOptimizerPlan ValidateReadinessPlanAdmission(
         request,
         "INDEX.OPTIMIZER_READINESS_EVIDENCE.UNSAFE_AUTHORITY",
         "index.optimizer_readiness_evidence.unsafe_authority",
-        "parser/client/donor/WAL/recovery/finality/visibility/security/provider/index/optimizer/agent/local-cluster authority refused",
+        "parser/client/reference/WAL/recovery/finality/visibility/security/provider/index/optimizer/agent/local-cluster authority refused",
         "readiness_unsafe_authority_fail_closed");
   }
   if (!evidence->runtime_family_available ||

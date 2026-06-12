@@ -6,7 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-#include "donor_server_authority.hpp"
+#include "compatibility_server_authority.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -86,7 +86,7 @@ const std::string& Field(const std::map<std::string, std::string>& row,
   return it->second;
 }
 
-bool HasEvidence(const server::DonorMigrationRouteResult& result,
+bool HasEvidence(const server::CompatibilityMigrationRouteResult& result,
                  std::string_view key,
                  std::string_view value) {
   return std::any_of(result.evidence.begin(),
@@ -103,7 +103,7 @@ void VerifyMigrationRow(const std::map<std::string, std::string>& row) {
   const auto& vector = Field(row, "security_vector");
 
   const auto contract =
-      server::ResolveDonorMigrationRouteContract(engine_id, surface_key);
+      server::ResolveCompatibilityMigrationRouteContract(engine_id, surface_key);
   Require(contract.has_value(), decision_id + " missing migration route contract");
   Require(contract->route_diagnostic_code == vector,
           decision_id + " route diagnostic mismatch");
@@ -111,15 +111,15 @@ void VerifyMigrationRow(const std::map<std::string, std::string>& row) {
           decision_id + " MGA rule mismatch");
   Require(contract->scratchbird_mga_authority_preserved,
           decision_id + " did not preserve ScratchBird MGA authority");
-  Require(!contract->donor_storage_authority_accepted,
-          decision_id + " accepted donor storage authority");
-  Require(!contract->donor_finality_accepted,
-          decision_id + " accepted donor finality");
+  Require(!contract->external_storage_authority_accepted,
+          decision_id + " accepted external storage authority");
+  Require(!contract->external_finality_accepted,
+          decision_id + " accepted external finality");
   Require(!contract->sblr_execution_surface,
           decision_id + " became an SBLR execution surface");
 
   if (vector == "SB.MIGRATION.PHYSICAL_OPERATION_ROUTED") {
-    Require(contract->route_kind == server::DonorMigrationRouteKind::kPhysicalOperation,
+    Require(contract->route_kind == server::CompatibilityMigrationRouteKind::kPhysicalOperation,
             decision_id + " did not resolve to physical migration");
     Require(contract->checkpoint_descriptor_kind ==
                 std::string_view("scratchbird.migration.physical.checkpoint.v1"),
@@ -132,7 +132,7 @@ void VerifyMigrationRow(const std::map<std::string, std::string>& row) {
             decision_id + " physical unavailable diagnostic mismatch");
   } else if (vector == "SB.MIGRATION.REPLICATION_ENDPOINT_ROUTED") {
     Require(contract->route_kind ==
-                server::DonorMigrationRouteKind::kLiveReplicationEndpoint,
+                server::CompatibilityMigrationRouteKind::kLiveReplicationEndpoint,
             decision_id + " did not resolve to live replication migration");
     Require(contract->checkpoint_descriptor_kind ==
                 std::string_view("scratchbird.migration.live_replication.checkpoint.v1"),
@@ -147,8 +147,8 @@ void VerifyMigrationRow(const std::map<std::string, std::string>& row) {
     Fail(decision_id + " has unexpected migration vector " + vector);
   }
 
-  const auto routed = server::EvaluateDonorMigrationRoute(
-      server::DonorMigrationRouteRequest{engine_id, surface_key, true});
+  const auto routed = server::EvaluateCompatibilityMigrationRoute(
+      server::CompatibilityMigrationRouteRequest{engine_id, surface_key, true});
   Require(routed.recognized && routed.routed && routed.accepted,
           decision_id + " did not route when migration service was available");
   Require(!routed.service_unavailable,
@@ -163,21 +163,21 @@ void VerifyMigrationRow(const std::map<std::string, std::string>& row) {
           decision_id + " routed resume token mismatch");
   Require(!routed.sblr_execution_attempted,
           decision_id + " migration route attempted SBLR execution");
-  Require(!routed.donor_storage_authority_accepted,
-          decision_id + " migration route accepted donor storage authority");
-  Require(!routed.donor_finality_accepted,
-          decision_id + " migration route accepted donor finality");
+  Require(!routed.external_storage_authority_accepted,
+          decision_id + " migration route accepted external storage authority");
+  Require(!routed.external_finality_accepted,
+          decision_id + " migration route accepted external finality");
   Require(routed.scratchbird_mga_authority_preserved,
           decision_id + " migration route did not preserve MGA authority");
   Require(HasEvidence(routed, "sblr_execution_attempted", "false"),
           decision_id + " missing no-SBLR route evidence");
-  Require(HasEvidence(routed, "donor_storage_authority_accepted", "false"),
-          decision_id + " missing donor-storage refusal evidence");
-  Require(HasEvidence(routed, "donor_finality_accepted", "false"),
-          decision_id + " missing donor-finality refusal evidence");
+  Require(HasEvidence(routed, "external_storage_authority_accepted", "false"),
+          decision_id + " missing external-storage refusal evidence");
+  Require(HasEvidence(routed, "external_finality_accepted", "false"),
+          decision_id + " missing external-finality refusal evidence");
 
-  const auto unavailable = server::EvaluateDonorMigrationRoute(
-      server::DonorMigrationRouteRequest{engine_id, surface_key, false});
+  const auto unavailable = server::EvaluateCompatibilityMigrationRoute(
+      server::CompatibilityMigrationRouteRequest{engine_id, surface_key, false});
   Require(unavailable.recognized && !unavailable.routed && !unavailable.accepted,
           decision_id + " did not fail closed when migration service was unavailable");
   Require(unavailable.service_unavailable,
@@ -186,10 +186,10 @@ void VerifyMigrationRow(const std::map<std::string, std::string>& row) {
           decision_id + " unavailable diagnostic mismatch");
   Require(!unavailable.sblr_execution_attempted,
           decision_id + " unavailable route attempted SBLR execution");
-  Require(!unavailable.donor_storage_authority_accepted,
-          decision_id + " unavailable route accepted donor storage authority");
-  Require(!unavailable.donor_finality_accepted,
-          decision_id + " unavailable route accepted donor finality");
+  Require(!unavailable.external_storage_authority_accepted,
+          decision_id + " unavailable route accepted external storage authority");
+  Require(!unavailable.external_finality_accepted,
+          decision_id + " unavailable route accepted external finality");
 }
 
 }  // namespace
@@ -215,12 +215,12 @@ int main(int argc, char** argv) {
   Require(physical_rows == 26, "physical migration route count mismatch");
   Require(replication_rows == 29, "replication migration route count mismatch");
 
-  const auto non_migration = server::ResolveDonorMigrationRouteContract(
+  const auto non_migration = server::ResolveCompatibilityMigrationRouteContract(
       "postgresql", "pg_copy_program");
   Require(!non_migration.has_value(),
           "non-migration authority row resolved as a migration route");
-  const auto unknown = server::EvaluateDonorMigrationRoute(
-      server::DonorMigrationRouteRequest{"postgresql", "pg_copy_program", true});
+  const auto unknown = server::EvaluateCompatibilityMigrationRoute(
+      server::CompatibilityMigrationRouteRequest{"postgresql", "pg_copy_program", true});
   Require(!unknown.recognized && !unknown.accepted && unknown.service_unavailable,
           "non-migration route did not fail closed");
   Require(unknown.diagnostic_code == "SB.MIGRATION.UNKNOWN_ROUTE",

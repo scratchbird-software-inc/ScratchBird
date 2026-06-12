@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Public guardrail gates for the donor/SBLR surface fixture substrate.
+"""Public guardrail gates for the reference/SBLR surface fixture substrate.
 
 These checks prove fixture promotion, traceability schema, deterministic
 resource shape, SBSQL synchronization requirements, and source-level admission
@@ -28,12 +28,12 @@ from typing import Any
 
 
 FIXTURE_DIR = Path(
-    "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03"
+    "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03"
 )
 
 CSV_FILES = {
-    "donor_gap_summary": "DONOR_GAP_SUMMARY.csv",
-    "donor_private_opcode": "DONOR_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
+    "reference_gap_summary": "REFERENCE_GAP_SUMMARY.csv",
+    "reference_private_opcode": "REFERENCE_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
     "explicit_unsupported": "EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv",
     "execution_plan_seed": "IMPLEMENTATION_EXECUTION_PLAN_SEED_MATRIX.csv",
     "non_direct_function": "NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv",
@@ -62,25 +62,25 @@ SERVER_SBLR_ADMISSION = Path("project/src/server/sblr_admission.cpp")
 SERVER_SBLR_DISPATCH = Path("project/src/server/sblr_dispatch_server.cpp")
 SBLR_OPCODE_REGISTRY = Path("public_contract_snapshot")
 ENGINE_OPCODE_REGISTRY = Path("project/src/engine/sblr/sblr_opcode_registry.cpp")
-TIKV_DONOR_PROFILE = Path(
+TIKV_REFERENCE_PROFILE = Path(
     "public_contract_snapshot"
-    "donor-tikv-exact-extraction-slice-2-kv-transaction-coprocessor-api-ast-sblr-lowering-profile.yaml"
+    "reference-tikv-exact-extraction-slice-2-kv-transaction-coprocessor-api-ast-sblr-lowering-profile.yaml"
 )
-TIKV_DONOR_CHAPTER = Path(
+TIKV_REFERENCE_CHAPTER = Path(
     "public_contract_snapshot"
-    "appendix-donor-tikv-exact-extraction-slice-2-kv-transaction-coprocessor-api-ast-sblr-lowering-profile.md"
+    "appendix-reference-tikv-exact-extraction-slice-2-kv-transaction-coprocessor-api-ast-sblr-lowering-profile.md"
 )
 TIKV_CONFORMANCE_MANIFEST = Path(
     "public_contract_snapshot"
-    "donor-tikv-exact-extraction-slice-2-kv-transaction-coprocessor-api-ast-sblr-lowering-profile-conformance.yaml"
+    "reference-tikv-exact-extraction-slice-2-kv-transaction-coprocessor-api-ast-sblr-lowering-profile-conformance.yaml"
 )
-IMMUDB_DONOR_PROFILE = Path(
+IMMUDB_REFERENCE_PROFILE = Path(
     "public_contract_snapshot"
-    "donor-immudb-exact-extraction-slice-2-sql-kv-document-verifiable-history-api-ast-sblr-lowering-profile.yaml"
+    "reference-immudb-exact-extraction-slice-2-sql-kv-document-verifiable-history-api-ast-sblr-lowering-profile.yaml"
 )
-IMMUDB_DONOR_CHAPTER = Path(
+IMMUDB_REFERENCE_CHAPTER = Path(
     "public_contract_snapshot"
-    "appendix-donor-immudb-exact-extraction-slice-2-sql-kv-document-verifiable-history-api-ast-sblr-lowering-profile.md"
+    "appendix-reference-immudb-exact-extraction-slice-2-sql-kv-document-verifiable-history-api-ast-sblr-lowering-profile.md"
 )
 
 RETIRED_NON_OPCODE_TOKENS = {
@@ -114,9 +114,9 @@ FORBIDDEN_RECONCILIATION_TOKENS = FORBIDDEN_COMPLETION_TOKENS + (
     "unknown",
     "placeholder",
 )
-FORBIDDEN_DONOR_DIALECT_TOKENS = (
-    "donor_dialect_paste_through",
-    "donor dialect paste",
+FORBIDDEN_REFERENCE_DIALECT_TOKENS = (
+    "compatibility_dialect_paste_through",
+    "reference dialect paste",
     "paste-through",
     "paste_through",
     "paste through",
@@ -141,22 +141,22 @@ REQUIRED_TRACEABILITY_FIELDS = (
 REQUIRED_SYNC_FIELDS = (
     "sbsql_cst_reference",
     "ast_sblr_reference",
-    "donor_normalization_reference",
+    "reference_normalization_reference",
     "parser_execution_plan_sync_reference",
 )
 
 REFERENCE_FIELD_NAMES = REQUIRED_TRACEABILITY_FIELDS + REQUIRED_SYNC_FIELDS
 
 SYNC_ALLOWED_CHANGE_KINDS = {
-    "donor_gap_summary_route",
-    "donor_sblr_seed_row",
+    "reference_gap_summary_route",
+    "reference_sblr_seed_row",
     "engine_function_surface_route",
     "engine_server_authority_rollup",
     "engine_server_authority_route",
     "engine_sblr_opcode_registry_change",
     "engine_unsupported_refusal_route",
-    "donor_sblr_fixture_hash_manifest_change",
-    "donor_sblr_traceability_manifest_change",
+    "reference_sblr_fixture_hash_manifest_change",
+    "reference_sblr_traceability_manifest_change",
     "parser_facing_contract_freeze_change",
     "sblr_alias_registry_cleanup",
     "sblr_family_reconciliation",
@@ -175,10 +175,10 @@ ENGINE_SBLR_RESOURCE_SYNC_PATHS = {
     "project/src/server/sblr_admission.cpp",
     "project/src/server/sblr_dispatch_server.cpp",
     "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
-    "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
-    "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
-    "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_surface_traceability_manifest.json",
-    "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_surface_fixture_hashes.json",
+    "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
+    "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
+    "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_surface_traceability_manifest.json",
+    "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_surface_fixture_hashes.json",
     "project/tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json",
 }
 
@@ -539,7 +539,7 @@ def validate_inventory(repo_root: Path, fixture_root: Path, errors: list[str]) -
 
     require_count(rows_by_name["explicit_unsupported"], 5, "explicit unsupported", errors)
     require_count(rows_by_name["stale_deferred_alias"], 8, "stale/deferred alias", errors)
-    require_count(rows_by_name["donor_private_opcode"], 34, "donor-private opcode", errors)
+    require_count(rows_by_name["reference_private_opcode"], 34, "reference-private opcode", errors)
 
     sbsql_rows = rows_by_name["sbsql_family"]
     mismatched = [
@@ -555,7 +555,7 @@ def validate_inventory(repo_root: Path, fixture_root: Path, errors: list[str]) -
         errors,
     )
 
-    summary_rows = rows_by_name["donor_gap_summary"]
+    summary_rows = rows_by_name["reference_gap_summary"]
     summary_totals = {
         field: sum(int(row.get(field, "0") or "0") for row in summary_rows)
         for field in (
@@ -567,7 +567,7 @@ def validate_inventory(repo_root: Path, fixture_root: Path, errors: list[str]) -
             "server_authority_rows",
         )
     }
-    require(summary_totals["server_authority_rows"] == 318, "donor summary server row total drifted", errors)
+    require(summary_totals["server_authority_rows"] == 318, "reference summary server row total drifted", errors)
     require(
         sum(
             summary_totals[field]
@@ -580,7 +580,7 @@ def validate_inventory(repo_root: Path, fixture_root: Path, errors: list[str]) -
             )
         )
         == 258,
-        f"donor summary non-direct total drifted: {summary_totals}",
+        f"reference summary non-direct total drifted: {summary_totals}",
         errors,
     )
 
@@ -639,9 +639,9 @@ def validate_parser_family_sync(
         errors,
     )
     lowered = joined.lower()
-    for token in FORBIDDEN_DONOR_DIALECT_TOKENS:
+    for token in FORBIDDEN_REFERENCE_DIALECT_TOKENS:
         if token in lowered:
-            errors.append(f"{context} contains donor dialect paste-through token {token!r}")
+            errors.append(f"{context} contains reference dialect paste-through token {token!r}")
 
 
 def validate_server_admission_family_reconciliation(
@@ -961,9 +961,9 @@ def validate_family_reconciliation(
         for token in FORBIDDEN_RECONCILIATION_TOKENS:
             if token in lowered:
                 errors.append(f"{context} contains unresolved completion token {token!r}")
-        for token in FORBIDDEN_DONOR_DIALECT_TOKENS:
+        for token in FORBIDDEN_REFERENCE_DIALECT_TOKENS:
             if token in lowered:
-                errors.append(f"{context} contains donor dialect paste-through token {token!r}")
+                errors.append(f"{context} contains reference dialect paste-through token {token!r}")
 
         target_families = split_semicolon_list(row.get("resolved_target_sblr_families", ""))
         require(target_families, f"{context} must declare resolved target families", errors)
@@ -1052,16 +1052,16 @@ def validate_registry_cleanup(repo_root: Path, fixture_root: Path, errors: list[
         CSV_FILES["stale_deferred_alias"],
         errors,
     )
-    donor_rows = load_csv(
+    reference_rows = load_csv(
         fixture_root / "",
-        CSV_FILES["donor_private_opcode"],
+        CSV_FILES["reference_private_opcode"],
         errors,
     )
     stale_tokens = [row.get("token", "") for row in stale_rows if row.get("token")]
-    donor_private_tokens = [row.get("token", "") for row in donor_rows if row.get("token")]
-    donor_prefixed_tokens = [
-        token.replace("SBLR_TIKV_", "SBLR_DONOR_TIKV_", 1)
-        for token in donor_private_tokens
+    reference_private_tokens = [row.get("token", "") for row in reference_rows if row.get("token")]
+    reference_prefixed_tokens = [
+        token.replace("SBLR_TIKV_", "SBLR_REFERENCE_TIKV_", 1)
+        for token in reference_private_tokens
     ]
     authored_stale_tokens = [
         token
@@ -1071,11 +1071,11 @@ def validate_registry_cleanup(repo_root: Path, fixture_root: Path, errors: list[
 
     registry_text = read_repo_text(repo_root, SBLR_OPCODE_REGISTRY, errors)
     engine_registry_text = read_repo_text(repo_root, ENGINE_OPCODE_REGISTRY, errors)
-    tikv_profile_text = read_repo_text(repo_root, TIKV_DONOR_PROFILE, errors)
-    tikv_chapter_text = read_repo_text(repo_root, TIKV_DONOR_CHAPTER, errors)
+    tikv_profile_text = read_repo_text(repo_root, TIKV_REFERENCE_PROFILE, errors)
+    tikv_chapter_text = read_repo_text(repo_root, TIKV_REFERENCE_CHAPTER, errors)
     tikv_conformance_text = read_repo_text(repo_root, TIKV_CONFORMANCE_MANIFEST, errors)
-    immudb_profile_text = read_repo_text(repo_root, IMMUDB_DONOR_PROFILE, errors)
-    immudb_chapter_text = read_repo_text(repo_root, IMMUDB_DONOR_CHAPTER, errors)
+    immudb_profile_text = read_repo_text(repo_root, IMMUDB_REFERENCE_PROFILE, errors)
+    immudb_chapter_text = read_repo_text(repo_root, IMMUDB_REFERENCE_CHAPTER, errors)
     if errors:
         return
 
@@ -1125,8 +1125,8 @@ def validate_registry_cleanup(repo_root: Path, fixture_root: Path, errors: list[
     for relative_path, text in (
         (SBLR_OPCODE_REGISTRY, registry_text),
         (ENGINE_OPCODE_REGISTRY, engine_registry_text),
-        (TIKV_DONOR_PROFILE, tikv_profile_text),
-        (TIKV_DONOR_CHAPTER, tikv_chapter_text),
+        (TIKV_REFERENCE_PROFILE, tikv_profile_text),
+        (TIKV_REFERENCE_CHAPTER, tikv_chapter_text),
         (TIKV_CONFORMANCE_MANIFEST, tikv_conformance_text),
     ):
         matches = sorted(set(bare_tikv_pattern.findall(text)))
@@ -1136,48 +1136,48 @@ def validate_registry_cleanup(repo_root: Path, fixture_root: Path, errors: list[
             errors,
         )
 
-    for token in donor_prefixed_tokens:
+    for token in reference_prefixed_tokens:
         require(
             token in registry_text,
-            f"{token} missing from donor_private_meta_opcodes registry block",
+            f"{token} missing from reference_private_meta_opcodes registry block",
             errors,
         )
         require(
             token in tikv_profile_text,
-            f"{token} missing from TiKV donor profile after normalization",
+            f"{token} missing from TiKV reference profile after normalization",
             errors,
         )
         require(
             token in tikv_chapter_text,
-            f"{token} missing from TiKV donor chapter after normalization",
+            f"{token} missing from TiKV reference chapter after normalization",
             errors,
         )
         require(
             token not in engine_registry_text,
-            f"{token} must stay donor-private and out of the engine opcode registry",
+            f"{token} must stay reference-private and out of the engine opcode registry",
             errors,
         )
 
     for token in RETIRED_NON_OPCODE_TOKENS:
         require(
             token not in immudb_profile_text,
-            f"{token} remains in immudb donor profile emitted SBLR",
+            f"{token} remains in immudb reference profile emitted SBLR",
             errors,
         )
         require(
             token not in immudb_chapter_text,
-            f"{token} remains in immudb donor chapter emitted SBLR",
+            f"{token} remains in immudb reference chapter emitted SBLR",
             errors,
         )
 
     require(
         "SBLR_TXN_BEGIN versioning_scope=VERIFIABLE_LEDGER" in immudb_profile_text,
-        "immudb donor profile must lower compat begin through SBLR_TXN_BEGIN descriptor extension",
+        "immudb reference profile must lower compat begin through SBLR_TXN_BEGIN descriptor extension",
         errors,
     )
     require(
         "retention_policy_uuid descriptor check" in immudb_profile_text,
-        "immudb donor profile must model retention check as descriptor policy validation",
+        "immudb reference profile must model retention check as descriptor policy validation",
         errors,
     )
 
@@ -1338,10 +1338,10 @@ def validate_traceability(repo_root: Path, fixture_root: Path, errors: list[str]
         "non_direct_function_lane_contract",
         "explicit_unsupported_refusal_contract",
         "catalog_projection_seed_rowset_contract",
-        "donor_sblr_interface_closure_gate",
+        "reference_sblr_interface_closure_gate",
         "sbsql_family_reconciliation_guardrail",
         "sblr_alias_cleanup_guardrail",
-        "donor_private_opcode_guardrail",
+        "reference_private_opcode_guardrail",
     }
     missing_classes = sorted(expected_classes - seen_classes)
     require(
@@ -1455,7 +1455,7 @@ def validate_sync_style_and_references(
     context: str,
 ) -> None:
     style = str(row.get("sbsql_style", ""))
-    if style in rejected_styles or style == "donor_dialect_paste_through":
+    if style in rejected_styles or style == "compatibility_dialect_paste_through":
         errors.append(f"{context} uses rejected SBSQL style {style}")
     require(
         style == SBSQL_NATIVE_STYLE and style in accepted_styles,
@@ -1473,9 +1473,9 @@ def validate_sync_style_and_references(
         for key, value in row.items()
         if key not in {"fixture_file", "path", "row_selector"} and not isinstance(value, dict)
     ]
-    for token in FORBIDDEN_DONOR_DIALECT_TOKENS:
+    for token in FORBIDDEN_REFERENCE_DIALECT_TOKENS:
         if any(token in value for value in lowered_values):
-            errors.append(f"{context} contains forbidden donor-dialect token {token}")
+            errors.append(f"{context} contains forbidden reference-dialect token {token}")
     for field in REQUIRED_SYNC_FIELDS:
         value = str(row.get(field, ""))
         if not value:
@@ -1493,10 +1493,10 @@ def validate_sync_style_and_references(
         errors,
     )
     require(
-        str(row.get("donor_normalization_reference", "")).startswith(
+        str(row.get("reference_normalization_reference", "")).startswith(
             "public_contract_snapshot"
         ),
-        f"{context} donor_normalization_reference must point at donor common specs",
+        f"{context} reference_normalization_reference must point at reference common specs",
         errors,
     )
     parser_ref = str(row.get("parser_execution_plan_sync_reference", ""))
@@ -1510,7 +1510,7 @@ def validate_sync_style_and_references(
         f"{context} must not point at the superseded SBSQL per-element pilot backlog",
         errors,
     )
-    for field in ("sbsql_cst_reference", "ast_sblr_reference", "donor_normalization_reference"):
+    for field in ("sbsql_cst_reference", "ast_sblr_reference", "reference_normalization_reference"):
         assert_repo_reference_exists(
             repo_root,
             str(row.get(field, "")),
@@ -1676,8 +1676,8 @@ def validate_sbsql_sync(repo_root: Path, fixture_root: Path, errors: list[str]) 
         errors,
     )
     require(
-        "donor_dialect_paste_through" in rejected_styles,
-        "SBSQL sync style policy must reject donor_dialect_paste_through",
+        "compatibility_dialect_paste_through" in rejected_styles,
+        "SBSQL sync style policy must reject compatibility_dialect_paste_through",
         errors,
     )
     require(
@@ -1743,7 +1743,7 @@ def validate_sbsql_sync(repo_root: Path, fixture_root: Path, errors: list[str]) 
         "EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv",
         "SBSQL_SBLR_FAMILY_RECONCILIATION_MATRIX.csv",
         "SBLR_STALE_DEFERRED_ALIAS_CLEANUP_MATRIX.csv",
-        "DONOR_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
+        "REFERENCE_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
     }
     missing = sorted(expected_fixture_files - seen_files)
     require(not missing, f"SBSQL sync manifest missing fixture categories: {missing}", errors)
@@ -1779,7 +1779,7 @@ def validate_interface_closure(repo_root: Path, fixture_root: Path, errors: list
     require_count(rows_by_name["non_direct_function"], 258, "non-direct function/API", errors)
     require_count(rows_by_name["explicit_unsupported"], 5, "explicit unsupported", errors)
     require_count(rows_by_name["stale_deferred_alias"], 8, "stale/deferred alias", errors)
-    require_count(rows_by_name["donor_private_opcode"], 34, "donor-private opcode", errors)
+    require_count(rows_by_name["reference_private_opcode"], 34, "reference-private opcode", errors)
 
     server_actions = Counter(row.get("server_action", "") for row in rows_by_name["server_authority"])
     require(
@@ -1846,8 +1846,8 @@ def validate_interface_closure(repo_root: Path, fixture_root: Path, errors: list
         "explicit_unsupported_refusal_contract",
         "catalog_projection_seed_rowset_contract",
         "sblr_alias_cleanup_guardrail",
-        "donor_private_opcode_guardrail",
-        "donor_sblr_interface_closure_gate",
+        "reference_private_opcode_guardrail",
+        "reference_sblr_interface_closure_gate",
     }
     rows_by_class = {
         str(row.get("proof_class", "")): row
@@ -1894,7 +1894,7 @@ def validate_interface_closure(repo_root: Path, fixture_root: Path, errors: list
         "sblr_surface_non_direct_function_lane_conformance",
         "sblr_surface_catalog_seed_manifest_gate",
         "sblr_surface_registry_cleanup_guardrail_gate",
-        "sblr_surface_donor_interface_closure_gate",
+        "sblr_surface_reference_interface_closure_gate",
     ):
         require(test_name in ctest_source,
                 f"closure CTest wiring missing {test_name}",

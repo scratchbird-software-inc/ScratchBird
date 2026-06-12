@@ -15,7 +15,7 @@ The controlling authority chain is:
 4. Current code and tests as evidence only until reconciled through the audit matrix.
 5. This execution_plan as execution control only.
 
-MGA authority is fixed by `DR-MGA-0001`: durable transaction inventory is the single-node finality authority. Parser state, donor state, WAL/redo/undo, CRUD text events, wall-clock order, UUID order, and file timestamps are not finality authority.
+MGA authority is fixed by `DR-MGA-0001`: durable transaction inventory is the single-node finality authority. Parser state, reference state, WAL/redo/undo, CRUD text events, wall-clock order, UUID order, and file timestamps are not finality authority.
 
 ## Implementation Anchors
 
@@ -40,7 +40,7 @@ MGA authority is fixed by `DR-MGA-0001`: durable transaction inventory is the si
 | MGA regression | `project/tests/mga_transaction_regression/`; `project/tests/conformance/transactions/` | Required for all transaction-sensitive lifecycle closure. |
 | Listener/server route | `project/tests/listener/`; `project/tests/sbsql_parser_worker/sbsql_full_route_execution_smoke.cpp`; `project/tests/sbsql_parser_worker/sbsql_sbwp_tls_engine_auth_route_smoke.py` | Existing route tests prove important pieces but must be mapped to lifecycle labels and expanded where route composition is incomplete. |
 | Engine public ABI | `project/tests/engine_public_abi/`; `project/tests/engine_public_abi/public_abi_symbol_gate.cpp` | Must stay included for lifecycle API/ABI closure. |
-| Firebird and donor parser | `project/tests/firebird_parser_worker/`; `project/tests/sbsql_parser_worker/` | Donor lifecycle mapping must remain separate from native lifecycle authority and cannot add cross-dialect dependencies. |
+| Firebird and reference parser | `project/tests/firebird_parser_worker/`; `project/tests/sbsql_parser_worker/` | Reference lifecycle mapping must remain separate from native lifecycle authority and cannot add cross-dialect dependencies. |
 
 ## Baseline Unknowns Closed For P0
 

@@ -116,7 +116,7 @@ REQUIRED_TOKENS = {
 FORBIDDEN_IN_P13T_FILES = [
     "sqlite3",
     "PRAGMA",
-    "donor shortcut",
+    "reference shortcut",
     "parser finality authority",
     "listener finality authority",
     "TODO threat",

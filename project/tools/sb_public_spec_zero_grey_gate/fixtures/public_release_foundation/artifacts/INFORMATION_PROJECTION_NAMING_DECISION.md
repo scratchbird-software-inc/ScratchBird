@@ -21,7 +21,7 @@ For the current canonical spec baseline:
 
 The trailing `_schema` name component is redundant in ScratchBird's recursive
 system schema tree. It exists only for older SQL client compatibility where a
-driver or donor dialect expects `INFORMATION_SCHEMA` spelling.
+driver or reference dialect expects `INFORMATION_SCHEMA` spelling.
 
 ## View Rules
 

@@ -69,16 +69,16 @@ bool HasTruthyOption(const std::vector<std::string>& options,
   return false;
 }
 
-bool ParserOrDonorAuthorityRequested(const EngineRequestContext& context,
+bool ParserOrReferenceAuthorityRequested(const EngineRequestContext& context,
                                      const EnginePredicateEnvelope& predicate,
                                      std::span<const std::string> option_envelopes) {
   const std::vector<std::string> options(option_envelopes.begin(),
                                          option_envelopes.end());
-  return predicate.predicate_kind == "donor_bulk" ||
-         HasTruthyOption(context.trace_tags, "serializable.parser_or_donor_authority") ||
-         HasTruthyOption(context.trace_tags, "odf031.parser_or_donor_authority") ||
-         HasTruthyOption(options, "serializable.parser_or_donor_authority") ||
-         HasTruthyOption(options, "odf031.parser_or_donor_authority");
+  return predicate.predicate_kind == "reference_bulk" ||
+         HasTruthyOption(context.trace_tags, "serializable.parser_or_reference_authority") ||
+         HasTruthyOption(context.trace_tags, "odf031.parser_or_reference_authority") ||
+         HasTruthyOption(options, "serializable.parser_or_reference_authority") ||
+         HasTruthyOption(options, "odf031.parser_or_reference_authority");
 }
 
 std::filesystem::path LedgerPath(const EngineRequestContext& context) {
@@ -158,7 +158,7 @@ SerializableDmlAdmissionResult Admit(std::string action,
   result.evidence = std::move(evidence);
   result.evidence.push_back({"serializable.admission", std::move(action)});
   result.evidence.push_back({"serializable.inventory_authority", "durable_transaction_inventory"});
-  result.evidence.push_back({"serializable.parser_or_donor_authority", "false"});
+  result.evidence.push_back({"serializable.parser_or_reference_authority", "false"});
   result.evidence.push_back({"serializable.ledger", "durable_access_file"});
   return result;
 }
@@ -599,7 +599,7 @@ mga::SerializableAccessRecord AccessRecord(
     mga::SerializableAccessKind kind,
     mga::SerializableKeyRange range,
     u64 sequence,
-    bool parser_or_donor_authority) {
+    bool parser_or_reference_authority) {
   mga::SerializableAccessRecord access;
   access.local_id = txn.identity.local_id;
   access.transaction_state = txn.state;
@@ -607,7 +607,7 @@ mga::SerializableAccessRecord AccessRecord(
   access.range = std::move(range);
   access.sequence = sequence;
   access.durable_inventory_authoritative = true;
-  access.parser_or_donor_authority = parser_or_donor_authority;
+  access.parser_or_reference_authority = parser_or_reference_authority;
   return access;
 }
 
@@ -618,7 +618,7 @@ SerializableDmlAdmissionResult BuildRecords(
     mga::SerializableAccessKind kind,
     const std::vector<mga::SerializableKeyRange>& ranges,
     bool read_access,
-    bool parser_or_donor_authority,
+    bool parser_or_reference_authority,
     storage_db::LocalTransactionStoreResult* loaded,
     mga::TransactionInventoryEntry* txn,
     u64* next_sequence,
@@ -667,7 +667,7 @@ SerializableDmlAdmissionResult BuildRecords(
                                       kind,
                                       std::move(range),
                                       sequence++,
-                                      parser_or_donor_authority));
+                                      parser_or_reference_authority));
     }
     *next_sequence = sequence;
   }
@@ -697,7 +697,7 @@ SerializableDmlAdmissionResult RecordReadOrWrite(
     mga::SerializableAccessKind kind,
     const std::vector<mga::SerializableKeyRange>& ranges,
     bool read_access,
-    bool parser_or_donor_authority,
+    bool parser_or_reference_authority,
     bool check_first) {
   storage_db::LocalTransactionStoreResult loaded;
   mga::TransactionInventoryEntry txn;
@@ -710,7 +710,7 @@ SerializableDmlAdmissionResult RecordReadOrWrite(
                             kind,
                             ranges,
                             read_access,
-                            parser_or_donor_authority,
+                            parser_or_reference_authority,
                             &loaded,
                             &txn,
                             &next_sequence,
@@ -740,7 +740,7 @@ SerializableDmlAdmissionResult CheckWriteOnly(
     std::string relation_uuid,
     mga::SerializableAccessKind kind,
     const std::vector<mga::SerializableKeyRange>& ranges,
-    bool parser_or_donor_authority) {
+    bool parser_or_reference_authority) {
   storage_db::LocalTransactionStoreResult loaded;
   mga::TransactionInventoryEntry txn;
   u64 next_sequence = 0;
@@ -752,7 +752,7 @@ SerializableDmlAdmissionResult CheckWriteOnly(
                             kind,
                             ranges,
                             false,
-                            parser_or_donor_authority,
+                            parser_or_reference_authority,
                             &loaded,
                             &txn,
                             &next_sequence,
@@ -803,7 +803,7 @@ SerializableDmlAdmissionResult RecordSerializableSelectRead(
       relation.valid() ? RangesForPredicate(relation, predicate)
                        : std::vector<mga::SerializableKeyRange>{},
       true,
-      ParserOrDonorAuthorityRequested(context, predicate, option_envelopes),
+      ParserOrReferenceAuthorityRequested(context, predicate, option_envelopes),
       false);
   AddPredicateEvidence(predicate, &result);
   return result;
@@ -823,7 +823,7 @@ SerializableDmlAdmissionResult CheckSerializableInsertMutation(
       mga::SerializableAccessKind::insert,
       relation.valid() ? RangesForRows(relation, rows)
                        : std::vector<mga::SerializableKeyRange>{},
-      ParserOrDonorAuthorityRequested(context, {}, option_envelopes));
+      ParserOrReferenceAuthorityRequested(context, {}, option_envelopes));
 }
 
 SerializableDmlAdmissionResult RecordSerializableInsertMutation(
@@ -841,7 +841,7 @@ SerializableDmlAdmissionResult RecordSerializableInsertMutation(
       relation.valid() ? RangesForRows(relation, rows)
                        : std::vector<mga::SerializableKeyRange>{},
       false,
-      ParserOrDonorAuthorityRequested(context, {}, option_envelopes),
+      ParserOrReferenceAuthorityRequested(context, {}, option_envelopes),
       true);
 }
 
@@ -861,7 +861,7 @@ SerializableDmlAdmissionResult CheckSerializablePredicateMutation(
                  : mga::SerializableAccessKind::update,
       relation.valid() ? RangesForPredicate(relation, predicate)
                        : std::vector<mga::SerializableKeyRange>{},
-      ParserOrDonorAuthorityRequested(context, predicate, option_envelopes));
+      ParserOrReferenceAuthorityRequested(context, predicate, option_envelopes));
   AddPredicateEvidence(predicate, &result);
   return result;
 }
@@ -883,7 +883,7 @@ SerializableDmlAdmissionResult RecordSerializablePredicateMutation(
       relation.valid() ? RangesForPredicate(relation, predicate)
                        : std::vector<mga::SerializableKeyRange>{},
       false,
-      ParserOrDonorAuthorityRequested(context, predicate, option_envelopes),
+      ParserOrReferenceAuthorityRequested(context, predicate, option_envelopes),
       true);
   AddPredicateEvidence(predicate, &result);
   return result;

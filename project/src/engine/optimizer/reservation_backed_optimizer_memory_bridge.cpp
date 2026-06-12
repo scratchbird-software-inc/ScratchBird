@@ -82,7 +82,7 @@ OptimizerReservationBackedMemoryResult Refuse(
   result.evidence.push_back(kAnchor);
   result.evidence.push_back("optimizer.reservation_backed_memory.fail_closed=true");
   result.evidence.push_back(
-      "optimizer.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_plan_index_or_agent_authority");
+      "optimizer.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_plan_index_or_agent_authority");
   return result;
 }
 
@@ -93,7 +93,7 @@ OptimizerReservationBackedMemoryResult BuildOptimizerTemporaryWorkFromReservedRe
     std::string planning_route_label,
     u64 candidate_count,
     bool catalog_stats_authoritative,
-    bool parser_or_donor_authority,
+    bool parser_or_reference_authority,
     bool memory_benchmark_authority) {
   if (resource == nullptr || !resource->active()) {
     return Refuse(std::move(planning_route_label),
@@ -107,12 +107,12 @@ OptimizerReservationBackedMemoryResult BuildOptimizerTemporaryWorkFromReservedRe
                   "optimizer.ceic_012.memory.request_invalid",
                   "planning_route_and_candidate_count_required");
   }
-  if (!catalog_stats_authoritative || parser_or_donor_authority ||
+  if (!catalog_stats_authoritative || parser_or_reference_authority ||
       memory_benchmark_authority) {
     return Refuse(std::move(planning_route_label),
                   "SB_CEIC_012_OPTIMIZER_MEMORY.UNSAFE_AUTHORITY",
                   "optimizer.ceic_012.memory.unsafe_authority",
-                  "catalog_stats_authority_required_and_parser_donor_benchmark_memory_authority_refused");
+                  "catalog_stats_authority_required_and_parser_reference_benchmark_memory_authority_refused");
   }
   if (candidate_count >
       std::numeric_limits<u64>::max() / sizeof(OptimizerScratchCandidate)) {
@@ -163,7 +163,7 @@ OptimizerReservationBackedMemoryResult BuildOptimizerTemporaryWorkFromReservedRe
   result.evidence.push_back("optimizer.reservation_backed_memory.digest=" +
                             result.digest);
   result.evidence.push_back(
-      "optimizer.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_plan_index_or_agent_authority");
+      "optimizer.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_plan_index_or_agent_authority");
   return result;
 }
 

@@ -56,7 +56,7 @@ void AppendBaseEvidence(BackgroundMemoryReclamationResult* result,
   result->evidence.push_back("background_reclamation.route_label=" + request.route_label);
   result->evidence.push_back("background_reclamation.operation_id=" + request.operation_id);
   result->evidence.push_back(
-      "background_reclamation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "background_reclamation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
   result->evidence.push_back("background_reclamation.engine_mga_authoritative=" +
                              std::string(request.engine_mga_authoritative ? "true" : "false"));
 }
@@ -77,7 +77,7 @@ BackgroundMemoryReclamationResult ErrorResult(
 }
 
 bool UnsafeAuthority(const BackgroundMemoryReclamationWorkItem& item) {
-  return item.parser_or_donor_authority ||
+  return item.parser_or_reference_authority ||
          item.client_authority ||
          item.provider_authority ||
          item.wal_authority;

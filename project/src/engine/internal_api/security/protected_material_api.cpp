@@ -1131,14 +1131,14 @@ EngineApiDiagnostic ValidateEngineAuthorityBoundary(const EngineApiRequest& requ
   for (const auto& tag : request.context.trace_tags) {
     const auto lower = SecurityLower(tag);
     if (StartsWith(lower, "authority:parser") || StartsWith(lower, "authority:driver") ||
-        StartsWith(lower, "authority:donor") || StartsWith(lower, "authority:sqlite")) {
+        StartsWith(lower, "authority:reference") || StartsWith(lower, "authority:sqlite")) {
       return AuthorityBypassDiagnostic(operation_id, "non_engine_trace_authority");
     }
   }
-  if (OptionEnabled(request, "donor_shortcut:") ||
+  if (OptionEnabled(request, "reference_shortcut:") ||
       OptionEnabled(request, "sqlite_shortcut:") ||
       OptionEnabled(request, "authoritative_wal:")) {
-    return AuthorityBypassDiagnostic(operation_id, "donor_sqlite_wal_shortcut_forbidden");
+    return AuthorityBypassDiagnostic(operation_id, "reference_sqlite_wal_shortcut_forbidden");
   }
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
@@ -1288,7 +1288,7 @@ bool IsKnownStorageClass(const std::string& storage_class) {
 
 bool IsKnownPurposeClass(const std::string& purpose_class) {
   return purpose_class == "security_use" || purpose_class == "encryption_use" ||
-         purpose_class == "audit_use" || purpose_class == "donor_use" ||
+         purpose_class == "audit_use" || purpose_class == "reference_use" ||
          purpose_class == "UDR_use" || purpose_class == "udr_use" ||
          purpose_class == "application_use" ||
          purpose_class == "compliance_use" || purpose_class == "cloud_ops_use";

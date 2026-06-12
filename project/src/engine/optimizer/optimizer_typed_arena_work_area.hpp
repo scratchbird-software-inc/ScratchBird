@@ -26,7 +26,7 @@ struct OptimizerTypedArenaWorkAreaRequest {
   std::string planning_route_label;
   u64 candidate_count = 0;
   bool catalog_stats_authoritative = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool memory_benchmark_authority = false;
 };
 

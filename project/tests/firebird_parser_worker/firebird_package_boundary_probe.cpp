@@ -50,7 +50,7 @@ int main(int argc, char** argv) {
 
   const std::filesystem::path project_root = argv[1];
   const std::vector<std::filesystem::path> roots{
-      project_root / "src/parsers/donor/firebird",
+      project_root / "src/parsers/compatibility/firebird",
       project_root / "src/udr/sbu_firebird_parser_support"};
   const std::vector<std::string_view> forbidden{
       "sbsql_worker", "sbl_sbsql", "sbu_sbsql", "sbp_sbsql", "SBSQL",

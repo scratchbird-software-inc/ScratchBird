@@ -119,7 +119,7 @@ opt::CachedOptimizerPlan CachedPlan(const opt::OptimizerPlanCacheKeyInput& input
   plan.metadata_only = true;
   plan.mga_visibility_recheck_required = true;
   plan.security_recheck_required = true;
-  plan.parser_or_donor_finality_authority = false;
+  plan.parser_or_reference_finality_authority = false;
   return plan;
 }
 
@@ -269,10 +269,10 @@ bool InvalidationEventsCarryDeterministicEvidence() {
 bool UnsafeCacheAuthorityFailsClosed() {
   opt::OptimizerPlanCache cache;
   auto plan = CachedPlan(BaseInput());
-  plan.parser_or_donor_finality_authority = true;
+  plan.parser_or_reference_finality_authority = true;
   cache.Put(plan);
   const auto lookup = cache.Lookup(BaseInput());
-  return Require(!lookup.hit, "cache reused parser/donor finality authority") &&
+  return Require(!lookup.hit, "cache reused parser/reference finality authority") &&
          Require(lookup.diagnostic_code == "SB_OPTIMIZER_PLAN_CACHE_AUTHORITY_UNSAFE",
                  "unsafe cache authority diagnostic changed");
 }

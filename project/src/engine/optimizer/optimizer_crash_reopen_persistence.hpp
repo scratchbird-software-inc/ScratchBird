@@ -20,7 +20,7 @@ namespace scratchbird::engine::optimizer {
 // Optimizer crash/reopen evidence proves persisted optimizer artifacts are
 // reloadable, refused, rebuilt, or quarantined after modeled crash points. It
 // is evidence only. It is not transaction finality, visibility,
-// authorization/security, recovery, parser, donor, WAL, benchmark,
+// authorization/security, recovery, parser, reference, WAL, benchmark,
 // optimizer-plan, index-finality, provider-finality, cluster, or agent-action
 // authority.
 inline constexpr const char* kOptimizerCrashReopenPersistenceSchemaId =
@@ -66,7 +66,7 @@ struct OptimizerCrashReopenAuthorityFlags {
   bool authorization_security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -159,9 +159,9 @@ struct OptimizerCrashReopenPersistenceRecord {
   bool synthetic_only_artifact = false;
   bool local_default_statistics = false;
   bool policy_default_statistics = false;
-  bool donor_reference_only = true;
-  bool donor_as_authority = false;
-  bool uses_donor_storage_or_finality_for_scratchbird = false;
+  bool reference_reference_only = true;
+  bool reference_as_authority = false;
+  bool uses_reference_storage_or_finality_for_scratchbird = false;
   bool production_benchmark_clean_claim = false;
   bool evidence_only = true;
 

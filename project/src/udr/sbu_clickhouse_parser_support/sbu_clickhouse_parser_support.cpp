@@ -36,7 +36,7 @@ struct CatalogOverlayInstallState {
 };
 
 std::string EscapeJson(std::string_view text) {
-  return scratchbird::parser::donor::EscapeJson(text);
+  return scratchbird::parser::compatibility::EscapeJson(text);
 }
 
 std::string BoolJson(bool value) {
@@ -154,15 +154,15 @@ std::string ManagementInventoryJson(std::string_view render_policy) {
   out << "{\"package\":\"sbup_clickhouse\","
       << "\"package_logical_name\":\"clickhouse-v25_12\","
       << "\"package_call_name\":\"sbup_clickhouse\","
-      << "\"donor_family\":\"clickhouse\","
+      << "\"reference_family\":\"clickhouse\","
       << "\"management_abi_version\":\"1.0\","
       << "\"routine_count\":" << std::size(kManagementOperations) << ','
       << "\"native_sbsql_excluded\":true,"
       << "\"parser_authority\":false,"
       << "\"engine_authorizes_before_udr\":true,"
       << "\"mga_transaction_authority\":\"scratchbird_engine\","
-      << "\"donor_storage_authority\":false,"
-      << "\"donor_recovery_authority\":false,"
+      << "\"reference_storage_authority\":false,"
+      << "\"reference_recovery_authority\":false,"
       << "\"real_clickhouse_file_effects\":false,"
       << "\"inventory_detail\":\""
       << (include_details ? "release" : "summary") << "\","
@@ -556,7 +556,7 @@ UdrResult sbu_clickhouse_management_package_request(std::string_view operation_n
   UdrResult failure;
   if (!IsManagementOperation(operation_name)) {
     return Diagnostic("UDR.CLICKHOUSE.MGMT_OPERATION_UNKNOWN",
-                      "ClickHouse management package request names must be registered in the standard donor management ABI.");
+                      "ClickHouse management package request names must be registered in the standard compatibility management ABI.");
   }
   if (!RequireTrustedContext(context_packet, function_name,
                              required_context, failure)) {
@@ -595,12 +595,12 @@ UdrResult sbu_clickhouse_management_package_request(std::string_view operation_n
           "\"mga_transaction_authority\":\"scratchbird_engine\","
           "\"requires_mga_transaction\":" +
               BoolJson(ManagementOperationMutates(operation_name)) + ","
-          "\"donor_storage_authority\":false,"
-          "\"donor_recovery_authority\":false,"
+          "\"reference_storage_authority\":false,"
+          "\"reference_recovery_authority\":false,"
           "\"real_clickhouse_file_effects\":false,"
           "\"exact_refusal\":" + BoolJson(refused) + ","
           "\"idempotency_state\":\"engine_request_uuid_bound\","
-          "\"support_evidence_ref\":\"project/tests/donor_regression/clickhouse/management_package_abi/management_package_abi_manifest.csv\"}",
+          "\"support_evidence_ref\":\"project/tests/reference_regression/clickhouse/management_package_abi/management_package_abi_manifest.csv\"}",
           scratchbird::parser::clickhouse::MessageVectorToJson({})};
 }
 

@@ -34,5 +34,5 @@ Required negative flow:
    diagnostics.
 3. Attempt static-secret mode without explicit policy and verify denial.
 4. Attempt edge invalidation before commit and verify no event is emitted.
-5. Confirm no path uses WAL, donor storage, parser finality, cloud provider
+5. Confirm no path uses WAL, reference storage, parser finality, cloud provider
    status, Kubernetes status, or CDN event delivery as engine finality.

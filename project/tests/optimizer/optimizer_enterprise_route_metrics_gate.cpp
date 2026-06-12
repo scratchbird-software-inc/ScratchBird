@@ -149,12 +149,12 @@ void TestRouteMetricPublication() {
 
 void TestRouteMetricRefusals() {
   auto sample = GoodSample();
-  sample.authority.parser_or_donor_authority = true;
+  sample.authority.parser_or_reference_authority = true;
   auto refused = opt::PublishOptimizerRouteMetrics(sample);
   Require(!refused.ok &&
               refused.diagnostic_code ==
                   "SB_OPTIMIZER_ROUTE_METRICS.UNSAFE_AUTHORITY",
-          "parser/donor route authority was not refused");
+          "parser/reference route authority was not refused");
 
   sample = GoodSample();
   sample.authority.route_equivalence_validated = false;

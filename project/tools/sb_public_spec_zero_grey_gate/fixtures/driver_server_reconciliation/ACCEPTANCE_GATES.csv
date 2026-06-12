@@ -18,7 +18,7 @@ DSR_G10,P4,Server verification packets pass,completed,project/drivers,Every clai
 DSR_G11,P4,Benchmark route correct,completed,project/drivers;project/tests,Benchmark uses client/tool to SBWP/TLS or admitted IPC to listener/parser/server/engine route and engine auth policy
 DSR_G18,P4,Performance budget gate passes,completed,artifacts/PERFORMANCE_BUDGET_GATE.md;project/tests;project/drivers,Real-route latency throughput TLS overhead bulk transfer and allocation budgets are measured and enforced
 DSR_G19,P4,Documentation and sample app gate passes,completed,artifacts/DOCUMENTATION_SAMPLE_APP_GATE.md;project/drivers;docs,Driver adapter and tool docs include executable sample apps for DSN auth TLS diagnostics transactions metadata and lifecycle
-DSR_G20,P4,Donor-driver compatibility route gate passes,completed,artifacts/DONOR_DRIVER_COMPATIBILITY_ROUTE_GATE.md;project/tests,Donor compatibility tests use donor tools or compatibility drivers through the admitted ScratchBird route
+DSR_G20,P4,Reference-driver compatibility route gate passes,completed,artifacts/REFERENCE_DRIVER_COMPATIBILITY_ROUTE_GATE.md;project/tests,Reference compatibility tests use reference tools or compatibility drivers through the admitted ScratchBird route
 DSR_G12,P5,Inventory synchronized,completed,public_audit_summary;public_audit_summary,Public registry and inventory reflect true implemented/proven state
 DSR_G13,P5,Final closure,completed,FINAL_AUDIT.md;CLOSURE_REPORT.md,All gates pass and no target row is grey
 DSR_G21,P5,Machine-readable release declaration generated,completed,artifacts/RELEASE_DECLARATION_GENERATOR_MODEL.md;public_audit_summary,Release declaration states supported fail_closed conditional_n/a or not_implemented for every checklist row and lane

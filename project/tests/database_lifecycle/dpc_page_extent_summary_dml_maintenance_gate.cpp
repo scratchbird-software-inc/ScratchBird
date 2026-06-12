@@ -416,7 +416,7 @@ void ValidateIdentityAndAuthorityBoundaries() {
                         metadata);
   external.after_row_present = true;
   external.after_row = Row(100, "010");
-  external.donor_finality_authority_claimed = true;
+  external.reference_finality_authority_claimed = true;
   const auto event_tainted =
       idx::ApplyPageExtentSummaryMaintenanceEvent(metadata, format, external);
   RequireFallback(

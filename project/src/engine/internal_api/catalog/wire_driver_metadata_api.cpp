@@ -62,10 +62,10 @@ bool IsOpaqueDescriptor(const EngineDescriptor& descriptor) {
 
 std::string DisplayTypeFor(const EngineDescriptor& descriptor,
                            const std::string& base_type,
-                           const std::string& donor_label) {
+                           const std::string& reference_label) {
   const std::string display = DescriptorField(descriptor.encoded_descriptor, "driver_display_type");
   if (!display.empty()) { return display; }
-  if (!donor_label.empty()) { return donor_label; }
+  if (!reference_label.empty()) { return reference_label; }
   if (descriptor.descriptor_kind == "domain" && !descriptor.canonical_type_name.empty()) {
     return descriptor.canonical_type_name;
   }
@@ -147,27 +147,27 @@ std::int64_t DisplaySizeFor(const dt::DatatypeDescriptor& descriptor, std::int64
 }  // namespace
 
 EngineWireDriverMetadata RenderWireDriverMetadata(const EngineDescriptor& descriptor,
-                                                  std::string donor_dialect,
-                                                  std::string donor_label) {
+                                                  std::string compatibility_dialect,
+                                                  std::string reference_label) {
   EngineWireDriverMetadata metadata;
   metadata.descriptor_kind = descriptor.descriptor_kind.empty() ? "scalar" : descriptor.descriptor_kind;
   metadata.canonical_type_name = descriptor.canonical_type_name;
   metadata.domain_uuid = DescriptorField(descriptor.encoded_descriptor, "domain_uuid");
   metadata.base_canonical_type_name = DescriptorField(descriptor.encoded_descriptor, "base_type");
-  metadata.donor_dialect = std::move(donor_dialect);
-  metadata.donor_label = std::move(donor_label);
+  metadata.compatibility_dialect = std::move(compatibility_dialect);
+  metadata.reference_label = std::move(reference_label);
   metadata.driver_metadata_envelope = HexDecodeOrOriginal(DescriptorField(descriptor.encoded_descriptor, "driver_metadata"));
   metadata.wire_metadata_envelope = HexDecodeOrOriginal(DescriptorField(descriptor.encoded_descriptor, "wire_metadata"));
   metadata.domain_descriptor = metadata.descriptor_kind == "domain" || !metadata.domain_uuid.empty();
-  metadata.native_descriptor = !metadata.domain_descriptor && metadata.donor_label.empty();
-  metadata.donor_label_alias_only = true;
+  metadata.native_descriptor = !metadata.domain_descriptor && metadata.reference_label.empty();
+  metadata.reference_label_alias_only = true;
   metadata.opaque_render_only = IsOpaqueDescriptor(descriptor);
   metadata.comparison_supported = !metadata.opaque_render_only;
   metadata.mutation_supported = !metadata.opaque_render_only;
   if (metadata.domain_descriptor && metadata.base_canonical_type_name.empty()) {
     metadata.base_canonical_type_name = descriptor.canonical_type_name;
   }
-  metadata.driver_display_type = DisplayTypeFor(descriptor, metadata.base_canonical_type_name, metadata.donor_label);
+  metadata.driver_display_type = DisplayTypeFor(descriptor, metadata.base_canonical_type_name, metadata.reference_label);
   metadata.metadata_projection_source = "sys.information.scratchbird_datatype_descriptors";
 
   const auto type_id = DescriptorTypeId(descriptor, metadata.base_canonical_type_name);

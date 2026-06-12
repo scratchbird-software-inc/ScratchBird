@@ -94,7 +94,7 @@ AgentActionSafetyEnvelope AgentActionSafetyEnvelopeFromInputs(
     bool contract_manual_approval_required,
     bool authority_parser_claim,
     bool authority_client_claim,
-    bool authority_donor_claim,
+    bool authority_reference_claim,
     bool authority_sidecar_claim);
 
 AgentRuntimeStatus ValidateAgentActionSafetyEnvelope(

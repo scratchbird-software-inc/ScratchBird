@@ -72,7 +72,7 @@ struct AgentReplayControlRequest {
   bool external_cluster_provider_attested = false;
   bool parser_authority = false;
   bool client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;

@@ -119,8 +119,8 @@ void RequireBenchmarkEvidence(const CompressionPolicyDecision& decision) {
           "missing exact binary equivalence evidence");
   Require(HasEvidencePrefix(decision, "compression_byte_delta="),
           "missing byte delta evidence");
-  Require(HasEvidence(decision, "parser_or_donor_authority=false"),
-          "missing parser/donor non-authority evidence");
+  Require(HasEvidence(decision, "parser_or_reference_authority=false"),
+          "missing parser/reference non-authority evidence");
   Require(HasEvidence(decision, "wal_or_finality_authority=false"),
           "missing WAL/finality non-authority evidence");
   Require(HasEvidence(decision, "benchmark_clean=true"),
@@ -254,8 +254,8 @@ void ProveNoSqlProviderCompressionAdapters() {
             "NoSQL adapter must be metadata-only");
     Require(HasStringEvidence(evidence, "provider_finality_authority=false"),
             "NoSQL adapter must not claim provider finality authority");
-    Require(HasStringEvidence(evidence, "parser_or_donor_authority=false"),
-            "NoSQL adapter must not claim parser/donor authority");
+    Require(HasStringEvidence(evidence, "parser_or_reference_authority=false"),
+            "NoSQL adapter must not claim parser/reference authority");
   }
 }
 
@@ -283,13 +283,13 @@ void ProveWireResultFrameCompressionAdapter() {
 
 void ProveUnsafeAuthorityRefused() {
   auto parser = BeneficialRequest(CompressionFamily::kPostingList);
-  parser.parser_or_donor_authority = true;
+  parser.parser_or_reference_authority = true;
   const auto parser_decision = EvaluateCompressionPolicy(parser);
   Require(!parser_decision.accepted && !parser_decision.fallback,
-          "parser/donor authority was not refused");
+          "parser/reference authority was not refused");
   Require(HasDiagnostic(parser_decision,
-                        "compression_policy.unsafe_parser_or_donor_authority"),
-          "missing parser/donor authority diagnostic");
+                        "compression_policy.unsafe_parser_or_reference_authority"),
+          "missing parser/reference authority diagnostic");
 
   auto wal = BeneficialRequest(CompressionFamily::kSearchPosting);
   wal.wal_or_finality_authority = true;

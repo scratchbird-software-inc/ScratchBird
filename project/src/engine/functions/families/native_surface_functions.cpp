@@ -252,7 +252,7 @@ bool IsNativeSurfaceFunction(const FunctionCallRequest& request) {
                    "sb.scalar.accept_sql2016_timeseries", "sb.scalar.at_time_zone",
                    "sb.scalar.bit_string", "sb.scalar.bulk_exceptions", "sb.scalar.close",
                    "sb.scalar.domain_stack", "sb.scalar.domain_stack_value",
-                   "sb.scalar.donor_only", "sb.scalar.donor_rewrite",
+                   "sb.scalar.reference_only", "sb.scalar.reference_rewrite",
                    "sb.scalar.future_version", "sb.scalar.gap", "sb.scalar.immutable",
                    "sb.scalar.match_recognize", "sb.scalar.native_future", "sb.scalar.native_now",
                    "sb.scalar.nvl", "sb.scalar.open", "sb.scalar.private_only", "sb.scalar.reserved",
@@ -293,8 +293,8 @@ FunctionCallResult DispatchNativeSurfaceFunction(const FunctionCallRequest& requ
   }
   if (IdIs(id, {"sb.scalar.stable"})) return NoArgText(request, "stable", "character", "volatility.stable");
   if (IdIs(id, {"sb.scalar.volatile"})) return NoArgText(request, "volatile", "character", "volatility.volatile");
-  if (IdIs(id, {"sb.scalar.donor_only"})) return NoArgText(request, "donor_only", "character", "surface.donor_only");
-  if (IdIs(id, {"sb.scalar.donor_rewrite"})) return NoArgText(request, "donor_rewrite", "character", "surface.donor_rewrite");
+  if (IdIs(id, {"sb.scalar.reference_only"})) return NoArgText(request, "reference_only", "character", "surface.reference_only");
+  if (IdIs(id, {"sb.scalar.reference_rewrite"})) return NoArgText(request, "reference_rewrite", "character", "surface.reference_rewrite");
   if (IdIs(id, {"sb.scalar.native_future"})) return NoArgText(request, "native_future", "character", "status.native_future");
   if (IdIs(id, {"sb.scalar.native_now"})) return NoArgText(request, "native_now", "character", "status.native_now");
   if (IdIs(id, {"sb.scalar.private_only"})) return NoArgText(request, "private_only", "character", "surface.private_only");

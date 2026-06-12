@@ -283,7 +283,7 @@ void ValidateManifest(const CsvTable& manifest, Harness* harness) {
       "sbsql_regression_server_admission",
       "sbsql_regression_engine_behavior",
       "sbsql_regression_full_route",
-      "sbsql_regression_donor_alias",
+      "sbsql_regression_reference_alias",
       "sbsql_regression_diagnostic",
       "sbsql_regression_fuzz",
       "sbsql_regression_hardening",

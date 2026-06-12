@@ -398,9 +398,9 @@ optimizer::BenchmarkMethodologyRunEvidence MethodologyRun(
   run.latest_scratchbird_baseline_id =
       "scratchbird-private-latest:ORH-128-overhead-budget";
   run.latest_scratchbird_baseline_p50_us = 120.0;
-  run.donor_equivalent_baseline_id = "firebird-equivalent:evidence-light";
-  run.donor_equivalent_engine = "firebird";
-  run.donor_equivalent_baseline_p50_us = 150.0;
+  run.reference_equivalent_baseline_id = "firebird-equivalent:evidence-light";
+  run.reference_equivalent_engine = "firebird";
+  run.reference_equivalent_baseline_p50_us = 150.0;
   run.methodology_only = false;
   run.performance_proof = true;
   run.benchmark_clean_claim = true;

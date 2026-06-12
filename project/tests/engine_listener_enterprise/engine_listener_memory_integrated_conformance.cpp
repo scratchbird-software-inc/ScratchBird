@@ -283,7 +283,7 @@ void ProveQueryReservationIntegration(const std::filesystem::path& temp_root) {
   std::filesystem::remove_all(spill_root);
 
   auto unsafe_context = QueryContext("unsafe");
-  unsafe_context.parser_or_donor_finality_or_visibility_authority = true;
+  unsafe_context.parser_or_reference_finality_or_visibility_authority = true;
   memory::QueryMemoryArena unsafe_arena(unsafe_context,
                                         QueryLimits(false),
                                         allocator,
@@ -293,7 +293,7 @@ void ProveQueryReservationIntegration(const std::filesystem::path& temp_root) {
   const auto unsafe = unsafe_arena.Grant(GrantRequest(
       memory::QueryMemoryFamily::graph, 512, false, "unsafe_authority"));
   Require(!unsafe.ok() && unsafe.fail_closed,
-          "ELER-050 query arena admitted parser/donor authority");
+          "ELER-050 query arena admitted parser/reference authority");
 
   AddRow("query_arena_hierarchical_reservation",
          "pass",
@@ -439,7 +439,7 @@ void ProvePressureDecisionAndExecutors() {
   unsafe_observation.current_bytes = 990;
   unsafe_observation.soft_limit_bytes = 700;
   unsafe_observation.hard_limit_bytes = 1000;
-  unsafe_observation.parser_or_donor_authority = true;
+  unsafe_observation.parser_or_reference_authority = true;
   const auto unsafe = memory::PlanMemoryPressureResponse(
       memory::MemoryPressurePolicy{}, unsafe_observation);
   Require(!unsafe.ok() && unsafe.fail_closed,

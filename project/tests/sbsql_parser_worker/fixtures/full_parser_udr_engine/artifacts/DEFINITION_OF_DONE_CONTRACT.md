@@ -22,7 +22,7 @@ An item is not complete until all rules below are satisfied.
 8. Cluster-private operations have exact refusal, policy-blocked, or cluster-required message-vector behavior in standalone builds.
 9. Every failure path has a diagnostic/message-vector row and parser rendering rule.
 10. Every success path has command completion, row metadata, warning, and result-shape behavior where applicable.
-11. Every accepted donor alias maps to the native SBSQL surface or is recorded as policy-blocked or refused with exact rationale.
+11. Every accepted reference alias maps to the native SBSQL surface or is recorded as policy-blocked or refused with exact rationale.
 12. Tests exist for parse, bind, lower, server admission, engine execution, result rendering, restart/persistence where applicable, and negative/security cases.
 13. Generated fixtures are reproducible from repository-local inputs without internet access.
 14. Source files remain inside the source-size and logical-family gates.

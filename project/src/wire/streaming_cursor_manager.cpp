@@ -111,7 +111,7 @@ void AppendStateEvidence(std::vector<std::string>* evidence,
   evidence->push_back("ceic_020_outstanding_frame_count=" +
                       std::to_string(state.outstanding_frame_count));
   evidence->push_back(
-      "ceic_020_memory_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority");
+      "ceic_020_memory_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority");
 }
 
 StreamingCursorResult CursorOk(std::string code,

@@ -91,7 +91,7 @@ struct NoSqlBackpressureDebtAuthority {
   bool grants_proven = false;
   bool row_mga_recheck_required = true;
   bool row_security_recheck_required = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool provider_transaction_finality_authority = false;
   bool provider_visibility_authority = false;
   bool client_autocommit_authority = false;

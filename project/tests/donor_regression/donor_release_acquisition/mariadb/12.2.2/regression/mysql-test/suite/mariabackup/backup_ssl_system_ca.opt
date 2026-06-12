@@ -1,2 +1,0 @@
---ssl-key=$MYSQL_TEST_DIR/std_data/server8k-key.pem
---ssl-cert=$MYSQL_TEST_DIR/std_data/server8k-cert.pem

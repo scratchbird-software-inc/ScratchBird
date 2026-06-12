@@ -263,8 +263,8 @@ void AddBaseEvidence(BtreeUniqueDurableProviderClosureResult* result,
                       request.mga_recovery_contract.recommendation));
   AddBoolEvidence(result, "concurrency_evidence_valid",
                   ConcurrencyEvidenceValid(request.concurrency));
-  AddBoolEvidence(result, "donor_local_participation",
-                  request.donor_local_participation);
+  AddBoolEvidence(result, "reference_local_participation",
+                  request.reference_local_participation);
   AddBoolEvidence(result, "policy_local_participation",
                   request.policy_local_participation);
   AddBoolEvidence(result, "cluster_local_participation",
@@ -352,8 +352,8 @@ const char* BtreeUniqueDurableProviderClosureStatusName(
       return "ADMITTED_DURABLE_PROVIDER_EVIDENCE";
     case BtreeUniqueDurableProviderClosureStatus::unsupported_family:
       return "UNSUPPORTED_FAMILY";
-    case BtreeUniqueDurableProviderClosureStatus::donor_policy_cluster_participation:
-      return "DONOR_POLICY_CLUSTER_PARTICIPATION";
+    case BtreeUniqueDurableProviderClosureStatus::reference_policy_cluster_participation:
+      return "REFERENCE_POLICY_CLUSTER_PARTICIPATION";
     case BtreeUniqueDurableProviderClosureStatus::provider_admission_not_admitted:
       return "PROVIDER_ADMISSION_NOT_ADMITTED";
     case BtreeUniqueDurableProviderClosureStatus::mga_recovery_contract_not_admitted:
@@ -394,7 +394,7 @@ bool BtreeUniqueClosureAuthorityBoundaryClear(
          !boundary.security_authority &&
          !boundary.recovery_authority &&
          !boundary.parser_authority &&
-         !boundary.donor_authority &&
+         !boundary.reference_authority &&
          !boundary.wal_authority &&
          !boundary.benchmark_authority &&
          !boundary.optimizer_plan_authority &&
@@ -414,14 +414,14 @@ AdmitBtreeUniqueDurableProviderClosure(
         BtreeUniqueDurableProviderClosureStatus::unsupported_family,
         "CEIC-033 closes only btree and unique_btree durable providers");
   }
-  if (request.donor_local_participation ||
+  if (request.reference_local_participation ||
       request.policy_local_participation ||
       request.cluster_local_participation) {
     return RefuseClosure(
         request,
         BtreeUniqueDurableProviderClosureStatus::
-            donor_policy_cluster_participation,
-        "donor policy and cluster paths cannot participate in local B-tree durable provider closure");
+            reference_policy_cluster_participation,
+        "reference policy and cluster paths cannot participate in local B-tree durable provider closure");
   }
   if (request.enterprise_ready_claimed ||
       request.all_index_readiness_claimed) {
@@ -441,7 +441,7 @@ AdmitBtreeUniqueDurableProviderClosure(
     return RefuseClosure(
         request,
         BtreeUniqueDurableProviderClosureStatus::forbidden_authority_claim,
-        "B-tree provider closure evidence must not claim transaction finality visibility security recovery parser donor WAL provider finality benchmark optimizer plan index finality cluster or agent-action authority");
+        "B-tree provider closure evidence must not claim transaction finality visibility security recovery parser reference WAL provider finality benchmark optimizer plan index finality cluster or agent-action authority");
   }
   if (!request.provider_admission.ok() ||
       request.provider_admission.admission_status !=

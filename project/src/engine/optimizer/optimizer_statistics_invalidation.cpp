@@ -119,7 +119,7 @@ bool KindGenerationPresent(const OptimizerStatisticsInvalidationRequest& request
 }
 
 bool UnsafeAuthorityPresent(const OptimizerStatisticsInvalidationAuthority& authority) {
-  return authority.parser_or_donor_authority ||
+  return authority.parser_or_reference_authority ||
          authority.client_finality_authority ||
          authority.client_visibility_authority ||
          authority.metric_finality_authority ||
@@ -209,7 +209,7 @@ OptimizerStatisticsInvalidationResult DispatchOptimizerStatisticsInvalidation(
                             std::string(OptimizerStatisticsInvalidationKindName(request.kind)));
   result.evidence.push_back("event_kind=" + event.event_kind);
   result.evidence.push_back("evidence_digest=" + request.evidence_digest);
-  result.evidence.push_back("parser_or_donor_authority=false");
+  result.evidence.push_back("parser_or_reference_authority=false");
   result.evidence.push_back("cluster_authority=false");
   return result;
 }

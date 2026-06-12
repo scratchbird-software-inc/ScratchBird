@@ -1,0 +1,588 @@
+{
+  "seed_manifest_uuid": "cf53b4fd-9607-5311-ab33-3c4f074e7a54",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "tikv-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_REFERENCE_CATALOG_SEED_TIKV_BETA2_FULL",
+  "seed_manifest_status": "profile_derived_private_seed_manifest",
+  "reference_family": "tikv",
+  "reference_version_profile_id": "tikv_beta2_full",
+  "reference_version_profile_uuid": "dd794d58-bdbb-5fa9-89ed-4a1bb7215938",
+  "reference_exact_version": "TiKV beta2-full compatibility profile",
+  "new_database_recipe_id": "tikv_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-05-10T00:00:00Z",
+  "extraction_tool_ref": "docs/specifications/registries/reference-catalog-source-derived-seed-rows.yaml",
+  "normalization_profile_ref": "embedded:SB_REFERENCE_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "tikv_keyspace",
+      "reference_catalog_object_name": "tikv.keyspace",
+      "reference_catalog_object_kind": "catalog_surface",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tikv_tikv_keyspace",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "diagnostic_code": "REFERENCE.TIKV.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tikv_region",
+      "reference_catalog_object_name": "tikv.region",
+      "reference_catalog_object_kind": "catalog_surface",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tikv_tikv_region",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "diagnostic_code": "REFERENCE.TIKV.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tikv_store",
+      "reference_catalog_object_name": "tikv.store",
+      "reference_catalog_object_kind": "catalog_surface",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tikv_tikv_store",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "diagnostic_code": "REFERENCE.TIKV.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tikv_placement_rule",
+      "reference_catalog_object_name": "tikv.placement_rule",
+      "reference_catalog_object_kind": "catalog_surface",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tikv_tikv_placement_rule",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "diagnostic_code": "REFERENCE.TIKV.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tikv_raw_kv",
+      "reference_catalog_object_name": "tikv.raw_kv",
+      "reference_catalog_object_kind": "catalog_surface",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tikv_tikv_raw_kv",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "diagnostic_code": "REFERENCE.TIKV.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tikv_txn_kv",
+      "reference_catalog_object_name": "tikv.txn_kv",
+      "reference_catalog_object_kind": "catalog_surface",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tikv_tikv_txn_kv",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "diagnostic_code": "REFERENCE.TIKV.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tikv_coprocessor",
+      "reference_catalog_object_name": "tikv.coprocessor",
+      "reference_catalog_object_kind": "catalog_surface",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tikv_tikv_coprocessor",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "diagnostic_code": "REFERENCE.TIKV.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "tikv_backup_stream",
+      "reference_catalog_object_name": "tikv.backup_stream",
+      "reference_catalog_object_kind": "catalog_surface",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_tikv_tikv_backup_stream",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "diagnostic_code": "REFERENCE.TIKV.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "column_id": "tikv_keyspace_object_name",
+      "object_ref": "tikv_keyspace",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d61b537a6bec8bad610e110ba58273a562818b2344cead735c0b35010ea8c30f"
+    },
+    {
+      "column_id": "tikv_keyspace_object_kind",
+      "object_ref": "tikv_keyspace",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "997a8696dfbe7430a734f18b0c0e1efe5644faeaed61de9a7702b69a77fee3c2"
+    },
+    {
+      "column_id": "tikv_keyspace_source_ref",
+      "object_ref": "tikv_keyspace",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "b9e1b99840c510e183aff8f3231fc20eeb4f3c021cb076f02ecfe0b28177ff77"
+    },
+    {
+      "column_id": "tikv_region_object_name",
+      "object_ref": "tikv_region",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "79baae0c8ce15415a18e51eae0d5c5b4a37255abe0b90d84bc639989864b2bd3"
+    },
+    {
+      "column_id": "tikv_region_object_kind",
+      "object_ref": "tikv_region",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "966524b48f059f798bddc640d57c5c50d863fa820351d62e3cd51fc6bb265c2b"
+    },
+    {
+      "column_id": "tikv_region_source_ref",
+      "object_ref": "tikv_region",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "c11d4a5aac82a85c1a12f58096060f64375eb83a0453f0cb52e096da7b10c02a"
+    },
+    {
+      "column_id": "tikv_store_object_name",
+      "object_ref": "tikv_store",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "ed10e3cf83d97a5ae6b91f5abee82bb7e48a31f25ab97af534fac075267eb6ab"
+    },
+    {
+      "column_id": "tikv_store_object_kind",
+      "object_ref": "tikv_store",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "aa0081cee40793db7f6e70b94d88773c0a2611f2532c916b891a9de92fc4b102"
+    },
+    {
+      "column_id": "tikv_store_source_ref",
+      "object_ref": "tikv_store",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "9fa02da05d0ba3459277a8a677b6988de68f36c958d19ca4bb1b026d3c82c272"
+    },
+    {
+      "column_id": "tikv_placement_rule_object_name",
+      "object_ref": "tikv_placement_rule",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "76165d9e0e02d3836224a4d529bd48e53d88518acbe264e726c754efe8094d87"
+    },
+    {
+      "column_id": "tikv_placement_rule_object_kind",
+      "object_ref": "tikv_placement_rule",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "5c870dd8a9a28d9b2700835277521c4aa674a40603dedaa8ccbbc3acef610acc"
+    },
+    {
+      "column_id": "tikv_placement_rule_source_ref",
+      "object_ref": "tikv_placement_rule",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "aa21ee3ae132b42dca04930206ea9c70bee33f1267cd4a2e7d9450126bd91ef2"
+    },
+    {
+      "column_id": "tikv_raw_kv_object_name",
+      "object_ref": "tikv_raw_kv",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "81a6b29c5476ab7a9f65f1258460295e411b39e98952fb86b08b25fffcb94097"
+    },
+    {
+      "column_id": "tikv_raw_kv_object_kind",
+      "object_ref": "tikv_raw_kv",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "485a12f4b0913373cdbcda9cb5ee04f9e2f796f5e54f432b39aed44808329216"
+    },
+    {
+      "column_id": "tikv_raw_kv_source_ref",
+      "object_ref": "tikv_raw_kv",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "b5c778467719a25ecd15b7d8fc76273d6ff6a9c8e7132ae0f1cc895db02ec3dd"
+    },
+    {
+      "column_id": "tikv_txn_kv_object_name",
+      "object_ref": "tikv_txn_kv",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "792ad8c5e2224d9fc09d10ba99b6ff6c3a8ab88a4716c8f5dd73c645e211d783"
+    },
+    {
+      "column_id": "tikv_txn_kv_object_kind",
+      "object_ref": "tikv_txn_kv",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "eaa2b8ca7b5c3ae74c8f31ff99ba7c3eccc2c017743a6f6904ffeaa7b0a44010"
+    },
+    {
+      "column_id": "tikv_txn_kv_source_ref",
+      "object_ref": "tikv_txn_kv",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "8386d0d850457533b204e64c66fd27dd050f1511a95079455c1eab59a4a7a5f4"
+    },
+    {
+      "column_id": "tikv_coprocessor_object_name",
+      "object_ref": "tikv_coprocessor",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4625a5de908e070db7651f05571b82d180fa51fd4eb99a681e1667ba46f23889"
+    },
+    {
+      "column_id": "tikv_coprocessor_object_kind",
+      "object_ref": "tikv_coprocessor",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "625945945d46ad308847473d65e10015efed160619d6e3385fdc6c7209c66a71"
+    },
+    {
+      "column_id": "tikv_coprocessor_source_ref",
+      "object_ref": "tikv_coprocessor",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "d916a67e24a9c088368615d5384f6bb0aa293fb1431c43ffd38d74cd6058584f"
+    },
+    {
+      "column_id": "tikv_backup_stream_object_name",
+      "object_ref": "tikv_backup_stream",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "38bb6dc813bffea348133ac05e17bef8b6bce2a230dab38f3fd3a1c73a138894"
+    },
+    {
+      "column_id": "tikv_backup_stream_object_kind",
+      "object_ref": "tikv_backup_stream",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "70e12412747ec584ca51c79f7c7368f6deb783f5db4d20d5ec22aad060b1147b"
+    },
+    {
+      "column_id": "tikv_backup_stream_source_ref",
+      "object_ref": "tikv_backup_stream",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "2c46217af1af67e93ceadc7cb9f42654c9bb2da05aa1154f5cf23d1be7cfcc3d"
+    }
+  ],
+  "default_row_set": [
+    {
+      "row_id": "tikv.seed.tikv_keyspace",
+      "reference_object_ref": "tikv_keyspace",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "tikv.keyspace",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "dc41006b6c9446f91e7a7f7c3c435401dff327f04161c574a3046fb30ae6a156"
+    },
+    {
+      "row_id": "tikv.seed.tikv_region",
+      "reference_object_ref": "tikv_region",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "tikv.region",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "8271a945b439c613d4ca1de944bc78f46e979e07ee1e94bc3c159a1488daa988"
+    },
+    {
+      "row_id": "tikv.seed.tikv_store",
+      "reference_object_ref": "tikv_store",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "tikv.store",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "95e19b9c263333473e6c7021402a57677681f1aeaaad4047bf0f0093ba338a49"
+    },
+    {
+      "row_id": "tikv.seed.tikv_placement_rule",
+      "reference_object_ref": "tikv_placement_rule",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "tikv.placement_rule",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "bbc6b87593e99c52a4b70c7159a8aeb6aab56706bbf1b4c8e30cbd115b812c1a"
+    },
+    {
+      "row_id": "tikv.seed.tikv_raw_kv",
+      "reference_object_ref": "tikv_raw_kv",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "tikv.raw_kv",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "6b355b3ccfcf824356d7d58ce5f3186345f76b2857c0303fad3ecb0dfc10d5f6"
+    },
+    {
+      "row_id": "tikv.seed.tikv_txn_kv",
+      "reference_object_ref": "tikv_txn_kv",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "tikv.txn_kv",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "52565cc7ff639ab3b0e4095a6fd539e07776e07b58bc68d17da5605c146fb4cb"
+    },
+    {
+      "row_id": "tikv.seed.tikv_coprocessor",
+      "reference_object_ref": "tikv_coprocessor",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "tikv.coprocessor",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "cc0e91368e7f46a7afeca4d9efe3d3460c75ba9e01cf8a9ff383831c03ee9be9"
+    },
+    {
+      "row_id": "tikv.seed.tikv_backup_stream",
+      "reference_object_ref": "tikv_backup_stream",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "tikv.backup_stream",
+      "definition_source_ref": "docs/specifications/chapters/references/tikv/README.md",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "59f1ee41166310df240fdb6f85d76ad8f77a0c530588d58dd81d26ed78bd7403"
+    }
+  ],
+  "default_metadata_set": [],
+  "default_security_row_set": [
+    {
+      "row_id": "tikv.security.default_visibility_policy",
+      "principal": "PUBLIC",
+      "secret_material": "redacted_not_applicable",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "row_hash": "37ebcab5851e0df777078891c46e36b0936943a76daa8b41be78aeb8d534bcc8"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "value_id": "tikv.runtime.database_identity",
+      "value_class": "instance_generated_uuid",
+      "emulation_rule": "generate ScratchBird UUIDv7 at database/profile create and expose only reference-compatible rendering",
+      "row_hash": "1d2e51aebdb9743e8d69a88ab00872d912e59387f64d65361a1f15f9d7b3f018"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "rule_id": "grant_filtered_metadata",
+      "rule": "visible only through reference metadata policy and ScratchBird engine authorization"
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "rule_id": "raw_secret_forbidden",
+      "rule": "raw secrets are never stored in reference seed manifests"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "rule_id": "report_only",
+      "rule": "catalog seed rows are report-only; mutation routes through UUID-backed ScratchBird catalog APIs"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_tikv_tikv_keyspace",
+      "reference_object_ref": "tikv_keyspace",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "2d5ad6d9-6b12-5897-beb8-d433356b2ee8",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tikv_tikv_region",
+      "reference_object_ref": "tikv_region",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "1aec07e6-9490-59b1-aca4-deac12c25765",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tikv_tikv_store",
+      "reference_object_ref": "tikv_store",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "e213916b-057c-547a-a032-a059f7262f96",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tikv_tikv_placement_rule",
+      "reference_object_ref": "tikv_placement_rule",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "e9421bcc-456c-5df1-949e-89e9711646d7",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tikv_tikv_raw_kv",
+      "reference_object_ref": "tikv_raw_kv",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "cb741edc-252c-5c15-8e8d-3eef9e109840",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tikv_tikv_txn_kv",
+      "reference_object_ref": "tikv_txn_kv",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a78e9352-0ae3-5ebd-a44d-335bab928071",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tikv_tikv_coprocessor",
+      "reference_object_ref": "tikv_coprocessor",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "ddc68dda-2647-5e31-834a-618e1fd3bf80",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_tikv_tikv_backup_stream",
+      "reference_object_ref": "tikv_backup_stream",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "7e6e1b3f-faa6-5dde-a937-1ed8fb9a6d1b",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "REFERENCE.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "REFERENCE.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "REFERENCE.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "REFERENCE.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "REFERENCE.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "REFERENCE.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "REFERENCE.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "rowset_hashes": {
+    "catalog_object_set": "4f605a687658ddaad90302402d29218ddbb6f2d7726bab8a9236db420c0fc71d",
+    "catalog_column_set": "09a12b11412f7597c330a50cbfa56e4d8fb1ded9bd1633b01cbdaa7491832fde",
+    "default_row_set": "f19d1c4734ae47d4425b74c33d9acf38a24e692621151087ed38248bd880250b",
+    "default_metadata_set": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "default_security_row_set": "2e4aeb26230725cda9af293ab8b453ac675ba3744bbbbbab31213432ec0045ac",
+    "default_runtime_generated_value_set": "1f28235f5e76d6432c0c4d9881b57755dffb87a5d6f31a9bf49a9fb30d9ca4de",
+    "visibility_rule_set": "e3d11affebfa8ba62fe7e7f0c2014ac363d6d1ac1ccaa3f47aafd18109cdd20c",
+    "redaction_rule_set": "c081d87b2dadb71687177f97c210a024f823fba2383d3e299998c66deee46f2f",
+    "mutation_rule_set": "8b806b0d95bbd92e3c2aeb3d7d4ecd0fd0abc1aaf9c6a14639f8966080719fed",
+    "scratchbird_mapping_set": "a2ab450757dc03fc4c915c51d71e3cb5f81aa44312a54a92061c2771d27a4cbf"
+  },
+  "manifest_hash": "0864431322deb0e0e9bfd381dd22db6f92a417e58b4190d623848bb8559b1852"
+}

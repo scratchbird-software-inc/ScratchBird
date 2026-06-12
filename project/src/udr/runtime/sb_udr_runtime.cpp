@@ -49,12 +49,20 @@ bool Blank(std::string_view value) {
   return value.find_first_not_of(" \t\r\n") == std::string_view::npos;
 }
 
+bool IsTrustedCppRuntimeLanguage(std::string_view value) {
+  return value.empty() || value == "cpp" || value == "c++" ||
+         value == "cxx" || value == "trusted_cpp";
+}
+
 UdrStatus ValidateDescriptor(const UdrPackageDescriptor& descriptor) {
   if (Blank(descriptor.package_uuid)) {
     return Error("UDR.RUNTIME.PACKAGE_UUID_REQUIRED", "package_uuid_required");
   }
   if (Blank(descriptor.package_name)) {
     return Error("UDR.RUNTIME.PACKAGE_NAME_REQUIRED", descriptor.package_uuid);
+  }
+  if (!IsTrustedCppRuntimeLanguage(descriptor.runtime_language)) {
+    return Error("UDR.RUNTIME.NON_CPP_RUNTIME_FORBIDDEN", descriptor.package_uuid);
   }
   if (!descriptor.trusted_cpp) {
     return Error("UDR.RUNTIME.TRUSTED_CPP_REQUIRED", descriptor.package_uuid);
@@ -136,6 +144,7 @@ UdrStatus RegisterPackage(const UdrPackageDescriptor& descriptor) {
         current.signature_policy != descriptor.signature_policy ||
         current.package_name != descriptor.package_name ||
         current.capability_role != descriptor.capability_role ||
+        current.runtime_language != descriptor.runtime_language ||
         current.entrypoints.size() != descriptor.entrypoints.size()) {
       return Error("UDR.RUNTIME.PACKAGE_DESCRIPTOR_CONFLICT", descriptor.package_uuid);
     }
@@ -167,6 +176,7 @@ std::optional<UdrPackageRuntimeState> GetPackageState(std::string_view package_u
   state.binary_hash = package->descriptor.binary_hash;
   state.signature_policy = package->descriptor.signature_policy;
   state.capability_role = package->descriptor.capability_role;
+  state.runtime_language = package->descriptor.runtime_language;
   for (const auto& entrypoint : package->descriptor.entrypoints) {
     state.entrypoint_names.push_back(entrypoint.name);
   }
@@ -277,12 +287,12 @@ UdrCallResult InvokePackageWithReservedWorkspace(
     scratchbird::core::memory::ReservationBackedMemoryResource* resource,
     std::size_t workspace_bytes,
     bool sblr_invocation_authority,
-    bool parser_or_donor_finality_authority,
+    bool parser_or_reference_finality_authority,
     bool debug_or_relaxed_path) {
   if (resource == nullptr || !resource->active()) {
     return {false, {}, "{\"diagnostic\":\"UDR.RUNTIME.CEIC012_RESOURCE_REQUIRED\"}"};
   }
-  if (!sblr_invocation_authority || parser_or_donor_finality_authority ||
+  if (!sblr_invocation_authority || parser_or_reference_finality_authority ||
       debug_or_relaxed_path) {
     return {false, {}, "{\"diagnostic\":\"UDR.RUNTIME.CEIC012_UNSAFE_AUTHORITY\"}"};
   }

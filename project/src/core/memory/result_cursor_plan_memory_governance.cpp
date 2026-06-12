@@ -26,7 +26,7 @@ using scratchbird::core::platform::Subsystem;
 constexpr const char* kEvidenceAnchor =
     "CEIC-020_RESULT_CURSOR_PLAN_CACHE_PREPARED_MEMORY_GOVERNANCE";
 constexpr const char* kAuthorityScope =
-    "ceic_020.memory_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
+    "ceic_020.memory_evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -219,7 +219,7 @@ bool UnsafeAuthority(const ResultCursorPlanMemoryAuthority& authority,
     *reason = "engine_mga_transaction_inventory_security_policy_memory_evidence_required";
     return true;
   }
-  if (authority.parser_authority || authority.donor_authority ||
+  if (authority.parser_authority || authority.reference_authority ||
       authority.transaction_finality_authority || authority.visibility_authority ||
       authority.recovery_authority || authority.authorization_authority ||
       authority.wal_authority || authority.benchmark_authority ||

@@ -42,7 +42,7 @@ enum class DbbtKeySource {
   kTestBuiltin,
 };
 
-struct DonorProtocolProfile {
+struct ReferenceProtocolProfile {
   std::string family;
   std::string default_parser_package;
   std::string default_wire_protocol;
@@ -117,8 +117,8 @@ struct ConfigResult {
   bool ok{true};
 };
 
-const std::vector<DonorProtocolProfile>& DonorProtocolProfiles();
-std::optional<DonorProtocolProfile> FindDonorProtocolProfile(std::string_view family);
+const std::vector<ReferenceProtocolProfile>& ReferenceProtocolProfiles();
+std::optional<ReferenceProtocolProfile> FindReferenceProtocolProfile(std::string_view family);
 ConfigResult LoadListenerConfigFromArgs(int argc, char** argv);
 ConfigResult LoadListenerConfigFile(const std::string& path, ListenerConfig base = {});
 std::string ListenerModeName(ListenerMode mode);

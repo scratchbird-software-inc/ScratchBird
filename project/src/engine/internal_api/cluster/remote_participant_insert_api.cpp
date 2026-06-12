@@ -201,7 +201,7 @@ EngineRemoteParticipantInsertResult EnginePrepareRemoteParticipantInsert(
              {"participant_refusal", "retryable_transport_failure", "finality_unknown", "operator_review_required"})) {
     return ParticipantFailure(request, "failure_model_unsupported:" + request.failure_model, false);
   }
-  if (!OneOf(request.insert_mode, {"copy_import", "donor_bulk", "native_bulk", "multi_values"})) {
+  if (!OneOf(request.insert_mode, {"copy_import", "reference_bulk", "native_bulk", "multi_values"})) {
     return ParticipantFailure(request, "insert_mode_unsupported:" + request.insert_mode, false);
   }
   if (request.import_execution_requested && request.source_fingerprint.empty()) {

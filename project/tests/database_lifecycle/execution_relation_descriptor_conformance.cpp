@@ -176,7 +176,7 @@ void TestColumnFailures() {
           "EDR-015 invalid column descriptor detail was not preserved");
 
   relation = ValidRelation(engine::ExecutionRelationKind::rowset);
-  relation.columns.front().donor_rendering_name.clear();
+  relation.columns.front().reference_rendering_name.clear();
   RequireStatus(
       relation,
       engine::ExecutionRelationDescriptorStatus::

@@ -388,7 +388,7 @@ void ValidateExactFallbacks() {
     } else if (authority_case == 4) {
       non_authoritative[0].event_stream_finality_authority_claimed = true;
     } else if (authority_case == 5) {
-      non_authoritative[0].donor_finality_authority_claimed = true;
+      non_authoritative[0].reference_finality_authority_claimed = true;
     } else {
       non_authoritative[0].write_ahead_log_finality_authority_claimed = true;
     }

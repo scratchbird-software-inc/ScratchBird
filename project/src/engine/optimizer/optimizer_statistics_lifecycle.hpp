@@ -19,7 +19,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: SB_OPTIMIZER_STATISTICS_LIFECYCLE_ODF_028
 // Deterministic statistics refresh admission and evidence planning. Lifecycle
 // decisions are optimizer/catalog metadata only: they do not own transaction
-// finality, row visibility, parser execution, or donor behavior.
+// finality, row visibility, parser execution, or reference behavior.
 enum class OptimizerStatisticsLifecycleTrigger {
   kManualAnalyze,
   kSampledRefresh,
@@ -78,7 +78,7 @@ struct OptimizerStatisticsLifecycleRequest {
   bool security_recheck_present = true;
   bool epoch_evidence_present = true;
   bool advisory_only = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool agent_policy_safe = true;
   bool catalog_descriptor_present = true;
   bool catalog_write_admitted = true;

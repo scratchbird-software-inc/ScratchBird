@@ -73,7 +73,7 @@ struct EngineSupportBundleTransactionEvidenceSnapshot {
   bool support_bundle_is_authority = false;
   bool parser_finality_authority = false;
   bool client_finality_authority = false;
-  bool donor_finality_authority = false;
+  bool reference_finality_authority = false;
   bool timestamp_finality_authority = false;
   bool uuid_ordering_finality_authority = false;
   bool event_stream_finality_authority = false;

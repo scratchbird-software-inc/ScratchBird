@@ -138,13 +138,13 @@ void TestValidPolicies() {
   policy.decimal_floating_context = true;
   policy.decimal_context_precision = 34;
   policy.overflow_policy =
-      engine::ExecutionNumericOverflowPolicy::donor_compatible;
+      engine::ExecutionNumericOverflowPolicy::reference_compatible;
   policy.nan_policy =
-      engine::ExecutionNumericSpecialValuePolicy::donor_compatible;
-  policy.donor_profile_name = "edr034.donor.numeric";
-  policy.donor_difference_documented = true;
+      engine::ExecutionNumericSpecialValuePolicy::reference_compatible;
+  policy.reference_profile_name = "edr034.reference.numeric";
+  policy.reference_difference_documented = true;
   Require(engine::ValidateExecutionNumericEdgePolicyDescriptor(policy).ok(),
-          "EDR-034 rejected valid donor numeric edge policy");
+          "EDR-034 rejected valid reference numeric edge policy");
 }
 
 void TestIdentityFailures() {
@@ -290,21 +290,21 @@ void TestNumericPolicyFailures() {
                 "EDR-034 accepted signed zero for unsigned integer");
 }
 
-void TestDonorFailures() {
+void TestReferenceFailures() {
   auto policy = ValidPolicy();
   policy.overflow_policy =
-      engine::ExecutionNumericOverflowPolicy::donor_compatible;
+      engine::ExecutionNumericOverflowPolicy::reference_compatible;
   RequireStatus(policy,
-                engine::ExecutionNumericEdgePolicyStatus::donor_profile_required,
-                "EDR-034 accepted donor numeric policy without donor profile");
+                engine::ExecutionNumericEdgePolicyStatus::reference_profile_required,
+                "EDR-034 accepted reference numeric policy without reference profile");
 
   policy = ValidPolicy();
   policy.overflow_policy =
-      engine::ExecutionNumericOverflowPolicy::donor_compatible;
-  policy.donor_profile_name = "edr034.donor.numeric";
+      engine::ExecutionNumericOverflowPolicy::reference_compatible;
+  policy.reference_profile_name = "edr034.reference.numeric";
   RequireStatus(
-      policy, engine::ExecutionNumericEdgePolicyStatus::donor_difference_required,
-      "EDR-034 accepted donor numeric policy without documented differences");
+      policy, engine::ExecutionNumericEdgePolicyStatus::reference_difference_required,
+      "EDR-034 accepted reference numeric policy without documented differences");
 }
 
 }  // namespace
@@ -314,6 +314,6 @@ int main() {
   TestIdentityFailures();
   TestEnumAndDescriptorFailures();
   TestNumericPolicyFailures();
-  TestDonorFailures();
+  TestReferenceFailures();
   return EXIT_SUCCESS;
 }

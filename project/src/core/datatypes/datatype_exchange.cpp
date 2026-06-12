@@ -39,7 +39,7 @@ inline constexpr u32 kStableNameBytes = 64;
 namespace DescriptorFlag {
 inline constexpr u32 nullable_allowed = 1u << 0;
 inline constexpr u32 descriptor_authoritative = 1u << 1;
-inline constexpr u32 donor_name_is_alias_only = 1u << 2;
+inline constexpr u32 reference_name_is_alias_only = 1u << 2;
 inline constexpr u32 requires_mandatory_library = 1u << 3;
 }  // namespace DescriptorFlag
 
@@ -55,7 +55,7 @@ Status DatatypeExchangeErrorStatus() {
   return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::datatypes};
 }
 
-std::string NormalizeDonorLabel(const std::string& label) {
+std::string NormalizeReferenceLabel(const std::string& label) {
   std::string normalized;
   normalized.reserve(label.size());
   for (char value : label) {
@@ -93,8 +93,8 @@ u32 DescriptorFlags(const DatatypeDescriptor& descriptor) {
   if (descriptor.descriptor_authoritative) {
     flags |= DescriptorFlag::descriptor_authoritative;
   }
-  if (descriptor.donor_name_is_alias_only) {
-    flags |= DescriptorFlag::donor_name_is_alias_only;
+  if (descriptor.reference_name_is_alias_only) {
+    flags |= DescriptorFlag::reference_name_is_alias_only;
   }
   if (descriptor.requires_mandatory_library) {
     flags |= DescriptorFlag::requires_mandatory_library;
@@ -121,10 +121,10 @@ DiagnosticRecord MakeDatatypeExchangeDiagnostic(Status status,
                         "core.datatypes.exchange");
 }
 
-DonorTypeLabelMapping Mapping(DonorDialectId dialect, std::string donor_label, CanonicalTypeId target_type_id) {
-  DonorTypeLabelMapping mapping;
+ReferenceTypeLabelMapping Mapping(ReferenceDialectId dialect, std::string reference_label, CanonicalTypeId target_type_id) {
+  ReferenceTypeLabelMapping mapping;
   mapping.dialect = dialect;
-  mapping.donor_label = std::move(donor_label);
+  mapping.reference_label = std::move(reference_label);
   mapping.target_type_id = target_type_id;
   return mapping;
 }
@@ -135,19 +135,19 @@ bool IsIntegerFamily(TypeFamily family) {
 
 }  // namespace
 
-const char* DonorDialectName(DonorDialectId dialect) {
+const char* ReferenceDialectName(ReferenceDialectId dialect) {
   switch (dialect) {
-    case DonorDialectId::native_sbsql_v3: return "native_sbsql_v3";
-    case DonorDialectId::firebird: return "firebird";
-    case DonorDialectId::interbase: return "interbase";
-    case DonorDialectId::postgresql: return "postgresql";
-    case DonorDialectId::mysql: return "mysql";
-    case DonorDialectId::mariadb: return "mariadb";
-    case DonorDialectId::sqlite: return "sqlite";
-    case DonorDialectId::oracle: return "oracle";
-    case DonorDialectId::sql_server: return "sql_server";
-    case DonorDialectId::db2: return "db2";
-    case DonorDialectId::unknown: return "unknown";
+    case ReferenceDialectId::native_sbsql_v3: return "native_sbsql_v3";
+    case ReferenceDialectId::firebird: return "firebird";
+    case ReferenceDialectId::interbase: return "interbase";
+    case ReferenceDialectId::postgresql: return "postgresql";
+    case ReferenceDialectId::mysql: return "mysql";
+    case ReferenceDialectId::mariadb: return "mariadb";
+    case ReferenceDialectId::sqlite: return "sqlite";
+    case ReferenceDialectId::oracle: return "oracle";
+    case ReferenceDialectId::sql_server: return "sql_server";
+    case ReferenceDialectId::db2: return "db2";
+    case ReferenceDialectId::unknown: return "unknown";
   }
   return "unknown";
 }
@@ -159,7 +159,7 @@ const char* ConversionDiagnosticKindName(ConversionDiagnosticKind kind) {
     case ConversionDiagnosticKind::narrowing: return "narrowing";
     case ConversionDiagnosticKind::precision_loss_possible: return "precision_loss_possible";
     case ConversionDiagnosticKind::incompatible: return "incompatible";
-    case ConversionDiagnosticKind::donor_label_unmapped: return "donor_label_unmapped";
+    case ConversionDiagnosticKind::reference_label_unmapped: return "reference_label_unmapped";
     case ConversionDiagnosticKind::unsupported: return "unsupported";
   }
   return "unsupported";
@@ -230,36 +230,36 @@ DatatypeDescriptorResult ParseDatatypeDescriptor(const SerializedDatatypeDescrip
   return result;
 }
 
-const std::vector<DonorTypeLabelMapping>& BuiltinDonorTypeLabelPlaceholders() {
-  static const std::vector<DonorTypeLabelMapping> mappings = {
-      Mapping(DonorDialectId::native_sbsql_v3, "BOOLEAN", CanonicalTypeId::boolean),
-      Mapping(DonorDialectId::native_sbsql_v3, "INT128", CanonicalTypeId::int128),
-      Mapping(DonorDialectId::native_sbsql_v3, "UINT128", CanonicalTypeId::uint128),
-      Mapping(DonorDialectId::native_sbsql_v3, "REAL128", CanonicalTypeId::real128),
-      Mapping(DonorDialectId::native_sbsql_v3, "UUID", CanonicalTypeId::uuid),
-      Mapping(DonorDialectId::firebird, "SMALLINT", CanonicalTypeId::int16),
-      Mapping(DonorDialectId::firebird, "INTEGER", CanonicalTypeId::int32),
-      Mapping(DonorDialectId::firebird, "BIGINT", CanonicalTypeId::int64),
-      Mapping(DonorDialectId::firebird, "DECFLOAT", CanonicalTypeId::real128),
-      Mapping(DonorDialectId::postgresql, "SMALLINT", CanonicalTypeId::int16),
-      Mapping(DonorDialectId::postgresql, "INTEGER", CanonicalTypeId::int32),
-      Mapping(DonorDialectId::postgresql, "BIGINT", CanonicalTypeId::int64),
-      Mapping(DonorDialectId::postgresql, "UUID", CanonicalTypeId::uuid),
-      Mapping(DonorDialectId::mysql, "TINYINT", CanonicalTypeId::int8),
-      Mapping(DonorDialectId::mysql, "SMALLINT", CanonicalTypeId::int16),
-      Mapping(DonorDialectId::mysql, "INT", CanonicalTypeId::int32),
-      Mapping(DonorDialectId::mysql, "BIGINT", CanonicalTypeId::int64),
-      Mapping(DonorDialectId::sqlite, "INTEGER", CanonicalTypeId::int64),
-      Mapping(DonorDialectId::oracle, "NUMBER", CanonicalTypeId::decimal),
-      Mapping(DonorDialectId::sql_server, "UNIQUEIDENTIFIER", CanonicalTypeId::uuid),
-      Mapping(DonorDialectId::db2, "BIGINT", CanonicalTypeId::int64),
+const std::vector<ReferenceTypeLabelMapping>& BuiltinReferenceTypeLabelPlaceholders() {
+  static const std::vector<ReferenceTypeLabelMapping> mappings = {
+      Mapping(ReferenceDialectId::native_sbsql_v3, "BOOLEAN", CanonicalTypeId::boolean),
+      Mapping(ReferenceDialectId::native_sbsql_v3, "INT128", CanonicalTypeId::int128),
+      Mapping(ReferenceDialectId::native_sbsql_v3, "UINT128", CanonicalTypeId::uint128),
+      Mapping(ReferenceDialectId::native_sbsql_v3, "REAL128", CanonicalTypeId::real128),
+      Mapping(ReferenceDialectId::native_sbsql_v3, "UUID", CanonicalTypeId::uuid),
+      Mapping(ReferenceDialectId::firebird, "SMALLINT", CanonicalTypeId::int16),
+      Mapping(ReferenceDialectId::firebird, "INTEGER", CanonicalTypeId::int32),
+      Mapping(ReferenceDialectId::firebird, "BIGINT", CanonicalTypeId::int64),
+      Mapping(ReferenceDialectId::firebird, "DECFLOAT", CanonicalTypeId::real128),
+      Mapping(ReferenceDialectId::postgresql, "SMALLINT", CanonicalTypeId::int16),
+      Mapping(ReferenceDialectId::postgresql, "INTEGER", CanonicalTypeId::int32),
+      Mapping(ReferenceDialectId::postgresql, "BIGINT", CanonicalTypeId::int64),
+      Mapping(ReferenceDialectId::postgresql, "UUID", CanonicalTypeId::uuid),
+      Mapping(ReferenceDialectId::mysql, "TINYINT", CanonicalTypeId::int8),
+      Mapping(ReferenceDialectId::mysql, "SMALLINT", CanonicalTypeId::int16),
+      Mapping(ReferenceDialectId::mysql, "INT", CanonicalTypeId::int32),
+      Mapping(ReferenceDialectId::mysql, "BIGINT", CanonicalTypeId::int64),
+      Mapping(ReferenceDialectId::sqlite, "INTEGER", CanonicalTypeId::int64),
+      Mapping(ReferenceDialectId::oracle, "NUMBER", CanonicalTypeId::decimal),
+      Mapping(ReferenceDialectId::sql_server, "UNIQUEIDENTIFIER", CanonicalTypeId::uuid),
+      Mapping(ReferenceDialectId::db2, "BIGINT", CanonicalTypeId::int64),
   };
   return mappings;
 }
 
-std::vector<DonorTypeLabelMapping> DonorTypeLabelPlaceholdersFor(DonorDialectId dialect) {
-  std::vector<DonorTypeLabelMapping> matches;
-  for (const DonorTypeLabelMapping& mapping : BuiltinDonorTypeLabelPlaceholders()) {
+std::vector<ReferenceTypeLabelMapping> ReferenceTypeLabelPlaceholdersFor(ReferenceDialectId dialect) {
+  std::vector<ReferenceTypeLabelMapping> matches;
+  for (const ReferenceTypeLabelMapping& mapping : BuiltinReferenceTypeLabelPlaceholders()) {
     if (mapping.dialect == dialect) {
       matches.push_back(mapping);
     }
@@ -267,10 +267,10 @@ std::vector<DonorTypeLabelMapping> DonorTypeLabelPlaceholdersFor(DonorDialectId 
   return matches;
 }
 
-DatatypeDescriptorResult ResolveDonorTypeLabelPlaceholder(DonorDialectId dialect, const std::string& donor_label) {
-  const std::string normalized = NormalizeDonorLabel(donor_label);
-  for (const DonorTypeLabelMapping& mapping : BuiltinDonorTypeLabelPlaceholders()) {
-    if (mapping.dialect == dialect && mapping.donor_label == normalized) {
+DatatypeDescriptorResult ResolveReferenceTypeLabelPlaceholder(ReferenceDialectId dialect, const std::string& reference_label) {
+  const std::string normalized = NormalizeReferenceLabel(reference_label);
+  for (const ReferenceTypeLabelMapping& mapping : BuiltinReferenceTypeLabelPlaceholders()) {
+    if (mapping.dialect == dialect && mapping.reference_label == normalized) {
       return LookupDatatypeDescriptor(mapping.target_type_id);
     }
   }
@@ -278,9 +278,9 @@ DatatypeDescriptorResult ResolveDonorTypeLabelPlaceholder(DonorDialectId dialect
   DatatypeDescriptorResult result;
   result.status = DatatypeExchangeWarningStatus();
   result.diagnostic = MakeDatatypeExchangeDiagnostic(result.status,
-                                                     "SB-DATATYPE-DONOR-LABEL-UNMAPPED",
-                                                     "datatype.donor_label_unmapped",
-                                                     DonorDialectName(dialect));
+                                                     "SB-DATATYPE-REFERENCE-LABEL-UNMAPPED",
+                                                     "datatype.reference_label_unmapped",
+                                                     ReferenceDialectName(dialect));
   return result;
 }
 

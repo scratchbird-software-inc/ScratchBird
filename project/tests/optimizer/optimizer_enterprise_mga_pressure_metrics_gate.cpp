@@ -107,12 +107,12 @@ void TestMgaPressurePublication() {
 
 void TestMgaPressureRefusals() {
   auto sample = GoodSample();
-  sample.authority.parser_or_donor_authority = true;
+  sample.authority.parser_or_reference_authority = true;
   auto refused = mga::PublishOptimizerMgaPressureMetrics(sample);
   Require(!refused.ok &&
               refused.diagnostic_code ==
                   "SB_OPTIMIZER_MGA_PRESSURE.UNSAFE_AUTHORITY",
-          "parser/donor authority was not refused");
+          "parser/reference authority was not refused");
 
   sample = GoodSample();
   sample.authority.cleanup_horizon_authoritative = false;

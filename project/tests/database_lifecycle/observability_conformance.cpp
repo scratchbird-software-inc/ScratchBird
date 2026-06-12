@@ -265,7 +265,7 @@ void TestParserRendering() {
   std::vector<std::string> errors;
   Require(api::ValidateEngineRenderedResultEnvelope(envelope, &errors),
           "parser rendered lifecycle diagnostic envelope failed validation");
-  Require(!envelope.parser_finality_authority && !envelope.donor_finality_authority,
+  Require(!envelope.parser_finality_authority && !envelope.reference_finality_authority,
           "parser rendered envelope claimed finality authority");
   Require(envelope.redaction_applied, "parser rendered envelope did not record redaction");
   Require(!envelope.diagnostics.empty() && envelope.diagnostics.front().retryable,

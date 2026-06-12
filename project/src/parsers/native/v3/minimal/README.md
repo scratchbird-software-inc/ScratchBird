@@ -9,4 +9,4 @@ Current scope:
 - emits syntax-only `ShowIdentityAst`;
 - emits deterministic parser diagnostics for unsupported commands.
 
-No binding, SBLR lowering, execution, donor syntax, management syntax, or cluster syntax is implemented here.
+No binding, SBLR lowering, execution, reference syntax, management syntax, or cluster syntax is implemented here.

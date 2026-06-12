@@ -80,8 +80,8 @@ agents::NoSqlBackpressureDebtAgentRequest ToAgentRequest(
       request.row_mga_recheck_required;
   agent_request.authority.row_security_recheck_required =
       request.row_security_recheck_required;
-  agent_request.authority.parser_or_donor_authority =
-      request.parser_or_donor_authority;
+  agent_request.authority.parser_or_reference_authority =
+      request.parser_or_reference_authority;
   agent_request.authority.provider_transaction_finality_authority =
       request.provider_claims_transaction_finality_authority;
   agent_request.authority.provider_visibility_authority =

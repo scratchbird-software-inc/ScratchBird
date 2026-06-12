@@ -190,7 +190,7 @@ void ValidatePositivePath() {
                 !row.authorization_security_authority &&
                 !row.recovery_authority &&
                 !row.parser_authority &&
-                !row.donor_authority &&
+                !row.reference_authority &&
                 !row.wal_authority &&
                 !row.benchmark_authority &&
                 !row.optimizer_plan_authority &&

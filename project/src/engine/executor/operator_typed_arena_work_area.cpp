@@ -30,7 +30,7 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityBoundary =
-    "executor_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority";
+    "executor_typed_arena.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority";
 
 struct ExecutorScratchRow {
   u64 ordinal = 0;
@@ -104,11 +104,11 @@ ExecutorTypedArenaWorkAreaResult BuildExecutorTypedArenaWorkArea(
                   "executor.typed_arena.mga_unproven",
                   "mga_snapshot_and_inventory_required");
   }
-  if (request.parser_or_donor_authority ||
+  if (request.parser_or_reference_authority ||
       request.memory_finality_or_visibility_authority) {
     return Refuse(std::move(request), "executor_typed_arena_unsafe_authority",
                   "executor.typed_arena.unsafe_authority",
-                  "parser_donor_or_memory_finality_authority_claimed");
+                  "parser_reference_or_memory_finality_authority_claimed");
   }
   if (request.row_count == 0) {
     return Refuse(std::move(request), "executor_typed_arena_empty_work",

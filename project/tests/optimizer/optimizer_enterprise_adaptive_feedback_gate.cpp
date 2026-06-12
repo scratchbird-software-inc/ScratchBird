@@ -156,7 +156,7 @@ bool EnterpriseAdaptiveFeedbackInvalidatesByScopeAndEpoch() {
 bool EnterpriseAdaptiveFeedbackRefusesAuthorityDrift() {
   opt::EnterpriseAdaptiveFeedbackStore store;
   auto request = ApplyRequest("feedback.enterprise.unsafe");
-  request.adaptive_request.authority.parser_client_or_donor_feedback_authority = true;
+  request.adaptive_request.authority.parser_client_or_reference_feedback_authority = true;
   const auto result = opt::ApplyEnterpriseAdaptiveFeedback(request, &store);
   return Require(!result.ok, "unsafe adaptive feedback was accepted") &&
          Require(store.Snapshot().total_records == 0,

@@ -37,7 +37,7 @@ inline constexpr const char* kSequenceDiagnosticCacheInvalid = "GENERATOR.CACHE_
 inline constexpr const char* kSequenceDiagnosticExhausted = "GENERATOR.EXHAUSTED";
 inline constexpr const char* kSequenceDiagnosticUnavailable = "GENERATOR.UNAVAILABLE";
 inline constexpr const char* kSequenceDiagnosticClusterPathAbsent = "GENERATOR.CLUSTER_PATH_ABSENT";
-inline constexpr const char* kSequenceDiagnosticDonorMappingIncomplete = "GENERATOR.DONOR_MAPPING_INCOMPLETE";
+inline constexpr const char* kSequenceDiagnosticReferenceMappingIncomplete = "GENERATOR.REFERENCE_MAPPING_INCOMPLETE";
 inline constexpr const char* kSequenceDiagnosticIdentityDoubleUuidForbidden =
     "GENERATOR.IDENTITY_DOUBLE_UUID_FORBIDDEN";
 inline constexpr const char* kSequenceDiagnosticIdentityAssigned = "GENERATOR.ROW_UUID_IDENTITY_ASSIGNED";
@@ -69,14 +69,14 @@ struct EngineSequenceGeneratorDefinition {
   std::string policy_uuid;
   std::string policy_version_uuid;
   std::uint64_t policy_generation = 1;
-  std::string donor_profile_uuid;
-  std::string donor_family;
-  std::string donor_mapping_label;
-  std::string donor_allocation_timing;
-  std::string donor_rollback_behavior;
-  std::string donor_finality_behavior;
-  std::string donor_cache_behavior;
-  bool donor_mapping_complete = false;
+  std::string reference_profile_uuid;
+  std::string reference_family;
+  std::string reference_mapping_label;
+  std::string reference_allocation_timing;
+  std::string reference_rollback_behavior;
+  std::string reference_finality_behavior;
+  std::string reference_cache_behavior;
+  bool reference_mapping_complete = false;
   bool requires_cluster_authority = false;
   bool cluster_metric_path_requested = false;
 };
@@ -131,7 +131,7 @@ struct EngineSequenceAllocationRecord {
   bool row_effect_committed = false;
   bool released = false;
   bool unique_validation_required = true;
-  std::string donor_mapping_label;
+  std::string reference_mapping_label;
   std::int64_t cache_window_first_value = 0;
   std::int64_t cache_window_last_value = 0;
   std::int64_t durable_high_water_after = 0;
@@ -165,7 +165,7 @@ struct EngineSequenceGeneratorMetrics {
   std::uint64_t recovery_snapshots_total = 0;
   std::uint64_t recovered_cache_gap_values_total = 0;
   std::uint64_t exhaustion_refusals_total = 0;
-  std::uint64_t donor_mapping_reject_total = 0;
+  std::uint64_t reference_mapping_reject_total = 0;
   std::uint64_t cluster_path_reject_total = 0;
   std::uint64_t mga_retention_blocked_total = 0;
   std::vector<std::string> local_metric_paths;

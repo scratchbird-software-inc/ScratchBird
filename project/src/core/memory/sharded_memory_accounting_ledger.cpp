@@ -18,7 +18,7 @@ using scratchbird::core::platform::MakeDiagnostic;
 using scratchbird::core::platform::StatusCode;
 
 constexpr const char* kLedgerAuthorityScope =
-    "memory_accounting_event_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_or_support_bundle_authority";
+    "memory_accounting_event_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_or_support_bundle_authority";
 
 Status LedgerStatus(StatusCode code, Severity severity) {
   return {code, severity, Subsystem::memory};

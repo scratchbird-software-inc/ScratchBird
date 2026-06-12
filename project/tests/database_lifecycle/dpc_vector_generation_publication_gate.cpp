@@ -201,7 +201,7 @@ void ProveInvisibleUntilSealRecallAndMgaPublish() {
                 !row.timestamp_ordering_authority &&
                 !row.uuid_ordering_authority &&
                 !row.event_stream_authority &&
-                !row.donor_authority &&
+                !row.reference_authority &&
                 !row.write_ahead_authority,
             "DPC-044 evidence accepted external finality authority");
     if (row.state == idx::VectorGenerationState::requested) {
@@ -470,12 +470,12 @@ void ProveResourceEnvelopeAndAuthorityClaimsRejected() {
   request.timestamp_ordering_authority = true;
   request.uuid_ordering_authority = true;
   request.event_stream_authority = true;
-  request.donor_authority = true;
+  request.reference_authority = true;
   request.write_ahead_authority = true;
   const auto authority_refused =
       idx::RequestVectorGeneration(&ledger, request);
   Require(!authority_refused.ok(),
-          "DPC-044 parser/client/timestamp/UUID/event/donor/write-ahead authority claim was accepted");
+          "DPC-044 parser/client/timestamp/UUID/event/reference/write-ahead authority claim was accepted");
   Require(authority_refused.diagnostic.diagnostic_code ==
               "INDEX.VECTOR_GENERATION.EXTERNAL_AUTHORITY_REJECTED",
           "DPC-044 external authority rejection diagnostic changed");

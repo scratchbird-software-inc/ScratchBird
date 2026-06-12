@@ -125,8 +125,8 @@ void ExactCandidateAcceptedAfterAllProofs() {
           "CEIC-037 must not claim recovery authority");
   Require(!result.parser_authority,
           "CEIC-037 must not claim parser authority");
-  Require(!result.donor_authority,
-          "CEIC-037 must not claim donor authority");
+  Require(!result.reference_authority,
+          "CEIC-037 must not claim reference authority");
   Require(!result.wal_authority, "CEIC-037 must not claim WAL authority");
   Require(!result.provider_authority,
           "CEIC-037 must not claim provider authority");
@@ -341,12 +341,12 @@ void AuthorityAndExternalRoutesFailClosed() {
                     forbidden_authority_claim,
                 "authorization authority claim did not fail closed");
 
-  auto donor = ValidRequest();
-  donor.authority_boundary.donor_authority = true;
-  RequireStatus(index::ApplyEngineOwnedExactRecheck(donor),
+  auto reference = ValidRequest();
+  reference.authority_boundary.reference_authority = true;
+  RequireStatus(index::ApplyEngineOwnedExactRecheck(reference),
                 index::EngineOwnedExactRecheckStatus::
                     external_authority_refused,
-                "donor authority did not fail closed");
+                "reference authority did not fail closed");
 
   auto parser = ValidRequest();
   parser.authority_boundary.parser_authority = true;

@@ -137,8 +137,8 @@ void RequireNoAuthorityOwned(const exec::ExecutorBatchJoinDmlAuthorityEvidence& 
           "DPC-052 helper must not own parser execution");
   Require(!authority.owns_timestamp_ordering,
           "DPC-052 helper must not own timestamp ordering");
-  Require(!authority.owns_donor_storage,
-          "DPC-052 helper must not own donor storage");
+  Require(!authority.owns_reference_storage,
+          "DPC-052 helper must not own reference storage");
   Require(!authority.owns_sql_execution,
           "DPC-052 helper must not own SQL execution");
   Require(!authority.owns_durable_commit,

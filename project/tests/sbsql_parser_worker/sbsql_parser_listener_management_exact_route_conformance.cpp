@@ -231,7 +231,7 @@ void RequireExactLowering(const ManagementRowEvidence& row) {
           EvidenceMessage(row, "no_sql_engine_execution",
                           "management lowering allowed parser SQL execution"));
   Require(!artifacts.envelope.real_file_effects,
-          EvidenceMessage(row, "no_donor_execution",
+          EvidenceMessage(row, "no_reference_execution",
                           "management lowering allowed parser file effects"));
   Require(!Contains(artifacts.envelope.payload, row.sql),
           EvidenceMessage(row, "no_sql_text_authority", "management envelope embedded source SQL"));

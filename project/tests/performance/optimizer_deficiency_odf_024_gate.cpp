@@ -200,7 +200,7 @@ bool UnsafeCachedAuthorityNeverReusesPlan() {
   }
   {
     auto plan = CachedPlan(base);
-    plan.parser_or_donor_finality_authority = true;
+    plan.parser_or_reference_finality_authority = true;
     unsafe_plans.push_back(plan);
   }
 

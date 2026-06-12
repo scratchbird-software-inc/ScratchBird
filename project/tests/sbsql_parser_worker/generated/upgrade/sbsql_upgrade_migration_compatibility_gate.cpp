@@ -391,7 +391,7 @@ void ValidateCanonicalFunctionSeeds(const CsvTable& fixed,
   }
 
   std::map<std::string, std::set<std::string>> names_by_namespace_language;
-  std::size_t donor_aliases = 0;
+  std::size_t reference_aliases = 0;
   for (const auto& row : names.rows) {
     const std::string id(Field(row, "canonical_function_id"));
     const std::string uuid(Field(row, "function_uuid"));
@@ -408,16 +408,16 @@ void ValidateCanonicalFunctionSeeds(const CsvTable& fixed,
       harness->Check(names_by_namespace_language[key].insert(name).second,
                      id + " duplicate authoritative localized name in " + key + ": " + name);
     }
-    if (name_class == "donor_alias" || name_class == "plugin_alias") {
-      ++donor_aliases;
+    if (name_class == "reference_alias" || name_class == "plugin_alias") {
+      ++reference_aliases;
       harness->Check(StartsWith(ns, "sys.fn.compat."),
-                     id + " donor/plugin alias must be compatibility-scoped");
+                     id + " reference/plugin alias must be compatibility-scoped");
       harness->Check(Contains(Field(row, "notes"), "not durable authority") ||
                          Contains(Field(row, "notes"), "never authoritative"),
-                     id + " donor/plugin alias must not claim engine authority");
+                     id + " reference/plugin alias must not claim engine authority");
     }
   }
-  harness->Check(donor_aliases > 0, "canonical function name seed matrix lacks donor/plugin aliases");
+  harness->Check(reference_aliases > 0, "canonical function name seed matrix lacks reference/plugin aliases");
 
   for (const auto& row : catalog.rows) {
     const std::string id(Field(row, "canonical_function_id"));
@@ -441,19 +441,19 @@ void ValidateCanonicalFunctionSeeds(const CsvTable& fixed,
                "sblr-function-executor-low-guess-hardening/UPGRADE_MIGRATION_COMPATIBILITY_NOTE.md");
   for (const auto token : {"Incompatible semantic changes require a new function UUID",
                            "Deprecated functions keep their UUID",
-                           "Donor aliases never receive canonical function UUID authority"}) {
+                           "Reference aliases never receive canonical function UUID authority"}) {
     harness->Check(Contains(uuid_policy, token),
                    std::string("FUNCTION_UUID_SEMANTICS_VERSIONING_POLICY.md missing ") + token);
   }
   for (const auto token : {"UUID reuse for different semantics is forbidden",
                            "Rename adds or updates localized name rows",
-                           "Donor names are compatibility aliases and never authoritative identity"}) {
+                           "Reference names are compatibility aliases and never authoritative identity"}) {
     harness->Check(Contains(seed_validation, token),
                    std::string("STANDARD_FUNCTION_UUID_NAME_SEED_VALIDATION.md missing ") + token);
   }
   for (const auto token : {"Renamed function keeps UUID",
                            "Replaced function uses replacement UUID",
-                           "Donor alias changes affect parser projection only"}) {
+                           "Reference alias changes affect parser projection only"}) {
     harness->Check(Contains(upgrade_note, token),
                    std::string("UPGRADE_MIGRATION_COMPATIBILITY_NOTE.md missing ") + token);
   }
@@ -560,7 +560,7 @@ void ValidateDatabaseCompatibilityEvidence(const std::filesystem::path& repo_roo
                            "resolve_compatibility_mode",
                            "If exact mode cannot be satisfied",
                            "reject with diagnostic",
-                           "Reject donor SQL text at engine ingress"}) {
+                           "Reject reference SQL text at engine ingress"}) {
     harness->Check(Contains(compatibility, token),
                    std::string("compatibility mode matrix missing token ") + token);
   }

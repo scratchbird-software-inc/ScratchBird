@@ -7,7 +7,7 @@ Search key: `FSPE_010B6_VALIDATION_RESULT`
 
 This artifact closes `FSPE-010B6`: multi-result statement sequencing, result-set metadata, command tags, and finality. It does not close `FSPE-010B7` through `FSPE-010B9`.
 
-The implemented path is a server-admitted SBLR result sequencing contract. It does not allow SQL text, donor command text, parser AST, or BoundAST to become engine authority.
+The implemented path is a server-admitted SBLR result sequencing contract. It does not allow SQL text, reference command text, parser AST, or BoundAST to become engine authority.
 
 ## Validated Coverage
 

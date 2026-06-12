@@ -41,7 +41,7 @@ The skeleton layer is intentionally conservative:
 
 - page headers and page-family classification must succeed before body classification is considered;
 - every engine identity UUID requirement means UUIDv7 only;
-- UUIDv1 through UUIDv6 values are donor/client compatibility values only and must be mapped before engine authority;
+- UUIDv1 through UUIDv6 values are reference/client compatibility values only and must be mapped before engine authority;
 - unsupported page types fail closed;
 - cluster-private and encrypted pages remain blocked by the page registry authority checks;
 - page body parsing and mutation are explicitly marked unavailable until their own slices implement them;

@@ -51,7 +51,7 @@ struct NodeResourceAgentSnapshot {
   bool cluster_metric_route_requested = false;
   bool parser_authority = false;
   bool client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
 };
 
 struct NodeResourceAgentEvidenceField {

@@ -121,8 +121,8 @@ void RequireExplainCategories(const agents::AgentTypeDescriptor& descriptor,
           descriptor.type_id + " evidence row claimed engine authority");
   Require(Contains(evidence, "parser_authority=false"),
           descriptor.type_id + " evidence row claimed parser authority");
-  Require(Contains(evidence, "donor_authority=false"),
-          descriptor.type_id + " evidence row claimed donor authority");
+  Require(Contains(evidence, "reference_authority=false"),
+          descriptor.type_id + " evidence row claimed reference authority");
   Require(Contains(evidence, "sidecar_authority=false"),
           descriptor.type_id + " evidence row claimed sidecar authority");
   Require(Contains(evidence,

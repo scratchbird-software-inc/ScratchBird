@@ -88,7 +88,7 @@ EngineDatatypeTransportEncodeResult EncodeDatatypeTransportRecord(const EngineDa
     result.diagnostic_detail = "descriptor_required";
     return result;
   }
-  const auto metadata = RenderWireDriverMetadata(record.descriptor, record.donor_dialect, record.donor_label);
+  const auto metadata = RenderWireDriverMetadata(record.descriptor, record.compatibility_dialect, record.reference_label);
   scratchbird::core::datatypes::DatatypeDescriptorEnvelope envelope;
   envelope.kind = scratchbird::core::datatypes::DatatypeDescriptorEnvelopeKind::datatype_transport;
   envelope.integrity_profile =
@@ -105,10 +105,10 @@ EngineDatatypeTransportEncodeResult EncodeDatatypeTransportRecord(const EngineDa
       Record("value_descriptor_encoded_descriptor", record.value.descriptor.encoded_descriptor),
       Record("value_encoded_value", record.value.encoded_value),
       Record("value_is_null", BoolText(record.value.is_null)),
-      Record("donor_dialect", record.donor_dialect),
-      Record("donor_label", record.donor_label),
-      Record("donor_label_alias_only",
-             BoolText(record.donor_label_alias_only && metadata.donor_label_alias_only)),
+      Record("compatibility_dialect", record.compatibility_dialect),
+      Record("reference_label", record.reference_label),
+      Record("reference_label_alias_only",
+             BoolText(record.reference_label_alias_only && metadata.reference_label_alias_only)),
       Record("opaque_render_only", BoolText(record.opaque_render_only || metadata.opaque_render_only)),
   };
   const auto encoded = scratchbird::core::datatypes::EncodeDatatypeDescriptorEnvelope(envelope);
@@ -180,15 +180,15 @@ EngineDatatypeTransportDecodeResult DecodeDatatypeTransportRecord(const std::str
   if (!ReadBoolRecord(decoded.envelope, "value_is_null", &result.record.value.is_null)) {
     return DecodeFailure("bad_value_is_null");
   }
-  if (!ReadRecord(decoded.envelope, "donor_dialect", &result.record.donor_dialect)) {
-    return DecodeFailure("bad_donor_dialect");
+  if (!ReadRecord(decoded.envelope, "compatibility_dialect", &result.record.compatibility_dialect)) {
+    return DecodeFailure("bad_compatibility_dialect");
   }
-  if (!ReadRecord(decoded.envelope, "donor_label", &result.record.donor_label)) {
-    return DecodeFailure("bad_donor_label");
+  if (!ReadRecord(decoded.envelope, "reference_label", &result.record.reference_label)) {
+    return DecodeFailure("bad_reference_label");
   }
-  if (!ReadBoolRecord(decoded.envelope, "donor_label_alias_only",
-                      &result.record.donor_label_alias_only)) {
-    return DecodeFailure("bad_donor_label_alias_only");
+  if (!ReadBoolRecord(decoded.envelope, "reference_label_alias_only",
+                      &result.record.reference_label_alias_only)) {
+    return DecodeFailure("bad_reference_label_alias_only");
   }
   if (!ReadBoolRecord(decoded.envelope, "opaque_render_only", &result.record.opaque_render_only)) {
     return DecodeFailure("bad_opaque_render_only");

@@ -4,7 +4,7 @@ surface_key: show.database
 row_kind: accepted_command
 edition_scope: public_node
 parser_mode: native_sbsql
-donor_mode: none
+reference_mode: none
 input:
   command_text: "SHOW DATABASE;"
   source_encoding: utf8

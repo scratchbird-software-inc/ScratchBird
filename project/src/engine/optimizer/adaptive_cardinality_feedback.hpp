@@ -21,13 +21,13 @@ namespace scratchbird::engine::optimizer {
 // Adaptive row feedback is optimizer-advisory only. It may admit
 // bind-sensitive variants, quarantine a bad estimate, or request extended
 // statistics after runtime proof; it is never parser, visibility, finality,
-// recovery, authorization, or donor authority.
+// recovery, authorization, or reference authority.
 struct AdaptiveFeedbackAuthorityContext {
   bool engine_mga_snapshot_bound = false;
   bool transaction_inventory_authoritative = false;
   bool security_recheck_required = false;
   bool exact_recheck_required = false;
-  bool parser_client_or_donor_feedback_authority = false;
+  bool parser_client_or_reference_feedback_authority = false;
   bool feedback_visibility_or_finality_authority = false;
   bool feedback_recovery_authority = false;
 };
@@ -51,7 +51,7 @@ struct AdaptiveFeedbackPlanCapture {
   std::string fallback_result_hash;
   bool runtime_consumed = false;
   bool exact_fallback_available = false;
-  bool benchmark_or_donor_dominance_claim = false;
+  bool benchmark_or_reference_dominance_claim = false;
 };
 
 struct AdaptiveCardinalityFeedbackRequest {

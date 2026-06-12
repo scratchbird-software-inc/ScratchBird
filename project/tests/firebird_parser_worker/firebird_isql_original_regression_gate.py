@@ -16,8 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from firebird_donor_native_harness import (
-    normalize_firebird_donor_output,
+from firebird_reference_native_harness import (
+    normalize_firebird_reference_output,
     validate_failure_inventory_record,
 )
 
@@ -49,7 +49,7 @@ def extract_test_script(path: Path) -> str | None:
     return match.group("body")
 
 
-def donor_env(firebird_home: Path) -> dict[str, str]:
+def reference_env(firebird_home: Path) -> dict[str, str]:
     env = os.environ.copy()
     lib_path = str(firebird_home / "lib")
     existing = env.get("LD_LIBRARY_PATH")
@@ -151,33 +151,33 @@ def main() -> int:
 
     isql = firebird_home / "bin" / "isql"
     if not isql.exists():
-        raise SystemExit(f"donor isql binary missing: {isql}")
-    donor_result = run([str(isql), "-z"], env=donor_env(firebird_home))
-    donor_raw = output_dir / "donor_isql_version.raw.txt"
-    donor_normalized = output_dir / "donor_isql_version.normalized.txt"
-    donor_raw.write_text(donor_result.stdout)
-    donor_normalized.write_text(
-        normalize_firebird_donor_output(
-            donor_result.stdout,
+        raise SystemExit(f"reference isql binary missing: {isql}")
+    reference_result = run([str(isql), "-z"], env=reference_env(firebird_home))
+    reference_raw = output_dir / "reference_isql_version.raw.txt"
+    reference_normalized = output_dir / "reference_isql_version.normalized.txt"
+    reference_raw.write_text(reference_result.stdout)
+    reference_normalized.write_text(
+        normalize_firebird_reference_output(
+            reference_result.stdout,
             repo_root=Path.cwd().resolve(),
             temp_root=output_dir,
         )
     )
-    if donor_result.returncode != 0:
-        print(donor_result.stdout, file=sys.stderr)
-        return donor_result.returncode
+    if reference_result.returncode != 0:
+        print(reference_result.stdout, file=sys.stderr)
+        return reference_result.returncode
 
     endpoint_record = {
         "ctest_name": "firebird_isql_original_regression_gate",
-        "label_set": "firebird_isql_original_regression_gate;firebird_original_regression_replay_gate;firebird_donor_native",
+        "label_set": "firebird_isql_original_regression_gate;firebird_original_regression_replay_gate;firebird_reference_native",
         "surface_row_id": "FBCTV-002",
-        "donor_tool_name": "isql",
-        "donor_tool_args": "-z plus extracted QA isql_act scripts",
+        "reference_tool_name": "isql",
+        "reference_tool_args": "-z plus extracted QA isql_act scripts",
         "scratchbird_endpoint": "firebird://127.0.0.1:3050/scratchbird",
         "scratchbird_profile": "firebird_5_0",
-        "raw_stdout_path": str(donor_raw),
+        "raw_stdout_path": str(reference_raw),
         "raw_stderr_path": str(parser_raw),
-        "normalized_output_path": str(donor_normalized),
+        "normalized_output_path": str(reference_normalized),
         "exit_status": "0",
         "signal": "0",
         "status_vector": "scratchbird_firebird_parser_endpoint_executed",
@@ -203,10 +203,10 @@ def main() -> int:
             parser_result.stdout.strip(),
             "```",
             "",
-            "Donor isql probe:",
+            "Reference isql probe:",
             "",
             "```",
-            donor_result.stdout.strip(),
+            reference_result.stdout.strip(),
             "```",
             "",
             "ScratchBird endpoint replay status: scratchbird_firebird_parser_endpoint_executed.",

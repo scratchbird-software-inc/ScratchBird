@@ -91,7 +91,7 @@ SURFACES: tuple[dict[str, Any], ...] = (
                 "AppendRepairEventToLedger",
                 "LoadRepairEventLedger",
                 "repair_evidence_is_transaction_finality_authority",
-                "parser_or_donor_authority",
+                "parser_or_reference_authority",
                 "tampered repair ledger",
             ),
             "tests/release/public_repair_tamper_retention_crash_resume_gate.cpp": (

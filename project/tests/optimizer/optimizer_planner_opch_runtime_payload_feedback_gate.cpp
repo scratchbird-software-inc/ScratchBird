@@ -215,7 +215,7 @@ bool UnsafeFeedbackAuthorityIsRejected() {
   record.catalog_epoch = 1;
   record.security_epoch = 1;
   record.feedback = RuntimeFeedback();
-  record.feedback.parser_or_donor_authority = true;
+  record.feedback.parser_or_reference_authority = true;
 
   const auto status = store.Record(record);
   return Require(!status.ok, "unsafe feedback was persisted") &&

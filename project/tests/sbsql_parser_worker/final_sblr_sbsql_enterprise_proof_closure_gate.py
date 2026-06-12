@@ -39,7 +39,7 @@ EXPECTED_COUNTS = {
     "PROJECT_TEST_GATE_IMPLEMENTATION_MATRIX.csv": 25,
     "FULL_BUILD_REGENERATED_PROOF_MATRIX.csv": 10,
     "CLUSTER_STUB_DUAL_MODE_TEST_MATRIX.csv": 59,
-    "DONOR_SURFACE_COVERAGE_TRUTH_GATE_MATRIX.csv": 25,
+    "REFERENCE_SURFACE_COVERAGE_TRUTH_GATE_MATRIX.csv": 25,
     "SBLR_SBSQL_ROUNDTRIP_PROOF_MATRIX.csv": 2760,
     "ENTERPRISE_AUDIT_EXIT_CRITERIA.csv": 8,
     "RELEASE_EVIDENCE_RETENTION_MATRIX.csv": 10,
@@ -49,7 +49,7 @@ REQUIRED_TEST_LABELS = {
     "sblr_surface_fse_p7_execution_proof_gate",
     "sbsql_final_language_expansion_closure_gate",
     "parser_dialect_isolation_audit_gate",
-    "donor_sql_first_tranche_original_tool_replay_gate",
+    "reference_sql_first_tranche_original_tool_replay_gate",
     "public_cluster_provider_handshake_gate",
     "ctest_no_execution_plan_runtime_dependency_gate",
     "database_lifecycle_full_route_conformance",
@@ -136,11 +136,11 @@ def validate_roundtrip_coverage(root: Path, matrices: dict[str, list[dict[str, s
     cluster = matrices["CLUSTER_STUB_DUAL_MODE_TEST_MATRIX.csv"]
     require(sum(1 for row in cluster if "unlicensed" in row["message_vector"]) == 59,
             "cluster stub unlicensed message coverage drift")
-    donors = matrices["DONOR_SURFACE_COVERAGE_TRUTH_GATE_MATRIX.csv"]
-    for row in donors:
-        require(row["missing_rows"] == "0", f"donor missing rows: {row['donor']}")
-        require(int(row["inventory_rows"]) > 0, f"donor has no inventory rows: {row['donor']}")
-        require(int(row["proof_rows"]) > 0, f"donor has no proof rows: {row['donor']}")
+    references = matrices["REFERENCE_SURFACE_COVERAGE_TRUTH_GATE_MATRIX.csv"]
+    for row in references:
+        require(row["missing_rows"] == "0", f"reference missing rows: {row['reference']}")
+        require(int(row["inventory_rows"]) > 0, f"reference has no inventory rows: {row['reference']}")
+        require(int(row["proof_rows"]) > 0, f"reference has no proof rows: {row['reference']}")
 
 
 def validate_hashes(root: Path, matrices: dict[str, list[dict[str, str]]]) -> None:
@@ -169,7 +169,7 @@ def validate_ctest_registration(root: Path, build_root: Path | None) -> None:
         (root / "project/tests/sblr_surface/CMakeLists.txt").read_text(
             encoding="utf-8", errors="replace"
         ),
-        (root / "project/tests/donor_sql_parser_first_tranche/CMakeLists.txt").read_text(
+        (root / "project/tests/reference_sql_parser_first_tranche/CMakeLists.txt").read_text(
             encoding="utf-8", errors="replace"
         ),
         (root / "project/tests/release/CMakeLists.txt").read_text(

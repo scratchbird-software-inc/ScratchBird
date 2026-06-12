@@ -17,8 +17,8 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: CEIC_051_PERSISTED_OPTIMIZER_BENCHMARK_EVIDENCE_SCHEMA
 // Versioned persisted benchmark evidence records are optimizer evidence only.
 // They preserve benchmark route facts, result hashes, timing samples, counters,
-// donor methodology, and provenance. They are not transaction finality,
-// visibility, authorization/security, recovery, parser, donor, WAL,
+// reference methodology, and provenance. They are not transaction finality,
+// visibility, authorization/security, recovery, parser, reference, WAL,
 // index-finality, provider-finality, cluster, or agent-action authority.
 inline constexpr const char* kOptimizerBenchmarkEvidenceSchemaId =
     "sb.optimizer.benchmark_evidence.v1";
@@ -31,7 +31,7 @@ struct OptimizerBenchmarkEvidenceAuthorityFlags {
   bool authorization_security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -81,21 +81,21 @@ struct OptimizerBenchmarkSampleGroupEvidence {
   bool warm_cache_prepared_proven = false;
 };
 
-struct OptimizerBenchmarkDonorMethodologyEvidence {
-  std::string donor_engine;
-  std::string donor_version;
-  std::string donor_native_method;
+struct OptimizerBenchmarkReferenceMethodologyEvidence {
+  std::string reference_engine;
+  std::string reference_version;
+  std::string reference_native_method;
   std::string comparable_status;
   std::string non_comparable_reason;
   std::string dataset_schema_mapping_digest;
   std::string workload_mapping_digest;
   std::string route_equivalence_contract_hash;
-  std::string donor_result_hash;
-  std::string donor_transaction_policy;
-  std::string donor_timing_policy;
-  bool donor_reference_only = true;
-  bool donor_as_authority = false;
-  bool uses_donor_storage_or_finality_for_scratchbird = false;
+  std::string reference_result_hash;
+  std::string reference_transaction_policy;
+  std::string reference_timing_policy;
+  bool reference_reference_only = true;
+  bool reference_as_authority = false;
+  bool uses_reference_storage_or_finality_for_scratchbird = false;
 };
 
 struct PersistedOptimizerBenchmarkEvidenceRecord {
@@ -158,7 +158,7 @@ struct PersistedOptimizerBenchmarkEvidenceRecord {
 
   OptimizerBenchmarkEvidenceAuthorityFlags authority;
   std::vector<OptimizerBenchmarkSampleGroupEvidence> sample_groups;
-  std::vector<OptimizerBenchmarkDonorMethodologyEvidence> donor_methodology;
+  std::vector<OptimizerBenchmarkReferenceMethodologyEvidence> reference_methodology;
 };
 
 struct PersistedOptimizerBenchmarkEvidenceValidation {

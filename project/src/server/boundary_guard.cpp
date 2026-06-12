@@ -18,8 +18,8 @@ std::string ResponsibilityName(ForbiddenServerResponsibility responsibility) {
   switch (responsibility) {
     case ForbiddenServerResponsibility::kSqlParsing:
       return "sql_parsing";
-    case ForbiddenServerResponsibility::kDonorDialectSemantics:
-      return "donor_dialect_semantics";
+    case ForbiddenServerResponsibility::kReferenceDialectSemantics:
+      return "compatibility_dialect_semantics";
     case ForbiddenServerResponsibility::kClientWireProtocolShaping:
       return "client_wire_protocol_shaping";
     case ForbiddenServerResponsibility::kEngineSemanticAuthority:

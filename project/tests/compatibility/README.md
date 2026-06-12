@@ -1,3 +1,3 @@
 # Compatibility Tests
 
-Donor compatibility tests are organized by donor family.
+Reference compatibility tests are organized by reference family.

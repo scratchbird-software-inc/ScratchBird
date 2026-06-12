@@ -856,7 +856,7 @@ def required_hardening_artifacts(execution_plan_root: Path) -> list[str]:
             "artifacts/PACKAGING_DISTRIBUTION_EVIDENCE_MODEL.md",
             "artifacts/PERFORMANCE_BUDGET_GATE.md",
             "artifacts/DOCUMENTATION_SAMPLE_APP_GATE.md",
-            "artifacts/DONOR_DRIVER_COMPATIBILITY_ROUTE_GATE.md",
+            "artifacts/REFERENCE_DRIVER_COMPATIBILITY_ROUTE_GATE.md",
             "artifacts/RELEASE_DECLARATION_GENERATOR_MODEL.md",
             "artifacts/P0_EXECUTION_PLAN_CREATION_EVIDENCE.md",
         ]
@@ -904,7 +904,7 @@ def required_hardening_artifacts(execution_plan_root: Path) -> list[str]:
             "artifacts/DATATYPE_INDEX_EXECUTION_CLOSURE_MODEL.md",
             "artifacts/SECURITY_AUTH_AUDIT_CLOSURE_MODEL.md",
             "artifacts/WIRE_DRIVER_OPERATIONAL_CLOSURE_MODEL.md",
-            "artifacts/DONOR_REGRESSION_POLICY.md",
+            "artifacts/REFERENCE_REGRESSION_POLICY.md",
             "artifacts/FULL_ROUTE_ACCEPTANCE_FIXTURE.md",
         ]
     return [

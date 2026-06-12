@@ -161,13 +161,13 @@ int main() {
   ok &= Require(recovery.classifications.front().action == StrictBulkLoadRecoveryAction::complete_publication,
                 "recovery-required finalize maps to complete publication");
 
-  StrictBulkLoadLedger donor_ledger;
-  auto donor_request = BeginRequest(fixture);
-  donor_request.donor_relaxed_semantics_requested = true;
-  const auto donor_refused = BeginStrictBulkLoad(&donor_ledger, donor_request);
-  ok &= Require(!donor_refused.ok(), "donor relaxed semantics refused by default");
-  ok &= Require(donor_refused.diagnostic.diagnostic_code == "strict_bulk_load_donor_relaxed_refused",
-                "donor relaxed diagnostic");
+  StrictBulkLoadLedger reference_ledger;
+  auto reference_request = BeginRequest(fixture);
+  reference_request.reference_relaxed_semantics_requested = true;
+  const auto reference_refused = BeginStrictBulkLoad(&reference_ledger, reference_request);
+  ok &= Require(!reference_refused.ok(), "reference relaxed semantics refused by default");
+  ok &= Require(reference_refused.diagnostic.diagnostic_code == "strict_bulk_load_reference_relaxed_refused",
+                "reference relaxed diagnostic");
 
   return ok ? 0 : 1;
 }

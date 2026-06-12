@@ -144,21 +144,21 @@ opt::OptimizerBenchmarkSampleGroupEvidence Sample(std::string phase) {
   return sample;
 }
 
-opt::OptimizerBenchmarkDonorMethodologyEvidence Donor() {
-  opt::OptimizerBenchmarkDonorMethodologyEvidence donor;
-  donor.donor_engine = "postgresql";
-  donor.donor_version = "ceic056-reference-version";
-  donor.donor_native_method = "donor_native_best_method_reference_only";
-  donor.comparable_status = "comparable";
-  donor.dataset_schema_mapping_digest = "sha256:ceic056-donor-dataset-map";
-  donor.workload_mapping_digest = "sha256:ceic056-donor-workload-map";
-  donor.route_equivalence_contract_hash = "sha256:ceic056-donor-route-contract";
-  donor.donor_result_hash = "sha256:ceic056-donor-result";
-  donor.donor_transaction_policy =
-      "donor_reference_only_scratchbird_mga_not_substituted";
-  donor.donor_timing_policy = "prepared_best_method_output_suppressed";
-  donor.donor_reference_only = true;
-  return donor;
+opt::OptimizerBenchmarkReferenceMethodologyEvidence Reference() {
+  opt::OptimizerBenchmarkReferenceMethodologyEvidence reference;
+  reference.reference_engine = "postgresql";
+  reference.reference_version = "ceic056-reference-version";
+  reference.reference_native_method = "reference_native_best_method_reference_only";
+  reference.comparable_status = "comparable";
+  reference.dataset_schema_mapping_digest = "sha256:ceic056-reference-dataset-map";
+  reference.workload_mapping_digest = "sha256:ceic056-reference-workload-map";
+  reference.route_equivalence_contract_hash = "sha256:ceic056-reference-route-contract";
+  reference.reference_result_hash = "sha256:ceic056-reference-result";
+  reference.reference_transaction_policy =
+      "reference_reference_only_scratchbird_mga_not_substituted";
+  reference.reference_timing_policy = "prepared_best_method_output_suppressed";
+  reference.reference_reference_only = true;
+  return reference;
 }
 
 opt::OptimizerResultOracleEvidence ResultSide(std::string side,
@@ -302,7 +302,7 @@ opt::OptimizerWorkloadRegressionBudgetRecord Budget(
   record.benchmark_evidence.redaction_applied = true;
   record.benchmark_evidence.production_benchmark_clean_claim = true;
   record.benchmark_evidence.sample_groups = {Sample("cold"), Sample("warm")};
-  record.benchmark_evidence.donor_methodology = {Donor()};
+  record.benchmark_evidence.reference_methodology = {Reference()};
 
   record.correctness_oracle_attached = true;
   record.correctness_oracle_case.case_id = "ceic056-correctness-" + cls;
@@ -343,7 +343,7 @@ opt::OptimizerWorkloadRegressionBudgetRecord Budget(
   record.correctness_oracle_case.exact_rerank_required = exact_rerank;
   record.correctness_oracle_case.mga_recheck_required = true;
   record.correctness_oracle_case.security_recheck_required = true;
-  record.correctness_oracle_case.donor_reference_only = true;
+  record.correctness_oracle_case.reference_reference_only = true;
 
   return record;
 }
@@ -442,23 +442,23 @@ void SpecializedExactProofsAreMandatory() {
           "CEIC-056 exact rerank diagnostic missing");
 }
 
-void AuthorityAndDonorDriftFailClosed() {
+void AuthorityAndReferenceDriftFailClosed() {
   auto record =
       Budget(opt::OptimizerWorkloadRegressionClass::kDocumentPath, "cli");
   record.authority.transaction_finality_authority = true;
   record.authority.visibility_authority = true;
   record.authority.parser_authority = true;
   record.authority.wal_authority = true;
-  record.donor_reference_only = false;
-  record.donor_as_authority = true;
-  record.uses_donor_storage_or_finality_for_scratchbird = true;
+  record.reference_reference_only = false;
+  record.reference_as_authority = true;
+  record.uses_reference_storage_or_finality_for_scratchbird = true;
   const auto validation =
       opt::ValidateOptimizerWorkloadRegressionBudgetRecord(record);
-  Require(!validation.ok, "CEIC-056 authority/donor drift was accepted");
+  Require(!validation.ok, "CEIC-056 authority/reference drift was accepted");
   Require(HasDiagnostic(validation.diagnostics, "FORBIDDEN_AUTHORITY"),
           "CEIC-056 forbidden authority diagnostic missing");
-  Require(HasDiagnostic(validation.diagnostics, "DONOR_AUTHORITY_DRIFT"),
-          "CEIC-056 donor authority diagnostic missing");
+  Require(HasDiagnostic(validation.diagnostics, "REFERENCE_AUTHORITY_DRIFT"),
+          "CEIC-056 reference authority diagnostic missing");
 }
 
 void NestedBenchmarkAndCorrectnessProofsAreRequired() {
@@ -554,7 +554,7 @@ int main() {
   PlaceholderSyntheticAndUntrustedEvidenceFailClosed();
   SpillAndRegressionBudgetFailClosed();
   SpecializedExactProofsAreMandatory();
-  AuthorityAndDonorDriftFailClosed();
+  AuthorityAndReferenceDriftFailClosed();
   NestedBenchmarkAndCorrectnessProofsAreRequired();
   ClusterBoundariesAreClaimBlocked();
   RequiredClassAndRouteCoverageIsExplicit();

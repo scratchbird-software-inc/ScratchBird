@@ -196,7 +196,7 @@ struct EngineMemoryManagementRequest : EngineApiRequest {
   bool transaction_finality_authority = false;
   bool visibility_authority = false;
   bool recovery_authority = false;
-  bool donor_or_wal_recovery_authority = false;
+  bool reference_or_wal_recovery_authority = false;
   bool private_provider_dispatch_requested = false;
 };
 
@@ -206,7 +206,7 @@ struct EngineMemoryManagementResult : EngineApiResult {
   bool transaction_finality_authority = false;
   bool visibility_authority = false;
   bool recovery_authority = false;
-  bool donor_or_wal_recovery_authority = false;
+  bool reference_or_wal_recovery_authority = false;
   bool private_provider_dispatch = false;
   bool physical_action_dispatched = false;
   bool cache_invalidation_planned = false;

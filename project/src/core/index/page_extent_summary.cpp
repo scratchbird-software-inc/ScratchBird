@@ -133,7 +133,7 @@ bool EncodedGreater(std::string_view left, std::string_view right) {
 
 bool EventAuthorityClean(const PageExtentSummaryMaintenanceEvent& event) {
   return !event.parser_finality_authority_claimed &&
-         !event.donor_finality_authority_claimed &&
+         !event.reference_finality_authority_claimed &&
          !event.write_ahead_log_finality_authority_claimed;
 }
 
@@ -142,9 +142,9 @@ void TaintMetadataFromRowAuthority(PageExtentSummaryMetadata& metadata,
   metadata.parser_finality_authority_claimed =
       metadata.parser_finality_authority_claimed ||
       row.parser_finality_authority_claimed;
-  metadata.donor_finality_authority_claimed =
-      metadata.donor_finality_authority_claimed ||
-      row.donor_finality_authority_claimed;
+  metadata.reference_finality_authority_claimed =
+      metadata.reference_finality_authority_claimed ||
+      row.reference_finality_authority_claimed;
   metadata.write_ahead_log_finality_authority_claimed =
       metadata.write_ahead_log_finality_authority_claimed ||
       row.write_ahead_log_finality_authority_claimed;
@@ -457,7 +457,7 @@ bool PageExtentSummaryMetadataIdentityValid(const PageExtentSummaryMetadata& met
 
 bool PageExtentSummaryAuthorityFlagsClean(const PageExtentSummaryMetadata& metadata) {
   return !metadata.parser_finality_authority_claimed &&
-         !metadata.donor_finality_authority_claimed &&
+         !metadata.reference_finality_authority_claimed &&
          !metadata.write_ahead_log_finality_authority_claimed;
 }
 
@@ -673,7 +673,7 @@ bool PageExtentSummaryRangeContainsRow(const PageExtentSummaryRange& range,
 bool PageExtentSummaryRowEvidenceAuthorityClean(
     const PageExtentSummaryRowEvidence& row) {
   return !row.parser_finality_authority_claimed &&
-         !row.donor_finality_authority_claimed &&
+         !row.reference_finality_authority_claimed &&
          !row.write_ahead_log_finality_authority_claimed;
 }
 
@@ -695,9 +695,9 @@ PageExtentSummaryMaintenanceResult RebuildPageExtentSummaryFromBasePageEvidence(
     metadata.parser_finality_authority_claimed =
         metadata.parser_finality_authority_claimed ||
         event.parser_finality_authority_claimed;
-    metadata.donor_finality_authority_claimed =
-        metadata.donor_finality_authority_claimed ||
-        event.donor_finality_authority_claimed;
+    metadata.reference_finality_authority_claimed =
+        metadata.reference_finality_authority_claimed ||
+        event.reference_finality_authority_claimed;
     metadata.write_ahead_log_finality_authority_claimed =
         metadata.write_ahead_log_finality_authority_claimed ||
         event.write_ahead_log_finality_authority_claimed;
@@ -795,9 +795,9 @@ PageExtentSummaryMaintenanceResult ApplyPageExtentSummaryMaintenanceEvent(
     working.parser_finality_authority_claimed =
         working.parser_finality_authority_claimed ||
         event.parser_finality_authority_claimed;
-    working.donor_finality_authority_claimed =
-        working.donor_finality_authority_claimed ||
-        event.donor_finality_authority_claimed;
+    working.reference_finality_authority_claimed =
+        working.reference_finality_authority_claimed ||
+        event.reference_finality_authority_claimed;
     working.write_ahead_log_finality_authority_claimed =
         working.write_ahead_log_finality_authority_claimed ||
         event.write_ahead_log_finality_authority_claimed;

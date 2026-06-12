@@ -20,7 +20,7 @@ namespace scratchbird::core::index {
 // SEARCH_KEY: OEIC_INDEX_FAMILY_OPTIMIZER_METRICS
 // Index-family optimizer metrics are advisory costing inputs only. They are
 // produced by physical/runtime index providers and must never become
-// transaction finality, visibility, security, parser, donor, recovery, WAL, or
+// transaction finality, visibility, security, parser, reference, recovery, WAL, or
 // benchmark authority.
 
 struct IndexOptimizerRuntimeMetricAuthority {
@@ -36,7 +36,7 @@ struct IndexOptimizerRuntimeMetricAuthority {
   bool vector_runtime_authoritative = false;
   bool graph_runtime_authoritative = false;
   bool document_path_runtime_authoritative = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool metric_visibility_or_finality_authority = false;
   bool metric_recovery_authority = false;

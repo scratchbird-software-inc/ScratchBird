@@ -19,7 +19,7 @@ using scratchbird::core::platform::MakeDiagnostic;
 using scratchbird::core::platform::StatusCode;
 
 constexpr const char* kBudgetAuthorityScope =
-    "memory_budget_evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_authorization_optimizer_plan_index_finality_or_agent_action_authority";
+    "memory_budget_evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_authorization_optimizer_plan_index_finality_or_agent_action_authority";
 
 Status BudgetStatus(StatusCode code, Severity severity) {
   return {code, severity, Subsystem::memory};
@@ -68,7 +68,7 @@ DiagnosticRecord MakeBudgetDiagnostic(Status status,
                         std::move(arguments),
                         {},
                         "core.memory.hierarchical_budget_ledger",
-                        "Use reservation tokens for memory evidence only; do not treat memory evidence as transaction, parser, donor, optimizer, index, or agent authority.");
+                        "Use reservation tokens for memory evidence only; do not treat memory evidence as transaction, parser, reference, optimizer, index, or agent authority.");
 }
 
 bool ValidScope(const HierarchicalMemoryScopeRef& scope) {
@@ -138,7 +138,7 @@ bool SafeProvenance(const HierarchicalMemoryBudgetProvenance& provenance,
     *reason = "engine_mga_and_memory_evidence_only_provenance_required";
     return false;
   }
-  if (provenance.parser_authority || provenance.donor_authority ||
+  if (provenance.parser_authority || provenance.reference_authority ||
       provenance.transaction_finality_authority || provenance.visibility_authority ||
       provenance.recovery_authority || provenance.authorization_authority ||
       provenance.benchmark_authority || provenance.support_bundle_authority ||

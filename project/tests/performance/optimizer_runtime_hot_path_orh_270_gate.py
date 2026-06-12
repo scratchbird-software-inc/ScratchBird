@@ -7,11 +7,11 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""ORH-270 donor-dominance closure validator.
+"""ORH-270 reference-dominance closure validator.
 
 This gate intentionally does not synthesize benchmark results. It validates
 that ORH-270 is closed only as completed-blocked unless fresh live ScratchBird
-and donor-best dominance artifacts are present.
+and reference-best dominance artifacts are present.
 """
 
 from __future__ import annotations
@@ -23,25 +23,25 @@ from pathlib import Path
 
 
 REQUIRED_ROUTES = {"embedded", "ipc", "inet"}
-REQUIRED_DONORS = {"firebird", "mysql", "postgresql"}
+REQUIRED_REFERENCES = {"firebird", "mysql", "postgresql"}
 REQUIRED_NEGATIVE_DIAGNOSTICS = {
-    "ORH_DONOR_DOMINANCE_STALE_ARTIFACT",
-    "ORH_DONOR_DOMINANCE_DONOR_CONTROLS_MISSING",
-    "ORH_DONOR_DOMINANCE_LIVE_ROUTE_MISSING.IPC",
-    "ORH_DONOR_DOMINANCE_LIVE_ROUTE_MISSING.INET",
-    "ORH_DONOR_DOMINANCE_RESULT_HASH_MISSING",
-    "ORH_DONOR_DOMINANCE_CONTRACT_ONLY_EVIDENCE",
-    "ORH_DONOR_DOMINANCE_MGA_SECURITY_MISSING",
-    "ORH_DONOR_DOMINANCE_NON_REPRODUCIBLE_METADATA",
-    "ORH_DONOR_DOMINANCE_BENCHMARK_CLEAN_OVERCLAIM",
-    "ORH_DONOR_DOMINANCE_OVERCLAIM",
+    "ORH_REFERENCE_DOMINANCE_STALE_ARTIFACT",
+    "ORH_REFERENCE_DOMINANCE_REFERENCE_CONTROLS_MISSING",
+    "ORH_REFERENCE_DOMINANCE_LIVE_ROUTE_MISSING.IPC",
+    "ORH_REFERENCE_DOMINANCE_LIVE_ROUTE_MISSING.INET",
+    "ORH_REFERENCE_DOMINANCE_RESULT_HASH_MISSING",
+    "ORH_REFERENCE_DOMINANCE_CONTRACT_ONLY_EVIDENCE",
+    "ORH_REFERENCE_DOMINANCE_MGA_SECURITY_MISSING",
+    "ORH_REFERENCE_DOMINANCE_NON_REPRODUCIBLE_METADATA",
+    "ORH_REFERENCE_DOMINANCE_BENCHMARK_CLEAN_OVERCLAIM",
+    "ORH_REFERENCE_DOMINANCE_OVERCLAIM",
     "ORH_LARGE_SCALE_BENCHMARK_TIER_UNAVAILABLE",
 }
 REQUIRED_MISSING_LANE_DIAGNOSTICS = {
-    "ORH_DONOR_DOMINANCE_LIVE_ROUTE_MISSING.EMBEDDED",
-    "ORH_DONOR_DOMINANCE_LIVE_ROUTE_MISSING.IPC",
-    "ORH_DONOR_DOMINANCE_LIVE_ROUTE_MISSING.INET",
-    "ORH_DONOR_DOMINANCE_DONOR_CONTROLS_MISSING",
+    "ORH_REFERENCE_DOMINANCE_LIVE_ROUTE_MISSING.EMBEDDED",
+    "ORH_REFERENCE_DOMINANCE_LIVE_ROUTE_MISSING.IPC",
+    "ORH_REFERENCE_DOMINANCE_LIVE_ROUTE_MISSING.INET",
+    "ORH_REFERENCE_DOMINANCE_REFERENCE_CONTROLS_MISSING",
     "ORH_LARGE_SCALE_BENCHMARK_TIER_UNAVAILABLE",
 }
 
@@ -72,13 +72,13 @@ def validate_blocker_artifact(artifact: dict) -> None:
         "ORH-270 must be completed-blocked without fresh live dominance proof",
     )
     require(
-        artifact.get("diagnostic_code") == "ORH_DONOR_DOMINANCE_NOT_ACHIEVED",
+        artifact.get("diagnostic_code") == "ORH_REFERENCE_DOMINANCE_NOT_ACHIEVED",
         "top-level blocker diagnostic mismatch",
     )
     require(artifact.get("benchmark_clean") is False, "benchmark-clean overclaim")
     require(
-        artifact.get("donor_dominance_claim") is False,
-        "donor-dominance claim must be false",
+        artifact.get("reference_dominance_claim") is False,
+        "reference-dominance claim must be false",
     )
     require(
         artifact.get("performance_superiority_claim") is False,
@@ -93,8 +93,8 @@ def validate_blocker_artifact(artifact: dict) -> None:
         "required embedded/ipc/inet route list incomplete",
     )
     require(
-        REQUIRED_DONORS.issubset(set(artifact.get("required_donor_engines", []))),
-        "required donor engine list incomplete",
+        REQUIRED_REFERENCES.issubset(set(artifact.get("required_reference_engines", []))),
+        "required reference engine list incomplete",
     )
     require(
         artifact.get("required_comparable_workloads"),
@@ -163,7 +163,7 @@ def main() -> int:
     parser.add_argument("--artifact", required=True, type=Path)
     args = parser.parse_args()
     validate_blocker_artifact(load_json(args.artifact))
-    print("ORH-270 donor-dominance closure gate passed: completed-blocked")
+    print("ORH-270 reference-dominance closure gate passed: completed-blocked")
     return 0
 
 

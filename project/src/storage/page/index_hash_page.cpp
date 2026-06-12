@@ -480,7 +480,7 @@ std::vector<std::string> CandidateEvidence() {
           "security_recheck_required=true",
           "parser_finality_authority=false",
           "parser_hash_authority=false",
-          "donor_hash_authority=false",
+          "reference_hash_authority=false",
           "hash_finality_authority=false",
           "provider_finality_authority=false",
           "wal_finality_authority=false",
@@ -2728,7 +2728,7 @@ IndexHashPhysicalReportResult BuildIndexHashPhysicalReport(
                             "hash_seed_high64_redacted=true",
                             "hash_seed_key_material_bits=128",
                             "parser_hash_authority=false",
-                            "donor_hash_authority=false",
+                            "reference_hash_authority=false",
                             "hash_finality_authority=false",
                             std::string("high_assurance_fingerprint_present=") +
                                 (HashAlgorithmRequiresFingerprint(
@@ -2766,7 +2766,7 @@ IndexHashPhysicalReportResult BuildIndexHashPhysicalReport(
                                       "hash_seed_high64_redacted=true",
                                       "hash_seed_key_material_bits=128",
                                       "parser_hash_authority=false",
-                                      "donor_hash_authority=false",
+                                      "reference_hash_authority=false",
                                       "hash_finality_authority=false",
                                        "parser_finality_authority=false",
                                        "provider_finality_authority=false",

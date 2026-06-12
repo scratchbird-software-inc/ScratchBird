@@ -426,7 +426,7 @@ void TestNativeBulkRuntimeAndAllocatorEvidence() {
   Require(HasEvidence(result.evidence, "orh_210_runtime_consumed", "true"),
           "ORH-210 runtime consumption evidence missing");
   Require(HasEvidence(result.evidence, "parser_finality_authority", "false") &&
-              HasEvidence(result.evidence, "donor_finality_authority", "false") &&
+              HasEvidence(result.evidence, "reference_finality_authority", "false") &&
               HasEvidence(result.evidence, "mga_finality_authority",
                           "engine_transaction_inventory"),
           "ORH-210 finality authority evidence drifted");
@@ -701,26 +701,26 @@ void TestDeferredIndexBulkPublishFailClosedSpoofAndFamilies() {
           "ORH-211 hash family blocker evidence missing");
   Rollback(hash_context);
 
-  auto donor_fixture = MakeFixture("index_donor",
+  auto reference_fixture = MakeFixture("index_reference",
                                    6000,
-                                   api::kCrudIndexFamilyDonorEmulated,
-                                   "donor_emulated",
+                                   api::kCrudIndexFamilyReferenceEmulated,
+                                   "reference_emulated",
                                    false);
-  auto donor_context = Begin(donor_fixture, "orh-211-donor-blocked");
-  auto donor_request =
-      NativeRequest(donor_fixture, donor_context, Rows("idx_donor", 1));
-  AddDeferredIndexRouteOptions(&donor_request);
-  const auto donor = api::EngineExecuteNativeBulkIngest(donor_request);
+  auto reference_context = Begin(reference_fixture, "orh-211-reference-blocked");
+  auto reference_request =
+      NativeRequest(reference_fixture, reference_context, Rows("idx_reference", 1));
+  AddDeferredIndexRouteOptions(&reference_request);
+  const auto reference = api::EngineExecuteNativeBulkIngest(reference_request);
   RequireDiagnostic(
-      donor,
+      reference,
       "SB_ORH_DEFERRED_INDEX_BULK_PUBLISH.FAMILY_ROUTE_UNSUPPORTED",
-      "ORH-211 donor-emulated family was accepted as authority");
-  Require(HasEvidence(donor.evidence,
+      "ORH-211 reference-emulated family was accepted as authority");
+  Require(HasEvidence(reference.evidence,
                       "orh_deferred_index_bulk_publish_family_blocked",
-                      std::string(api::kCrudIndexFamilyDonorEmulated) +
+                      std::string(api::kCrudIndexFamilyReferenceEmulated) +
                           "=not_ordered_write_family"),
-          "ORH-211 donor-emulated family blocker evidence missing");
-  Rollback(donor_context);
+          "ORH-211 reference-emulated family blocker evidence missing");
+  Rollback(reference_context);
 
   auto unique_fixture =
       MakeFixture("index_unique", 7000, api::kCrudIndexFamilyBtree,

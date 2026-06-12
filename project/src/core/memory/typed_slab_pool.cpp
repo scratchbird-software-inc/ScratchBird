@@ -38,7 +38,7 @@ constexpr usize kDefaultSlotsPerSlab = 64;
 constexpr usize kMaxLatencySamples = 2048;
 constexpr const char* kAnchor = "CEIC-013_TYPED_SLAB_POOLS_SIZE_CLASS_ALLOCATORS";
 constexpr const char* kAuthorityScope =
-    "typed_slab_pool.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_plan_index_finality_or_agent_authority";
+    "typed_slab_pool.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_plan_index_finality_or_agent_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -90,7 +90,7 @@ bool UnsafeAuthority(const SizeClassAllocatorRequest& request,
     *reason = "security_or_policy_check_required";
     return true;
   }
-  if (authority.parser_or_donor_finality_authority ||
+  if (authority.parser_or_reference_finality_authority ||
       authority.memory_visibility_or_finality_authority ||
       authority.memory_recovery_authority ||
       authority.memory_authorization_authority ||
@@ -1008,8 +1008,8 @@ SizeClassAllocatorAcquireResult CreateSizeClassAllocator(
       request.authority.transaction_inventory_authoritative;
   resource_request.authority.security_or_policy_checked =
       request.authority.security_or_policy_checked;
-  resource_request.authority.parser_or_donor_finality_authority =
-      request.authority.parser_or_donor_finality_authority;
+  resource_request.authority.parser_or_reference_finality_authority =
+      request.authority.parser_or_reference_finality_authority;
   resource_request.authority.memory_visibility_or_finality_authority =
       request.authority.memory_visibility_or_finality_authority;
   resource_request.authority.memory_recovery_authority =

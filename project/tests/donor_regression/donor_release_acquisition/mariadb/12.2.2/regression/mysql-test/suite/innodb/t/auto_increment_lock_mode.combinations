@@ -1,6 +1,0 @@
-[old]
---innodb-autoinc-lock-mode=0
-[new]
---innodb-autoinc-lock-mode=1
-[none]
---innodb-autoinc-lock-mode=2

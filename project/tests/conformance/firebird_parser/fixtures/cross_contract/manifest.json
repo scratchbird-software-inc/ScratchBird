@@ -17,7 +17,7 @@
       "case_id": "DPR-FIX-012-NEG-001",
       "case_kind": "negative_control",
       "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
-      "purpose": "raw donor status"
+      "purpose": "raw reference status"
     },
     {
       "case_id": "DPR-FIX-012-NEG-002",
@@ -29,7 +29,7 @@
       "case_id": "DPR-FIX-012-NEG-003",
       "case_kind": "negative_control",
       "expected_gate_behavior": "Owning semantic gate must block or emit exact refusal until canonical implementation evidence exists.",
-      "purpose": "donor SQL execution"
+      "purpose": "reference SQL execution"
     }
   ],
   "consumer_agents": [
@@ -40,5 +40,5 @@
   ],
   "fixture_family": "firebird_cross_contract_fixtures",
   "fixture_id": "DPR-FIX-012",
-  "forbidden_fixture_source": "donor sample as ScratchBird authority"
+  "forbidden_fixture_source": "reference sample as ScratchBird authority"
 }

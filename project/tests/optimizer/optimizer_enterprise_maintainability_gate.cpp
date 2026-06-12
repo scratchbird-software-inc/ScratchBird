@@ -86,13 +86,13 @@ int main() {
   Require(!Contains(core, "ValidateBenchmarkMethodologyEvidence"),
           "benchmark methodology validator drifted back into core runtime evidence unit");
   Require(!Contains(core, "ValidateBestMethodBenchmarkEquivalence"),
-          "donor comparison validator drifted back into core runtime evidence unit");
+          "reference comparison validator drifted back into core runtime evidence unit");
   Require(Contains(benchmark, "OEIC_OPTIMIZER_MAINTAINABILITY_REFACTOR"),
           "benchmark evidence split lacks OEIC maintainability search key");
   Require(Contains(benchmark, "cockroachdb") &&
               Contains(benchmark, "elasticsearch") &&
               Contains(benchmark, "postgresql"),
-          "benchmark evidence split lost 24-donor route validation material");
+          "benchmark evidence split lost 24-reference route validation material");
 
   std::cout << "OEIC optimizer maintainability refactor gate passed\n";
   return 0;

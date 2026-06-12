@@ -279,7 +279,7 @@ bool DomainHasMetadataPolicy(const DomainRecord& record) {
          !record.method_binding_envelope.empty() ||
          !record.localized_names_envelope.empty() ||
          !record.comment_envelope.empty() ||
-         !record.donor_alias_envelope.empty();
+         !record.reference_alias_envelope.empty();
 }
 
 void SetDomainValidationHookStatus(DomainRecord* record) {

@@ -32,7 +32,7 @@ AUTHORITY_INVARIANTS = [
     "mga_visibility_required",
     "wal_not_authority",
     "parser_not_authority",
-    "donor_not_authority",
+    "reference_not_authority",
     "uuid_order_not_finality",
 ]
 
@@ -149,7 +149,7 @@ def write_packet(root: Path, rows: list[dict[str, str]]) -> None:
         "This packet is the single authority for create-database default policy seed rows.",
         "The catalog owns policy family defaults, tx1 seed requirements, override classes,",
         "diagnostic coverage, cache invalidation expectations, and fail-closed boundaries.",
-        "MGA visibility determines catalog visibility; WAL, cache, checkpoint, parser, donor,",
+        "MGA visibility determines catalog visibility; WAL, cache, checkpoint, parser, reference,",
         "and UUID ordering are evidence inputs, not policy finality authorities.",
         "",
         "## Default policy family table",
@@ -182,7 +182,7 @@ def write_packet(root: Path, rows: list[dict[str, str]]) -> None:
             "- `mga_visibility_required`",
             "- `wal_not_authority`",
             "- `parser_not_authority`",
-            "- `donor_not_authority`",
+            "- `reference_not_authority`",
             "- `uuid_order_not_finality`",
         ]
     )

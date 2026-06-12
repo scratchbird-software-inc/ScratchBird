@@ -24,7 +24,7 @@ upgrade_compatibility_worker,FSPE-012H,upgrade migration compatibility fixtures 
 spec_coordinator,FSPE-013,spec synchronization audit and documentation maps,unassigned implementation source files,complete
 catalog_parser_registry_worker,FSPE-013A,fixed UUID seed catalog verification fixtures and reports,unassigned migration files unless coordinator assigns update,complete
 benchmark_worker,FSPE-014F,benchmark baseline report and non-tuning measurement fixtures,unassigned optimization or tuning source files,complete
-donor_conformance_worker,FSPE-011B,donor alias profile fixtures and rendering reports,native parser or engine behavior files unless assigned,complete
+reference_conformance_worker,FSPE-011B,reference alias profile fixtures and rendering reports,native parser or engine behavior files unless assigned,complete
 persistence_conformance_worker,FSPE-011D,persistence restart fixtures reports and assigned conformance gates,unassigned parser/server/engine behavior files,complete
 transaction_conformance_worker,FSPE-011E,concurrent parser/session transaction fixtures and assigned transaction conformance gates,unassigned parser/server/engine behavior files,complete
 security_conformance_worker,FSPE-012G,security redaction fixtures and assigned security files,unassigned catalog or engine behavior files,complete

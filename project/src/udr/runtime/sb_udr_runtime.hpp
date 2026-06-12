@@ -56,6 +56,7 @@ struct UdrPackageDescriptor {
   std::string binary_hash;
   std::string signature_policy;
   std::string capability_role;
+  std::string runtime_language{"cpp"};
   bool trusted_cpp{false};
   std::vector<UdrEntrypointDescriptor> entrypoints;
   UdrLifecycleCallback init{nullptr};
@@ -73,6 +74,7 @@ struct UdrPackageRuntimeState {
   std::string binary_hash;
   std::string signature_policy;
   std::string capability_role;
+  std::string runtime_language;
   std::vector<std::string> entrypoint_names;
 };
 
@@ -109,7 +111,7 @@ UdrCallResult InvokePackageWithReservedWorkspace(
     scratchbird::core::memory::ReservationBackedMemoryResource* resource,
     std::size_t workspace_bytes,
     bool sblr_invocation_authority,
-    bool parser_or_donor_finality_authority,
+    bool parser_or_reference_finality_authority,
     bool debug_or_relaxed_path);
 void ResetRuntimeForTest();
 

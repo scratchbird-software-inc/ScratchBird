@@ -21,7 +21,7 @@ Prove the registry/linter/fixture/oracle/message-vector machinery works end-to-e
 | Expression/runtime | `SBSQL-971C709406A0` / `@` | Registry lookup for expression/runtime row and handler coverage lint. |
 | Cluster-private standalone fail-closed | `SBSQL-39C545BEBF5A` / `cluster_publish_options` | Profile gate lookup and standalone fail-closed message-vector rendering. |
 | Native-now closure decision | `SBSQL-DF502F8DF4FA` / `Accept` | Registry lookup proves the former promotion row is native_now, routed through the expression runtime parser/lowering/engine path, and retains closure-action evidence. |
-| Donor alias mapping/rendering | `apache_ignite:query_select` | Donor alias backlog lookup, native surface mapping/refusal, and donor rendering diagnostic path. |
+| Reference alias mapping/rendering | `apache_ignite:query_select` | Reference alias backlog lookup, native surface mapping/refusal, and reference rendering diagnostic path. |
 
 ## Required Outputs
 
@@ -38,7 +38,7 @@ The canary passes only when all required proof points below are true:
 - Handler coverage lint fails closed for a missing parser, UDR, SBLR, server, engine, diagnostic, or fixture assignment.
 - At least one parser-to-server-to-engine route is exercised, even if the route is a minimal smoke fixture.
 - The cluster-private row fails closed in standalone mode with a concrete message vector and parser rendering template.
-- The donor alias case maps to native SBSQL behavior or exact canonical refusal with donor/profile rendering evidence.
+- The reference alias case maps to native SBSQL behavior or exact canonical refusal with reference/profile rendering evidence.
 - The canary CTest label is durable and included in the validation command registry before `FSPE-001A` closes.
 
 ## Non-Acceptance

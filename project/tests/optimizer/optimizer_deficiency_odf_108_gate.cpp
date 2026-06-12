@@ -313,7 +313,7 @@ void RequireSchemaField(std::string_view name,
 void RequireCleanPayload(std::string_view payload, std::string_view surface) {
   for (const auto token :
        {"docs/", "execution-plans", "findings", "contracts", "references",
-        "parser_finality_authority\":true", "donor_finality_authority\":true",
+        "parser_finality_authority\":true", "reference_finality_authority\":true",
         "client_finality_authority\":true",
         "storage_shortcut_finality_authority\":true",
         "wal_recovery_authority\":true", "write_ahead_log"}) {

@@ -178,7 +178,7 @@ std::vector<std::string> BaseEvidenceFields(
       "route_evidence_kind=" + route_evidence_kind,
       "parser_authority=false",
       "client_authority=false",
-      "donor_authority=false",
+      "reference_authority=false",
       "sidecar_authority=false",
       "transaction_finality_authority=false",
       "visibility_authority=false",
@@ -592,7 +592,7 @@ AgentProductionActionExposure ClassifyAgentProductionActionExposure(
       "action_contract_implies_live_route=false",
       "parser_authority=false",
       "client_authority=false",
-      "donor_authority=false",
+      "reference_authority=false",
       "sidecar_authority=false",
       "transaction_finality_authority=false",
       "visibility_authority=false",
@@ -655,7 +655,7 @@ AgentRuntimeStatus ValidateAgentProductionExposureMatrix(
     }
     if (record.authority_safety.parser_authority ||
         record.authority_safety.client_authority ||
-        record.authority_safety.donor_authority ||
+        record.authority_safety.reference_authority ||
         record.authority_safety.sidecar_authority ||
         record.authority_safety.transaction_finality_authority ||
         record.authority_safety.visibility_authority ||

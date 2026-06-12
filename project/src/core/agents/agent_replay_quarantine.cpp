@@ -150,7 +150,7 @@ std::string ReplayUuidFor(const std::string& action_uuid,
 
 bool ReplayAuthorityClean(const AgentReplayControlRequest& request) {
   return !request.parser_authority && !request.client_authority &&
-         !request.donor_authority && !request.wal_authority &&
+         !request.reference_authority && !request.wal_authority &&
          !request.benchmark_authority && !request.optimizer_plan_authority &&
          !request.index_finality_authority &&
          !request.provider_finality_authority && !request.memory_authority &&
@@ -355,7 +355,7 @@ std::string AgentReplayResourceReservationDigest(
           << reservation->release_reason << '\n'
           << (reservation->parser_authority ? "1" : "0") << '\n'
           << (reservation->client_authority ? "1" : "0") << '\n'
-          << (reservation->donor_authority ? "1" : "0") << '\n'
+          << (reservation->reference_authority ? "1" : "0") << '\n'
           << (reservation->benchmark_authority ? "1" : "0") << '\n';
   return Sha256Digest(payload.str());
 }
@@ -403,7 +403,7 @@ std::string AgentDurableActionRecordDigest(
           << action.compensation_evidence_uuid << '\n'
           << (action.parser_authority ? "1" : "0") << '\n'
           << (action.client_authority ? "1" : "0") << '\n'
-          << (action.donor_authority ? "1" : "0") << '\n'
+          << (action.reference_authority ? "1" : "0") << '\n'
           << (action.sidecar_authority ? "1" : "0") << '\n';
   return Sha256Digest(payload.str());
 }
@@ -634,7 +634,7 @@ AgentReplayControlResult ApplyAgentReplayControl(
       request.external_cluster_provider_attested;
   replay.parser_authority = request.parser_authority;
   replay.client_authority = request.client_authority;
-  replay.donor_authority = request.donor_authority;
+  replay.reference_authority = request.reference_authority;
   replay.wal_authority = request.wal_authority;
   replay.benchmark_authority = request.benchmark_authority;
   replay.optimizer_plan_authority = request.optimizer_plan_authority;

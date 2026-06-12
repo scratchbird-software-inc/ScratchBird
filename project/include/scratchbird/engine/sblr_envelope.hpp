@@ -43,7 +43,7 @@ enum class SblrOperationFamily : std::uint16_t {
   versioned_history = 110,
   cluster_placement = 120,
   acceleration_management = 130,
-  donor_meta = 65000,
+  reference_meta = 65000,
 };
 
 enum class SblrBehaviorStatus : std::uint8_t {
@@ -68,7 +68,7 @@ enum class SblrCodecStatus : std::uint8_t {
   checksum_invalid = 3,
   version_unsupported = 4,
   opcode_unknown = 5,
-  donor_meta_forbidden = 6,
+  reference_meta_forbidden = 6,
   descriptor_invalid = 7,
 };
 
@@ -162,9 +162,9 @@ inline constexpr SblrPriorityDRegistryRow kSblrAccelerationRegistryRow{
     SblrOperationFamily::acceleration_management, 1, 499, SblrBehaviorStatus::capability_fail_closed,
     "sblr.acceleration.management.v3", "SBLR.CAPABILITY.FORBIDDEN"};
 
-inline constexpr SblrPriorityDRegistryRow kSblrDonorMetaRegistryRow{
-    SblrOperationFamily::donor_meta, 1, 65535, SblrBehaviorStatus::unsupported, "sblr.donor.meta.forbidden",
-    "SBLR.OPCODE.DONOR_META_FORBIDDEN"};
+inline constexpr SblrPriorityDRegistryRow kSblrReferenceMetaRegistryRow{
+    SblrOperationFamily::reference_meta, 1, 65535, SblrBehaviorStatus::unsupported, "sblr.reference.meta.forbidden",
+    "SBLR.OPCODE.REFERENCE_META_FORBIDDEN"};
 
 inline constexpr std::uint32_t kSblrEnvelopeMagic = 0x524c4253u;
 inline constexpr std::uint32_t kSblrEnvelopeHeaderSize = 32u;
@@ -176,8 +176,8 @@ inline const SblrPriorityDRegistryRow* FindSblrPriorityDRegistryRow(SblrOperatio
       opcode <= kSblrAccelerationRegistryRow.opcode_max) {
     return &kSblrAccelerationRegistryRow;
   }
-  if (family == kSblrDonorMetaRegistryRow.family) {
-    return &kSblrDonorMetaRegistryRow;
+  if (family == kSblrReferenceMetaRegistryRow.family) {
+    return &kSblrReferenceMetaRegistryRow;
   }
   for (const auto& row : kSblrPriorityDRegistry) {
     if (row.family == family && opcode >= row.opcode_min && opcode <= row.opcode_max) {
@@ -314,10 +314,10 @@ inline SblrDecodedEnvelope DecodeSblrEnvelopeBytes(const std::uint8_t* data, std
     decoded.message_key = "sblr.opcode.unknown";
     return decoded;
   }
-  if (row->family == SblrOperationFamily::donor_meta) {
-    decoded.status = SblrCodecStatus::donor_meta_forbidden;
-    decoded.diagnostic_code = "SBLR.OPCODE.DONOR_META_FORBIDDEN";
-    decoded.message_key = "sblr.opcode.donor_meta_forbidden";
+  if (row->family == SblrOperationFamily::reference_meta) {
+    decoded.status = SblrCodecStatus::reference_meta_forbidden;
+    decoded.diagnostic_code = "SBLR.OPCODE.REFERENCE_META_FORBIDDEN";
+    decoded.message_key = "sblr.opcode.reference_meta_forbidden";
     return decoded;
   }
   std::uint64_t offset = kSblrEnvelopeHeaderSize;

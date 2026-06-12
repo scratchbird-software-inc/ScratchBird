@@ -88,8 +88,8 @@ void RequireNoAuthorityOwned(const exec::ExecutorBatchRelationalEvidence& eviden
           "DPC-051 helper must not own parser execution");
   Require(!evidence.authority.owns_timestamp_ordering,
           "DPC-051 helper must not own timestamp ordering");
-  Require(!evidence.authority.owns_donor_storage,
-          "DPC-051 helper must not own donor storage");
+  Require(!evidence.authority.owns_reference_storage,
+          "DPC-051 helper must not own reference storage");
   Require(!evidence.authority.owns_sql_execution,
           "DPC-051 helper must not own SQL execution");
 }

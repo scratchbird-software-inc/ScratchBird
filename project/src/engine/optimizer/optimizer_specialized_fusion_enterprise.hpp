@@ -55,7 +55,7 @@ struct EnterpriseFusionFamilyMetric {
   bool security_recheck_required = true;
   bool descriptor_scan_fallback = false;
   bool behavior_store_scan_fallback = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool metric_finality_or_visibility_authority = false;

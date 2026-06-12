@@ -22,7 +22,7 @@ Canonical behavior authority remains the manifest-listed parser-v3 contracts. Th
 - SBSQL surface rows: 2617.
 - SBSQL to SBLR operation rows: 2617.
 - Engine gap rows: 932.
-- Donor alias rows: 312.
+- Reference alias rows: 312.
 
 ## Surface Status Counts
 
@@ -61,7 +61,7 @@ Canonical behavior authority remains the manifest-listed parser-v3 contracts. Th
 | `artifacts/SURFACE_IMPLEMENTATION_BACKLOG.csv` | 2617 |
 | `artifacts/NATIVE_FUTURE_PROMOTION_AUDIT.csv` | 0 |
 | `artifacts/ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv` | 932 |
-| `artifacts/DONOR_ALIAS_COVERAGE_BACKLOG.csv` | 312 |
+| `artifacts/REFERENCE_ALIAS_COVERAGE_BACKLOG.csv` | 312 |
 | `artifacts/REGISTRY_FAMILY_BATCHING_PLAN.csv` | 77 |
 
 ## Coverage Result

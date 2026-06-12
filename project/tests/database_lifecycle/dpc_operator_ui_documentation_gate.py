@@ -79,7 +79,7 @@ REQUIRED_TOKENS = (
     "support_bundle_forbidden_fields_absent",
     "config_precedence_order",
     "parser_finality_authority",
-    "donor_finality_authority",
+    "reference_finality_authority",
     "client_finality_authority",
     "storage_shortcut_finality_authority",
     "wal_recovery_authority",

@@ -393,7 +393,7 @@ void AddConfigEffectiveValueJson(
 bool ContainsOdf108ForbiddenToken(std::string_view value) {
   for (const auto token :
        {"docs/", "execution-plans", "findings", "contracts", "references",
-        "parser_finality_authority=true", "donor_finality_authority=true",
+        "parser_finality_authority=true", "reference_finality_authority=true",
         "client_finality_authority=true",
         "storage_shortcut_finality_authority=true",
         "wal_recovery_authority=true", "write_ahead_log"}) {
@@ -870,8 +870,8 @@ void AddPerformanceOptimizationSurfaceRow(
                       std::string(kPerformanceConfigPrecedence)},
                      {"parser_finality_authority",
                       BoolText(snapshot.parser_finality_authority)},
-                     {"donor_finality_authority",
-                      BoolText(snapshot.donor_finality_authority)},
+                     {"reference_finality_authority",
+                      BoolText(snapshot.reference_finality_authority)},
                      {"client_finality_authority",
                       BoolText(snapshot.client_finality_authority)},
                      {"storage_shortcut_finality_authority",
@@ -1053,7 +1053,7 @@ PerformanceOptimizationSurfaceSchema() {
       {"config_defaults_packaging_ready", "bool", true, "config_defaults"},
       {"config_precedence_order", "text", true, "config_defaults"},
       {"parser_finality_authority", "bool", true, "authority_boundaries"},
-      {"donor_finality_authority", "bool", true, "authority_boundaries"},
+      {"reference_finality_authority", "bool", true, "authority_boundaries"},
       {"client_finality_authority", "bool", true, "authority_boundaries"},
       {"storage_shortcut_finality_authority", "bool", true, "authority_boundaries"},
       {"wal_recovery_authority", "bool", true, "authority_boundaries"}};
@@ -1635,7 +1635,7 @@ ValidatePerformanceOptimizationSurfaceSnapshot(
   }
 
   if (snapshot.parser_finality_authority ||
-      snapshot.donor_finality_authority ||
+      snapshot.reference_finality_authority ||
       snapshot.client_finality_authority ||
       snapshot.storage_shortcut_finality_authority ||
       snapshot.wal_recovery_authority) {
@@ -2032,8 +2032,8 @@ std::string SerializePerformanceOptimizationSurfaceJson(
               snapshot.parser_finality_authority);
   AddJsonBool(&out,
               &first,
-              "donor_finality_authority",
-              snapshot.donor_finality_authority);
+              "reference_finality_authority",
+              snapshot.reference_finality_authority);
   AddJsonBool(&out,
               &first,
               "client_finality_authority",
@@ -2123,7 +2123,7 @@ EngineInspectPerformanceOptimizationSurface(
   result.support_bundle_ready = true;
   result.sys_view_contract_ready = true;
   result.parser_finality_authority = false;
-  result.donor_finality_authority = false;
+  result.reference_finality_authority = false;
   const auto config_resolution =
       ResolvePerformanceOptimizationConfigSurface(request.config_overrides);
   result.management_api_json =
@@ -2189,7 +2189,7 @@ EngineInspectPerformanceOptimizationSurface(
                          snapshot.exact_refusal_message_vector);
   AddApiBehaviorEvidence(&result, "mga_authority_boundary", "engine_owned");
   AddApiBehaviorEvidence(&result, "parser_finality_authority", "false");
-  AddApiBehaviorEvidence(&result, "donor_finality_authority", "false");
+  AddApiBehaviorEvidence(&result, "reference_finality_authority", "false");
   AddApiBehaviorEvidence(&result, "wal_recovery_authority", "false");
   return result;
 }

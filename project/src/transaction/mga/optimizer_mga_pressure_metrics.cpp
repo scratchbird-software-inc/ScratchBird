@@ -60,7 +60,7 @@ MetricValidationResult RegisterIfMissing(metrics::MetricRegistry* registry,
 }
 
 bool UnsafeAuthority(const OptimizerMgaPressureAuthority& authority) {
-  return authority.parser_or_donor_authority ||
+  return authority.parser_or_reference_authority ||
          authority.client_finality_or_visibility_authority ||
          authority.metric_visibility_or_finality_authority ||
          authority.metric_recovery_authority ||

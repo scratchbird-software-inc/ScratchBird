@@ -56,7 +56,7 @@ bool Probe(const Case& test) {
   if (!Contains(parsed.message_vector_json,
                 "\"real_firebird_file_effects\":\"false\"") ||
       !Contains(parsed.message_vector_json,
-                "\"donor_engine_sql_executed\":\"false\"")) {
+                "\"reference_engine_sql_executed\":\"false\"")) {
     std::cerr << "service tool denial proof fields missing for "
               << test.command << '\n'
               << parsed.message_vector_json << '\n';
@@ -86,7 +86,7 @@ bool ProbeGbakLogicalStream(std::string_view command,
   }
   if (parsed.scratchbird_lifecycle_api ||
       parsed.real_firebird_file_effects ||
-      parsed.donor_engine_sql_executed) {
+      parsed.reference_engine_sql_executed) {
     std::cerr << "gbak logical stream claimed forbidden authority for "
               << command << '\n';
     return false;
@@ -120,7 +120,7 @@ bool ProbeGbakLogicalStream(std::string_view command,
       !Contains(parsed.sblr_envelope,
                 "\"real_firebird_file_effects\":false") ||
       !Contains(parsed.sblr_envelope,
-                "\"donor_engine_sql_executed\":false") ||
+                "\"reference_engine_sql_executed\":false") ||
       !Contains(parsed.sblr_envelope,
                 "\"engine_authority\":\"scratchbird\"")) {
     std::cerr << "gbak logical stream SBLR evidence mismatch for "
@@ -203,27 +203,27 @@ int main() {
 
   const Case cases[] = {
       {"GBAK -backup scratchbird-firebird.fdb scratchbird-firebird.fbk",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"GBAK -backup scratchbird-firebird.fdb scratchbird-firebird.fbk -y stdout",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"GBAK -restore scratchbird-firebird.fbk scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"GBAK -restore -y stdin scratchbird-firebird.fbk scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"GBAK -replace scratchbird-firebird.fbk scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"GFIX -validate scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"GFIX -mend scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"GFIX -sweep scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"GSTAT -header scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"GSTAT -data scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"GSTAT -index scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"NBACKUP -backup 0 scratchbird-firebird.fdb scratchbird-firebird.nbk",
        "firebird.emulated.incremental_backup"},
       {"NBACKUP -lock scratchbird-firebird.fdb",
@@ -233,22 +233,22 @@ int main() {
       {"NBACKUP -fixup scratchbird-firebird.fdb",
        "firebird.emulated.incremental_backup"},
       {"FBSVCMGR service_mgr action_db_stats dbname scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"FBSVCMGR service_mgr action_backup dbname scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"FBSVCMGR service_mgr action_restore dbname scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"FBSVCMGR service_mgr action_validate dbname scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"FBTRACEMGR -service service_mgr -list",
-       "firebird.emulated.donor_native_tool"},
-      {"GSEC display", "firebird.emulated.donor_native_tool"},
-      {"GPRE sample.e", "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
+      {"GSEC display", "firebird.emulated.reference_native_tool"},
+      {"GPRE sample.e", "firebird.emulated.reference_native_tool"},
       {"GSPLIT -join_backup_file split01.fbk split02.fbk",
-       "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
       {"FB_LOCK_PRINT -d scratchbird-firebird.fdb",
-       "firebird.emulated.donor_native_tool"},
-      {"FBGUARD -onetime", "firebird.emulated.donor_native_tool"},
+       "firebird.emulated.reference_native_tool"},
+      {"FBGUARD -onetime", "firebird.emulated.reference_native_tool"},
   };
 
   for (const auto& test : cases) {

@@ -120,7 +120,7 @@ AgentLocalWorkflowApplyResult Finish(const AgentLocalWorkflowRequest& request,
   AddEvidence(&result, "recovery_authority", "false");
   AddEvidence(&result, "security_authority", "false");
   AddEvidence(&result, "parser_authority", "false");
-  AddEvidence(&result, "donor_authority", "false");
+  AddEvidence(&result, "reference_authority", "false");
   AddEvidence(&result, "client_authority", "false");
   AddEvidence(&result, "cluster_authority", "false");
   return result;
@@ -181,7 +181,7 @@ AgentRuntimeStatus ValidateAgentLocalWorkflowAuthority(
                       AgentLocalWorkflowDomainName(request.domain));
   }
   if (authority.parser_authority || authority.client_authority ||
-      authority.donor_authority || authority.recovery_authority ||
+      authority.reference_authority || authority.recovery_authority ||
       authority.cluster_route_requested) {
     return AgentError("SB_AGENT_LOCAL_WORKFLOW.UNTRUSTED_AUTHORITY",
                       AgentLocalWorkflowDomainName(request.domain));
@@ -222,7 +222,7 @@ AgentLocalWorkflowApplyResult AgentLocalWorkflowLedger::Apply(
     record.diagnostic_code = authority.diagnostic_code;
     record.parser_authority = request.authority.parser_authority;
     record.client_authority = request.authority.client_authority;
-    record.donor_authority = request.authority.donor_authority;
+    record.reference_authority = request.authority.reference_authority;
     record.recovery_authority = request.authority.recovery_authority;
     record.cluster_authority = request.authority.cluster_route_requested;
     record.workflow_uuid = DeterministicAgentRuntimeObjectUuidFromKey(
@@ -274,7 +274,7 @@ AgentLocalWorkflowApplyResult AgentLocalWorkflowLedger::Apply(
       replay.outcome_verified = action.outcome_verified;
       replay.parser_authority = action.parser_authority;
       replay.client_authority = action.client_authority;
-      replay.donor_authority = action.donor_authority;
+      replay.reference_authority = action.reference_authority;
       replay.recovery_authority = false;
       replay.cluster_authority = false;
       return Finish(request,
@@ -391,7 +391,7 @@ AgentRuntimeStatus AgentLocalWorkflowLedger::AppendDurableRecord(
   evidence.redaction_applied_before_buffering = true;
   evidence.parser_authority = false;
   evidence.client_authority = false;
-  evidence.donor_authority = false;
+  evidence.reference_authority = false;
   evidence.sidecar_authority = false;
   evidence.transaction_authority = false;
   evidence.finality_authority = false;
@@ -429,7 +429,7 @@ AgentRuntimeStatus AgentLocalWorkflowLedger::AppendDurableRecord(
   action.compensation_attempted = false;
   action.parser_authority = false;
   action.client_authority = false;
-  action.donor_authority = false;
+  action.reference_authority = false;
   action.sidecar_authority = false;
   durable_catalog_->actions.push_back(std::move(action));
 

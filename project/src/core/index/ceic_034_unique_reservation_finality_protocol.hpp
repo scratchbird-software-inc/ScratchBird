@@ -64,7 +64,7 @@ enum class UniqueReservationFinalityProtocolStatus : u32 {
   conflict_outcome_unresolved = 11,
   crash_window_classification_missing = 12,
   cleanup_horizon_not_engine_bound = 13,
-  donor_policy_cluster_participation = 14,
+  reference_policy_cluster_participation = 14,
   forbidden_authority_claim = 15,
   readiness_overclaim = 16,
   reservation_ledger_result_missing = 17,
@@ -79,7 +79,7 @@ struct UniqueReservationProtocolAuthorityBoundary {
   bool security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -169,7 +169,7 @@ struct UniqueReservationFinalityProtocolRequest {
       UniqueReservationConflictOutcome::unresolved;
   UniqueReservationCrashWindowProof crash_window;
   UniqueReservationProtocolAuthorityBoundary authority_boundary;
-  bool donor_local_participation = false;
+  bool reference_local_participation = false;
   bool policy_local_participation = false;
   bool cluster_local_participation = false;
   bool unique_protocol_evidence_claimed = true;

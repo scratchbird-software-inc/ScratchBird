@@ -86,12 +86,12 @@ RELEASE_PROOF_SCOPE_LABELS = {
 }
 
 SBLR_TRACEABILITY_FIXTURE_ROOT = Path(
-    "tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03"
+    "tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03"
 )
 
 SBLR_TRACEABILITY_CSV_FILES = (
-    "DONOR_GAP_SUMMARY.csv",
-    "DONOR_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
+    "REFERENCE_GAP_SUMMARY.csv",
+    "REFERENCE_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
     "EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv",
     "IMPLEMENTATION_EXECUTION_PLAN_SEED_MATRIX.csv",
     "NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv",
@@ -110,7 +110,7 @@ SBLR_TRACEABILITY_JSON_FILES = (
 SBSQL_SYNC_REQUIRED_FIELDS = (
     "sbsql_cst_reference",
     "ast_sblr_reference",
-    "donor_normalization_reference",
+    "reference_normalization_reference",
     "parser_execution_plan_sync_reference",
 )
 
@@ -121,8 +121,8 @@ EXPECTED_PRIMARY_SBLR_FAMILY_ROWS = 52
 EXPECTED_SBLR_OPCODE_ROWS = 217
 EXPECTED_PARSER_CONTRACT_MINIMUM_ROWS = 1300
 SBSQL_FORBIDDEN_STYLE_TOKENS = (
-    "donor_dialect_paste_through",
-    "donor dialect paste",
+    "compatibility_dialect_paste_through",
+    "reference dialect paste",
     "paste-through",
     "paste_through",
     "paste through",
@@ -141,7 +141,7 @@ PARSER_CONTRACT_REQUIRED_SECTIONS = (
     "sblr_opcode_bindings",
     "server_admission_rules",
     "server_dispatch_routes",
-    "donor_route_classifications",
+    "reference_route_classifications",
     "unsupported_surface_vectors",
     "sbsql_sync_status",
     "compatibility_version",
@@ -531,7 +531,7 @@ INTEGRATED_PRODUCT_PROOF_ROWS: tuple[dict[str, Any], ...] = (
                 "catalog-backed production optimizer route was not admitted",
                 "optimizer did not select scalar B-tree lookup route",
                 "executor row-locator stream did not consume physical B-tree route",
-                "parser_donor_placeholder_cluster_refused",
+                "parser_reference_placeholder_cluster_refused",
             ),
         },
     },
@@ -1090,12 +1090,12 @@ FUZZ_PROPERTY_BOUNDARY_ROWS: tuple[dict[str, Any], ...] = (
                 "attempted SBLR execution",
                 "scratchbird_mga_authority_preserved",
                 "parser_action",
-                "donor",
+                "reference",
             ),
             "tests/sblr_surface/sblr_surface_non_direct_function_lane_conformance.cpp": (
                 "parser shortcut refusal evidence",
                 "SBLR authority refusal evidence",
-                "donor",
+                "reference",
                 "unsupported",
             ),
         },
@@ -1262,7 +1262,7 @@ PERFORMANCE_SCALABILITY_ROWS: tuple[dict[str, Any], ...] = (
         "row_id": "transaction_begin_commit_latency",
         "surface": "transactions",
         "required_operation_id": "transaction_begin_commit",
-        "metric_claim": "MGA begin/commit latency is thresholded without parser or donor transaction authority",
+        "metric_claim": "MGA begin/commit latency is thresholded without parser or reference transaction authority",
         "behavior_gates": ("scratchbird_beta_performance_baseline_conformance",),
         "evidence_files": {
             "tests/performance/scratchbird_beta_performance_baseline_conformance.cpp": (
@@ -1290,7 +1290,7 @@ PERFORMANCE_SCALABILITY_ROWS: tuple[dict[str, Any], ...] = (
                 "insert_rows_per_second",
                 "SBLR_DML_INSERT_ROWS",
                 "scratchbird_mga_native_storage",
-                "donor_or_embedded_storage_backend",
+                "reference_or_embedded_storage_backend",
             ),
             "tests/performance/public_performance_baselines.json": (
                 "dml_insert_batch",
@@ -1608,7 +1608,7 @@ SOAK_CERTIFICATION_ROWS: tuple[dict[str, Any], ...] = (
         "certification_policy": (
             "soak certification must include crash and restart cycles, fault "
             "injection, sanitizer/static analysis, and hostile security-negative "
-            "checks that fail closed without granting cluster, donor, parser, "
+            "checks that fail closed without granting cluster, reference, parser, "
             "WAL, recovery, transaction finality, or authorization authority"
         ),
         "required_lanes": (
@@ -1628,7 +1628,7 @@ SOAK_CERTIFICATION_ROWS: tuple[dict[str, Any], ...] = (
                 "REQUIRED_CRASH_FAULT_POINTS",
                 "REQUIRED_SANITIZER_STATIC_KINDS",
                 "REQUIRED_SECURITY_NEGATIVES",
-                "donor_parser_wal_authority",
+                "reference_parser_wal_authority",
                 "local_cluster_production_claim",
             ),
             "tests/consolidated_enterprise/ceic_093_reliability_security_suite_gate_test.py": (
@@ -3506,7 +3506,7 @@ SUPPORT_MAINTENANCE_ROWS: tuple[dict[str, Any], ...] = (
         ),
         "support_policy": (
             "support policy must never become runtime authority and cannot "
-            "promote unsupported cluster parser donor or recovery claims "
+            "promote unsupported cluster parser reference or recovery claims "
             "without implementation and regenerated proof"
         ),
         "behavior_gates": (
@@ -3539,15 +3539,15 @@ EXTERNAL_REVIEW_CLOSURE_MANIFEST = Path(
 
 FINAL_PROJECT_ONLY_ROWS: tuple[dict[str, Any], ...] = (
     {
-        "row_id": "donor_sblr_and_sbsql_closure",
-        "surface": "donor_sblr_parser_contract",
+        "row_id": "reference_sblr_and_sbsql_closure",
+        "surface": "reference_sblr_parser_contract",
         "closure_policy": (
-            "donor SBLR interface closure and SBSQL synchronization must be "
-            "regenerated from project tests, reject donor dialect paste-through, "
+            "reference SBLR interface closure and SBSQL synchronization must be "
+            "regenerated from project tests, reject reference dialect paste-through, "
             "and produce parser handoff evidence without parser runtime claims"
         ),
         "behavior_gates": (
-            "sblr_surface_donor_interface_closure_gate",
+            "sblr_surface_reference_interface_closure_gate",
             "sblr_surface_sbsql_sync_guardrail_gate",
             "engine_listener_sbsql_parser_sync_gate",
             "public_sbsql_parser_sync_gate",
@@ -3556,13 +3556,13 @@ FINAL_PROJECT_ONLY_ROWS: tuple[dict[str, Any], ...] = (
             "project/tests/sblr_surface/sblr_surface_guardrail_gate.py": (
                 "validate_interface_closure",
                 "validate_sbsql_sync",
-                "donor_dialect_paste_through",
+                "compatibility_dialect_paste_through",
                 "PUBLIC_PARSER_HANDOFF_PREFIX",
             ),
-            "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json": (
+            "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json": (
                 "scratchbird.sblr_surface.sbsql_sync_requirements.v1",
                 "sbsql_native_normalized",
-                "donor_dialect_paste_through",
+                "compatibility_dialect_paste_through",
                 "product_completion_claim",
             ),
         },
@@ -3782,17 +3782,17 @@ EXTERNAL_REVIEW_CLOSURE_ROWS: tuple[dict[str, Any], ...] = (
         },
     },
     {
-        "row_id": "donor_sblr_parser_boundary_review",
-        "surface": "donor_sblr_parser_boundary_review",
-        "review_family": "donor_sblr_parser_boundary_review",
+        "row_id": "reference_sblr_parser_boundary_review",
+        "surface": "reference_sblr_parser_boundary_review",
+        "review_family": "reference_sblr_parser_boundary_review",
         "review_policy": (
-            "donor SBLR parser boundary review closure evidence must map donor "
+            "reference SBLR parser boundary review closure evidence must map reference "
             "server authority and non-direct surfaces to server/catalog/policy/"
             "unsupported routes and SBSQL-native parser handoff without parser "
-            "or donor execution authority"
+            "or reference execution authority"
         ),
         "behavior_gates": (
-            "sblr_surface_donor_interface_closure_gate",
+            "sblr_surface_reference_interface_closure_gate",
             "sblr_surface_sbsql_sync_guardrail_gate",
             "engine_listener_parser_contract_freeze_gate",
             "engine_listener_sbsql_parser_sync_gate",
@@ -3802,10 +3802,10 @@ EXTERNAL_REVIEW_CLOSURE_ROWS: tuple[dict[str, Any], ...] = (
                 "validate_interface_closure",
                 "validate_sbsql_sync",
                 "sbsql_native_normalized",
-                "donor_dialect_paste_through",
+                "compatibility_dialect_paste_through",
             ),
             "project/tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json": (
-                "donor_route_classifications",
+                "reference_route_classifications",
                 "unsupported_surface_vectors",
                 "sbsql_sync_status",
                 "compatibility_version",
@@ -3846,20 +3846,20 @@ EXTERNAL_REVIEW_CLOSURE_ROWS: tuple[dict[str, Any], ...] = (
 
 GOLD_ENTERPRISE_READINESS_ROWS: tuple[dict[str, Any], ...] = (
     {
-        "row_id": "donor_sblr_sbsql_contract_ready",
-        "surface": "donor_sblr_sbsql",
+        "row_id": "reference_sblr_sbsql_contract_ready",
+        "surface": "reference_sblr_sbsql",
         "readiness_policy": (
-            "donor SBLR closure, parser-facing contract freeze, and SBSQL-native "
+            "reference SBLR closure, parser-facing contract freeze, and SBSQL-native "
             "synchronization are complete enough for parser implementation to "
             "consume the engine/listener surface"
         ),
         "behavior_gates": (
-            "sblr_surface_donor_interface_closure_gate",
+            "sblr_surface_reference_interface_closure_gate",
             "engine_listener_parser_contract_freeze_gate",
             "engine_listener_sbsql_parser_sync_gate",
         ),
         "proof_refs": (
-            "ELER-079.linux_donor_sblr_interface_closure_proven",
+            "ELER-079.linux_reference_sblr_interface_closure_proven",
             "ELER-085.linux_parser_contract_freeze_proven_cross_platform_pending",
             "ELER-089.linux_sbsql_parser_sync_proven_cross_platform_pending",
         ),
@@ -4083,30 +4083,30 @@ SUBSYSTEM_SPEC_AUTHORITY = {
     "performance": "public_contract_snapshot",
     "ops": "public_contract_snapshot",
     "observability": "public_contract_snapshot",
-    "donor_sblr": "public_contract_snapshot",
+    "reference_sblr": "public_contract_snapshot",
 }
 
 SBLR_FIXTURE_TRACEABILITY = {
-    "DONOR_GAP_SUMMARY.csv": {
+    "REFERENCE_GAP_SUMMARY.csv": {
         "selector": "engine_id",
         "spec": "public_contract_snapshot",
         "implementation": "project/tests/sblr_surface/sblr_surface_guardrail_gate.py#validate_inventory",
-        "test": "ctest:sblr_surface_donor_inventory_guardrail_gate",
-        "status": "linux_donor_sblr_inventory_traceability_proven",
-        "proof": "donor_sblr_inventory_guardrail",
+        "test": "ctest:sblr_surface_reference_inventory_guardrail_gate",
+        "status": "linux_reference_sblr_inventory_traceability_proven",
+        "proof": "reference_sblr_inventory_guardrail",
     },
-    "DONOR_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv": {
+    "REFERENCE_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv": {
         "selector": "token",
         "spec": "public_contract_snapshot",
         "implementation": "project/tests/sblr_surface/sblr_surface_guardrail_gate.py#validate_registry_cleanup",
         "test": "ctest:sblr_surface_registry_cleanup_guardrail_gate",
         "status": "linux_registry_proven",
-        "proof": "donor_private_opcode_guardrail",
+        "proof": "reference_private_opcode_guardrail",
     },
     "EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv": {
         "selector": "inventory_id",
         "spec": "public_contract_snapshot",
-        "implementation": "project/src/engine/functions/metadata/donor_function_surface_policy.cpp#EvaluateDonorFunctionSurface",
+        "implementation": "project/src/engine/functions/metadata/reference_function_surface_policy.cpp#EvaluateReferenceFunctionSurface",
         "test": "ctest:sblr_surface_non_direct_function_lane_conformance",
         "status": "linux_unsupported_refusal_proven",
         "proof": "explicit_unsupported_refusal_contract",
@@ -4116,13 +4116,13 @@ SBLR_FIXTURE_TRACEABILITY = {
         "spec": "public_contract_snapshot",
         "implementation": "project/tests/sblr_surface/sblr_surface_guardrail_gate.py#validate_interface_closure",
         "test": "ctest:sblr_surface_public_substrate_guardrail_gate",
-        "status": "linux_donor_sblr_seed_traceability_proven",
-        "proof": "donor_sblr_seed_guardrail",
+        "status": "linux_reference_sblr_seed_traceability_proven",
+        "proof": "reference_sblr_seed_guardrail",
     },
     "NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv": {
         "selector": "inventory_id",
         "spec": "public_contract_snapshot",
-        "implementation": "project/src/engine/functions/metadata/donor_function_surface_policy.cpp#ResolveDonorFunctionSurfacePolicy",
+        "implementation": "project/src/engine/functions/metadata/reference_function_surface_policy.cpp#ResolveReferenceFunctionSurfacePolicy",
         "test": "ctest:sblr_surface_non_direct_function_lane_conformance",
         "status": "linux_non_direct_function_lane_proven",
         "proof": "non_direct_function_lane_contract",
@@ -4146,7 +4146,7 @@ SBLR_FIXTURE_TRACEABILITY = {
     "SERVER_AUTHORITY_ROLLUP.csv": {
         "selector": "surface_key",
         "spec": "public_contract_snapshot",
-        "implementation": "project/src/server/donor_server_authority.cpp#ResolveDonorServerAuthoritySurface",
+        "implementation": "project/src/server/reference_server_authority.cpp#ResolveReferenceServerAuthoritySurface",
         "test": "ctest:sblr_surface_server_authority_route_conformance",
         "status": "linux_server_authority_rollup_traceability_proven",
         "proof": "server_authority_rollup_guardrail",
@@ -4154,7 +4154,7 @@ SBLR_FIXTURE_TRACEABILITY = {
     "SERVER_AUTHORITY_SURFACE_MATRIX.csv": {
         "selector": "decision_id",
         "spec": "public_contract_snapshot",
-        "implementation": "project/src/server/donor_server_authority.cpp#ResolveDonorServerAuthoritySurface",
+        "implementation": "project/src/server/reference_server_authority.cpp#ResolveReferenceServerAuthoritySurface",
         "test": "ctest:sblr_surface_server_authority_route_conformance",
         "status": "linux_server_authority_route_proven",
         "proof": "server_authority_exact_route_conformance",
@@ -4641,19 +4641,19 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
     ),
     FeatureDeclaration(
         "ELER-070",
-        "donor_sblr",
-        "Donor SBLR audit row promotion",
-        ("tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03",),
-        ("sblr_surface_donor_inventory_guardrail_gate",),
+        "reference_sblr",
+        "Reference SBLR audit row promotion",
+        ("tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03",),
+        ("sblr_surface_reference_inventory_guardrail_gate",),
         False,
         True,
     ),
     FeatureDeclaration(
         "ELER-079",
-        "donor_sblr",
-        "Donor SBLR interface closure gate",
+        "reference_sblr",
+        "Reference SBLR interface closure gate",
         ("tests/sblr_surface/sblr_surface_guardrail_gate.py",),
-        ("sblr_surface_donor_interface_closure_gate",),
+        ("sblr_surface_reference_interface_closure_gate",),
         False,
         True,
     ),
@@ -4944,7 +4944,7 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
         "release",
         "Row-level traceability manifest",
         (
-            "tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_surface_traceability_manifest.json",
+            "tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_surface_traceability_manifest.json",
             "tests/engine_listener_enterprise/engine_listener_enterprise_gate.py",
         ),
         (
@@ -4957,13 +4957,13 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
     ),
     FeatureDeclaration(
         "ELER-085",
-        "donor_sblr+release",
+        "reference_sblr+release",
         "Parser-facing contract freeze package",
         (
             "tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json",
             "tests/engine_listener_enterprise/engine_listener_enterprise_gate.py",
-            "tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
-            "tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
+            "tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
+            "tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
         ),
         (
             "engine_listener_parser_contract_freeze_gate",
@@ -4977,7 +4977,7 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
         "release",
         "Generated resource determinism gate",
         (
-            "tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sblr_surface_fixture_hashes.json",
+            "tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_surface_fixture_hashes.json",
             "tests/engine_listener_enterprise/fixtures/generated_resource_determinism_manifest.json",
             "tests/engine_listener_enterprise/engine_listener_enterprise_gate.py",
         ),
@@ -5021,10 +5021,10 @@ DECLARED_FEATURES: tuple[FeatureDeclaration, ...] = (
     ),
     FeatureDeclaration(
         "ELER-089",
-        "donor_sblr+release",
+        "reference_sblr+release",
         "SBSQL parser contract execution_plan synchronization",
         (
-            "tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
+            "tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
             "tests/sblr_surface/sblr_surface_guardrail_gate.py",
             "tests/engine_listener_enterprise/engine_listener_enterprise_gate.py",
         ),
@@ -5481,7 +5481,7 @@ def declared_feature_rows(project_root: Path) -> list[dict[str, Any]]:
         )
     required_subsystems = {
         "release", "storage", "transaction", "datatypes", "security", "index",
-        "optimizer", "agents", "memory", "listener", "donor_sblr",
+        "optimizer", "agents", "memory", "listener", "reference_sblr",
     }
     observed = {row["subsystem"] for row in rows}
     missing = sorted(required_subsystems - observed)
@@ -5938,7 +5938,7 @@ def selector_value(row: dict[str, str], selector: str, filename: str, index: int
     return f"{filename}:{index}:{digest}"
 
 
-def traceability_donor_rows(project_root: Path) -> list[dict[str, str]]:
+def traceability_reference_rows(project_root: Path) -> list[dict[str, str]]:
     fixture_root = project_root / SBLR_TRACEABILITY_FIXTURE_ROOT
     rows: list[dict[str, str]] = []
     for filename in SBLR_TRACEABILITY_CSV_FILES:
@@ -5952,8 +5952,8 @@ def traceability_donor_rows(project_root: Path) -> list[dict[str, str]]:
             )[:16]
             rows.append(
                 {
-                    "trace_id": f"ELER084-DONOR-{Path(filename).stem}-{index:04d}-{row_digest}",
-                    "trace_kind": "donor_sblr_audit_row",
+                    "trace_id": f"ELER084-REFERENCE-{Path(filename).stem}-{index:04d}-{row_digest}",
+                    "trace_kind": "reference_sblr_audit_row",
                     "source_id": f"{filename}:{selector}={selected}",
                     "canonical_spec_authority": str(policy["spec"]),
                     "implementation_route": str(policy["implementation"]),
@@ -5964,7 +5964,7 @@ def traceability_donor_rows(project_root: Path) -> list[dict[str, str]]:
                     "soak_proof_ref": SOAK_CERTIFICATION_TRACEABILITY_REF,
                     "evidence_artifact": (
                         "project/tests/sblr_surface/fixtures/"
-                        f"donor_sblr_interface_gap_2026_06_03/{filename}"
+                        f"reference_sblr_interface_gap_2026_06_03/{filename}"
                     ),
                     "completion_status": str(policy["status"]),
                     "traceability_status": "traceability_mapped",
@@ -5979,8 +5979,8 @@ def validate_row_level_traceability_manifest(project_root: Path,
                                              build_root: Path) -> dict[str, Any]:
     repo_root = project_root.parent
     feature_rows = traceability_feature_rows(project_root)
-    donor_rows = traceability_donor_rows(project_root)
-    rows = feature_rows + donor_rows
+    reference_rows = traceability_reference_rows(project_root)
+    rows = feature_rows + reference_rows
     seen_trace_ids: set[str] = set()
     for row in rows:
         missing = [field for field in TRACEABILITY_SCHEMA_FIELDS if not row.get(field)]
@@ -6004,15 +6004,15 @@ def validate_row_level_traceability_manifest(project_root: Path,
                 f"{trace_id}:{field}",
             )
         reject_private_reference(row["test_id"], f"{trace_id}:test_id")
-    expected_donor_rows = 0
+    expected_reference_rows = 0
     for filename in SBLR_TRACEABILITY_CSV_FILES:
-        expected_donor_rows += len(
+        expected_reference_rows += len(
             read_traceability_csv(project_root / SBLR_TRACEABILITY_FIXTURE_ROOT / filename)
         )
-    if len(donor_rows) != expected_donor_rows or expected_donor_rows < 700:
+    if len(reference_rows) != expected_reference_rows or expected_reference_rows < 700:
         fail(
-            "traceability_donor_row_count_mismatch:"
-            f"actual={len(donor_rows)} expected={expected_donor_rows}"
+            "traceability_reference_row_count_mismatch:"
+            f"actual={len(reference_rows)} expected={expected_reference_rows}"
         )
     if len(feature_rows) != len(DECLARED_FEATURES):
         fail(
@@ -6026,7 +6026,7 @@ def validate_row_level_traceability_manifest(project_root: Path,
         "git_history_required": False,
         "matrix_id": "ELER_084_ROW_LEVEL_TRACEABILITY_MANIFEST",
         "feature_row_count": len(feature_rows),
-        "donor_sblr_row_count": len(donor_rows),
+        "reference_sblr_row_count": len(reference_rows),
         "traceability_schema_fields": list(TRACEABILITY_SCHEMA_FIELDS),
         "rows": rows,
         "build_root_recorded": False,
@@ -7037,7 +7037,7 @@ def validate_soak_certification(project_root: Path,
                 "required_token_count": str(token_count),
                 "required_token_sha256": sha256_text("|".join(token_hashes)),
                 "artifact_retention_required": "true",
-                "authority_policy": "evidence_only_no_parser_donor_wal_cluster_or_transaction_authority",
+                "authority_policy": "evidence_only_no_parser_reference_wal_cluster_or_transaction_authority",
                 "proof_class": "soak_certification_behavior_gate_with_tokenized_source_evidence",
                 "linux_result": "linux_long_duration_soak_certification_proven_cross_platform_pending",
                 "product_completion_claim": "false",
@@ -8062,7 +8062,7 @@ def aggregation_row(project_root: Path,
 def validate_project_only_implementation_proof(project_root: Path,
                                                build_root: Path) -> dict[str, Any]:
     required_surfaces = {
-        "donor_sblr_parser_contract",
+        "reference_sblr_parser_contract",
         "integrated_enterprise_stack",
         "parser_contract_determinism",
         "release_profile_export_hygiene",
@@ -8102,8 +8102,8 @@ def validate_project_only_implementation_proof(project_root: Path,
         fail("final_project_only_declared_feature_count_drift")
     if int(traceability.get("feature_row_count", 0)) != len(DECLARED_FEATURES):
         fail("final_project_only_traceability_feature_count_drift")
-    if int(traceability.get("donor_sblr_row_count", 0)) < 700:
-        fail("final_project_only_donor_traceability_row_count")
+    if int(traceability.get("reference_sblr_row_count", 0)) < 700:
+        fail("final_project_only_reference_traceability_row_count")
     if int(parser_contract.get("row_count", 0)) < EXPECTED_PARSER_CONTRACT_MINIMUM_ROWS:
         fail("final_project_only_parser_contract_row_count")
     if int(sbsql_sync.get("fixture_row_count", 0)) < 700:
@@ -8119,7 +8119,7 @@ def validate_project_only_implementation_proof(project_root: Path,
         "traceability_ref": FINAL_PROJECT_IMPLEMENTATION_TRACEABILITY_REF,
         "declared_feature_count": len(DECLARED_FEATURES),
         "traceability_feature_row_count": int(traceability.get("feature_row_count", 0)),
-        "donor_sblr_row_count": int(traceability.get("donor_sblr_row_count", 0)),
+        "reference_sblr_row_count": int(traceability.get("reference_sblr_row_count", 0)),
         "parser_contract_row_count": int(parser_contract.get("row_count", 0)),
         "sbsql_sync_fixture_row_count": int(sbsql_sync.get("fixture_row_count", 0)),
         "release_profile_feature_count": int(release_profile.get("declared_feature_count", 0)),
@@ -8149,7 +8149,7 @@ def validate_external_review_manifest_shape(project_root: Path) -> dict[str, Any
     expected_families = {
         "cluster_boundary_review",
         "database_correctness_review",
-        "donor_sblr_parser_boundary_review",
+        "reference_sblr_parser_boundary_review",
         "independent_security_review",
         "operational_reliability_review",
     }
@@ -8253,7 +8253,7 @@ def validate_gold_enterprise_readiness(project_root: Path,
     external_review = validate_external_review_closure_package(project_root, build_root)
     required_surfaces = {
         "claim_boundary",
-        "donor_sblr_sbsql",
+        "reference_sblr_sbsql",
         "final_project_review_package",
         "integrated_crash_recovery",
         "ops_release_docs_support",
@@ -8456,8 +8456,8 @@ def validate_sbsql_sync_item(project_root: Path,
     require_traceability_reference(
         project_root,
         repo_root,
-        str(item["donor_normalization_reference"]),
-        f"{context}:donor_normalization_reference",
+        str(item["reference_normalization_reference"]),
+        f"{context}:reference_normalization_reference",
     )
     require_parser_handoff_reference(str(item["parser_execution_plan_sync_reference"]), context)
 
@@ -8468,7 +8468,7 @@ def validate_sbsql_sync_manifest_shape(project_root: Path) -> dict[str, Any]:
     if manifest.get("schema_id") != "scratchbird.sblr_surface.sbsql_sync_requirements.v1":
         fail("sbsql_sync_manifest_schema")
     if manifest.get("fixture_root") != (
-        "project/tests/sblr_surface/fixtures/donor_sblr_interface_gap_2026_06_03"
+        "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03"
     ):
         fail("sbsql_sync_manifest_fixture_root")
     style_policy = manifest.get("style_policy", {})
@@ -8480,7 +8480,7 @@ def validate_sbsql_sync_manifest_shape(project_root: Path) -> dict[str, Any]:
     rejected_styles = set(style_policy.get("rejected_sbsql_styles", []))
     if SBSQL_NATIVE_STYLE not in accepted_styles:
         fail("sbsql_sync_manifest_missing_native_style")
-    if "donor_dialect_paste_through" not in rejected_styles:
+    if "compatibility_dialect_paste_through" not in rejected_styles:
         fail("sbsql_sync_manifest_missing_rejected_style")
     if tuple(manifest.get("required_reference_fields", [])) != SBSQL_SYNC_REQUIRED_FIELDS:
         fail("sbsql_sync_manifest_required_fields")
@@ -8505,7 +8505,7 @@ def validate_sbsql_sync_manifest_shape(project_root: Path) -> dict[str, Any]:
         "EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv",
         "SBSQL_SBLR_FAMILY_RECONCILIATION_MATRIX.csv",
         "SBLR_STALE_DEFERRED_ALIAS_CLEANUP_MATRIX.csv",
-        "DONOR_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
+        "REFERENCE_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv",
     }
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -8592,7 +8592,7 @@ def sbsql_sync_fixture_rows(project_root: Path,
                     "sbsql_style": str(requirement["sbsql_style"]),
                     "sbsql_cst_reference": str(requirement["sbsql_cst_reference"]),
                     "ast_sblr_reference": str(requirement["ast_sblr_reference"]),
-                    "donor_normalization_reference": str(requirement["donor_normalization_reference"]),
+                    "reference_normalization_reference": str(requirement["reference_normalization_reference"]),
                     "parser_execution_plan_sync_key": sync_parser_handoff_key(
                         str(requirement["parser_execution_plan_sync_reference"])
                     ),
@@ -8601,7 +8601,7 @@ def sbsql_sync_fixture_rows(project_root: Path,
                     "proof_class": "row_expanded_full_sbsql_sync",
                     "evidence_artifact": (
                         "project/tests/sblr_surface/fixtures/"
-                        f"donor_sblr_interface_gap_2026_06_03/{fixture_file}"
+                        f"reference_sblr_interface_gap_2026_06_03/{fixture_file}"
                     ),
                     "product_completion_claim": "false",
                 }
@@ -8660,7 +8660,7 @@ def sbsql_sync_resource_rows(project_root: Path,
                 "sbsql_style": str(resource["sbsql_style"]),
                 "sbsql_cst_reference": str(resource["sbsql_cst_reference"]),
                 "ast_sblr_reference": str(resource["ast_sblr_reference"]),
-                "donor_normalization_reference": str(resource["donor_normalization_reference"]),
+                "reference_normalization_reference": str(resource["reference_normalization_reference"]),
                 "parser_execution_plan_sync_key": sync_parser_handoff_key(
                     str(resource["parser_execution_plan_sync_reference"])
                 ),
@@ -8696,7 +8696,7 @@ def validate_sbsql_parser_spec_execution_plan_sync(project_root: Path,
             fail(f"sbsql_sync_matrix_product_claim:{trace_id}")
         for field, value in row.items():
             reject_private_reference(str(value), f"{trace_id}:{field}")
-        for field in ("sbsql_cst_reference", "ast_sblr_reference", "donor_normalization_reference"):
+        for field in ("sbsql_cst_reference", "ast_sblr_reference", "reference_normalization_reference"):
             require_traceability_reference(
                 project_root,
                 project_root.parent,
@@ -9112,12 +9112,12 @@ def parser_contract_server_rows(
     ]
 
 
-def parser_contract_donor_route_rows(
+def parser_contract_reference_route_rows(
     project_root: Path,
     manifest: dict[str, Any],
     source_by_kind: dict[str, dict[str, str]],
 ) -> list[dict[str, str]]:
-    source = source_by_kind["donor_route_classification_matrix"]
+    source = source_by_kind["reference_route_classification_matrix"]
     csv_rows = read_traceability_csv(
         project_root / SBLR_TRACEABILITY_FIXTURE_ROOT / "SERVER_AUTHORITY_SURFACE_MATRIX.csv"
     )
@@ -9140,7 +9140,7 @@ def parser_contract_donor_route_rows(
             parser_contract_row(
                 manifest,
                 index,
-                "donor_route_classifications",
+                "reference_route_classifications",
                 decision_id,
                 source["resource_kind"],
                 published_value,
@@ -9151,7 +9151,7 @@ def parser_contract_donor_route_rows(
             )
         )
     if len(rows) < 318:
-        fail(f"parser_contract_donor_route_rows_too_small:{len(rows)}")
+        fail(f"parser_contract_reference_route_rows_too_small:{len(rows)}")
     return rows
 
 
@@ -9271,7 +9271,7 @@ def validate_parser_facing_contract_freeze(project_root: Path,
     rows.extend(parser_contract_envelope_rows(project_root, manifest, source_by_kind))
     rows.extend(parser_contract_opcode_rows(project_root, manifest, source_by_kind))
     rows.extend(parser_contract_server_rows(project_root, manifest, source_by_kind))
-    rows.extend(parser_contract_donor_route_rows(project_root, manifest, source_by_kind))
+    rows.extend(parser_contract_reference_route_rows(project_root, manifest, source_by_kind))
     rows.extend(parser_contract_unsupported_rows(project_root, manifest, source_by_kind))
     rows.extend(parser_contract_sbsql_sync_rows(project_root, build_root, manifest, source_by_kind))
     rows.extend(parser_contract_compatibility_rows(manifest, source_by_kind))
@@ -9357,7 +9357,7 @@ def validate_sblr_fixture_hash_manifest(project_root: Path) -> list[dict[str, st
                 "status": "deterministic",
                 "evidence": (
                     "project/tests/sblr_surface/fixtures/"
-                    f"donor_sblr_interface_gap_2026_06_03/{filename}"
+                    f"reference_sblr_interface_gap_2026_06_03/{filename}"
                 ),
             }
         )
@@ -9375,7 +9375,7 @@ def validate_sblr_fixture_hash_manifest(project_root: Path) -> list[dict[str, st
                 "status": "deterministic",
                 "evidence": (
                     "project/tests/sblr_surface/fixtures/"
-                    f"donor_sblr_interface_gap_2026_06_03/{filename}"
+                    f"reference_sblr_interface_gap_2026_06_03/{filename}"
                 ),
             }
         )
@@ -9654,7 +9654,7 @@ def validate_project_tests_proof_location(project_root: Path) -> dict[str, Any]:
         "engine_listener_declared_feature_inventory_gate",
         "engine_listener_anti_skeleton_classifier_gate",
         "engine_listener_project_tests_proof_location_gate",
-        "sblr_surface_donor_interface_closure_gate",
+        "sblr_surface_reference_interface_closure_gate",
         "public_cluster_build_matrix_gate",
     }
     missing = sorted(

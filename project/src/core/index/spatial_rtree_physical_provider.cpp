@@ -69,7 +69,7 @@ bool LocatorEqual(const TextInvertedRowLocator& left,
 
 bool RecheckAuthorityClean(const SpatialRTreeRecheckProof& proof) {
   return !proof.parser_finality_authority_claimed &&
-         !proof.donor_finality_authority_claimed &&
+         !proof.reference_finality_authority_claimed &&
          !proof.provider_finality_authority_claimed &&
          !proof.index_finality_authority_claimed &&
          !proof.write_ahead_log_finality_authority_claimed &&
@@ -80,7 +80,7 @@ bool RecheckAuthorityClean(const SpatialRTreeRecheckProof& proof) {
 
 bool DescriptorAuthorityClean(const SpatialRTreeDescriptor& descriptor) {
   return !descriptor.parser_finality_authority_claimed &&
-         !descriptor.donor_finality_authority_claimed &&
+         !descriptor.reference_finality_authority_claimed &&
          !descriptor.provider_finality_authority_claimed &&
          !descriptor.index_finality_authority_claimed &&
          !descriptor.write_ahead_log_finality_authority_claimed;
@@ -88,7 +88,7 @@ bool DescriptorAuthorityClean(const SpatialRTreeDescriptor& descriptor) {
 
 bool SridAuthorityClean(const SpatialRTreeSridResource& resource) {
   return !resource.parser_finality_authority_claimed &&
-         !resource.donor_finality_authority_claimed &&
+         !resource.reference_finality_authority_claimed &&
          !resource.provider_finality_authority_claimed &&
          !resource.index_finality_authority_claimed &&
          !resource.write_ahead_log_finality_authority_claimed;
@@ -162,7 +162,7 @@ bool ProviderAuthorityClean(const SpatialRTreePhysicalProvider& provider) {
          !provider.security_authority_claimed &&
          !provider.transaction_finality_authority_claimed &&
          !provider.parser_finality_authority_claimed &&
-         !provider.donor_finality_authority_claimed &&
+         !provider.reference_finality_authority_claimed &&
          !provider.provider_finality_authority_claimed &&
          !provider.index_finality_authority_claimed &&
          !provider.write_ahead_log_finality_authority_claimed;

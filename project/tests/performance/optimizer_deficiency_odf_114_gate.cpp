@@ -1008,7 +1008,7 @@ ScenarioEvidence FailClosedMatrixScenario() {
 
   plan = Plan(exec::OperatorFusionPipelineKind::kIndexVisibilityProject,
               "refusal");
-  plan.parser_or_donor_finality_or_visibility_authority = true;
+  plan.parser_or_reference_finality_or_visibility_authority = true;
   RequireRefusal(plan, safe_provider, "SB_OPERATOR_FUSION.UNSAFE_AUTHORITY");
 
   plan = Plan(exec::OperatorFusionPipelineKind::kIndexVisibilityProject,

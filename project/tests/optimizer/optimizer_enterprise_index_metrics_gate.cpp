@@ -178,12 +178,12 @@ void TestIndexMetricPublication() {
 
 void TestIndexMetricRefusals() {
   auto sample = GoodSample();
-  sample.authority.parser_or_donor_authority = true;
+  sample.authority.parser_or_reference_authority = true;
   auto refused = idx::PublishIndexOptimizerRuntimeMetrics(sample);
   Require(!refused.ok &&
               refused.diagnostic_code ==
                   "SB_OPTIMIZER_INDEX_METRICS.UNSAFE_AUTHORITY",
-          "parser/donor index authority was not refused");
+          "parser/reference index authority was not refused");
 
   sample = GoodSample();
   sample.authority.exact_recheck_preserved = false;

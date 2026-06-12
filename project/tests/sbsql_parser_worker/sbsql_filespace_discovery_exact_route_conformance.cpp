@@ -311,8 +311,8 @@ void RequireRegistryAndDispatch(const DiscoveryRouteRow& row) {
           Message(row, "engine_dispatch", "transaction finality authority was granted"));
   Require(HasEvidence(dispatch.api_result, "recovery_authority", "false"),
           Message(row, "engine_dispatch", "recovery authority was granted"));
-  Require(HasEvidence(dispatch.api_result, "donor_wal_recovery_authority", "false"),
-          Message(row, "engine_dispatch", "donor/WAL recovery authority was granted"));
+  Require(HasEvidence(dispatch.api_result, "reference_wal_recovery_authority", "false"),
+          Message(row, "engine_dispatch", "reference/WAL recovery authority was granted"));
   Require(HasEvidence(dispatch.api_result, "private_provider_dispatch", "false"),
           Message(row, "engine_dispatch", "private provider dispatch was granted"));
   Require(HasEvidence(dispatch.api_result,
@@ -341,7 +341,7 @@ void RequireRuntimeScanDirectEngineApi() {
               !result.parser_storage_authority &&
               !result.transaction_finality_authority &&
               !result.recovery_authority &&
-              !result.donor_or_wal_recovery_authority &&
+              !result.reference_or_wal_recovery_authority &&
               !result.private_provider_dispatch,
           "runtime_scan engine API granted forbidden authority");
   Require(HasEvidence(result, "runtime_filesystem_scan_executed", "true"),
@@ -381,7 +381,7 @@ void RequireEngineOwnedQuarantineExecutionDirectApi() {
               !result.parser_storage_authority &&
               !result.transaction_finality_authority &&
               !result.recovery_authority &&
-              !result.donor_or_wal_recovery_authority &&
+              !result.reference_or_wal_recovery_authority &&
               !result.private_provider_dispatch,
           "engine-owned discovery execution granted forbidden parser/recovery authority");
   Require(HasEvidence(result, "cleanup_or_quarantine_executed", "true"),
@@ -470,7 +470,7 @@ void RequireEngineOwnedPhysicalCleanupDirectApi() {
               !result.parser_storage_authority &&
               !result.transaction_finality_authority &&
               !result.recovery_authority &&
-              !result.donor_or_wal_recovery_authority &&
+              !result.reference_or_wal_recovery_authority &&
               !result.private_provider_dispatch,
           "engine-owned discovery cleanup granted forbidden parser/recovery authority");
   Require(HasEvidence(result,

@@ -19,7 +19,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: OEIC_STATISTICS_INVALIDATION_ENTERPRISE
 // Enterprise stats invalidation is cache/pinned-descriptor hygiene only. It
 // refuses unsafe authority and never changes row visibility, transaction
-// finality, parser behavior, donor behavior, or recovery outcome.
+// finality, parser behavior, reference behavior, or recovery outcome.
 enum class OptimizerStatisticsInvalidationKind {
   kCatalogGeneration,
   kSecurityGeneration,
@@ -44,7 +44,7 @@ struct OptimizerStatisticsInvalidationAuthority {
   bool analyze_generation_authority = false;
   bool index_generation_authority = false;
 
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_finality_authority = false;
   bool client_visibility_authority = false;
   bool metric_finality_authority = false;

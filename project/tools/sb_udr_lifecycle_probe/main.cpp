@@ -182,7 +182,7 @@ int main() {
   bad_abi_request.option_envelopes.clear();
   bad_abi_request.option_envelopes.push_back("permission:manage_udr");
   bad_abi_request.option_envelopes.push_back("trust:trusted_cpp");
-  bad_abi_request.option_envelopes.push_back("abi:donor_private_0");
+  bad_abi_request.option_envelopes.push_back("abi:reference_private_0");
   const auto bad_abi_result = EngineRegisterUdrPackage(bad_abi_request);
 
   auto bypass_request = RegisterRequest(bad_context, "00000000-0000-7000-8000-000000001617", "bypass_udr");

@@ -70,7 +70,7 @@ struct CachedOptimizerPlan {
   bool metadata_only = true;
   bool mga_visibility_recheck_required = true;
   bool security_recheck_required = true;
-  bool parser_or_donor_finality_authority = false;
+  bool parser_or_reference_finality_authority = false;
   bool memory_governed = false;
   std::uint64_t memory_reserved_bytes = 0;
   std::string memory_lease_id;
@@ -178,7 +178,7 @@ struct OptimizerProductionPlanCacheKeyRequest {
   std::vector<std::string> filespace_uuids;
   std::vector<std::string> dependency_digests;
   bool cluster_route_requested = false;
-  bool parser_or_donor_authority_claimed = false;
+  bool parser_or_reference_authority_claimed = false;
 };
 
 struct OptimizerProductionPlanCacheKeyResult {

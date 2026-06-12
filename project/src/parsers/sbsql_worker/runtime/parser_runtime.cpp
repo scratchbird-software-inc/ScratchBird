@@ -136,8 +136,8 @@ std::string SbsqlParserLifecycleMappingReportJson() {
       ++exact_diagnostic_count;
     }
   }
-  return "{\"gate\":\"DBLC_P14_DONOR_MAPPING_COMPLETE\","
-         "\"static_gate\":\"DBLC_STATIC_NO_DONOR_ENGINE_SQL\","
+  return "{\"gate\":\"DBLC_P14_REFERENCE_MAPPING_COMPLETE\","
+         "\"static_gate\":\"DBLC_STATIC_NO_REFERENCE_ENGINE_SQL\","
          "\"dialect\":\"sbsql\","
          "\"lifecycle_api_mappings\":" + std::to_string(lifecycle_api_count) + ","
          "\"exact_emulated_non_file_diagnostics\":" + std::to_string(exact_diagnostic_count) + ","

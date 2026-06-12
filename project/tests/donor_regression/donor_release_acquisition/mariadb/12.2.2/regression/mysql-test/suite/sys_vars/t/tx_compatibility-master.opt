@@ -1,2 +1,0 @@
---transaction-isolation=SERIALIZABLE
---transaction-read-only

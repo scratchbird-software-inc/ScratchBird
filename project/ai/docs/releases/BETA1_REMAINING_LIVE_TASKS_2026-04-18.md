@@ -30,11 +30,11 @@ Endpoint state used by the rerun recipe below:
 - Native ScratchBird listener details are read from the configured profile.
 - Database, user, and secret values are deployment configuration and must not be
   committed in this repository.
-- Donor emulation listeners may be profile-defined but are outside this
+- Reference emulation listeners may be profile-defined but are outside this
   component's supported AI surface.
 
 Only the native listener is part of the AI repo live-certification path.
-Donor-emulation listener startup remains outside this repository's supported AI
+Reference-emulation listener startup remains outside this repository's supported AI
 surface.
 
 ## 2. Completed Live Tasks

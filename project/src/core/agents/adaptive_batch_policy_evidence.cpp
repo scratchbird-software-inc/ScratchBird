@@ -49,7 +49,7 @@ AdaptiveBatchPolicyEvidence BuildAdaptiveBatchPolicyEvidence(
   evidence.grants_proven = request.grants_proven;
   evidence.mga_recheck_required = request.mga_recheck_required;
   evidence.security_recheck_required = request.security_recheck_required;
-  evidence.parser_or_donor_authority = request.parser_or_donor_authority;
+  evidence.parser_or_reference_authority = request.parser_or_reference_authority;
   evidence.provider_transaction_finality_authority =
       request.provider_transaction_finality_authority;
   evidence.provider_visibility_authority =
@@ -106,8 +106,8 @@ SerializeAdaptiveBatchPolicyEvidence(
       "security_recheck_required",
       BoolText(evidence.security_recheck_required));
   Add(&fields,
-      "parser_or_donor_authority",
-      BoolText(evidence.parser_or_donor_authority));
+      "parser_or_reference_authority",
+      BoolText(evidence.parser_or_reference_authority));
   Add(&fields,
       "provider_transaction_finality_authority",
       BoolText(evidence.provider_transaction_finality_authority));

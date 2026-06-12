@@ -76,7 +76,7 @@ handoff. Parser workers can translate and return evidence, but they cannot
 assert authentication, authorization, transaction finality, or recovery state.
 The engine accepts only versioned public ABI calls or admitted SBLR envelopes.
 
-SBSQL parser contracts must stay SBSQL-native. Donor syntax is mapped to
+SBSQL parser contracts must stay SBSQL-native. Reference syntax is mapped to
 ScratchBird operation families through parser work, not pasted into SBSQL as a
 foreign dialect.
 

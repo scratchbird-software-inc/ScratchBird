@@ -151,7 +151,7 @@ RepairIdentityDecision ValidateCommonAuthority(
     const RepairIdentityRequest& request) {
   if (!request.durable_mga_inventory_authority_available ||
       request.repair_evidence_is_transaction_authority ||
-      request.parser_or_donor_authority ||
+      request.parser_or_reference_authority ||
       request.names_are_authority) {
     return Refused(request,
                    "SB-REPAIR-IDENTITY-AUTHORITY-REFUSED",

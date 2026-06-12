@@ -25,7 +25,7 @@ using scratchbird::core::metrics::MetricValue;
 
 constexpr const char* kAnchor = "CEIC-028_FRAGMENTATION_PROFILER_DIFF";
 constexpr const char* kAuthorityScope =
-    "memory_fragmentation_profiler.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority";
+    "memory_fragmentation_profiler.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority";
 
 u64 BasisPoints(u64 numerator, u64 denominator) {
   if (denominator == 0 || numerator == 0) {
@@ -417,7 +417,7 @@ void MemoryFragmentationProfiler::AddRecord(
   record.evidence.push_back(
       "memory_fragmentation_profiler.no_authority.recovery=true");
   record.evidence.push_back(
-      "memory_fragmentation_profiler.no_authority.parser_donor_wal=true");
+      "memory_fragmentation_profiler.no_authority.parser_reference_wal=true");
   record.evidence.push_back(
       "memory_fragmentation_profiler.no_authority.benchmark_optimizer_index_cluster_agent=true");
   records_.push_back(std::move(record));
@@ -478,7 +478,7 @@ MemoryFragmentationProfilerSnapshot MemoryFragmentationProfiler::Snapshot()
   snapshot.evidence.push_back(
       "memory_fragmentation_profiler.no_authority.recovery=true");
   snapshot.evidence.push_back(
-      "memory_fragmentation_profiler.no_authority.parser_donor_wal=true");
+      "memory_fragmentation_profiler.no_authority.parser_reference_wal=true");
   snapshot.evidence.push_back(
       "memory_fragmentation_profiler.no_authority.benchmark_optimizer_index_cluster_agent=true");
 
@@ -575,7 +575,7 @@ MemoryFragmentationProfilerDiff MemoryFragmentationProfiler::Diff(
   diff.evidence.push_back(
       "memory_fragmentation_profiler.no_authority.recovery=true");
   diff.evidence.push_back(
-      "memory_fragmentation_profiler.no_authority.parser_donor_wal=true");
+      "memory_fragmentation_profiler.no_authority.parser_reference_wal=true");
   diff.evidence.push_back(
       "memory_fragmentation_profiler.no_authority.benchmark_optimizer_index_cluster_agent=true");
 

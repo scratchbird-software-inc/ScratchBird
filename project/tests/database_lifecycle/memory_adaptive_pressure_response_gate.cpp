@@ -79,7 +79,7 @@ void RequirePressureEvidence(const mem::MemoryPressureDecision& decision) {
           "MMCH-018 evidence marker missing");
   Require(EvidenceHas(
               decision.evidence,
-              "memory_pressure.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"),
+              "memory_pressure.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"),
           "MMCH-018 authority boundary evidence missing");
 }
 
@@ -129,10 +129,10 @@ void HighPressurePlansDeterministicActions() {
 
 void UnsafeAuthorityFailsClosed() {
   auto observation = BaseObservation();
-  observation.parser_or_donor_authority = true;
+  observation.parser_or_reference_authority = true;
   auto decision = mem::PlanMemoryPressureResponse(mem::MemoryPressurePolicy{}, observation);
   Require(!decision.ok() && decision.fail_closed,
-          "MMCH-018 parser/donor authority did not fail closed");
+          "MMCH-018 parser/reference authority did not fail closed");
   Require(decision.diagnostic.diagnostic_code == "memory_pressure_unsafe_authority",
           "MMCH-018 unsafe authority diagnostic changed");
   RequirePressureEvidence(decision);
@@ -255,7 +255,7 @@ void PageCacheShrinkActionConsumesRealPath() {
 
 int main() {
   std::cout << "MMCH-018 authority_note=adaptive_memory_pressure_evidence_only;"
-               "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+               "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   LowPressurePlansNoAction();
   HighPressurePlansDeterministicActions();

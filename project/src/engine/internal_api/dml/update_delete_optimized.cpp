@@ -296,9 +296,9 @@ DmlTargetAccessPlanRequest BuildUpdateTargetAccessPlanRequest(
       request.context.security_context_present && !force_missing_security_context;
   plan_request.security_context_present =
       request.context.security_context_present && !force_missing_security_context;
-  plan_request.parser_or_donor_authority =
-      request.update_predicate.predicate_kind == "donor_bulk" ||
-      UpdateOptionEnabled(request, "odf031.parser_or_donor_authority=true");
+  plan_request.parser_or_reference_authority =
+      request.update_predicate.predicate_kind == "reference_bulk" ||
+      UpdateOptionEnabled(request, "odf031.parser_or_reference_authority=true");
   const std::uint64_t observed_catalog_epoch =
       request.bound_object_identity.catalog_generation_id != 0
           ? request.bound_object_identity.catalog_generation_id
@@ -438,7 +438,7 @@ DmlRowLocatorStreamResult BuildRouteLocatorStream(
   request.durable_mga_inventory_proof = true;
   request.mga_visibility_recheck_planned = true;
   request.security_recheck_planned = true;
-  request.parser_or_donor_authority = false;
+  request.parser_or_reference_authority = false;
   request.index_or_cache_finality_authority = false;
   request.table_scan_fallback_allowed = table_scan_fallback_allowed;
   request.applicable_physical_index_exists = applicable_physical_index_exists;
@@ -509,7 +509,7 @@ bool UnsafeTargetAccessRefusal(const DmlTargetAccessPlan& plan) {
          HasTargetAccessDiagnostic(plan, "stale security epoch") ||
          HasTargetAccessDiagnostic(plan, "stale policy epoch") ||
          HasTargetAccessDiagnostic(plan, "stale stats epoch") ||
-         HasTargetAccessDiagnostic(plan, "unsafe parser/donor authority");
+         HasTargetAccessDiagnostic(plan, "unsafe parser/reference authority");
 }
 
 bool IsIndexTargetAccess(DmlTargetAccessKind access_kind) {
@@ -760,9 +760,9 @@ DmlTargetAccessPlanRequest BuildDeleteTargetAccessPlanRequest(
       request.context.security_context_present && !force_missing_security_context;
   plan_request.security_context_present =
       request.context.security_context_present && !force_missing_security_context;
-  plan_request.parser_or_donor_authority =
-      request.delete_predicate.predicate_kind == "donor_bulk" ||
-      DeleteOptionEnabled(request, "odf032.parser_or_donor_authority=true");
+  plan_request.parser_or_reference_authority =
+      request.delete_predicate.predicate_kind == "reference_bulk" ||
+      DeleteOptionEnabled(request, "odf032.parser_or_reference_authority=true");
   const std::uint64_t observed_catalog_epoch =
       request.bound_object_identity.catalog_generation_id != 0
           ? request.bound_object_identity.catalog_generation_id
@@ -1103,9 +1103,9 @@ mga::HotStableRowHeadDecisionResult OrdinaryHotPlusDecision() {
   return result;
 }
 
-bool ParserOrDonorAuthorityForHotProof(const EngineUpdateRowsRequest& request) {
-  return request.update_predicate.predicate_kind == "donor_bulk" ||
-         UpdateOptionEnabled(request, "odf031.parser_or_donor_authority=true");
+bool ParserOrReferenceAuthorityForHotProof(const EngineUpdateRowsRequest& request) {
+  return request.update_predicate.predicate_kind == "reference_bulk" ||
+         UpdateOptionEnabled(request, "odf031.parser_or_reference_authority=true");
 }
 
 std::uint64_t HotPlusSamePageBudgetBytes(const EngineUpdateRowsRequest& request) {
@@ -1268,11 +1268,11 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
     return result;
   }
 
-  const bool parser_or_donor_authority =
-      ParserOrDonorAuthorityForHotProof(request);
+  const bool parser_or_reference_authority =
+      ParserOrReferenceAuthorityForHotProof(request);
   const bool exact_index_keys_unchanged =
       HotPlusExactIndexKeysUnchanged(batch_context, old_row, new_values);
-  if (!parser_or_donor_authority && !exact_index_keys_unchanged) {
+  if (!parser_or_reference_authority && !exact_index_keys_unchanged) {
     result.ok = true;
     result.decision = OrdinaryHotPlusDecision();
     return result;
@@ -1341,7 +1341,7 @@ HotPlusDecisionBuildResult BuildHotPlusDecisionForStagedUpdate(
   input.exact_index_keys_unchanged = exact_index_keys_unchanged;
   input.same_page_budget_available =
       HotPlusSamePageBudgetAvailable(request, new_values, toast_required);
-  input.parser_or_donor_authority = parser_or_donor_authority;
+  input.parser_or_reference_authority = parser_or_reference_authority;
 
   result.ok = true;
   result.decision = mga::EvaluateHotStableRowHeadDecision(input);

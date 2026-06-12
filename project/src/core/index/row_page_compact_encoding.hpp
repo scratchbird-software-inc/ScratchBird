@@ -40,7 +40,7 @@ struct RowPageCompactAuthorityContext {
   bool durable_mga_inventory_authority_available = true;
   bool normal_mga_visibility_authority_available = true;
   bool security_recheck_required = true;
-  bool parser_client_or_donor_authority = false;
+  bool parser_client_or_reference_authority = false;
   bool compact_form_visibility_authority = false;
   bool compact_form_finality_authority = false;
   bool compact_form_recovery_authority = false;

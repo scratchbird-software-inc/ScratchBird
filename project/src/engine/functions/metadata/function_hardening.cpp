@@ -165,10 +165,10 @@ FunctionHardeningReport ValidateFunctionCrossPlatformGate(const FunctionRegistry
   return report;
 }
 
-std::vector<GoldenDonorBehaviorFixture> GoldenDonorBehaviorFixtures() {
+std::vector<GoldenReferenceBehaviorFixture> GoldenReferenceBehaviorFixtures() {
   return {
-      {"postgresql", "substring", "data.scalar.substring", "('abcdef',2,3)", "text:'bcd'", "canonical_then_donor_rendered"},
-      {"mysql", "JSON_EXTRACT", "nosql.document.get", "('{\"a\":1}','$.a')", "json_document:'1'", "canonical_then_donor_rendered"},
+      {"postgresql", "substring", "data.scalar.substring", "('abcdef',2,3)", "text:'bcd'", "canonical_then_reference_rendered"},
+      {"mysql", "JSON_EXTRACT", "nosql.document.get", "('{\"a\":1}','$.a')", "json_document:'1'", "canonical_then_reference_rendered"},
       {"firebird", "GEN_ID", "data.sequence.next", "('seq_uuid',5)", "int64", "side_effect_evidence_required"},
       {"sqlite", "last_insert_rowid", "data.identity.current", "()", "int64_or_null", "context_value"},
       {"postgis", "ST_Distance", "spatial.distance", "(POINT(0 0),POINT(3 4))", "real64:5", "plugin_alias"},

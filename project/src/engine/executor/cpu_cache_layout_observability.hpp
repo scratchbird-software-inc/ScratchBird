@@ -23,7 +23,7 @@ namespace scratchbird::engine::executor {
 struct CpuCacheLayoutAuthorityContext {
   bool engine_mga_visibility_authority = false;
   bool security_recheck_authority = false;
-  bool parser_client_or_donor_layout_authority = false;
+  bool parser_client_or_reference_layout_authority = false;
   bool layout_metrics_visibility_authority = false;
   bool layout_metrics_finality_authority = false;
   bool layout_metrics_security_authority = false;
@@ -57,7 +57,7 @@ struct CpuCacheLayoutObservationRequest {
   bool contract_only_evidence = false;
   bool exact_fallback_available = true;
   bool benchmark_clean_claim = false;
-  bool donor_dominance_claim = false;
+  bool reference_dominance_claim = false;
 };
 
 struct CpuCacheLayoutObservationResult {

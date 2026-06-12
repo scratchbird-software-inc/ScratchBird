@@ -60,8 +60,8 @@ opt::NoSqlStatisticsAdvisorRequest ToOptimizerRequest(
   advisor_request.engine_mga_authoritative = request.engine_mga_authoritative;
   advisor_request.mga_recheck_required = request.mga_recheck_required;
   advisor_request.security_recheck_required = request.security_recheck_required;
-  advisor_request.parser_or_donor_authority =
-      request.parser_or_donor_authority;
+  advisor_request.parser_or_reference_authority =
+      request.parser_or_reference_authority;
   advisor_request.provider_claims_transaction_finality_authority =
       request.provider_claims_transaction_finality_authority;
   advisor_request.provider_claims_visibility_authority =

@@ -348,12 +348,12 @@ void TestNegativeAuthorityAndEnvelopeCases() {
                   "ORH_SBLR_HOT_PATH_EXTERNAL_AUTHORITY_REFUSED",
                   "raw SQL parser authority");
 
-  scratchbird::engine::executor::PreparedTemplateCache donor_cache;
-  auto donor = Request(&donor_cache);
-  donor.authority.donor_execution_authority = true;
-  RequireRejected(sblr::ExecuteSblrHotPath(donor),
+  scratchbird::engine::executor::PreparedTemplateCache reference_cache;
+  auto reference = Request(&reference_cache);
+  reference.authority.reference_execution_authority = true;
+  RequireRejected(sblr::ExecuteSblrHotPath(reference),
                   "ORH_SBLR_HOT_PATH_EXTERNAL_AUTHORITY_REFUSED",
-                  "donor execution authority");
+                  "reference execution authority");
 
   scratchbird::engine::executor::PreparedTemplateCache client_cache;
   auto client = Request(&client_cache);

@@ -17,7 +17,7 @@ The package owns:
 
 - Local transaction IDs are local inventory handles only.
 - Transaction UUIDs are engine identity and must be UUIDv7.
-- UUIDv1 through UUIDv6 are donor/client compatibility values only and cannot be transaction identity.
+- UUIDv1 through UUIDv6 are reference/client compatibility values only and cannot be transaction identity.
 - A transaction identity must carry both a valid local transaction ID and a typed transaction UUID.
 
 ## State rules
@@ -44,7 +44,7 @@ The row-version layer owns:
 ## Row identity rules
 
 - Row UUIDs are engine identity and must be UUIDv7.
-- UUIDv1 through UUIDv6 are donor/client compatibility values only and cannot be row identity.
+- UUIDv1 through UUIDv6 are reference/client compatibility values only and cannot be row identity.
 - Version identity is not a separate UUID kind in this slice; it is the row UUID plus the creator transaction identity plus a local version sequence.
 - Version-chain links are sequence references only. They are not disk pointers and they are not cleanup authority.
 

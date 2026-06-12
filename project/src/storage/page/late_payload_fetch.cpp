@@ -96,7 +96,7 @@ LatePayloadFetchResult Refuse(const LatePayloadReference& reference,
 }
 
 bool HasUnsafeAuthorityDrift(const LatePayloadReference& reference) {
-  return reference.parser_or_donor_finality_or_visibility_authority ||
+  return reference.parser_or_reference_finality_or_visibility_authority ||
          reference.client_finality_or_visibility_authority ||
          reference.provider_finality_or_visibility_authority ||
          reference.wal_recovery_or_finality_authority;

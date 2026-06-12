@@ -19,7 +19,7 @@ The gate is exhaustive over the finite registered surface and fixture authority:
 - 1,083 non-expression command and statement surfaces are covered.
 - 19 SBLR operation families are represented.
 - 932 engine gap rows are closed by engine API/SBLR family or cluster fail-closed gates.
-- 312 donor alias rows are closed by donor alias rendering coverage.
+- 312 reference alias rows are closed by reference alias rendering coverage.
 
 ## Dynamic Procedure Path
 

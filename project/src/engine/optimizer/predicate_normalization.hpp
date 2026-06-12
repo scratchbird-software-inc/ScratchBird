@@ -44,7 +44,7 @@ struct CanonicalSblrExpressionNode {
   bool normalized_sblr_metadata = true;
   bool raw_sql_text_present = false;
   bool parser_execution_authority_claimed = false;
-  bool donor_or_legacy_authority_claimed = false;
+  bool reference_or_legacy_authority_claimed = false;
   bool name_authority_claimed = false;
 };
 
