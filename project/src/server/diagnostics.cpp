@@ -202,7 +202,7 @@ void WriteMessageVectorHeader(std::ostringstream* out,
        << "\",\"redaction_profile\":\"canonical_lifecycle_least_disclosure_v1"
        << "\",\"retryable\":" << (retryable ? "true" : "false")
        << ",\"parser_finality_authority\":false"
-       << ",\"donor_finality_authority\":false";
+       << ",\"reference_finality_authority\":false";
 }
 
 std::string ToMessageVectorJsonLine(const ServerDiagnostic& diagnostic) {

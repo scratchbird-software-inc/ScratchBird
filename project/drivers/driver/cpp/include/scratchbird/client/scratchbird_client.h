@@ -75,7 +75,7 @@ typedef struct sb_error {
  *   - sb_error is caller-owned storage populated by the driver; the driver never
  *     allocates or frees sb_error.
  *   - Ownership evidence is diagnostic only. It is not transaction finality,
- *     visibility, security/authorization, recovery, parser, donor, or benchmark
+ *     visibility, security/authorization, recovery, parser, reference, or benchmark
  *     authority.
  */
 typedef enum sb_memory_ownership_kind {

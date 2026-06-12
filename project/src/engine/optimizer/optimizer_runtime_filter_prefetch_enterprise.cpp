@@ -36,7 +36,7 @@ EnterpriseRuntimeFilterPrefetchDecision Refuse(std::string diagnostic_code,
 
 bool MetricsHaveUnsafeAuthority(
     const EnterpriseRuntimeFilterPrefetchMetricSnapshot& metrics) {
-  return metrics.parser_or_donor_authority ||
+  return metrics.parser_or_reference_authority ||
          metrics.client_authority ||
          metrics.provider_finality_or_visibility_authority ||
          metrics.recovery_or_wal_authority ||

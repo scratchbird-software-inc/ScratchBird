@@ -352,7 +352,7 @@ api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
     } else if (row.operation_id == "query.canonicalize_document_value") {
       request.rows.push_back(Row("query-row-1",
                                  {{"value", TypedValue("json", "{\"b003\":true}")}}));
-      request.option_envelopes.push_back("document_donor_profile:sbsql");
+      request.option_envelopes.push_back("document_reference_profile:sbsql");
     } else if (row.operation_id == "query.apply_numeric_operation") {
       request.descriptors.push_back(Descriptor("int64"));
       request.rows.push_back(Row("query-row-1",

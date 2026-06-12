@@ -80,7 +80,7 @@ void AddAuthorityEvidence(AsyncPageIoResult* result) {
   result->evidence.push_back(
       "async_page_io.mga_authority=durable_transaction_inventory");
   result->evidence.push_back("async_page_io.parser_finality_authority=false");
-  result->evidence.push_back("async_page_io.donor_finality_authority=false");
+  result->evidence.push_back("async_page_io.reference_finality_authority=false");
   result->evidence.push_back(
       "async_page_io.write_ahead_log_finality_authority=false");
   result->evidence.push_back("async_page_io.timestamp_finality_authority=false");
@@ -242,7 +242,7 @@ bool FasterEnough(const AsyncPageIoSelectionPolicy& policy) {
 
 bool HasExternalAuthorityClaim(const AsyncPageIoOperation& operation) {
   return !operation.durable_transaction_inventory_authority ||
-         operation.parser_or_donor_finality_authority ||
+         operation.parser_or_reference_finality_authority ||
          operation.client_finality_authority ||
          operation.provider_finality_authority ||
          operation.write_ahead_log_finality_authority ||

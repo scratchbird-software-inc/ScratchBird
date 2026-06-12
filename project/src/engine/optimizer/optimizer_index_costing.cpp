@@ -47,7 +47,7 @@ EnterpriseIndexCostResult Refuse(const EnterpriseIndexCostRequest& request,
 }
 
 bool UnsafeAuthority(const EnterpriseIndexCostAuthority& authority) {
-  return authority.parser_or_donor_authority ||
+  return authority.parser_or_reference_authority ||
          authority.client_finality_authority ||
          authority.client_visibility_authority ||
          authority.metric_finality_authority ||
@@ -328,8 +328,8 @@ std::string FamilyBlockerDiagnostic(const IndexStats& index) {
                ? "SB_OPT_INDEX_COST_FAMILY_NOT_RUNTIME_AVAILABLE"
                : capability->blocker_diagnostic_code;
   }
-  if (lookup.descriptor->persistence == idx::IndexPersistenceClass::donor_emulated) {
-    return "SB_OPT_INDEX_COST_DONOR_EMULATED_BLOCKED";
+  if (lookup.descriptor->persistence == idx::IndexPersistenceClass::reference_emulated) {
+    return "SB_OPT_INDEX_COST_REFERENCE_EMULATED_BLOCKED";
   }
   if (lookup.descriptor->persistence == idx::IndexPersistenceClass::policy_blocked) {
     return "SB_OPT_INDEX_COST_POLICY_BLOCKED";
@@ -467,7 +467,7 @@ EnterpriseIndexCostResult EstimateEnterpriseIndexAccessCost(
   result.evidence.push_back("route_runtime_proof=true");
   result.evidence.push_back("operation_metrics_support_bundle_proof=true");
   result.evidence.push_back("crash_cleanup_corruption_storage_proof=true");
-  result.evidence.push_back("parser_or_donor_authority=false");
+  result.evidence.push_back("parser_or_reference_authority=false");
   result.evidence.push_back("cluster_authority=false");
   if (VectorApproximate(request.index) ||
       request.index.index_family == "sparse_wand") {
@@ -479,9 +479,9 @@ EnterpriseIndexCostResult EstimateEnterpriseIndexAccessCost(
 std::vector<StatisticsContractStatus> ValidateEnterpriseIndexCostingFamilyMatrix() {
   std::vector<StatisticsContractStatus> statuses;
   for (const auto& descriptor : idx::BuiltinIndexFamilyDescriptors()) {
-    if (descriptor.persistence == idx::IndexPersistenceClass::donor_emulated) {
+    if (descriptor.persistence == idx::IndexPersistenceClass::reference_emulated) {
       statuses.push_back(Status(true,
-                                "SB_OPT_INDEX_COST_DONOR_EMULATED_CLAIM_REMOVED",
+                                "SB_OPT_INDEX_COST_REFERENCE_EMULATED_CLAIM_REMOVED",
                                 descriptor.id));
       continue;
     }

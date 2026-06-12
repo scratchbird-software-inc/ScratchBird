@@ -9,18 +9,27 @@
 add_library(sb_core_datatypes
   datatype_advanced_family.cpp
   datatype_binary.cpp
+  datatype_catalog_manifest.cpp
+  datatype_conformance_manifest.cpp
   datatype_descriptor.cpp
   datatype_document.cpp
   datatype_exchange.cpp
   datatype_layout.cpp
+  datatype_metrics_redaction.cpp
   datatype_operations.cpp
+  datatype_physical_encoding.cpp
   datatype_runtime_closure.cpp
   datatype_temporal_wire.cpp
   datatype_wire_metadata.cpp
+  reference_compatibility_metadata.cpp
 )
 
 if(NOT TARGET sb_core_hash)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../hash ${CMAKE_CURRENT_BINARY_DIR}/core_hash)
+endif()
+
+if(NOT TARGET sb_core_metrics)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../metrics ${CMAKE_CURRENT_BINARY_DIR}/core_metrics)
 endif()
 
 if(NOT TARGET sbl_numeric)
@@ -32,4 +41,4 @@ target_include_directories(sb_core_datatypes PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${PROJECT_SOURCE_DIR}/include
 )
-target_link_libraries(sb_core_datatypes PUBLIC sb_core_platform sb_core_hash sbl_numeric)
+target_link_libraries(sb_core_datatypes PUBLIC sb_core_platform sb_core_hash sb_core_metrics sbl_numeric)

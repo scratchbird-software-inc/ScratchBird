@@ -93,7 +93,7 @@ bool ContainsUnsafeAuthorityText(const std::string& text) {
   const std::string lower = Lower(text);
   return lower.find("raw_sql") != std::string::npos ||
          lower.find("parser_authority") != std::string::npos ||
-         lower.find("donor_authority") != std::string::npos ||
+         lower.find("reference_authority") != std::string::npos ||
          lower.find("name_authority") != std::string::npos;
 }
 
@@ -219,7 +219,7 @@ std::string CanonicalRepairEventPayload(const RepairEventRecord& event,
                     .repair_evidence_is_transaction_finality_authority),
       BoolField(event.authority.repair_evidence_is_visibility_authority),
       BoolField(event.authority.repair_evidence_is_recovery_authority),
-      BoolField(event.authority.parser_or_donor_authority),
+      BoolField(event.authority.parser_or_reference_authority),
       BoolField(event.authority.names_are_authority),
       BoolField(event.authority.sblr_or_internal_operation),
       event.reason_code,
@@ -278,7 +278,7 @@ RepairEventLedgerResult ValidateRepairEvent(const RepairEventRecord& event,
       event.authority.repair_evidence_is_transaction_finality_authority ||
       event.authority.repair_evidence_is_visibility_authority ||
       event.authority.repair_evidence_is_recovery_authority ||
-      event.authority.parser_or_donor_authority ||
+      event.authority.parser_or_reference_authority ||
       event.authority.names_are_authority ||
       !event.authority.sblr_or_internal_operation) {
     return LedgerError("SB-REPAIR-EVENT-AUTHORITY-REFUSED",
@@ -557,7 +557,7 @@ RepairEventLedgerResult ParseRepairEventRecord(const std::string& serialized) {
       !ParseBoolField(fields[25],
                       &event.authority.repair_evidence_is_recovery_authority) ||
       !ParseBoolField(fields[26],
-                      &event.authority.parser_or_donor_authority) ||
+                      &event.authority.parser_or_reference_authority) ||
       !ParseBoolField(fields[27], &event.authority.names_are_authority) ||
       !ParseBoolField(fields[28],
                       &event.authority.sblr_or_internal_operation)) {
@@ -718,7 +718,7 @@ RepairAccessDecision AdmitRepairAccessFromLedger(
   }
   if (!request.durable_mga_inventory_authority ||
       request.repair_evidence_is_transaction_authority ||
-      request.parser_or_donor_authority ||
+      request.parser_or_reference_authority ||
       request.names_are_authority) {
     return AccessDecisionError("SB-REPAIR-ACCESS-AUTHORITY-REFUSED",
                                "storage.repair_event_ledger.access_authority_refused");
@@ -779,7 +779,7 @@ RepairEventRetentionDecision EvaluateRepairEventRetention(
                                   "storage.repair_event_ledger.retention_unverified");
   }
   if (request.repair_evidence_is_transaction_authority ||
-      request.parser_or_donor_authority ||
+      request.parser_or_reference_authority ||
       request.names_are_authority) {
     return RetentionDecisionError("SB-REPAIR-RETENTION-AUTHORITY-REFUSED",
                                   "storage.repair_event_ledger.retention_authority_refused");
@@ -843,7 +843,7 @@ RepairCrashResumeDecision EvaluateRepairCrashResumeFromLedger(
   }
   if (!request.durable_mga_inventory_authority ||
       request.repair_evidence_is_recovery_authority ||
-      request.parser_or_donor_authority ||
+      request.parser_or_reference_authority ||
       request.names_are_authority) {
     return CrashResumeDecisionError("SB-REPAIR-CRASH-RESUME-AUTHORITY-REFUSED",
                                     "storage.repair_event_ledger.crash_resume_authority_refused");

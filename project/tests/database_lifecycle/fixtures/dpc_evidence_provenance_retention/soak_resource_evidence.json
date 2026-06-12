@@ -24,7 +24,7 @@
     "engine_mga_authority": true,
     "parser_finality_authority": false,
     "client_finality_authority": false,
-    "donor_finality_authority": false,
+    "reference_finality_authority": false,
     "write_ahead_finality_authority": false
   }
 }

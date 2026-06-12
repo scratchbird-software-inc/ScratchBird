@@ -223,27 +223,27 @@ int main() {
 
   const auto hostile_tool =
       ParseStatement("GBAK -backup ../../etc/passwd /tmp/escape.fbk");
-  if (!Expect(!hostile_tool.ok, "hostile donor-tool command was accepted")) {
+  if (!Expect(!hostile_tool.ok, "hostile reference-tool command was accepted")) {
     return EXIT_FAILURE;
   }
   if (!Expect(hostile_tool.statement_family == "low_level_utility",
-              "hostile donor-tool command did not enter low-level utility denial lane")) {
+              "hostile reference-tool command did not enter low-level utility denial lane")) {
     return EXIT_FAILURE;
   }
   if (!Expect(Contains(hostile_tool.message_vector_json,
                        "FIREBIRD.AUTHORITY.UNSUPPORTED_DENIED"),
-              "hostile donor-tool unsupported-denied diagnostic missing")) {
+              "hostile reference-tool unsupported-denied diagnostic missing")) {
     return EXIT_FAILURE;
   }
   if (!Expect(Contains(hostile_tool.message_vector_json,
                        "\"real_firebird_file_effects\":\"false\"") &&
                   Contains(hostile_tool.message_vector_json,
-                           "\"donor_engine_sql_executed\":\"false\""),
-              "hostile donor-tool denial did not prove no file or donor execution effects")) {
+                           "\"reference_engine_sql_executed\":\"false\""),
+              "hostile reference-tool denial did not prove no file or reference execution effects")) {
     return EXIT_FAILURE;
   }
   if (!Expect(hostile_tool.sblr_envelope.empty(),
-              "hostile donor-tool denial produced SBLR payload")) {
+              "hostile reference-tool denial produced SBLR payload")) {
     return EXIT_FAILURE;
   }
 

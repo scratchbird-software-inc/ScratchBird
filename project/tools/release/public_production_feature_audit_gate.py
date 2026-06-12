@@ -41,7 +41,7 @@ REQUIRED_CONTROL_TOKENS = (
     "SB_OPTIMIZER_ALLOW_LOCAL_DEFAULT_STATS_IN_PRODUCTION",
     "SB_OPTIMIZER_ALLOW_POLICY_DEFAULT_STATS_IN_PRODUCTION",
     "SB_OPTIMIZER_ALLOW_PLACEHOLDER_RUNTIME_EVIDENCE_IN_PRODUCTION",
-    "SB_OPTIMIZER_ALLOW_DONOR_AUTHORITY_IN_PRODUCTION",
+    "SB_OPTIMIZER_ALLOW_COMPAT_AUTHORITY_IN_PRODUCTION",
     "SB_OPTIMIZER_ALLOW_PARSER_SHORTCUTS_IN_PRODUCTION",
     "SB_OPTIMIZER_ALLOW_CLUSTER_STUB_LIVE_CLAIMS",
     "SB_OPTIMIZER_ALLOW_DEBUG_ONLY_PATHS_IN_PRODUCTION",
@@ -195,7 +195,7 @@ def check_gate_script_coverage(repo_root: Path, project_root: Path) -> list[dict
         "debug_credentials",
         "no_cluster_claim",
         "parser_shortcut",
-        "donor_authority",
+        "reference_authority",
         "synthetic_feedback",
     )
     for token in REQUIRED_CONTROL_TOKENS:

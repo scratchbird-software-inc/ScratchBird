@@ -73,7 +73,7 @@ struct InMemoryIndexAuthorityProof {
   u64 security_snapshot_epoch = 0;
   std::string evidence_token;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool index_finality_authority_claimed = false;
   bool transaction_finality_authority_claimed = false;
@@ -111,7 +111,7 @@ struct InMemoryIndexColdSourceDescriptor {
   bool lifecycle_only_fallback = false;
   bool provider_only_fallback = false;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool index_finality_authority_claimed = false;
   bool transaction_finality_authority_claimed = false;

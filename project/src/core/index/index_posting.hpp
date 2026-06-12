@@ -31,7 +31,7 @@ struct IndexPostingEqualityProof {
   bool encoded_key_bytewise_stable = false;
   bool stable_row_uuid_locators = false;
   bool preserves_mga_visibility_recheck = false;
-  bool parser_or_donor_finality_authority = false;
+  bool parser_or_reference_finality_authority = false;
   bool timestamp_or_uuid_order_finality_authority = false;
 };
 

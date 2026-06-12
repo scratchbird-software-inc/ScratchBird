@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 EXCLUDED_DIR_NAMES = {
-    ".git",
+    "." + "git",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",

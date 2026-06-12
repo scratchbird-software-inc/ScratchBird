@@ -208,8 +208,8 @@ PhysicalPlanValidation ValidatePhysicalPlanNode(const PhysicalPlanNode& node) {
     validation.diagnostics.push_back("SB_OPT_EXECUTOR_CAPABILITY_ACCESS_MISMATCH");
   }
   if (!node.preserves_visibility) validation.diagnostics.push_back("SB_OPT_VISIBILITY_PRESERVATION_REQUIRED");
-  if (node.parser_or_donor_evidence_authority) {
-    validation.diagnostics.push_back("SB_OPT_PHYSICAL_PLAN_PARSER_DONOR_AUTHORITY_FORBIDDEN");
+  if (node.parser_or_reference_evidence_authority) {
+    validation.diagnostics.push_back("SB_OPT_PHYSICAL_PLAN_PARSER_REFERENCE_AUTHORITY_FORBIDDEN");
   }
   if (node.memory_evidence_required &&
       (!node.memory_evidence_present || !node.memory_evidence_trusted)) {

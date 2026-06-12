@@ -192,7 +192,7 @@ void AddNonAuthorityEvidence(std::vector<std::string>* evidence) {
   evidence->push_back("expression_index_transaction_finality_authority=false");
   evidence->push_back("expression_index_cleanup_authority=false");
   evidence->push_back("expression_index_recovery_authority=false");
-  evidence->push_back("expression_index_parser_or_donor_finality_authority=false");
+  evidence->push_back("expression_index_parser_or_reference_finality_authority=false");
 }
 
 ExpressionIndexCanonicalizationResult RefuseCanonicalization(std::string code,

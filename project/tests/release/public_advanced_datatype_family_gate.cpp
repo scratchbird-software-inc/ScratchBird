@@ -292,14 +292,14 @@ bool RequireEngineApiAndOptimizerAdmission() {
                                     "family=vector;type=dense_vector;dimension=128;element_type=real32");
   admission.support_path = "advanced_family:descriptor_schema_canonicalized:hnsw";
   admission.index_stats_status = "validated";
-  admission.donor_label = "pgvector";
+  admission.reference_label = "pgvector";
   const auto admitted = api::EvaluateDatatypeIndexOptimizerAdmission(admission);
   ok = Expect(admitted.ok && admitted.index_admitted && admitted.statistics_admitted,
               "advanced datatype optimizer admission did not use canonical descriptor") &&
        ok;
   ok = Expect(admitted.optimizer_uses_canonical_descriptor &&
                   admitted.canonical_descriptor_used == "dense_vector",
-              "advanced datatype optimizer admission used donor label authority") &&
+              "advanced datatype optimizer admission used reference label authority") &&
        ok;
 
   admission.index_stats_status = "blocked";

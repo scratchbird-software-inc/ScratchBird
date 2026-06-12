@@ -151,8 +151,8 @@ void RequireCommonPhysicalEvidence(const exec::IndexedPhysicalOperatorResult& re
                       "mga_finality_authority",
                       "engine_transaction_inventory"),
           "MGA finality authority evidence missing");
-  Require(HasEvidence(result.evidence, "parser_or_donor_authority", "false"),
-          "parser/donor non-authority evidence missing");
+  Require(HasEvidence(result.evidence, "parser_or_reference_authority", "false"),
+          "parser/reference non-authority evidence missing");
   Require(HasEvidence(result.evidence,
                       "index_or_cache_finality_authority",
                       "false"),

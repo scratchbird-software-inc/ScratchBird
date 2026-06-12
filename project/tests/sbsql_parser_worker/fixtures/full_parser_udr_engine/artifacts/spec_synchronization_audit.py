@@ -168,7 +168,7 @@ def audit_matrices(repo: Path, audit: Audit) -> None:
     surfaces = read_csv(canon / "SBSQL_SURFACE_REGISTRY.csv")
     operations = read_csv(canon / "SBSQL_TO_SBLR_OPERATION_MATRIX.csv")
     engine_gaps = read_csv(canon / "SBSQL_ENGINE_GAP_MATRIX.csv")
-    donors = read_csv(canon / "DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv")
+    references = read_csv(canon / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv")
     membership = read_csv(EXECUTION_PLAN / "artifacts/BATCH_ROW_MEMBERSHIP.csv")
     oracles = read_csv(EXECUTION_PLAN / "artifacts/SEMANTIC_ORACLE_AUTHORITY_MAP.csv")
 
@@ -182,7 +182,7 @@ def audit_matrices(repo: Path, audit: Audit) -> None:
     audit.require({row["surface_id"] for row in oracles} == set(surface_ids),
                   "semantic oracle map does not exactly cover surface registry")
     audit.require(len(engine_gaps) == 932, "engine gap matrix count is not 932")
-    audit.require(len(donors) == 312, "donor alias matrix count is not 312")
+    audit.require(len(references) == 312, "reference alias matrix count is not 312")
 
     for row in surfaces:
         spec = row["canonical_spec"].split("#", 1)[0]

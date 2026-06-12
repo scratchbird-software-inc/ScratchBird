@@ -39,6 +39,11 @@ SKIP_SUFFIXES = {
     ".zip",
 }
 
+SKIP_PATH_PREFIXES = (
+    Path("tests/reference_regression/reference_release_acquisition"),
+    Path("tests/reference_regression/firebird/original_firebird_qa"),
+)
+
 GIT_REFERENCE_ALLOWLIST = {
     Path("drivers/driver/cpp/include/nlohmann/json.hpp"),
     Path("drivers/tool/cli/include/nlohmann/json.hpp"),
@@ -83,6 +88,9 @@ def iter_files(root: Path):
       dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
       for filename in filenames:
           path = Path(dirpath) / filename
+          rel = path.relative_to(root)
+          if any(rel == prefix or prefix in rel.parents for prefix in SKIP_PATH_PREFIXES):
+              continue
           if path.suffix in SKIP_SUFFIXES:
               continue
           yield path

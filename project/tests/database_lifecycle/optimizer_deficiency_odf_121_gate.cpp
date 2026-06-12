@@ -329,8 +329,8 @@ void RequireOnlineCommon(const agents::OnlineMaintenanceResult& result,
           "ODF-121 online maintenance diagnostic mismatch");
   Require(HasEvidence(result.snapshot, "parser_finality_authority", "false"),
           "ODF-121 parser authority evidence missing");
-  Require(HasEvidence(result.snapshot, "donor_finality_authority", "false"),
-          "ODF-121 donor authority evidence missing");
+  Require(HasEvidence(result.snapshot, "reference_finality_authority", "false"),
+          "ODF-121 reference authority evidence missing");
   Require(HasEvidence(result.snapshot, "write_ahead_recovery_authority", "false"),
           "ODF-121 write-ahead authority evidence missing");
   Require(HasEvidence(result.snapshot,

@@ -89,7 +89,7 @@ struct SnapshotSafeCacheStoreRequest {
   bool transaction_finality_authority_cached = false;
   bool recovery_authority_cached = false;
   bool parser_execution_authority_cached = false;
-  bool donor_behavior_authority_cached = false;
+  bool reference_behavior_authority_cached = false;
   bool durability_log_authority_cached = false;
 };
 
@@ -129,7 +129,7 @@ struct SnapshotSafeCacheLookupRequest {
   bool transaction_finality_authority_cached = false;
   bool recovery_authority_cached = false;
   bool parser_execution_authority_cached = false;
-  bool donor_behavior_authority_cached = false;
+  bool reference_behavior_authority_cached = false;
   bool durability_log_authority_cached = false;
 };
 

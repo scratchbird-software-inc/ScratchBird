@@ -127,7 +127,7 @@ def main() -> int:
         note = (row.get("notes", "") or "").lower()
         if "mga" not in note or ("sidecar" not in note and "relation" not in note):
             errors.append(f"{fixture_id}: note must cite MGA relation sidecar authority")
-        if any(forbidden in note for forbidden in ("parser sql", "donor", "wal", "sqlite")):
+        if any(forbidden in note for forbidden in ("parser sql", "reference", "wal", "sqlite")):
             if "without parser sql" not in note and "no parser sql" not in note:
                 errors.append(f"{fixture_id}: note cites forbidden authority without refusal wording")
 

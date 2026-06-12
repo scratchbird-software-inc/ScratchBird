@@ -7,7 +7,11 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Generate and validate driver/server reconciliation release evidence."""
+"""Generate or validate driver/server reconciliation release evidence.
+
+Validation is intentionally read-only. Generation summarizes existing evidence
+and must not promote checklist or evidence rows to passing states.
+"""
 
 from __future__ import annotations
 
@@ -29,7 +33,7 @@ REQUIRED_P4_ARTIFACTS = (
     "FULL_ROUTE_BENCHMARK_EVIDENCE.json",
     "PERFORMANCE_BUDGETS.json",
     "DSR_044_DOCUMENTATION_SAMPLE_APP_EVIDENCE.json",
-    "DSR_045_DONOR_DRIVER_COMPATIBILITY_ROUTE_EVIDENCE.json",
+    "DSR_045_REFERENCE_DRIVER_COMPATIBILITY_ROUTE_EVIDENCE.json",
 )
 REQUIRED_CLOSED_GATES = {
     "DSR_G00",
@@ -52,6 +56,11 @@ REQUIRED_CLOSED_GATES = {
     "DSR_G18",
     "DSR_G19",
     "DSR_G20",
+}
+ALLOWED_RELEASE_BUCKETS = {
+    "release_supported",
+    "release_candidate",
+    "tracked_not_released",
 }
 
 
@@ -94,25 +103,14 @@ def artifact_root(execution_plan_root: Path) -> Path:
     return execution_plan_root / "artifacts"
 
 
-def close_target_rows(execution_plan_root: Path) -> list[dict[str, str]]:
+def load_target_rows(execution_plan_root: Path) -> list[dict[str, str]]:
     path = artifact_root(execution_plan_root) / "TARGET_CHECKLIST_ROWS.csv"
-    rows = read_csv(path)
-    for row in rows:
-        row["spec_status"] = "specified"
-        row["implementation_status"] = "implemented_and_proven"
-        row["test_status"] = "passed"
-        row["closure_status"] = "implemented_and_proven"
-    write_csv(path, rows, list(rows[0].keys()) if rows else [])
-    return rows
+    return read_csv(path)
 
 
-def close_target_evidence(execution_plan_root: Path) -> list[dict[str, str]]:
+def load_target_evidence(execution_plan_root: Path) -> list[dict[str, str]]:
     path = artifact_root(execution_plan_root) / "TARGET_EVIDENCE_MANIFEST.csv"
-    rows = read_csv(path)
-    for row in rows:
-        row["status"] = "implemented_and_proven"
-    write_csv(path, rows, list(rows[0].keys()) if rows else [])
-    return rows
+    return read_csv(path)
 
 
 def load_component_lanes(repo_root: Path, project_root: Path) -> list[dict[str, Any]]:
@@ -123,17 +121,33 @@ def load_component_lanes(repo_root: Path, project_root: Path) -> list[dict[str, 
         component_id = component["component_id"]
         name = component["name"]
         category = component["category"]
+        release_bucket = component.get("release_bucket", "").strip()
+        if not release_bucket:
+            raise ValueError(f"{component_id} is missing release_bucket")
+        if release_bucket not in ALLOWED_RELEASE_BUCKETS:
+            raise ValueError(
+                f"{component_id} has invalid release_bucket {release_bucket!r}"
+            )
         trace_path = trace_root / trace_manifest_name(category, name)
-        trace = load_yaml(trace_path)
-        items = trace.get("items", [])
-        if not isinstance(items, list):
-            raise ValueError(f"{trace_path} items must be a list")
+        if trace_path.is_file():
+            trace = load_yaml(trace_path)
+            items = trace.get("items", [])
+            if not isinstance(items, list):
+                raise ValueError(f"{trace_path} items must be a list")
+            trace_manifest = str(trace_path.relative_to(repo_root))
+        elif release_bucket == "release_supported":
+            raise ValueError(f"{component_id} is release_supported but missing trace manifest")
+        else:
+            items = []
+            trace_manifest = ""
         status_counts: dict[str, int] = {}
         for item in items:
             if not isinstance(item, dict):
                 raise ValueError(f"{trace_path} contains a non-mapping item")
             status = str(item.get("status", ""))
             status_counts[status] = status_counts.get(status, 0) + 1
+        if not status_counts:
+            status_counts["not_required_for_release_candidate"] = 1
         lanes.append(
             {
                 "component_id": component_id,
@@ -141,14 +155,22 @@ def load_component_lanes(repo_root: Path, project_root: Path) -> list[dict[str, 
                 "name": name,
                 "driver_status": component.get("driver_status", ""),
                 "conformance_ctest_label": component.get("conformance_profile_ref", ""),
-                "trace_manifest": str(trace_path.relative_to(repo_root)),
+                "trace_manifest": trace_manifest,
                 "package_manifest_ref": f"project/drivers/DriverPackageManifest.csv#component_id={component_id}",
                 "row_count": len(items),
                 "status_counts": status_counts,
-                "release_state": "supported",
+                "release_state": release_bucket,
             }
         )
     return lanes
+
+
+def release_state_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        state = str(row.get("release_state", ""))
+        counts[state] = counts.get(state, 0) + 1
+    return counts
 
 
 def build_declaration(
@@ -172,7 +194,7 @@ def build_declaration(
                 "capability": row["capability"],
                 "requirement": row["requirement"],
                 "applies_to": row["applies_to"],
-                "release_state": "supported",
+                "release_state": "release_candidate",
                 "spec_status": row["spec_status"],
                 "implementation_status": row["implementation_status"],
                 "test_status": row["test_status"],
@@ -181,6 +203,8 @@ def build_declaration(
                 "route_requirement": evidence.get("route_requirement", ""),
             }
         )
+    row_release_state_counts = release_state_counts(rows)
+    lane_release_state_counts = release_state_counts(lanes)
     return {
         "schema": "scratchbird.driver_server_release_declaration.v1",
         "generated_at_utc": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -190,7 +214,8 @@ def build_declaration(
             "target_evidence_rows": len(target_evidence),
             "lanes": len(lanes),
             "implementation_ahead_items": len(implementation_ahead),
-            "release_state_counts": {"supported": len(target_rows)},
+            "release_state_counts": row_release_state_counts,
+            "lane_release_state_counts": lane_release_state_counts,
         },
         "required_artifacts": [str((artifact_root(execution_plan_root) / name).relative_to(repo_root)) for name in REQUIRED_P4_ARTIFACTS],
         "acceptance_gates": gates,
@@ -228,6 +253,7 @@ def write_declaration(repo_root: Path, execution_plan_root: Path, declaration: d
 def validate(repo_root: Path, project_root: Path, execution_plan_root: Path) -> list[str]:
     errors: list[str] = []
     artifacts = artifact_root(execution_plan_root)
+    manifest_lanes = load_component_lanes(repo_root, project_root)
     target_rows = read_csv(artifacts / "TARGET_CHECKLIST_ROWS.csv")
     target_evidence = read_csv(artifacts / "TARGET_EVIDENCE_MANIFEST.csv")
     if len(target_rows) != len(target_evidence):
@@ -271,8 +297,29 @@ def validate(repo_root: Path, project_root: Path, execution_plan_root: Path) -> 
             errors.append("release declaration target row count mismatch")
         if len(declaration.get("rows", [])) != len(target_rows):
             errors.append("release declaration rows do not cover every target checklist row")
-        if len(declaration.get("lanes", [])) != len(load_component_lanes(repo_root, project_root)):
+        if len(declaration.get("lanes", [])) != len(manifest_lanes):
             errors.append("release declaration lanes do not cover every package manifest component")
+        declared_rows = declaration.get("rows", [])
+        if isinstance(declared_rows, list):
+            declared_counts = release_state_counts(
+                [row for row in declared_rows if isinstance(row, dict)]
+            )
+            if declaration.get("summary", {}).get("release_state_counts") != declared_counts:
+                errors.append("release declaration row release-state counts are stale")
+            supported_lanes = [
+                lane for lane in manifest_lanes if lane.get("release_state") == "release_supported"
+            ]
+            if not supported_lanes and declared_counts.get("supported"):
+                errors.append("release declaration uses legacy supported state without supported lanes")
+            if not supported_lanes and declared_counts.get("release_supported"):
+                errors.append("release declaration claims release_supported rows without supported lanes")
+        declared_lanes = declaration.get("lanes", [])
+        if isinstance(declared_lanes, list):
+            lane_counts = release_state_counts(
+                [lane for lane in declared_lanes if isinstance(lane, dict)]
+            )
+            if declaration.get("summary", {}).get("lane_release_state_counts") != lane_counts:
+                errors.append("release declaration lane release-state counts are stale")
     if not declaration_csv.is_file():
         errors.append(f"missing {DECLARATION_CSV}")
     return errors
@@ -283,8 +330,8 @@ def command_generate(args: argparse.Namespace) -> int:
     project_root = args.project_root.resolve()
     execution_plan_root = args.execution_plan_root.resolve()
     try:
-        target_rows = close_target_rows(execution_plan_root)
-        target_evidence = close_target_evidence(execution_plan_root)
+        target_rows = load_target_rows(execution_plan_root)
+        target_evidence = load_target_evidence(execution_plan_root)
         declaration = build_declaration(repo_root, project_root, execution_plan_root, target_rows, target_evidence)
         write_declaration(repo_root, execution_plan_root, declaration)
     except (OSError, ValueError, KeyError, yaml.YAMLError) as exc:
@@ -319,16 +366,13 @@ def main() -> int:
     parser.add_argument("--repo-root", type=Path, required=True)
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--fixture-root", "--execution_plan-root", dest="execution_plan_root", type=Path, required=True)
-    parser.add_argument("mode", choices=("generate", "validate", "all"))
+    parser.add_argument("mode", choices=("generate", "validate"))
     args = parser.parse_args()
     if args.mode == "generate":
         return command_generate(args)
     if args.mode == "validate":
         return command_validate(args)
-    generated = command_generate(args)
-    if generated != 0:
-        return generated
-    return command_validate(args)
+    return fail("unsupported mode")
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ enum class FunctionImplementationState {
   implemented_policy_security_or_dependency_runtime_refusal,
   refuse_until_classified,
   optional_package_dependency_gated,
-  donor_compat_package,
+  reference_compat_package,
   udr_only,
   connector_agent,
   future_gated_package,

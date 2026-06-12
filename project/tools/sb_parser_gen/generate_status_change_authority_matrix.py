@@ -161,8 +161,8 @@ TRANSITIONS = [
         "required_canonical_updates": CANONICAL_UPDATES_REMOVE,
         "required_execution_plan_artifact_updates": EXECUTION_PLAN_ARTIFACT_UPDATES,
         "required_test_and_inventory_updates": TEST_INVENTORY_UPDATES,
-        "decision_authority": "coordinator_with_explicit_removal_justification_and_donor_alias_audit",
-        "notes": "Remove native_now row by canonical spec change. Donor aliases mapping to this surface must be re-validated via SBSFC-041.",
+        "decision_authority": "coordinator_with_explicit_removal_justification_and_reference_alias_audit",
+        "notes": "Remove native_now row by canonical spec change. Reference aliases mapping to this surface must be re-validated via SBSFC-041.",
     },
     {
         "transition_id": "CP_TO_NN_DEPRIVATE",

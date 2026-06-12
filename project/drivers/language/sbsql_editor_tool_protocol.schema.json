@@ -1,0 +1,104 @@
+{
+  "schema_version": "sbsql.editor_tool_protocol.schema.v1",
+  "protocol_version": "sbsql.editor_tool.v1",
+  "required_component_fields": [
+    "component_id",
+    "component_category",
+    "resource_identity",
+    "syntax_profile_order",
+    "local_parse",
+    "draft_sblr",
+    "completion",
+    "diagnostics",
+    "canonical_preview",
+    "renderer",
+    "renderer_lossiness",
+    "predictive",
+    "standard_english_fallback",
+    "offline_cache",
+    "redaction_metadata",
+    "capability_negotiation",
+    "fail_closed_on_mismatch",
+    "server_revalidation_authority",
+    "authority_boundary",
+    "implementation_state"
+  ],
+  "syntax_profile_order": [
+    "explicit_syntax_profile",
+    "preferred_language_and_dialect",
+    "canonical_english_fallback_when_preferred_fails",
+    "fail_closed"
+  ],
+  "allowed_component_values": {
+    "local_parse": [
+      "common_resource_pack_required",
+      "delegates_to_common_resource_pack_consumer",
+      "unsupported_release_blocked"
+    ],
+    "draft_sblr": [
+      "local_draft_allowed_server_revalidated",
+      "delegates_to_driver_local_draft_server_revalidated",
+      "unsupported_release_blocked"
+    ],
+    "completion": [
+      "common_protocol_required",
+      "delegates_to_common_protocol_consumer",
+      "unsupported_release_blocked"
+    ],
+    "diagnostics": [
+      "canonical_message_vector_keys_required",
+      "delegates_to_canonical_message_vector_consumer",
+      "unsupported_release_blocked"
+    ],
+    "canonical_preview": [
+      "required",
+      "delegates_to_common_protocol_consumer",
+      "unsupported_release_blocked"
+    ],
+    "renderer": [
+      "preferred_language_then_canonical_english",
+      "delegates_to_common_renderer_consumer",
+      "unsupported_release_blocked"
+    ],
+    "renderer_lossiness": [
+      "classified_required",
+      "delegates_to_common_renderer_consumer",
+      "unsupported_release_blocked"
+    ],
+    "predictive": [
+      "resource_bounded_no_hidden_objects",
+      "delegates_to_common_protocol_consumer",
+      "unsupported_release_blocked"
+    ],
+    "standard_english_fallback": [
+      "enabled_only_when_preferred_profile_fails",
+      "delegates_to_common_parser_consumer",
+      "unsupported_release_blocked"
+    ],
+    "offline_cache": [
+      "signed_hash_epoch_scoped",
+      "delegates_to_common_resource_cache",
+      "unsupported_release_blocked"
+    ],
+    "redaction_metadata": [
+      "required_no_query_text_or_hidden_identifiers",
+      "delegates_to_common_protocol_consumer",
+      "unsupported_release_blocked"
+    ],
+    "capability_negotiation": [
+      "exact_resource_identity_required",
+      "delegates_to_common_negotiation_consumer",
+      "unsupported_release_blocked"
+    ],
+    "server_revalidation_authority": [
+      "required"
+    ],
+    "authority_boundary": [
+      "client_resources_are_untrusted_until_server_revalidation"
+    ],
+    "implementation_state": [
+      "contract_declared_pending_runtime_integration",
+      "runtime_integrated_with_tests"
+    ]
+  }
+}

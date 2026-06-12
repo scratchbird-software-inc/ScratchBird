@@ -294,13 +294,13 @@ StrictBulkLoadBeginResult BeginStrictBulkLoad(StrictBulkLoadLedger* ledger,
                        "core.bulk_load.strict.policy_not_enabled",
                        "strict bulk-load policy is disabled");
   }
-  if (request.donor_relaxed_semantics_requested &&
-      !(request.policy.allow_donor_relaxed_semantics && request.policy.map_donor_relaxed_to_native_safe)) {
+  if (request.reference_relaxed_semantics_requested &&
+      !(request.policy.allow_reference_relaxed_semantics && request.policy.map_reference_relaxed_to_native_safe)) {
     return RefuseBegin(ledger,
                        request,
-                       "strict_bulk_load_donor_relaxed_refused",
-                       "core.bulk_load.strict.donor_relaxed_refused",
-                       "donor relaxed semantics are refused unless policy maps them to native safe behavior");
+                       "strict_bulk_load_reference_relaxed_refused",
+                       "core.bulk_load.strict.reference_relaxed_refused",
+                       "reference relaxed semantics are refused unless policy maps them to native safe behavior");
   }
   if (request.staging_target.empty()) {
     return RefuseBegin(ledger,

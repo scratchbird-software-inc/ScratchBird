@@ -29,7 +29,7 @@ void AddCommonEvidence(const SblrHotPathExecutionRequest& request,
   result->evidence.push_back(
       "sblr_hot_path.execution_authority=engine_sblr_internal_envelope");
   result->evidence.push_back("sblr_hot_path.parser_execution_authority=false");
-  result->evidence.push_back("sblr_hot_path.donor_execution_authority=false");
+  result->evidence.push_back("sblr_hot_path.reference_execution_authority=false");
   result->evidence.push_back("sblr_hot_path.client_execution_authority=false");
   result->evidence.push_back(
       "sblr_hot_path.mga_finality_authority=engine_transaction_inventory");
@@ -139,13 +139,13 @@ SblrHotPathExecutionResult ExecuteSblrHotPath(
                   "route label is required");
   }
   if (request.authority.parser_sql_execution_authority ||
-      request.authority.donor_execution_authority ||
+      request.authority.reference_execution_authority ||
       request.authority.client_execution_authority ||
       request.envelope.contains_sql_text ||
       request.envelope.source_artifact_map.contains_sql_text ||
       request.envelope.source_artifact_map.raw_sql_text_authoritative) {
     return Refuse(request, "ORH_SBLR_HOT_PATH_EXTERNAL_AUTHORITY_REFUSED",
-                  "parser SQL, donor, and client routes cannot execute or own "
+                  "parser SQL, reference, and client routes cannot execute or own "
                   "SBLR hot-path authority");
   }
   if (request.authority.template_visibility_or_finality_authority ||

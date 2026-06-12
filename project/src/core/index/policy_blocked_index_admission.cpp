@@ -114,7 +114,7 @@ std::string FallbackPathFor(const PolicyBlockedIndexRouteRequest& request) {
 const char* FirstAuthorityClaim(
     const PolicyBlockedIndexAuthorityClaims& claims) {
   if (claims.parser) return "parser";
-  if (claims.donor) return "donor";
+  if (claims.reference) return "reference";
   if (claims.provider) return "provider";
   if (claims.index) return "index";
   if (claims.security) return "security";
@@ -161,7 +161,7 @@ std::vector<std::string> BaseEvidence(
       "policy_blocked.native_physical_provider=false",
       "policy_blocked.authoritative=false",
       "policy_blocked.parser_authority=false",
-      "policy_blocked.donor_authority=false",
+      "policy_blocked.reference_authority=false",
       "policy_blocked.provider_authority=false",
       "policy_blocked.index_authority=false",
       "policy_blocked.security_authority=false",

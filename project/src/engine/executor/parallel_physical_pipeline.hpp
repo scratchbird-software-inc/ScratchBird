@@ -84,7 +84,7 @@ struct ParallelPhysicalWorkerLane {
   bool worker_claims_security_authority = false;
   bool worker_claims_publication_authority = false;
   bool worker_claims_recovery_authority = false;
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool write_after_stream_finality_or_recovery_authority = false;
   bool timestamp_finality_authority = false;
   bool uuid_ordering_finality_authority = false;
@@ -120,7 +120,7 @@ struct ParallelPhysicalWorkerExecutionResult {
   bool worker_claims_security_authority = false;
   bool worker_claims_publication_authority = false;
   bool worker_claims_recovery_authority = false;
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool write_after_stream_finality_or_recovery_authority = false;
   bool timestamp_finality_authority = false;
   bool uuid_ordering_finality_authority = false;

@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from firebird_donor_native_harness import (
+from firebird_reference_native_harness import (
     ALLOWED_CLASSIFICATIONS,
     ALLOWED_LABELS,
     REQUIRED_FAILURE_FIELDS,
@@ -24,7 +24,7 @@ from firebird_donor_native_harness import (
 POLICY_MUST_CONTAIN = (
     "CTest name and label set",
     "Firebird surface row id",
-    "Donor tool name and arguments",
+    "Reference tool name and arguments",
     "ScratchBird endpoint and profile",
     "Raw stdout and stderr paths",
     "Normalized output path",
@@ -52,10 +52,10 @@ def create_valid_record(base_dir: Path) -> dict[str, str]:
     normalized.write_text("SQLCODE=-104\nSQLSTATE=42000\n")
     return {
         "ctest_name": "firebird_isql_original_regression_gate",
-        "label_set": "firebird_isql_original_regression_gate;firebird_donor_native",
+        "label_set": "firebird_isql_original_regression_gate;firebird_reference_native",
         "surface_row_id": "FBCTV-002",
-        "donor_tool_name": "isql",
-        "donor_tool_args": "-z -i case.sql",
+        "reference_tool_name": "isql",
+        "reference_tool_args": "-z -i case.sql",
         "scratchbird_endpoint": "firebird://127.0.0.1:3050/scratchbird",
         "scratchbird_profile": "firebird_5_0",
         "raw_stdout_path": str(raw_stdout),
@@ -142,8 +142,8 @@ def main() -> int:
         if not any("signal must be an integer" in error for error in errors):
             print("nonnumeric signal was not detected", file=sys.stderr)
             return 1
-        if not any("firebird_donor_native" in error for error in errors):
-            print("missing donor-native label was not detected", file=sys.stderr)
+        if not any("firebird_reference_native" in error for error in errors):
+            print("missing reference-native label was not detected", file=sys.stderr)
             return 1
         if not any("unsupported label" in error for error in errors):
             print("unsupported label was not detected", file=sys.stderr)

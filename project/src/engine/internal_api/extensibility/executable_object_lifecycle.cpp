@@ -339,7 +339,7 @@ bool RequestsExecutionBoundaryBypass(const EngineApiRequest& request) {
          HasOptionToken(request, "direct_storage") ||
          HasOptionToken(request, "raw_page") ||
          HasOptionToken(request, "external_engine_execution") ||
-         HasOptionToken(request, "donor_execution") ||
+         HasOptionToken(request, "reference_execution") ||
          HasOptionToken(request, "bypass_sblr") ||
          HasOptionToken(request, "bypass_mga") ||
          HasOptionToken(request, "bypass_catalog") ||

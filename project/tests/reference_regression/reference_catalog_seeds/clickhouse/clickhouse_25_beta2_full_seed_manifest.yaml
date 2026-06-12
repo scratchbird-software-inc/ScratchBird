@@ -1,0 +1,2948 @@
+{
+  "seed_manifest_uuid": "02b9d2a4-75e2-5521-94e0-84d3c8191cb8",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "clickhouse-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_REFERENCE_CATALOG_SEED_CLICKHOUSE_BETA2_FULL",
+  "seed_manifest_status": "actual_private_seed_manifest",
+  "reference_family": "clickhouse",
+  "reference_version_profile_id": "clickhouse_beta2_full",
+  "reference_version_profile_uuid": "a043ef34-cf62-57aa-b91d-407537cd43fb",
+  "reference_exact_version": "ClickHouse 25 beta2-full compatibility profile",
+  "new_database_recipe_id": "clickhouse_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-04-27T00:00:00Z",
+  "extraction_tool_ref": null,
+  "normalization_profile_ref": "embedded:SB_REFERENCE_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "system_databases",
+      "reference_catalog_object_name": "system.databases",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_databases",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_tables",
+      "reference_catalog_object_name": "system.tables",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_tables",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_columns",
+      "reference_catalog_object_name": "system.columns",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_columns",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_functions",
+      "reference_catalog_object_name": "system.functions",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_functions",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "reference_catalog_object_name": "system.data_type_families",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_data_type_families",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_formats",
+      "reference_catalog_object_name": "system.formats",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_formats",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_table_engines",
+      "reference_catalog_object_name": "system.table_engines",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_table_engines",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_settings",
+      "reference_catalog_object_name": "system.settings",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_settings",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_users",
+      "reference_catalog_object_name": "system.users",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "superuser_only_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_users",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_roles",
+      "reference_catalog_object_name": "system.roles",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_roles",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_grants",
+      "reference_catalog_object_name": "system.grants",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_grants",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_clusters",
+      "reference_catalog_object_name": "system.clusters",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_clusters",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_parts",
+      "reference_catalog_object_name": "system.parts",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_parts",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_mutations",
+      "reference_catalog_object_name": "system.mutations",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_mutations",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "system_query_log",
+      "reference_catalog_object_name": "system.query_log",
+      "reference_catalog_object_kind": "table_or_view",
+      "namespace_kind": "catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "session_filtered_metadata",
+      "scratchbird_mapping_ref": "map_clickhouse_system_query_log",
+      "diagnostic_code": "REFERENCE.CLICKHOUSE.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "object_id": "system_databases",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_databases",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_databases",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_databases",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_databases",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_databases",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_databases",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_databases",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_databases",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_tables",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_tables",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_tables",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_tables",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_tables",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_tables",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_tables",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_tables",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_tables",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_columns",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_columns",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_columns",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_columns",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_columns",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_columns",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_columns",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_columns",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_columns",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_functions",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_functions",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_functions",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_functions",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_functions",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_functions",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_functions",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_functions",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_functions",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_formats",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_formats",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_formats",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_formats",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_formats",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_formats",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_formats",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_formats",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_formats",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_table_engines",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_table_engines",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_table_engines",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_table_engines",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_table_engines",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_table_engines",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_table_engines",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_table_engines",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_table_engines",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_settings",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_settings",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_settings",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_settings",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_settings",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_settings",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_settings",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_settings",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_settings",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_users",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_users",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_users",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_users",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_users",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_users",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_users",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_users",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_users",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_roles",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_roles",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_roles",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_roles",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_roles",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_roles",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_roles",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_roles",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_roles",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_grants",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_grants",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_grants",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_grants",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_grants",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_grants",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_grants",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_grants",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_grants",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_clusters",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_clusters",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_clusters",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_clusters",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_clusters",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_clusters",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_clusters",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_clusters",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_clusters",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_parts",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_parts",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_parts",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_parts",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_parts",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_parts",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_parts",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_parts",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_parts",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_mutations",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_mutations",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_mutations",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_mutations",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_mutations",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_mutations",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_mutations",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_mutations",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_mutations",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    },
+    {
+      "object_id": "system_query_log",
+      "ordinal": 1,
+      "reference_column_name": "row_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "stable reference row key"
+    },
+    {
+      "object_id": "system_query_log",
+      "ordinal": 2,
+      "reference_column_name": "reference_name",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference-visible object or row name"
+    },
+    {
+      "object_id": "system_query_log",
+      "ordinal": 3,
+      "reference_column_name": "reference_kind",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": false,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "reference metadata kind"
+    },
+    {
+      "object_id": "system_query_log",
+      "ordinal": 4,
+      "reference_column_name": "scratchbird_mapping_key",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "UUID-backed ScratchBird mapping resolver key"
+    },
+    {
+      "object_id": "system_query_log",
+      "ordinal": 5,
+      "reference_column_name": "default_state",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "constant",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "new database default state"
+    },
+    {
+      "object_id": "system_query_log",
+      "ordinal": 6,
+      "reference_column_name": "visibility_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata visibility class"
+    },
+    {
+      "object_id": "system_query_log",
+      "ordinal": 7,
+      "reference_column_name": "mutation_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "metadata mutation class"
+    },
+    {
+      "object_id": "system_query_log",
+      "ordinal": 8,
+      "reference_column_name": "generated_value_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "runtime generated value classification"
+    },
+    {
+      "object_id": "system_query_log",
+      "ordinal": 9,
+      "reference_column_name": "redaction_class",
+      "reference_type_text": "string",
+      "scratchbird_type_ref": "sb.text.var.collated",
+      "nullable": true,
+      "default_text": null,
+      "generated_rule": "computed",
+      "collation_ref": "default_reference_profile_collation",
+      "redaction_rule_ref": null,
+      "description": "redaction class"
+    }
+  ],
+  "default_row_set": [
+    {
+      "object_id": "system_databases",
+      "row_ordinal": 1,
+      "row_key": "clickhouse:system_databases:default",
+      "values": {
+        "reference_name": "system.databases",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_databases",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "4546c79adcb358fc36c8d4925949f7c67ed08a61eb578c993b8ebb3705a25a65"
+    },
+    {
+      "object_id": "system_tables",
+      "row_ordinal": 2,
+      "row_key": "clickhouse:system_tables:default",
+      "values": {
+        "reference_name": "system.tables",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_tables",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "91a1b9e5bae2bf1cd066d187e74e4a7412e4919b6164a3c71acc7f4623b336c3"
+    },
+    {
+      "object_id": "system_columns",
+      "row_ordinal": 3,
+      "row_key": "clickhouse:system_columns:default",
+      "values": {
+        "reference_name": "system.columns",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_columns",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "81e29869b7ca6f5e12f2014e191cd7d52161bb1dfb1a1e83dde99c212bb68f3c"
+    },
+    {
+      "object_id": "system_functions",
+      "row_ordinal": 4,
+      "row_key": "clickhouse:system_functions:default",
+      "values": {
+        "reference_name": "system.functions",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_functions",
+        "default_state": "seeded_default_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "98ce4937a7fb68d8ef8fb9555dc45112426acd5c943687085ba64a46794f2081"
+    },
+    {
+      "object_id": "system_data_type_families",
+      "row_ordinal": 5,
+      "row_key": "clickhouse:system_data_type_families:default",
+      "values": {
+        "reference_name": "system.data_type_families",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_data_type_families",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "afb0adcfae30567c63ecd31e3eb8cce15c9804899ea358aa4410e3c3e1367a44"
+    },
+    {
+      "object_id": "system_formats",
+      "row_ordinal": 6,
+      "row_key": "clickhouse:system_formats:default",
+      "values": {
+        "reference_name": "system.formats",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_formats",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "7eebb37a5cceeeddc7c9c0c645d7585fbc83a18dfeb994610da168f581e9a91b"
+    },
+    {
+      "object_id": "system_table_engines",
+      "row_ordinal": 7,
+      "row_key": "clickhouse:system_table_engines:default",
+      "values": {
+        "reference_name": "system.table_engines",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_table_engines",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "6f42112ecf67c06e3805ca4a7d7ab220cbe8a97702a21fe8dd80e94e1e62750a"
+    },
+    {
+      "object_id": "system_settings",
+      "row_ordinal": 8,
+      "row_key": "clickhouse:system_settings:default",
+      "values": {
+        "reference_name": "system.settings",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_settings",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "e3d92072bafdd45872088633f189d2afce1c0ceeb3345678514e7a3b74615b25"
+    },
+    {
+      "object_id": "system_users",
+      "row_ordinal": 9,
+      "row_key": "clickhouse:system_users:default",
+      "values": {
+        "reference_name": "system.users",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_users",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "superuser_only_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "redacted_metadata"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "a03efcb5edd04970bef17538ad6485aeb7ea3685e3807f6faeafdd037e968d9a"
+    },
+    {
+      "object_id": "system_roles",
+      "row_ordinal": 10,
+      "row_key": "clickhouse:system_roles:default",
+      "values": {
+        "reference_name": "system.roles",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_roles",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "8ec10f002143439d112baa3722343f785272bc4fc8f83ee04e32a62b0d4d31e1"
+    },
+    {
+      "object_id": "system_grants",
+      "row_ordinal": 11,
+      "row_key": "clickhouse:system_grants:default",
+      "values": {
+        "reference_name": "system.grants",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_grants",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "690056c9a96f7d7280dbf9b1a0fcbd304cef640781ea861d6ea6a7e1a78c5aec"
+    },
+    {
+      "object_id": "system_clusters",
+      "row_ordinal": 12,
+      "row_key": "clickhouse:system_clusters:default",
+      "values": {
+        "reference_name": "system.clusters",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_clusters",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "962cbbbb896a4b83bf36381ee5f8052f74e92966c01075b455ef024e22a409fe"
+    },
+    {
+      "object_id": "system_parts",
+      "row_ordinal": 13,
+      "row_key": "clickhouse:system_parts:default",
+      "values": {
+        "reference_name": "system.parts",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_parts",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "00e6c6ecb55247c40d925536cf7b25091addec1022eb26386c67519057df7138"
+    },
+    {
+      "object_id": "system_mutations",
+      "row_ordinal": 14,
+      "row_key": "clickhouse:system_mutations:default",
+      "values": {
+        "reference_name": "system.mutations",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_mutations",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "227c96a2374d7cac0dc7ed6be64055433c3160e216005cfe4c14d2d00b4ba13f"
+    },
+    {
+      "object_id": "system_query_log",
+      "row_ordinal": 15,
+      "row_key": "clickhouse:system_query_log:default",
+      "values": {
+        "reference_name": "system.query_log",
+        "reference_kind": "table_or_view",
+        "scratchbird_mapping_key": "map_clickhouse_system_query_log",
+        "default_state": "explicit_empty_on_new_database_or_builtin_profile_rowset",
+        "visibility_class": "session_filtered_metadata",
+        "mutation_class": "report_only",
+        "generated_value_class": "classified_by_default_runtime_generated_value_set",
+        "redaction_class": "none"
+      },
+      "runtime_value_refs": [
+        "part_id",
+        "replica_id",
+        "mutation_id"
+      ],
+      "row_hash": "1577de10953d005613f5cb84753c8c3ee232fe9ce2a37a7975cc963ea19cf770"
+    }
+  ],
+  "default_metadata_set": [
+    {
+      "metadata_row_key": "clickhouse:system_databases:metadata",
+      "object_id": "system_databases",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "37ebc745d78ffceb0e5fc022293d83e152748973bf50f2d9660fdf376d55d950"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_tables:metadata",
+      "object_id": "system_tables",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "7b36e381237a5853dd1a8c5941885672e6435b48eada2b6fd6be9a2bb92752c5"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_columns:metadata",
+      "object_id": "system_columns",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "f21babd0f816b80a41e8823362ef32785d7135d4062c84e981a7868f03a970b5"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_functions:metadata",
+      "object_id": "system_functions",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "29d1fe4dfe612f542813bc723fc85adae092d0d786b7817a48490d50d6b716d9"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_data_type_families:metadata",
+      "object_id": "system_data_type_families",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "2bf4785b2559dd9fd95cc4d5e505fe5e0d2ea290bad8d7ed8601de32e9708ed6"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_formats:metadata",
+      "object_id": "system_formats",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "fda3d1cac32ac4841707f3f6d70ea2ad61c3ae6cec73e6ebc27f0b9ede6eaa24"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_table_engines:metadata",
+      "object_id": "system_table_engines",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "fe5ca26a40925e1864f977bba6ce5ba4f083ddf4da9dbdfb3fb136e24554355f"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_settings:metadata",
+      "object_id": "system_settings",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "1bcf69a890c386cdbbc952acb8470495f3bbb6baa1358e0abe94d227cd3309c0"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_users:metadata",
+      "object_id": "system_users",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "superuser_only_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "5c14a47ee7c545c59c08c956131cd8cce6e0d6ef70069ee578c95721c8db7db0"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_roles:metadata",
+      "object_id": "system_roles",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "cf1f170f36b2e2fddde8a1c22c1bd52ae73b32f89f7a1bc9d1ffbdcfe20fcb87"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_grants:metadata",
+      "object_id": "system_grants",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "f9ac7294bd31a429863a04219d49134b624ee9cecf6ba008bedb8c1f5f5a9310"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_clusters:metadata",
+      "object_id": "system_clusters",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "76e662b77baa1b0e12bc88836d525939fc8b01233f0e7a5eebfdeb36638b00df"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_parts:metadata",
+      "object_id": "system_parts",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "de800ef28be92e141b296130212ff5b2e78de2d56bd2da9c61e8bf9479375b27"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_mutations:metadata",
+      "object_id": "system_mutations",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "10fa2404cc1fe47c3c9342e80d2909f7472f40212bde1186111e8dbe07ac44ef"
+    },
+    {
+      "metadata_row_key": "clickhouse:system_query_log:metadata",
+      "object_id": "system_query_log",
+      "stable_order": [
+        "row_key",
+        "reference_name",
+        "reference_kind",
+        "scratchbird_mapping_key"
+      ],
+      "primary_key": [
+        "row_key"
+      ],
+      "default_metadata": {
+        "default_visibility_rule": "session_filtered_metadata",
+        "default_mutation_rule": "report_only",
+        "uuid_exposure_rule": "hidden",
+        "reference_id_exposure_rule": "reference_compatible_id_when_profile_requires_otherwise_hidden"
+      },
+      "row_hash": "9a0ae50b2872124eeee9b242d6fab8ceb1bc1822a05f124fd9c59e6e5755bad4"
+    }
+  ],
+  "default_security_row_set": [
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "clickhouse:security:1",
+      "values": {
+        "security_seed_name": "user password hash redacted",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "7993999da5a5903b516f41a4e79787b32e3e161972727485c6270662cac6927e"
+    },
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "clickhouse:security:2",
+      "values": {
+        "security_seed_name": "dictionary credential secret_ref",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "324284314ae80c8d103d7090f77981a5819c02ff142fa016474671b7bbfb2ecb"
+    },
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "clickhouse:security:3",
+      "values": {
+        "security_seed_name": "external storage secret_ref",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "dcc648f6d8fd242bd144a4eca994ea5f02cef429ba9f084b9ad23b272983ca08"
+    },
+    {
+      "object_id": "security_bootstrap",
+      "row_key": "clickhouse:security:4",
+      "values": {
+        "security_seed_name": "cluster secret_ref",
+        "secret_material": "redacted_or_secret_ref",
+        "visibility_rule_ref": "superuser_only_metadata"
+      },
+      "secret_policy": "redacted",
+      "row_hash": "cce52ed9f84b36b3a9219d6145a5d166ab996bd5ca6c4a3b9d9636b4d3613386"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "runtime_value_id": "part_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "part_id",
+      "reference_behavior": "part_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "replica_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "replica_id",
+      "reference_behavior": "replica_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "mutation_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "mutation_id",
+      "reference_behavior": "mutation_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "query_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "query_id",
+      "reference_behavior": "query_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "cluster_node_id",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "cluster_node_id",
+      "reference_behavior": "cluster_node_id is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "host_name",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "host_name",
+      "reference_behavior": "host_name is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "data_path",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "data_path",
+      "reference_behavior": "data_path is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "bytes_on_disk",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "bytes_on_disk",
+      "reference_behavior": "bytes_on_disk is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "settings_source",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "settings_source",
+      "reference_behavior": "settings_source is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "generated_at_setup",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    },
+    {
+      "runtime_value_id": "creation_timestamp",
+      "object_id": "all_catalog_surfaces",
+      "column_name": "creation_timestamp",
+      "reference_behavior": "creation_timestamp is generated by the reference or by runtime environment for a new instance/session/object",
+      "scratchbird_emulation_rule": "computed_on_read",
+      "diagnostic_code": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "visibility_rule_id": "public_metadata",
+      "rule": "public",
+      "security_authority": "sys.security local policy; cluster.sys.security only when cluster exists",
+      "applies_to": [
+        "non-secret built-in metadata"
+      ]
+    },
+    {
+      "visibility_rule_id": "grant_filtered_metadata",
+      "rule": "grant_filtered",
+      "security_authority": "effective user grants, roles, and external group UUID cache",
+      "applies_to": [
+        "user objects and privilege-dependent metadata"
+      ]
+    },
+    {
+      "visibility_rule_id": "session_filtered_metadata",
+      "rule": "session_filtered",
+      "security_authority": "attachment/session policy",
+      "applies_to": [
+        "monitoring, command, task, connection, and status surfaces"
+      ]
+    },
+    {
+      "visibility_rule_id": "superuser_only_metadata",
+      "rule": "superuser_only",
+      "security_authority": "SysArch/root/superuser equivalent policy",
+      "applies_to": [
+        "security catalogs and privileged settings"
+      ]
+    },
+    {
+      "visibility_rule_id": "redacted_metadata",
+      "rule": "redacted",
+      "security_authority": "redaction_rule_set",
+      "applies_to": [
+        "secret-bearing rows and fields"
+      ]
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "redaction_rule_id": "raw_secret_forbidden",
+      "rule": "raw passwords, password hashes, tokens, certificates, private keys, replication secrets, and host secrets are never stored raw",
+      "replacement": "secret_ref or redacted sentinel",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN"
+    },
+    {
+      "redaction_rule_id": "host_path_redaction",
+      "rule": "host paths and file-system locations are redacted unless policy explicitly exposes them",
+      "replacement": "redacted_path",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN"
+    },
+    {
+      "redaction_rule_id": "network_endpoint_redaction",
+      "rule": "host names, peer addresses, node ids, and topology values are redacted when policy marks topology sensitive",
+      "replacement": "redacted_endpoint",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN"
+    },
+    {
+      "redaction_rule_id": "generated_secret_ref",
+      "rule": "setup-generated credentials are represented by generated_at_setup secret refs",
+      "replacement": "secret_ref:generated_at_setup",
+      "diagnostic": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "mutation_rule_id": "read_only_overlay",
+      "rule": "read_only",
+      "write_path": "none",
+      "rollback_behavior": "none"
+    },
+    {
+      "mutation_rule_id": "reference_ddl_translation",
+      "rule": "reference_compatible_write",
+      "write_path": "parser_overlay_to_native_v3_catalog",
+      "rollback_behavior": "transactional"
+    },
+    {
+      "mutation_rule_id": "native_v3_only",
+      "rule": "native_v3_only",
+      "write_path": "native_v3_command",
+      "rollback_behavior": "transactional"
+    },
+    {
+      "mutation_rule_id": "migration_only",
+      "rule": "migration_only",
+      "write_path": "migration_stage",
+      "rollback_behavior": "transactional"
+    },
+    {
+      "mutation_rule_id": "report_only",
+      "rule": "report_only",
+      "write_path": "none",
+      "rollback_behavior": "none"
+    },
+    {
+      "mutation_rule_id": "explicitly_unsupported",
+      "rule": "explicitly_unsupported",
+      "write_path": "none",
+      "rollback_behavior": "none"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_clickhouse_system_databases",
+      "reference_object_ref": "system_databases",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "bb5dbdff-85c8-570a-86df-8dceb00dfed5",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_tables",
+      "reference_object_ref": "system_tables",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "c4d9d3cd-aa23-5f2f-83a0-84f119023da6",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_columns",
+      "reference_object_ref": "system_columns",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "3f0eefcd-0acd-5c53-96ed-76ca6ad960f1",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_functions",
+      "reference_object_ref": "system_functions",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "90ef698c-1a69-5f0e-9f7a-18b568ac4575",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_data_type_families",
+      "reference_object_ref": "system_data_type_families",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "28c4a8d8-e61e-56f2-b230-882f61348592",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_formats",
+      "reference_object_ref": "system_formats",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a798f913-9fde-56ea-a2a5-dadb0048b47b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_table_engines",
+      "reference_object_ref": "system_table_engines",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "6d84f887-3bc9-576e-b39d-bc110f222d54",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_settings",
+      "reference_object_ref": "system_settings",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "5154a9ef-beb6-5954-a3e3-b2eb08c0aab1",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_users",
+      "reference_object_ref": "system_users",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "2181db5a-da41-5f33-8091-b7edc6a9784b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_roles",
+      "reference_object_ref": "system_roles",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "8af731b4-017d-55d1-b839-a7cd70561562",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_grants",
+      "reference_object_ref": "system_grants",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "cb0ac69b-d5cd-5741-af36-accce777ddd5",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_clusters",
+      "reference_object_ref": "system_clusters",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "a7b6320b-d177-51ec-b1da-2f355604bf7a",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_parts",
+      "reference_object_ref": "system_parts",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "4eed189b-4067-5483-ad08-5c705db574cb",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_mutations",
+      "reference_object_ref": "system_mutations",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "3b44954c-95d4-55a5-acee-969838dba00e",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_clickhouse_system_query_log",
+      "reference_object_ref": "system_query_log",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d5e9930b-66dd-5fc4-802e-7f16ca075fa4",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "rowset_hashes": {
+    "catalog_object_set": "21ce7db088d674fcdc7371c60cc9f17ee3373a30be5ff1eee58c67c55d59f7df",
+    "catalog_column_set": "7e7c4b1f25f8bf245f16bb2790df4d9898330cec57a7bc72b40d2e439b9fa03d",
+    "default_row_set": "f83c33b0248f65b0371113df44b368d0bd59928095bd66048dfbd76b5cb31660",
+    "default_metadata_set": "13d342ad591137a651b39bbd67c9e4c4a1911c1e0c8c2bfb9cfbbccd2d3f5e3d",
+    "default_security_row_set": "a59e3ad98100cc8910bbaabea1d975fdbe485af2fee72deae0e7a46421b26299",
+    "default_runtime_generated_value_set": "9894d99a816ceb6549c9707248805e4776eb5dee54b6a3a3c7c78469399757ab",
+    "visibility_rule_set": "a4ff62809b18a5598c9c433aaf85518e9b890ab27281c2a10c835bdf3e4b4ebb",
+    "redaction_rule_set": "19c1ee9c4c8a2c3b8a0284f1b8e67a0979c7b8f758b983f9f98df014c737cbc3",
+    "mutation_rule_set": "1a4c0ffc820a04116da2585f61eafa9c5e9f6a383bd54b9e1ce8bde110bf90ba",
+    "scratchbird_mapping_set": "92bb27e8c04ab6c792c5d4a81cda0b409cf1b9e654e08bbc94d3c295e2c893e2"
+  },
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "project/tests/reference_regression/reference_catalog_seeds/<family>/<manifest>#redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "REFERENCE.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "REFERENCE.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "REFERENCE.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "REFERENCE.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "REFERENCE.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "REFERENCE.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "REFERENCE.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "manifest_hash": "a8c6d03e75ff912a04e24756c9fc0a2088ea7e538c9e37b78a8b85552f3c8d7d"
+}

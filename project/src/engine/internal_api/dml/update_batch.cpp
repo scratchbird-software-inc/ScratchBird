@@ -158,7 +158,7 @@ UpdateIndexMaintenanceAction ActionForIndex(const CrudIndexRecord& index,
       index.family == kCrudIndexFamilyColumnarZone || index.family == kCrudIndexFamilyExpression ||
       index.family == kCrudIndexFamilyGraphAdjacency || index.family == kCrudIndexFamilyPartial ||
       index.family == kCrudIndexFamilyCovering || index.family == kCrudIndexFamilyInMemory ||
-      index.family == kCrudIndexFamilyDonorEmulated) {
+      index.family == kCrudIndexFamilyReferenceEmulated) {
     return UpdateIndexMaintenanceAction::synchronous_exact_rewrite;
   }
   return UpdateIndexMaintenanceAction::reject_batch_path;
@@ -204,7 +204,7 @@ const char* UpdateBatchModeName(UpdateBatchMode mode) {
     case UpdateBatchMode::singleton_row_uuid: return "singleton_row_uuid";
     case UpdateBatchMode::predicate_scan: return "predicate_scan";
     case UpdateBatchMode::indexed_predicate: return "indexed_predicate";
-    case UpdateBatchMode::donor_bulk: return "donor_bulk";
+    case UpdateBatchMode::reference_bulk: return "reference_bulk";
     case UpdateBatchMode::native_bulk: return "native_bulk";
   }
   return "unknown";
@@ -239,8 +239,8 @@ UpdateBatchMode ResolveUpdateBatchMode(const EngineUpdateRowsRequest& request,
   if (request.update_predicate.predicate_kind == "row_uuid_match") {
     return UpdateBatchMode::singleton_row_uuid;
   }
-  if (request.update_predicate.predicate_kind == "donor_bulk") {
-    return UpdateBatchMode::donor_bulk;
+  if (request.update_predicate.predicate_kind == "reference_bulk") {
+    return UpdateBatchMode::reference_bulk;
   }
   if (request.update_predicate.predicate_kind == "native_bulk") {
     return UpdateBatchMode::native_bulk;

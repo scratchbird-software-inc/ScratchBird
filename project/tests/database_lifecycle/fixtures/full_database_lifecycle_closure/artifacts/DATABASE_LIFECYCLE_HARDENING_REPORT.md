@@ -12,8 +12,8 @@ Covered gate labels:
 
 | Gate | Evidence |
 | --- | --- |
-| `database_lifecycle_fault_injection` | Runtime conformance test covering partial tx1 create evidence loss, interrupted tx2 activation evidence loss, unclean startup recovery, stale owner classification, identity mismatch refusal, engine authentication denial, parser SQL bypass refusal, donor non-file diagnostic behavior, cluster fail-closed behavior, and MGA recovery evidence without write-ahead terminology. |
-| `DBLC_STATIC_AUTHORITY_DRIFT_GATES` | Static authority scan over accepted lifecycle, parser-admission, donor-mapping, server-session, MGA, cluster-boundary, and backup/archive authority paths. |
+| `database_lifecycle_fault_injection` | Runtime conformance test covering partial tx1 create evidence loss, interrupted tx2 activation evidence loss, unclean startup recovery, stale owner classification, identity mismatch refusal, engine authentication denial, parser SQL bypass refusal, reference non-file diagnostic behavior, cluster fail-closed behavior, and MGA recovery evidence without write-ahead terminology. |
+| `DBLC_STATIC_AUTHORITY_DRIFT_GATES` | Static authority scan over accepted lifecycle, parser-admission, reference-mapping, server-session, MGA, cluster-boundary, and backup/archive authority paths. |
 | `DBLC_STATIC_NO_LIFECYCLE_PLACEHOLDERS` | Static scan proving accepted lifecycle code paths do not retain TODO, FIXME, NotImplemented, not implemented, stub, placeholder, future work, or deferred wording. |
 | `mga_policy_gate` | External ScratchBird MGA authority scanner must pass before DBLC-017 closure. |
 
@@ -25,7 +25,7 @@ The hardening gate preserves these rules:
 | --- | --- |
 | MGA is the transaction and recovery authority. | Partial tx1, interrupted tx2, and unclean startup cases are checked against durable startup and transaction-inventory evidence. |
 | Parser dialects do not execute SQL or own finality. | Raw SQL and SQL-text-bearing SBLR envelopes are rejected before engine admission; transaction control envelopes require engine/public-ABI dispatch. |
-| Donor dialect support has no donor storage or donor SQL authority. | Firebird non-file surfaces return exact diagnostics or ScratchBird lifecycle SBLR mappings with donor SQL and file effects disabled. |
+| Reference dialect support has no reference storage or reference SQL authority. | Firebird non-file surfaces return exact diagnostics or ScratchBird lifecycle SBLR mappings with reference SQL and file effects disabled. |
 | Cluster paths fail closed until cluster mapping exists. | Standalone cluster route and cluster transaction admission refuse before entering cluster route details. |
 | Accepted lifecycle code paths do not rely on placeholder behavior. | Static placeholder gate scans lifecycle source paths and requires explicit platform-unavailable diagnostics instead of implementation-placeholder language. |
 

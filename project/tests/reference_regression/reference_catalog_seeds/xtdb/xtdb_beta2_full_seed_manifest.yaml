@@ -1,0 +1,1548 @@
+{
+  "seed_manifest_uuid": "1c043ea3-58b7-5215-8edf-d41923274417",
+  "seed_manifest_schema_version": 1,
+  "seed_manifest_template_id": "xtdb-catalog-seed-template-v1",
+  "search_key": "SB_REFERENCE_REFERENCE_CATALOG_SEED_XTDB_BETA2_FULL",
+  "seed_manifest_status": "profile_derived_private_seed_manifest",
+  "reference_family": "xtdb",
+  "reference_version_profile_id": "xtdb_beta2_full",
+  "reference_version_profile_uuid": "b0a6ae77-95c4-5917-b5b5-d0e371dbc6de",
+  "reference_exact_version": "XTDB beta2-full compatibility profile",
+  "new_database_recipe_id": "xtdb_empty_database_beta2_default_recipe_v1",
+  "sandbox_profile_uuid": null,
+  "extraction_timestamp_utc": "2026-05-10T00:00:00Z",
+  "extraction_tool_ref": "docs/specifications/registries/reference-catalog-source-derived-seed-rows.yaml",
+  "normalization_profile_ref": "embedded:SB_REFERENCE_CATALOG_SEED_NORMALIZATION_PROFILE_V1",
+  "redaction_profile_ref": "embedded:redaction_rule_set",
+  "row_hash_algorithm": "sha256",
+  "catalog_object_set": [
+    {
+      "object_id": "xt",
+      "reference_catalog_object_name": "xt",
+      "reference_catalog_object_kind": "system_schema",
+      "namespace_kind": "default_schema_bootstrap",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_xt",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog",
+      "reference_catalog_object_name": "pg_catalog",
+      "reference_catalog_object_kind": "system_schema",
+      "namespace_kind": "default_schema_bootstrap",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema",
+      "reference_catalog_object_name": "information_schema",
+      "reference_catalog_object_kind": "system_schema",
+      "namespace_kind": "default_schema_bootstrap",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_information_schema",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "public",
+      "reference_catalog_object_name": "public",
+      "reference_catalog_object_kind": "system_schema",
+      "namespace_kind": "default_schema_bootstrap",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_public",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_tables",
+      "reference_catalog_object_name": "information_schema.tables",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "information_schema",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_information_schema_tables",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_columns",
+      "reference_catalog_object_name": "information_schema.columns",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "information_schema",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_information_schema_columns",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "information_schema_schemata",
+      "reference_catalog_object_name": "information_schema.schemata",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "information_schema",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_information_schema_schemata",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_tables",
+      "reference_catalog_object_name": "pg_catalog.pg_tables",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_tables",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_type",
+      "reference_catalog_object_name": "pg_catalog.pg_type",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_type",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_class",
+      "reference_catalog_object_name": "pg_catalog.pg_class",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_class",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_description",
+      "reference_catalog_object_name": "pg_catalog.pg_description",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_description",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_views",
+      "reference_catalog_object_name": "pg_catalog.pg_views",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_views",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_matviews",
+      "reference_catalog_object_name": "pg_catalog.pg_matviews",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_matviews",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_attribute",
+      "reference_catalog_object_name": "pg_catalog.pg_attribute",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_attribute",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_namespace",
+      "reference_catalog_object_name": "pg_catalog.pg_namespace",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_namespace",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_proc",
+      "reference_catalog_object_name": "pg_catalog.pg_proc",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_proc",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_database",
+      "reference_catalog_object_name": "pg_catalog.pg_database",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_database",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_stat_user_tables",
+      "reference_catalog_object_name": "pg_catalog.pg_stat_user_tables",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_stat_user_tables",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_settings",
+      "reference_catalog_object_name": "pg_catalog.pg_settings",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_settings",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_range",
+      "reference_catalog_object_name": "pg_catalog.pg_range",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_range",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_am",
+      "reference_catalog_object_name": "pg_catalog.pg_am",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_am",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "pg_catalog_pg_user",
+      "reference_catalog_object_name": "pg_catalog.pg_user",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "pg_catalog_template",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_pg_catalog_pg_user",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "xt_trie_stats",
+      "reference_catalog_object_name": "xt.trie_stats",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "xt_runtime",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_xt_trie_stats",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    },
+    {
+      "object_id": "xt_live_tables",
+      "reference_catalog_object_name": "xt.live_tables",
+      "reference_catalog_object_kind": "system_table",
+      "namespace_kind": "xt_runtime",
+      "default_seed_required": true,
+      "mutation_policy": "report_only",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "scratchbird_mapping_ref": "map_xtdb_xt_live_tables",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "diagnostic_code": "REFERENCE.XTDB.CATALOG_SEED_OBJECT_MISSING"
+    }
+  ],
+  "catalog_column_set": [
+    {
+      "column_id": "xt_object_name",
+      "object_ref": "xt",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4758d4afd96d1f1c9e6af9eaa66433c85a62f309ebea22836e70eea25e70a3f4"
+    },
+    {
+      "column_id": "xt_object_kind",
+      "object_ref": "xt",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "0802e7345dca165a280513ee867c55a13ee80f2cb9c407d03a1d8bd9e103528f"
+    },
+    {
+      "column_id": "xt_source_ref",
+      "object_ref": "xt",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "23d4af58bcd4866d37e23ea29997d7b235255354bd1486955bf3762353b354f6"
+    },
+    {
+      "column_id": "pg_catalog_object_name",
+      "object_ref": "pg_catalog",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "469c8b5e347017f11729e85c723ef279104705bc1edc19030feae8e37e506fda"
+    },
+    {
+      "column_id": "pg_catalog_object_kind",
+      "object_ref": "pg_catalog",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b452f5842569714d79a57ee545f02ba678c27cba5d604e7f00deed27f125aa41"
+    },
+    {
+      "column_id": "pg_catalog_source_ref",
+      "object_ref": "pg_catalog",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "25cf5d9cba3358d94918b0f32556f4213d10506374b09051f66641012d3b0d28"
+    },
+    {
+      "column_id": "information_schema_object_name",
+      "object_ref": "information_schema",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "f43a25863bfcadd3d13f487d7f80da91179ad9505b8790910d690369b0e58eb9"
+    },
+    {
+      "column_id": "information_schema_object_kind",
+      "object_ref": "information_schema",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "f3dd58c5679a664e9dd94a54e8424de0041e0051d8b210bd52f849111b9a49ac"
+    },
+    {
+      "column_id": "information_schema_source_ref",
+      "object_ref": "information_schema",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "8bb3ae5683d783422bf4a8b7ee1819708edb8ebf13af100969e7cd0bac15bfe2"
+    },
+    {
+      "column_id": "public_object_name",
+      "object_ref": "public",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "798bb7a2a0e0664b343ee0269e6053fcf129656085ac3cf3a65d58f8a93edde0"
+    },
+    {
+      "column_id": "public_object_kind",
+      "object_ref": "public",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "129c59edf53a53aecff27f69b22386901e221fed18742498e5e778972ded9909"
+    },
+    {
+      "column_id": "public_source_ref",
+      "object_ref": "public",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "5114ef8219ba318ea2321faa763af09ab9f51e0b0ef3a497830ef16e5788aa6d"
+    },
+    {
+      "column_id": "information_schema_tables_object_name",
+      "object_ref": "information_schema_tables",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "618f46e152e6bf6882cf134f6e2d38e5e7172904acfe9869d73562032e8de907"
+    },
+    {
+      "column_id": "information_schema_tables_object_kind",
+      "object_ref": "information_schema_tables",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "9dc09f3eaddba56d1c55c97e1b351d286891065d95c32ea5d38de357ef70facf"
+    },
+    {
+      "column_id": "information_schema_tables_source_ref",
+      "object_ref": "information_schema_tables",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "3913d23b749fb8c27bb583a3f2e59d95a144397acb774ed173237303f2f25af4"
+    },
+    {
+      "column_id": "information_schema_columns_object_name",
+      "object_ref": "information_schema_columns",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "782c02260887153f935583d003ce8c778fc3f024b53b834f5b9e08957987b9ef"
+    },
+    {
+      "column_id": "information_schema_columns_object_kind",
+      "object_ref": "information_schema_columns",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "115402a69959f16601b7aed60e2a732336c6fd37c05c7e87af77ed3e1e26a3a6"
+    },
+    {
+      "column_id": "information_schema_columns_source_ref",
+      "object_ref": "information_schema_columns",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "1fe92f9e9ecc95f040612ac5a1f283880656f563f10de01302bf8d9b801a3aea"
+    },
+    {
+      "column_id": "information_schema_schemata_object_name",
+      "object_ref": "information_schema_schemata",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "cc747232f7a76d7cb184dbb60dd4318eb75c7a81850379e729a29384ebf9c184"
+    },
+    {
+      "column_id": "information_schema_schemata_object_kind",
+      "object_ref": "information_schema_schemata",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2b0c2a4b4930dde03983b36917eb1ec2d4a97fe27cb35a211acf19f9d5658bfb"
+    },
+    {
+      "column_id": "information_schema_schemata_source_ref",
+      "object_ref": "information_schema_schemata",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "de2a53fb88750fe32b7771c254cff05484601d48ba2791f8e229239d572442b5"
+    },
+    {
+      "column_id": "pg_catalog_pg_tables_object_name",
+      "object_ref": "pg_catalog_pg_tables",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2c164b51e0972c61715cece3ab8f0e98ef41fceed4493dfda235e1ea72501d57"
+    },
+    {
+      "column_id": "pg_catalog_pg_tables_object_kind",
+      "object_ref": "pg_catalog_pg_tables",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "25ea6a6bbb43097b11e797cafb206b57479d81fbd2fea9d561e6d69ae97b6db0"
+    },
+    {
+      "column_id": "pg_catalog_pg_tables_source_ref",
+      "object_ref": "pg_catalog_pg_tables",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "154d3191b68f354b1cc7b502faa1d8defc617d79025638f3fcfd4f06de6aa9f5"
+    },
+    {
+      "column_id": "pg_catalog_pg_type_object_name",
+      "object_ref": "pg_catalog_pg_type",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "bf6d00f841ef13635ce5cf6b770452129b8d1b7c61d07f7dc0c9673d6e837c66"
+    },
+    {
+      "column_id": "pg_catalog_pg_type_object_kind",
+      "object_ref": "pg_catalog_pg_type",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "ac0d1214c11a4d591d43f7f4c8639571e14f0457081a440371130a031a2bca96"
+    },
+    {
+      "column_id": "pg_catalog_pg_type_source_ref",
+      "object_ref": "pg_catalog_pg_type",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "bc09c48360b609b734fad044c11f6a9a915eaf408655ed4c83f513c58ee32934"
+    },
+    {
+      "column_id": "pg_catalog_pg_class_object_name",
+      "object_ref": "pg_catalog_pg_class",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "e96619140cc9cceebe6cafcf2079f4e81179e6ee4fe2eabfe318e408468e97f9"
+    },
+    {
+      "column_id": "pg_catalog_pg_class_object_kind",
+      "object_ref": "pg_catalog_pg_class",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "f7c848e16a1be7c49b80ad68579f0a299f4cabbcf6e0702b9ad337795994b9c6"
+    },
+    {
+      "column_id": "pg_catalog_pg_class_source_ref",
+      "object_ref": "pg_catalog_pg_class",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "fb35c3eb80a4ce2bd6998891bf16932d55804b5d4d4f6d30c849677ae7542f09"
+    },
+    {
+      "column_id": "pg_catalog_pg_description_object_name",
+      "object_ref": "pg_catalog_pg_description",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "e88d048982b0ad9472c8bb41d11e5695a17a12eeeb87bcec4e4d85d9249bf263"
+    },
+    {
+      "column_id": "pg_catalog_pg_description_object_kind",
+      "object_ref": "pg_catalog_pg_description",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "e025c5a4c6a03f8780d733a80f5254b141fdce25e295653cfd9282fd9b7058e6"
+    },
+    {
+      "column_id": "pg_catalog_pg_description_source_ref",
+      "object_ref": "pg_catalog_pg_description",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "4bede27644e517cd22c6ff88d64b4f96c702c23a3b0b82d1046c5733c4d98d29"
+    },
+    {
+      "column_id": "pg_catalog_pg_views_object_name",
+      "object_ref": "pg_catalog_pg_views",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "6aad46cb68a41ab1c68e9b0f52cd12fa4fa0f4f3effde0fe02282b6cd7b851a3"
+    },
+    {
+      "column_id": "pg_catalog_pg_views_object_kind",
+      "object_ref": "pg_catalog_pg_views",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "9f80116f82096865ff5ae58276bfde753d1ddfa4fcc44906464124916136c352"
+    },
+    {
+      "column_id": "pg_catalog_pg_views_source_ref",
+      "object_ref": "pg_catalog_pg_views",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "9542140fca87d83df25a274295ad7630355dd96f49f94191882ba24b6711e56c"
+    },
+    {
+      "column_id": "pg_catalog_pg_matviews_object_name",
+      "object_ref": "pg_catalog_pg_matviews",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "35366cc2dd46e49575a16d5fd97b11297ab86be88a34c84b931a0823f9065486"
+    },
+    {
+      "column_id": "pg_catalog_pg_matviews_object_kind",
+      "object_ref": "pg_catalog_pg_matviews",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "68fddb26221207486a18d2ea5142a915a02d8692efb8b3666bb4204cb0fc71c9"
+    },
+    {
+      "column_id": "pg_catalog_pg_matviews_source_ref",
+      "object_ref": "pg_catalog_pg_matviews",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "80c5fd819b7f2f2b9bc195dd071fa9e8c918ac2537960af4e66863999c8466b6"
+    },
+    {
+      "column_id": "pg_catalog_pg_attribute_object_name",
+      "object_ref": "pg_catalog_pg_attribute",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "8ddb1800716965b122e16b50e06fd930a648e65bcaba90cf26d22eaf8688faf4"
+    },
+    {
+      "column_id": "pg_catalog_pg_attribute_object_kind",
+      "object_ref": "pg_catalog_pg_attribute",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "9c4c7f094e3dce0e097f5d69d5af6cc8f9bf782401629d4432d3dfbc65ed48bb"
+    },
+    {
+      "column_id": "pg_catalog_pg_attribute_source_ref",
+      "object_ref": "pg_catalog_pg_attribute",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "cee446f7593b10f9d0ca67330f3dcdfbaf9c46ff02eca4dd471b629c2478ab5b"
+    },
+    {
+      "column_id": "pg_catalog_pg_namespace_object_name",
+      "object_ref": "pg_catalog_pg_namespace",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b1524791fe8bfd5be1d743c7f4c49fbf405ffd40bf37aa78d160793e34b444d1"
+    },
+    {
+      "column_id": "pg_catalog_pg_namespace_object_kind",
+      "object_ref": "pg_catalog_pg_namespace",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "9d0f0deecc932de3fd18401f3aa377bb3ab1cc12cc7757fa7e15a0c2d12b8275"
+    },
+    {
+      "column_id": "pg_catalog_pg_namespace_source_ref",
+      "object_ref": "pg_catalog_pg_namespace",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "5578d70ad67dad33d9f62520cabfe422f5b7126458b36c8ea5029d6e65459704"
+    },
+    {
+      "column_id": "pg_catalog_pg_proc_object_name",
+      "object_ref": "pg_catalog_pg_proc",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "198c5e26ea4d1d8aefec0b0d2819b6bee82bb26045b560b269d349e58a14662f"
+    },
+    {
+      "column_id": "pg_catalog_pg_proc_object_kind",
+      "object_ref": "pg_catalog_pg_proc",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "cd760c943b2a45cb8ef5190a8c0fa503a71d7ca617e8f155259e5ff37b0072e6"
+    },
+    {
+      "column_id": "pg_catalog_pg_proc_source_ref",
+      "object_ref": "pg_catalog_pg_proc",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "2c88fa03406c7818f9ded834dc1d433d2dc3e322688f2560bed13b3915440adf"
+    },
+    {
+      "column_id": "pg_catalog_pg_database_object_name",
+      "object_ref": "pg_catalog_pg_database",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "c085a8de16a615e2202993eee03cad621074effa4349205f863898bf10c0cd1f"
+    },
+    {
+      "column_id": "pg_catalog_pg_database_object_kind",
+      "object_ref": "pg_catalog_pg_database",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "440ece2645156254217879af9d268c250c44081d5a2083c7e2835e294f7da056"
+    },
+    {
+      "column_id": "pg_catalog_pg_database_source_ref",
+      "object_ref": "pg_catalog_pg_database",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "38c12629e83d135f5c3325c97d85f70ea05d4231787445be5a5f02418132a3f3"
+    },
+    {
+      "column_id": "pg_catalog_pg_stat_user_tables_object_name",
+      "object_ref": "pg_catalog_pg_stat_user_tables",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4318245e19faa61442fc9b5061f1fa3e5dc419e172c5c2d5460603a1fc46e2c1"
+    },
+    {
+      "column_id": "pg_catalog_pg_stat_user_tables_object_kind",
+      "object_ref": "pg_catalog_pg_stat_user_tables",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "018d12fea21e2593762e91c348996fa227a793e4e6038f78b2a27099a63f2b8a"
+    },
+    {
+      "column_id": "pg_catalog_pg_stat_user_tables_source_ref",
+      "object_ref": "pg_catalog_pg_stat_user_tables",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "94b20ca31c5821ce657af3d664fc5d43c6e609f8b94005bc0bd0b1c39950aeb7"
+    },
+    {
+      "column_id": "pg_catalog_pg_settings_object_name",
+      "object_ref": "pg_catalog_pg_settings",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "4e9529ed1674dad5a9ef5181d3406e860a9d7cb837df8b84a88558c54a49cb85"
+    },
+    {
+      "column_id": "pg_catalog_pg_settings_object_kind",
+      "object_ref": "pg_catalog_pg_settings",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "d28b2cfce476715a26544ecdb6804e8a05e2cb692e9109f7707513fa551ee560"
+    },
+    {
+      "column_id": "pg_catalog_pg_settings_source_ref",
+      "object_ref": "pg_catalog_pg_settings",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "9979d843f30bcac0bba08cfeec20f138483724cec254bd3892b23caf414fd6b4"
+    },
+    {
+      "column_id": "pg_catalog_pg_range_object_name",
+      "object_ref": "pg_catalog_pg_range",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "3b9c003a1acae04ba5cd202328e0e9961b943da9abfded6075a6b6bec70d9083"
+    },
+    {
+      "column_id": "pg_catalog_pg_range_object_kind",
+      "object_ref": "pg_catalog_pg_range",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "b9ff6b2a29b693cfba137b22c67ad2ce27e915f7b1aee09eb7b6179d2e9180ea"
+    },
+    {
+      "column_id": "pg_catalog_pg_range_source_ref",
+      "object_ref": "pg_catalog_pg_range",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "04c09cc30fb4310278e841282792ffc259a443773bf33a1d020267fdfd7c31ef"
+    },
+    {
+      "column_id": "pg_catalog_pg_am_object_name",
+      "object_ref": "pg_catalog_pg_am",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "924a69b205d6a293465cd142af793609ad9de4a757849f4661af25f7bc366389"
+    },
+    {
+      "column_id": "pg_catalog_pg_am_object_kind",
+      "object_ref": "pg_catalog_pg_am",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "2e9b86f35093ae2fcee6e761491537d1d5a8dd7fb444eb885abac5f6895fd375"
+    },
+    {
+      "column_id": "pg_catalog_pg_am_source_ref",
+      "object_ref": "pg_catalog_pg_am",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "eb1c73938bf2831837930b368b5e7dc570d2c7f34146af8255ba9771bf58b29f"
+    },
+    {
+      "column_id": "pg_catalog_pg_user_object_name",
+      "object_ref": "pg_catalog_pg_user",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "afffd4d15bdbd3202127e080ce905a045933cebaacccb28c640b51259717b7ac"
+    },
+    {
+      "column_id": "pg_catalog_pg_user_object_kind",
+      "object_ref": "pg_catalog_pg_user",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "e9bef8b798b1f5c95ad27a237f4bd9a75f5c0ee1d0326db9023f5f2891ab94f2"
+    },
+    {
+      "column_id": "pg_catalog_pg_user_source_ref",
+      "object_ref": "pg_catalog_pg_user",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "576138a96d04c20fab6b4e3203d3d70d7cac268c981a33cdf107e3d93ea407be"
+    },
+    {
+      "column_id": "xt_trie_stats_object_name",
+      "object_ref": "xt_trie_stats",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "728197640872cfdcbeb2bd5b3cac229075848068a4f8d6f8ab12270de93325f8"
+    },
+    {
+      "column_id": "xt_trie_stats_object_kind",
+      "object_ref": "xt_trie_stats",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "fce8ed15b9baa69935dfc20aaa411d3e6039d7d2448b341bd37136a2c84933ee"
+    },
+    {
+      "column_id": "xt_trie_stats_source_ref",
+      "object_ref": "xt_trie_stats",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "ed07713f195ec6d41b886e632a7534867e0851e07f203331a16d00637124a14d"
+    },
+    {
+      "column_id": "xt_live_tables_object_name",
+      "object_ref": "xt_live_tables",
+      "ordinal": 1,
+      "reference_column_name": "object_name",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "a12d752743de6ed69a9603580818aea98b0e62910a7fb411e0e0877cff3ae79d"
+    },
+    {
+      "column_id": "xt_live_tables_object_kind",
+      "object_ref": "xt_live_tables",
+      "ordinal": 2,
+      "reference_column_name": "object_kind",
+      "reference_type": "string",
+      "nullable": false,
+      "default_rendering": null,
+      "row_hash": "a715110bc7fe0d4ddcf15fd577054041de7e77d3bb77d7efdba72355b5e9f2c4"
+    },
+    {
+      "column_id": "xt_live_tables_source_ref",
+      "object_ref": "xt_live_tables",
+      "ordinal": 3,
+      "reference_column_name": "source_ref",
+      "reference_type": "string",
+      "nullable": true,
+      "default_rendering": null,
+      "row_hash": "987898c809be89764d35583bea6da7ac16a679f6cf5d6cec3528e380771fd634"
+    }
+  ],
+  "default_row_set": [
+    {
+      "row_id": "xtdb.seed.xt",
+      "reference_object_ref": "xt",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "xt",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "194157ea96869edaf99d24aa50011246f749081720a6b1cea41629e4a45f93e8"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog",
+      "reference_object_ref": "pg_catalog",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "ca5349423b1f9262fe22d9edd0b360974875aff75a2f1bceba2a4e1b0815e0a4"
+    },
+    {
+      "row_id": "xtdb.seed.information_schema",
+      "reference_object_ref": "information_schema",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "4a653e98925bdb63a5814972c4d3dedde0343f0b692b0cf82a3baac47963b659"
+    },
+    {
+      "row_id": "xtdb.seed.public",
+      "reference_object_ref": "public",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "public",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "42ade01c0ff23f2ab1c450605ed0365b0d3e5b624ab5e07ed7ea32622d0f37f2"
+    },
+    {
+      "row_id": "xtdb.seed.information_schema_tables",
+      "reference_object_ref": "information_schema_tables",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.tables",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "cdf2919bde981f7c986b5b9c4fd70e6475d827b365537ce373d9b20040e54296"
+    },
+    {
+      "row_id": "xtdb.seed.information_schema_columns",
+      "reference_object_ref": "information_schema_columns",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.columns",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "f53acf29b608a55db3c45ae549172436a9724f6fee55149e0bfd534eaf9b98ee"
+    },
+    {
+      "row_id": "xtdb.seed.information_schema_schemata",
+      "reference_object_ref": "information_schema_schemata",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "information_schema.schemata",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "f71c5752b37c3f6d778ca700893791b30e437c3c8076e29b53b926b13739707c"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_tables",
+      "reference_object_ref": "pg_catalog_pg_tables",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_tables",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "455dfcb7e0cf0117630543a4986e8baab6604767dadf5dec99df1eaaeeb2ebcb"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_type",
+      "reference_object_ref": "pg_catalog_pg_type",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_type",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "05605299e304afd8f00d212d9e58be3c4a652bda290e533efd65a982a49a026a"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_class",
+      "reference_object_ref": "pg_catalog_pg_class",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_class",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "c9bab68481d49c822ee818b688cc92b7787511a2688d07290a6a62b0b0e47ba7"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_description",
+      "reference_object_ref": "pg_catalog_pg_description",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_description",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "d3b02fcc3ddb648f83d3129a09bb6cd9c9c9fa147db93fb8c2ba99db2cafc14b"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_views",
+      "reference_object_ref": "pg_catalog_pg_views",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_views",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "cecb5cb8b75e96995aa315a6cd48ab0f063d038baf8fbc36406e7c0c03f78f65"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_matviews",
+      "reference_object_ref": "pg_catalog_pg_matviews",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_matviews",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "eb479d0641dfe48f9225ceaa664abdeee66c6257708bba8eb48d1324656e4d4b"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_attribute",
+      "reference_object_ref": "pg_catalog_pg_attribute",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_attribute",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "94dbec5418d5d280369374648a2e19ac83a72e6459f1ad12972e68e7e1d83a3a"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_namespace",
+      "reference_object_ref": "pg_catalog_pg_namespace",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_namespace",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "5b8d0077c0e760da810fb1a7e33ec3d43215d8f15d74cd2eaba368b8e411516d"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_proc",
+      "reference_object_ref": "pg_catalog_pg_proc",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_proc",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "78e897646536a1a8837d85782b663aa4fece39abf52dc84e333c797654a1d8eb"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_database",
+      "reference_object_ref": "pg_catalog_pg_database",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_database",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "ef6b2c468f10b3cf7b2dad403a453f0a4f93748f837db444642b3963428c1618"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_stat_user_tables",
+      "reference_object_ref": "pg_catalog_pg_stat_user_tables",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_stat_user_tables",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "020b6d74a305577c0433cc2411fa804e538f11bebddbb7c6c95ca1d4b4eaa3d9"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_settings",
+      "reference_object_ref": "pg_catalog_pg_settings",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_settings",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "9968e06cd75c7f0f3af724d9cb6c1e4b84584835cc94ba26c3822eb893988f4e"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_range",
+      "reference_object_ref": "pg_catalog_pg_range",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_range",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "b27f4532a2757af835663bae0557b0f705067391ae6b5b05da1eeb642c607234"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_am",
+      "reference_object_ref": "pg_catalog_pg_am",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_am",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "14316ffb0030d7329ada3eb90394d5c1c4435adca3694067fd64f5b4853c3b27"
+    },
+    {
+      "row_id": "xtdb.seed.pg_catalog_pg_user",
+      "reference_object_ref": "pg_catalog_pg_user",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "pg_catalog.pg_user",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "dde905edfdd780c05e75c00c01e57ed586298b0c8774316904b908111c5cdc81"
+    },
+    {
+      "row_id": "xtdb.seed.xt_trie_stats",
+      "reference_object_ref": "xt_trie_stats",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "xt.trie_stats",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "e90a8862cfcc8fa56f63054737340d658bd67ab16b8a94ed008fa973281da3b9"
+    },
+    {
+      "row_id": "xtdb.seed.xt_live_tables",
+      "reference_object_ref": "xt_live_tables",
+      "row_kind": "source_derived_catalog_surface_presence",
+      "reference_visible_name": "xt.live_tables",
+      "definition_source_ref": "reference_source_reference:xtdb/core/src/main/clojure/xtdb/information_schema.clj",
+      "value_profile": "exact_catalog_object_inventory_row",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "mutation_policy_ref": "report_only",
+      "row_hash": "8efc9cf157d277e0039421d22d31092797ed5ac9c2d29698a2d90a62573a9423"
+    }
+  ],
+  "default_metadata_set": [],
+  "default_security_row_set": [
+    {
+      "row_id": "xtdb.security.default_visibility_policy",
+      "principal": "PUBLIC",
+      "secret_material": "redacted_not_applicable",
+      "visibility_policy_ref": "grant_filtered_metadata",
+      "row_hash": "34988b3d4cdddc2090a12b5f95436c7b72a465dd82f1f9140a03b8261877a49c"
+    }
+  ],
+  "default_runtime_generated_value_set": [
+    {
+      "value_id": "xtdb.runtime.database_identity",
+      "value_class": "instance_generated_uuid",
+      "emulation_rule": "generate ScratchBird UUIDv7 at database/profile create and expose only reference-compatible rendering",
+      "row_hash": "3aba5cf0a5774044395b6c8a27c5374f4d29720a82450ba09f87baecfc3241ab"
+    }
+  ],
+  "visibility_rule_set": [
+    {
+      "rule_id": "grant_filtered_metadata",
+      "rule": "visible only through reference metadata policy and ScratchBird engine authorization"
+    }
+  ],
+  "redaction_rule_set": [
+    {
+      "rule_id": "raw_secret_forbidden",
+      "rule": "raw secrets are never stored in reference seed manifests"
+    }
+  ],
+  "mutation_rule_set": [
+    {
+      "rule_id": "report_only",
+      "rule": "catalog seed rows are report-only; mutation routes through UUID-backed ScratchBird catalog APIs"
+    }
+  ],
+  "scratchbird_mapping_set": [
+    {
+      "mapping_id": "map_xtdb_xt",
+      "reference_object_ref": "xt",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "592a1c15-7085-584f-815e-b15fafbb705a",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog",
+      "reference_object_ref": "pg_catalog",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d942a87a-7f1a-5150-bc67-3285b4b1d475",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_information_schema",
+      "reference_object_ref": "information_schema",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "e51c799f-19de-5b15-9bec-68707ca272d8",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_public",
+      "reference_object_ref": "public",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "52751398-3a15-5a88-af37-f6343f501009",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_information_schema_tables",
+      "reference_object_ref": "information_schema_tables",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "5344c312-aea1-5cee-a30c-9071449ea010",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_information_schema_columns",
+      "reference_object_ref": "information_schema_columns",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "f4065f1c-1dd3-5068-814c-73d6c5b5d2fb",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_information_schema_schemata",
+      "reference_object_ref": "information_schema_schemata",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "89b52eef-c7a8-54a0-a91b-ddf4970fd3c9",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_tables",
+      "reference_object_ref": "pg_catalog_pg_tables",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "653efa74-27ac-550d-8c82-b319e5c0116c",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_type",
+      "reference_object_ref": "pg_catalog_pg_type",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "d5be229e-5039-5ff9-9c53-485663b84c8b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_class",
+      "reference_object_ref": "pg_catalog_pg_class",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "6d8bf958-8ebd-5dd8-8397-c1df84a516f2",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_description",
+      "reference_object_ref": "pg_catalog_pg_description",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "045de005-9e1b-51ec-9155-4ba5c8fef216",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_views",
+      "reference_object_ref": "pg_catalog_pg_views",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "51a6d6fa-375b-5e08-9dd3-3321d991c1bc",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_matviews",
+      "reference_object_ref": "pg_catalog_pg_matviews",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "9692d51b-fcd6-5e8f-acf4-eed613f0804a",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_attribute",
+      "reference_object_ref": "pg_catalog_pg_attribute",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "343afbe0-aecc-58ff-9596-0e75607c8be8",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_namespace",
+      "reference_object_ref": "pg_catalog_pg_namespace",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "673b066e-2c36-5a6c-a4d3-fba168559de4",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_proc",
+      "reference_object_ref": "pg_catalog_pg_proc",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "95431ddd-fd35-52bf-be61-574f8beffc8a",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_database",
+      "reference_object_ref": "pg_catalog_pg_database",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "c932aa4c-9fe3-5905-8286-b05d0e6a550b",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_stat_user_tables",
+      "reference_object_ref": "pg_catalog_pg_stat_user_tables",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "3734092d-0644-5cfd-b4f2-6e0e904708a7",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_settings",
+      "reference_object_ref": "pg_catalog_pg_settings",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "8cc41f4e-68b9-5dd2-9943-56a71b75427f",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_range",
+      "reference_object_ref": "pg_catalog_pg_range",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "dc35d642-9da3-560a-b800-8a1e8f921b64",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_am",
+      "reference_object_ref": "pg_catalog_pg_am",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "0c62ff5d-5d12-52c2-b811-41abe416d2c5",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_pg_catalog_pg_user",
+      "reference_object_ref": "pg_catalog_pg_user",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "4f300a9a-8afc-5b8b-897c-0f5ee1ccde1d",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_xt_trie_stats",
+      "reference_object_ref": "xt_trie_stats",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "f31a10c8-299a-57af-ac60-333bc3f49aac",
+      "uuid_exposure_rule": "hidden"
+    },
+    {
+      "mapping_id": "map_xtdb_xt_live_tables",
+      "reference_object_ref": "xt_live_tables",
+      "scratchbird_source": "emulated catalog overlay over sys catalog, sys.metrics, sys.security, and seed manifest rows",
+      "scratchbird_object_ref": "7662bc8a-03b2-5c76-a212-ed92183298ba",
+      "uuid_exposure_rule": "hidden"
+    }
+  ],
+  "conformance_gate_set": [
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-001",
+      "proof_ref": "manifest_hash",
+      "requirement": "manifest hash present and stable"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-002",
+      "proof_ref": "default_row_set",
+      "requirement": "default rows present with row hashes"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-003",
+      "proof_ref": "visibility_rule_set",
+      "requirement": "visibility rules present"
+    },
+    {
+      "gate_id": "CATALOG-SEED-ACTUAL-004",
+      "proof_ref": "redaction_rule_set",
+      "requirement": "secret redaction rules present"
+    }
+  ],
+  "invalid_state_behavior": {
+    "missing_manifest": "REFERENCE.CATALOG_SEED.MANIFEST_INVALID",
+    "missing_object": "REFERENCE.CATALOG_SEED.OBJECT_MISSING",
+    "missing_column": "REFERENCE.CATALOG_SEED.COLUMN_MISSING",
+    "missing_rowset": "REFERENCE.CATALOG_SEED.ROWSET_MISSING",
+    "raw_secret": "REFERENCE.CATALOG_SEED.RAW_SECRET_FORBIDDEN",
+    "unclassified_generated_value": "REFERENCE.CATALOG_SEED.RUNTIME_VALUE_UNCLASSIFIED",
+    "visibility_undefined": "REFERENCE.CATALOG_SEED.TEMPLATE_VISIBILITY_UNDEFINED",
+    "mutation_undefined": "REFERENCE.CATALOG_SEED.MUTATION_AMBIGUOUS",
+    "external_reference": "REFERENCE.CATALOG_SEED.EXTERNAL_REFERENCE_FORBIDDEN"
+  },
+  "rowset_hashes": {
+    "catalog_object_set": "5ab7262247a53d4ebb65cb8c1c00b37b51c0bc35c1a074d553c0e5fe07d030f9",
+    "catalog_column_set": "9cb1402eec80a4fd55fa0201900dbca49e53ed5bcc0fa0365b1692a5eecddbcc",
+    "default_row_set": "ce69f738c41204eb9147afdcf7bb87d6fb5a07e4b2c204e5a4c35f3520295b6d",
+    "default_metadata_set": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "default_security_row_set": "faa876a4f1631635701526f2a78b8667d6116c90793158fbdf4dc08e28f81995",
+    "default_runtime_generated_value_set": "7871e1814a62d01791188d8520376889972fbc3f8df1439c753c76a7875d3cf4",
+    "visibility_rule_set": "e3d11affebfa8ba62fe7e7f0c2014ac363d6d1ac1ccaa3f47aafd18109cdd20c",
+    "redaction_rule_set": "c081d87b2dadb71687177f97c210a024f823fba2383d3e299998c66deee46f2f",
+    "mutation_rule_set": "8b806b0d95bbd92e3c2aeb3d7d4ecd0fd0abc1aaf9c6a14639f8966080719fed",
+    "scratchbird_mapping_set": "03d174547a0d4ceac82ce98a1b05a69d4e38f52df1bd3da35f5759e67316d9da"
+  },
+  "manifest_hash": "5fca1ad9a1e7290f508e913cd916a85cbf9aa1b60d7c1651f3b114ced4fc3128"
+}

@@ -67,7 +67,7 @@ constexpr PolicyRefusalRuntimeRow kPolicyRefusalRuntimeRows[] = {
     {"SBSQL-18E22DA52C20-with-readpast", "sb.scalar.refusal_with_readpast"},
     {"SBSQL-1CB047ADD7B5-with-nolock", "sb.scalar.refusal_with_nolock"},
     {"SBSQL-F9144106E9F2-explain-waltrue", "sb.scalar.refusal_explain_waltrue"},
-    {"SBSQL-E9D1FF70EC0D-explain-donor-log-compatibilitytrue", "sb.scalar.refusal_explain_donor_log_compatibilitytrue"},
+    {"SBSQL-E9D1FF70EC0D-explain-reference-log-compatibilitytrue", "sb.scalar.refusal_explain_reference_log_compatibilitytrue"},
     {"SBSQL-BEB64FF33809-explain-evidencetrue", "sb.scalar.refusal_explain_evidencetrue"},
     {"SBSQL-5D9C952A3697-system-variable-trancount", "sb.scalar.refusal_system_variable_trancount"},
     {"SBSQL-511BC12EEF82-atomic", "sb.scalar.refusal_atomic"},
@@ -94,8 +94,8 @@ constexpr PolicyRefusalRuntimeRow kPolicyRefusalRuntimeRows[] = {
     {"SBSQL-DCA62654CB0F-at-at", "sb.scalar.refusal_at_at"},
     {"SBSQL-6860D73D6667-named-argument", "sb.scalar.refusal_named_argument"},
     {"SBSQL-971C709406A0-at", "sb.scalar.refusal_at"},
-    {"SBSQL-6637546ABDF0-donor-log-mode", "sb.scalar.refusal_donor_log_mode"},
-    {"SBSQL-17068E518638-checkpoint-donor-log", "sb.scalar.refusal_checkpoint_donor_log"},
+    {"SBSQL-6637546ABDF0-reference-log-mode", "sb.scalar.refusal_reference_log_mode"},
+    {"SBSQL-17068E518638-checkpoint-reference-log", "sb.scalar.refusal_checkpoint_reference_log"},
 };
 
 SblrValue TextValue(std::string input) {
@@ -552,18 +552,18 @@ int main() {
   ok = ExpectText("SBSQL-14D576F7019D-deprecated_keyword-metadata",
                   Run(registry, "sb.scalar.deprecated_keyword"),
                   "keyword_class.deprecated") && ok;
-  ok = ExpectText("SBSQL-21B3D26B555C-donor_contextual_keyword-metadata",
-                  Run(registry, "sb.scalar.donor_contextual_keyword"),
-                  "keyword_class.donor_contextual") && ok;
+  ok = ExpectText("SBSQL-21B3D26B555C-reference_contextual_keyword-metadata",
+                  Run(registry, "sb.scalar.reference_contextual_keyword"),
+                  "keyword_class.reference_contextual") && ok;
   ok = ExpectText("SBSQL-7036F89856D2-reserved_native_keyword-metadata",
                   Run(registry, "sb.scalar.reserved_native_keyword"),
                   "keyword_class.reserved_native") && ok;
   ok = ExpectText("SBSQL-FA8B706E49D0-contextual_native_keyword-metadata",
                   Run(registry, "sb.scalar.contextual_native_keyword"),
                   "keyword_class.contextual_native") && ok;
-  ok = ExpectText("SBSQL-813817A7EDFD-donor_reserved_keyword-metadata",
-                  Run(registry, "sb.scalar.donor_reserved_keyword"),
-                  "keyword_class.donor_reserved") && ok;
+  ok = ExpectText("SBSQL-813817A7EDFD-reference_reserved_keyword-metadata",
+                  Run(registry, "sb.scalar.reference_reserved_keyword"),
+                  "keyword_class.reference_reserved") && ok;
   ok = ExpectText("SBSQL-C1E6BF629293-meta_command_keyword-metadata",
                   Run(registry, "sb.scalar.meta_command_keyword"),
                   "keyword_class.meta_command") && ok;
@@ -643,9 +643,9 @@ int main() {
   ok = ExpectText("SBSQL-85D62227A882-catalog_read-metadata",
                   Run(registry, "sb.scalar.catalog_read"),
                   "authority.catalog_read") && ok;
-  ok = ExpectText("SBSQL-87F8BED4D9EE-donor_log_compatibility-metadata",
-                  Run(registry, "sb.scalar.donor_log_compatibility"),
-                  "compatibility.donor_log_non_authority") && ok;
+  ok = ExpectText("SBSQL-87F8BED4D9EE-reference_log_compatibility-metadata",
+                  Run(registry, "sb.scalar.reference_log_compatibility"),
+                  "compatibility.reference_log_non_authority") && ok;
   ok = ExpectText("SBSQL-92C226CF5A7A-fail_closed-metadata",
                   Run(registry, "sb.scalar.fail_closed"),
                   "decision.fail_closed") && ok;
@@ -715,7 +715,7 @@ int main() {
                   "decision.refused") && ok;
   ok = ExpectText("SBSQL-70117DFD73D9-innodb-metadata",
                   Run(registry, "sb.scalar.innodb"),
-                  "donor_storage.innodb") && ok;
+                  "reference_storage.innodb") && ok;
   ok = ExpectText("SBSQL-902E2EF680C8-hnsw-metadata",
                   Run(registry, "sb.scalar.hnsw"),
                   "index_method.hnsw") && ok;
@@ -806,9 +806,9 @@ int main() {
   ok = ExpectText("SBSQL-95878BFEDF43-syntax_parser_only-metadata",
                   Run(registry, "sb.scalar.syntax_parser_only"),
                   "syntax.parser_only") && ok;
-  ok = ExpectText("SBSQL-A371FE7C3BAA-donor_only_rewrite-metadata",
-                  Run(registry, "sb.scalar.donor_only_rewrite"),
-                  "donor.rewrite_only") && ok;
+  ok = ExpectText("SBSQL-A371FE7C3BAA-reference_only_rewrite-metadata",
+                  Run(registry, "sb.scalar.reference_only_rewrite"),
+                  "reference.rewrite_only") && ok;
   ok = ExpectText("SBSQL-A57396612A09-object_resolution_failed-metadata",
                   Run(registry, "sb.scalar.object_resolution_failed"),
                   "diagnostic.object_resolution_failed") && ok;

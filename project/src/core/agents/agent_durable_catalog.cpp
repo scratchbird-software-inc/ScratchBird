@@ -439,7 +439,7 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
              evidence.key_material_exported);
     AddField(&out, "parser_authority", evidence.parser_authority);
     AddField(&out, "client_authority", evidence.client_authority);
-    AddField(&out, "donor_authority", evidence.donor_authority);
+    AddField(&out, "reference_authority", evidence.reference_authority);
     AddField(&out, "sidecar_authority", evidence.sidecar_authority);
     AddField(&out, "transaction_authority", evidence.transaction_authority);
     AddField(&out, "finality_authority", evidence.finality_authority);
@@ -474,7 +474,7 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
              action.compensation_evidence_uuid);
     AddField(&out, "parser_authority", action.parser_authority);
     AddField(&out, "client_authority", action.client_authority);
-    AddField(&out, "donor_authority", action.donor_authority);
+    AddField(&out, "reference_authority", action.reference_authority);
     AddField(&out, "sidecar_authority", action.sidecar_authority);
     out << '\n';
   }
@@ -536,7 +536,7 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
     AddField(&out, "release_reason", reservation.release_reason);
     AddField(&out, "parser_authority", reservation.parser_authority);
     AddField(&out, "client_authority", reservation.client_authority);
-    AddField(&out, "donor_authority", reservation.donor_authority);
+    AddField(&out, "reference_authority", reservation.reference_authority);
     AddField(&out, "benchmark_authority", reservation.benchmark_authority);
     out << '\n';
   }
@@ -587,7 +587,7 @@ std::string PayloadForImage(const DurableAgentCatalogImage& image) {
              replay.external_cluster_provider_attested);
     AddField(&out, "parser_authority", replay.parser_authority);
     AddField(&out, "client_authority", replay.client_authority);
-    AddField(&out, "donor_authority", replay.donor_authority);
+    AddField(&out, "reference_authority", replay.reference_authority);
     AddField(&out, "wal_authority", replay.wal_authority);
     AddField(&out, "benchmark_authority", replay.benchmark_authority);
     AddField(&out, "optimizer_plan_authority",
@@ -1057,7 +1057,7 @@ DurableCatalogValidationResult ValidateDurableAgentCatalogImage(
             BoolField(fields, "key_material_exported");
         evidence.parser_authority = BoolField(fields, "parser_authority");
         evidence.client_authority = BoolField(fields, "client_authority");
-        evidence.donor_authority = BoolField(fields, "donor_authority");
+        evidence.reference_authority = BoolField(fields, "reference_authority");
         evidence.sidecar_authority = BoolField(fields, "sidecar_authority");
         evidence.transaction_authority = BoolField(fields, "transaction_authority");
         evidence.finality_authority = BoolField(fields, "finality_authority");
@@ -1094,7 +1094,7 @@ DurableCatalogValidationResult ValidateDurableAgentCatalogImage(
             StringField(fields, "compensation_evidence_uuid");
         action.parser_authority = BoolField(fields, "parser_authority");
         action.client_authority = BoolField(fields, "client_authority");
-        action.donor_authority = BoolField(fields, "donor_authority");
+        action.reference_authority = BoolField(fields, "reference_authority");
         action.sidecar_authority = BoolField(fields, "sidecar_authority");
         result.image.actions.push_back(std::move(action));
       } else if (section == "approval") {
@@ -1153,7 +1153,7 @@ DurableCatalogValidationResult ValidateDurableAgentCatalogImage(
         reservation.release_reason = StringField(fields, "release_reason");
         reservation.parser_authority = BoolField(fields, "parser_authority");
         reservation.client_authority = BoolField(fields, "client_authority");
-        reservation.donor_authority = BoolField(fields, "donor_authority");
+        reservation.reference_authority = BoolField(fields, "reference_authority");
         reservation.benchmark_authority =
             BoolField(fields, "benchmark_authority");
         result.image.resource_reservations.push_back(std::move(reservation));
@@ -1209,7 +1209,7 @@ DurableCatalogValidationResult ValidateDurableAgentCatalogImage(
             BoolField(fields, "external_cluster_provider_attested");
         replay.parser_authority = BoolField(fields, "parser_authority");
         replay.client_authority = BoolField(fields, "client_authority");
-        replay.donor_authority = BoolField(fields, "donor_authority");
+        replay.reference_authority = BoolField(fields, "reference_authority");
         replay.wal_authority = BoolField(fields, "wal_authority");
         replay.benchmark_authority = BoolField(fields, "benchmark_authority");
         replay.optimizer_plan_authority =
@@ -1344,7 +1344,7 @@ AgentRuntimeStatus ValidateDurableAgentCatalogForProduction(
                         replay.replay_uuid);
     }
     if (replay.parser_authority || replay.client_authority ||
-        replay.donor_authority || replay.wal_authority ||
+        replay.reference_authority || replay.wal_authority ||
         replay.benchmark_authority || replay.optimizer_plan_authority ||
         replay.index_finality_authority ||
         replay.provider_finality_authority || replay.memory_authority ||

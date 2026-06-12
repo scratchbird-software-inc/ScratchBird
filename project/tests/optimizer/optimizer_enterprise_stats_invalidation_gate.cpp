@@ -139,7 +139,7 @@ bool InvalidationRejectsUnsafeAuthority() {
   opt::OptimizerStatisticsInvalidationRequest request;
   request.kind = opt::OptimizerStatisticsInvalidationKind::kStatsRefresh;
   request.authority = Authority();
-  request.authority.parser_or_donor_authority = true;
+  request.authority.parser_or_reference_authority = true;
   request.evidence_digest = "evidence:unsafe";
   request.stats_epoch = 20;
   const auto result = opt::DispatchOptimizerStatisticsInvalidation(request, &cache);

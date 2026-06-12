@@ -12,7 +12,7 @@
 // Production agent paths must not consume fixture policy, relaxed metric,
 // probe-only catalog, sidecar-only evidence, or synthetic live-management
 // state. These checks are admission/evidence controls only; they are not
-// transaction finality, visibility, recovery, parser, donor, or client
+// transaction finality, visibility, recovery, parser, reference, or client
 // authority.
 
 #include "agent_runtime.hpp"

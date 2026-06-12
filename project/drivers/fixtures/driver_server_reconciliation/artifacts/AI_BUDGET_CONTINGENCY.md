@@ -59,7 +59,7 @@ ctest --test-dir build --output-on-failure -R database_lifecycle_security_auth_a
 - Do not mark any checklist row closed without CTest or lane-native evidence.
 - Do not let driver code rely on implementation-ahead behavior without spec
   authority.
-- Do not replace MGA finality with driver inference, parser state, donor tools,
+- Do not replace MGA finality with driver inference, parser state, reference tools,
   or WAL-style assumptions.
 - Do not collapse driver/adaptor/tool lanes into one generic pass; every lane
   needs row-status evidence.

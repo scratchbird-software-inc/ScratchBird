@@ -113,7 +113,7 @@ bool IsAllowedAntiWalEvidenceLine(std::string_view lower) {
          Contains(lower, "optionenabled(request, \"authoritative_wal:\"") ||
          Contains(lower, "authoritative_wal:\") == \"true") ||
          Contains(lower, "backup_authoritative_wal_forbidden") ||
-         Contains(lower, "donor_sqlite_wal_shortcut_forbidden") ||
+         Contains(lower, "reference_sqlite_wal_shortcut_forbidden") ||
          Contains(lower, "std::string(\"authoritative_\") + \"wal\"") ||
          Contains(lower, "wal_authority\")") ||
          Contains(lower, "wal_required") ||

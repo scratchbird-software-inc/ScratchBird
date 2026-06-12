@@ -17,7 +17,7 @@
 namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DIAGNOSTIC_RENDERING
-// Canonical engine-to-parser-package result envelope. This is not donor
+// Canonical engine-to-parser-package result envelope. This is not reference
 // rendering. Parser packages consume this envelope and perform client/dialect
 // shaping without becoming engine authority.
 
@@ -85,7 +85,7 @@ struct EngineRenderedResultEnvelope {
   bool canonical_result_shape = true;
   bool render_context_valid = true;
   bool parser_finality_authority = false;
-  bool donor_finality_authority = false;
+  bool reference_finality_authority = false;
   bool redaction_applied = true;
   std::vector<EngineRenderedDiagnostic> diagnostics;
   std::vector<EngineDescriptor> columns;

@@ -112,8 +112,8 @@ void RequireAuthorityEvidence(const SnapshotSafeCacheDecision& decision) {
           "cache must not own recovery authority");
   Require(HasEvidence(evidence, "cache_parser_execution_authority=false"),
           "cache must not own parser execution authority");
-  Require(HasEvidence(evidence, "cache_donor_behavior_authority=false"),
-          "cache must not own donor behavior authority");
+  Require(HasEvidence(evidence, "cache_reference_behavior_authority=false"),
+          "cache must not own reference behavior authority");
   Require(HasEvidence(evidence, "cache_durability_log_authority=false"),
           "cache must not own durability-log authority");
 }

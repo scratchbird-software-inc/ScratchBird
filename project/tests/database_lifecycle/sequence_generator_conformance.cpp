@@ -323,32 +323,32 @@ void TestIdentityBindingMetadata() {
   Cleanup(path);
 }
 
-void TestDonorMappingDiagnosticsAndLabels() {
-  const auto path = TestPath("donor_mapping");
+void TestReferenceMappingDiagnosticsAndLabels() {
+  const auto path = TestPath("reference_mapping");
   Cleanup(path);
-  auto incomplete = Definition("019e0fda-dddd-7ddd-8ddd-donorbad001", 1, 1, 10, 2);
-  incomplete.donor_profile_uuid = "donor-mariadb";
+  auto incomplete = Definition("019e0fda-dddd-7ddd-8ddd-referencebad001", 1, 1, 10, 2);
+  incomplete.reference_profile_uuid = "reference-mariadb";
   RequireDiagnostic(CreateGenerator(path, 1, incomplete),
-                    seq_api::kSequenceDiagnosticDonorMappingIncomplete,
-                    "DBLC-013AH incomplete donor mapping was accepted");
+                    seq_api::kSequenceDiagnosticReferenceMappingIncomplete,
+                    "DBLC-013AH incomplete reference mapping was accepted");
 
-  auto mapped = Definition("019e0fda-dddd-7ddd-8ddd-donorgood01", 1, 1, 10, 2);
-  mapped.donor_profile_uuid = "donor-mariadb";
-  mapped.donor_family = "mariadb";
-  mapped.donor_mapping_label = "donor:mariadb:sequence:nontransactional";
-  mapped.donor_allocation_timing = "before_row_insert";
-  mapped.donor_rollback_behavior = "consumed_on_rollback";
-  mapped.donor_finality_behavior = "allocated_uncommitted_until_mga";
-  mapped.donor_cache_behavior = "cache_window_persisted_high_water";
-  mapped.donor_mapping_complete = true;
-  RequireOk(CreateGenerator(path, 2, mapped), "DBLC-013AH donor mapped create failed");
-  RequireOk(ApplyOutcome(path, 2, "committed"), "DBLC-013AH donor mapped create commit failed");
+  auto mapped = Definition("019e0fda-dddd-7ddd-8ddd-referencegood01", 1, 1, 10, 2);
+  mapped.reference_profile_uuid = "reference-mariadb";
+  mapped.reference_family = "mariadb";
+  mapped.reference_mapping_label = "reference:mariadb:sequence:nontransactional";
+  mapped.reference_allocation_timing = "before_row_insert";
+  mapped.reference_rollback_behavior = "consumed_on_rollback";
+  mapped.reference_finality_behavior = "allocated_uncommitted_until_mga";
+  mapped.reference_cache_behavior = "cache_window_persisted_high_water";
+  mapped.reference_mapping_complete = true;
+  RequireOk(CreateGenerator(path, 2, mapped), "DBLC-013AH reference mapped create failed");
+  RequireOk(ApplyOutcome(path, 2, "committed"), "DBLC-013AH reference mapped create commit failed");
   const auto allocated = Allocate(path, 3, mapped.generator_uuid);
-  RequireOk(allocated, "DBLC-013AH donor mapped allocation failed");
-  Require(allocated.allocation.donor_mapping_label == mapped.donor_mapping_label,
-          "DBLC-013AH donor mapping label missing from allocation");
-  Require(HasEvidence(allocated, "donor_mapping_label", mapped.donor_mapping_label),
-          "DBLC-013AH donor mapping evidence missing");
+  RequireOk(allocated, "DBLC-013AH reference mapped allocation failed");
+  Require(allocated.allocation.reference_mapping_label == mapped.reference_mapping_label,
+          "DBLC-013AH reference mapping label missing from allocation");
+  Require(HasEvidence(allocated, "reference_mapping_label", mapped.reference_mapping_label),
+          "DBLC-013AH reference mapping evidence missing");
   Cleanup(path);
 }
 
@@ -412,7 +412,7 @@ int main() {
   TestRollbackAndReusableTransactionSemantics();
   TestRestartAlterDropAndExhaustion();
   TestIdentityBindingMetadata();
-  TestDonorMappingDiagnosticsAndLabels();
+  TestReferenceMappingDiagnosticsAndLabels();
   TestClusterFailClosedBoundary();
   TestMgaRetentionInteraction();
   return EXIT_SUCCESS;

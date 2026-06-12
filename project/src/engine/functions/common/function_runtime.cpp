@@ -21,7 +21,7 @@ std::string ToString(FunctionImplementationState state) {
     case FunctionImplementationState::implemented_policy_security_or_dependency_runtime_refusal: return "implemented_policy_security_or_dependency_runtime_refusal";
     case FunctionImplementationState::refuse_until_classified: return "refuse_until_classified";
     case FunctionImplementationState::optional_package_dependency_gated: return "optional_package_dependency_gated";
-    case FunctionImplementationState::donor_compat_package: return "donor_compat_package";
+    case FunctionImplementationState::reference_compat_package: return "reference_compat_package";
     case FunctionImplementationState::udr_only: return "udr_only";
     case FunctionImplementationState::connector_agent: return "connector_agent";
     case FunctionImplementationState::future_gated_package: return "future_gated_package";
@@ -54,7 +54,7 @@ std::string RefusalDiagnosticForState(FunctionImplementationState state) {
     case FunctionImplementationState::unsupported: return "SB_DIAG_FUNCTION_UNSUPPORTED";
     case FunctionImplementationState::udr_only: return "SB_DIAG_FUNCTION_UDR_UNAVAILABLE";
     case FunctionImplementationState::connector_agent: return "SB_DIAG_FUNCTION_CONNECTOR_UNAVAILABLE";
-    case FunctionImplementationState::donor_compat_package: return "SB_DIAG_FUNCTION_DONOR_PACKAGE_UNAVAILABLE";
+    case FunctionImplementationState::reference_compat_package: return "SB_DIAG_FUNCTION_REFERENCE_PACKAGE_UNAVAILABLE";
     case FunctionImplementationState::refuse_until_classified: return "SB_DIAG_FUNCTION_CLASSIFICATION_REQUIRED";
   }
   return "SB_DIAG_FUNCTION_UNSUPPORTED";

@@ -15,7 +15,7 @@
 namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_DATATYPE_INDEX_OPTIMIZER_ADMISSION_API
-// Descriptor-owned index/statistics/optimizer admission policy. Donor labels
+// Descriptor-owned index/statistics/optimizer admission policy. Reference labels
 // are display aliases only and are never optimizer authority.
 
 struct EngineDatatypeIndexOptimizerAdmissionRequest {
@@ -23,7 +23,7 @@ struct EngineDatatypeIndexOptimizerAdmissionRequest {
   EngineDescriptor descriptor;
   std::string support_path;
   std::string index_stats_status;
-  std::string donor_label;
+  std::string reference_label;
 };
 
 struct EngineDatatypeIndexOptimizerAdmissionResult {

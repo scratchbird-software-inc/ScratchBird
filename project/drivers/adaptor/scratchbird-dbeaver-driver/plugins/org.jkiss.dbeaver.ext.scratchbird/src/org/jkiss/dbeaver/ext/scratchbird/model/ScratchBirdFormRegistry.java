@@ -128,7 +128,7 @@ public final class ScratchBirdFormRegistry {
         branch("SBDV-FRM-102", "Job And Schedule Editor", "sys.jobs", "Inspect and manage scheduler jobs, runs, dependencies, and schedules.");
         branch("SBDV-FRM-103", "Security Mapping And Identity Editor", "sys.security", "Inspect users, groups, roles, auth mappings, and security policy.");
         branch("SBDV-FRM-104", "Cluster Control Editor", "sys.cluster", "Inspect cluster control, routing, admission, and topology state.");
-        branch("SBDV-FRM-105", "Emulation Control Editor", "sys.emulation", "Inspect and manage donor-engine emulation control objects.");
+        branch("SBDV-FRM-105", "Emulation Control Editor", "sys.emulation", "Inspect and manage reference-engine emulation control objects.");
         branch("SBDV-FRM-106", "Monitoring Browser And Metrics Dashboard", "sys.monitoring", "Browse monitoring surfaces and jump to metrics dashboards.");
         branch("SBDV-FRM-107", "Catalog Browser And Object Identity Inspector", "sys.catalog", "Inspect catalog truth, object UUIDs, parent UUIDs, and resolver output.");
         branch("SBDV-FRM-108", "Structure Policy Editor", "sys.structure", "Inspect and manage structure policy and recursive namespace behavior.");
@@ -151,9 +151,9 @@ public final class ScratchBirdFormRegistry {
         branch("SBDV-FRM-304", "Node Editor", "cluster.nodes", "Manage node identity, health, and admitted operations.");
         branch("SBDV-FRM-305", "Shared Resource Editor", "cluster.shared", "Manage shared cluster resources.");
 
-        branch("SBDV-FRM-400", "Emulation Engine Editor", "emulated.<engine>", "Manage donor emulation engine branches.");
-        branch("SBDV-FRM-401", "Emulation Server Editor", "emulated.<engine>.<server>", "Manage donor emulation server endpoints.");
-        branch("SBDV-FRM-402", "Donor-Layout Catalog Browser", "emulated.<engine>.<server>.<engine-native layout>", "Browse donor-native catalog layouts inspect-only by default.");
+        branch("SBDV-FRM-400", "Emulation Engine Editor", "emulated.<engine>", "Manage reference emulation engine branches.");
+        branch("SBDV-FRM-401", "Emulation Server Editor", "emulated.<engine>.<server>", "Manage reference emulation server endpoints.");
+        branch("SBDV-FRM-402", "Reference-Layout Catalog Browser", "emulated.<engine>.<server>.<engine-native layout>", "Browse reference-native catalog layouts inspect-only by default.");
 
         branch("SBDV-FRM-500", "Remote Link Editor", "remote.links", "Manage remote links and connectivity dashboards.");
         branch("SBDV-FRM-501", "FDW Editor", "remote.fdw", "Manage foreign data wrapper definitions.");

@@ -73,7 +73,7 @@ FORBIDDEN_CLAIM_FRAGMENTS = (
     "outperform",
     "beats ",
     "dominates",
-    "donor dominance",
+    "compatibility dominance",
     "reference engine comparison",
     "firebird",
     "postgresql",

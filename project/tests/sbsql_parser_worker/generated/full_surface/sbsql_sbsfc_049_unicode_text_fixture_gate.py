@@ -135,12 +135,12 @@ def main() -> int:
             errors.append(f"{fixture_id}: note must cite SBLR Unicode authority")
         if "normalize" in fixture_id and "icu" not in note:
             errors.append(f"{fixture_id}: normalize fixture must cite ICU-backed behavior")
-        for forbidden in ("parser sql", "donor", "wal", "sqlite", "cluster"):
+        for forbidden in ("parser sql", "reference", "wal", "sqlite", "cluster"):
             if (
                 forbidden in note
                 and f"without {forbidden}" not in note
                 and f"no {forbidden}" not in note
-                and "without parser sql donor wal sqlite or cluster authority" not in note
+                and "without parser sql reference wal sqlite or cluster authority" not in note
             ):
                 errors.append(f"{fixture_id}: note cites {forbidden} without explicit non-authority wording")
 

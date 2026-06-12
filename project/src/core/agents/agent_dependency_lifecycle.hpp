@@ -12,7 +12,7 @@
 // Agent dependency lifecycle admission for database-local DR, restore, clone,
 // role-change, and restricted operating modes. This is an admission/evidence
 // validator only; it is not transaction finality, visibility, security,
-// recovery, parser, donor, benchmark, optimizer-plan, index-finality,
+// recovery, parser, reference, benchmark, optimizer-plan, index-finality,
 // provider-finality, cluster, memory, or agent-action authority.
 
 #include "agent_runtime.hpp"
@@ -60,7 +60,7 @@ struct AgentDependencyLifecycleAuthorityBoundary {
   bool recovery_authority = false;
   bool security_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool write_ahead_log_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;

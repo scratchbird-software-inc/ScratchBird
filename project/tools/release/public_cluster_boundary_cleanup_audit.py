@@ -64,7 +64,7 @@ EXPECTED_NORMALIZED_BOUNDARY_TOKENS = (
 
 EXPECTED_PRE_ADMISSION_REFUSALS = (
     "cluster.security.refuse_local_cluster_mutation",
-    "cluster.admin.refuse_donor_shell_control",
+    "cluster.admin.refuse_reference_shell_control",
     "cluster.query.refuse_local_query_as_cluster_authority",
 )
 

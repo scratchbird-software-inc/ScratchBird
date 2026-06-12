@@ -320,7 +320,7 @@ void TestRoundTripDurableCommercialEvidence() {
               "019f0700-0000-7000-8000-000000000040",
           "outcome verification evidence missing");
   Require(!evidence.parser_authority && !evidence.client_authority &&
-              !evidence.donor_authority && !evidence.sidecar_authority &&
+              !evidence.reference_authority && !evidence.sidecar_authority &&
               !evidence.transaction_authority && !evidence.finality_authority &&
               !evidence.visibility_authority && !evidence.recovery_authority &&
               !evidence.security_authority,

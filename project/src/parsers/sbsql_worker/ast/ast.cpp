@@ -236,7 +236,7 @@ bool IsPublicExactManagementStatement(const CstDocument& cst) {
 bool IsPublicExactMigrationStatement(const CstDocument& cst) {
   const auto words = AllMeaningfulTokenWords(cst);
   if (words.size() >= 3 && words[0] == "MIGRATE" && words[1] == "FROM" &&
-      words[2] == "DONOR") {
+      words[2] == "REFERENCE") {
     return true;
   }
   if (words.size() >= 2 && words[0] == "ALTER" && words[1] == "MIGRATION") {
@@ -484,7 +484,7 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "LIMBO" && second == "STMT") canonical_name = "limbo_stmt";
   else if (keyword == "PRE" && second == "SPLIT" && third == "CLAUSE") canonical_name = "pre_split_clause";
   else if (keyword == "SALVAGE" && second == "OPTIONS") canonical_name = "salvage_options";
-  else if (keyword == "DONOR" && second == "PROFILE" && third == "STMT") canonical_name = "donor_profile_stmt";
+  else if (keyword == "REFERENCE" && second == "PROFILE" && third == "STMT") canonical_name = "reference_profile_stmt";
   else if (keyword == "RETURNING" && second == "CLAUSE") canonical_name = "returning_clause";
   else if (keyword == "HISTORICAL" && second == "READ" && third == "CLAUSE") canonical_name = "historical_read_clause";
   else if (keyword == "ARTIFACT" && second == "REF") canonical_name = "artifact_ref";
@@ -530,7 +530,7 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "PIPELINE" && second == "PROCESSOR") canonical_name = "pipeline_processor";
   else if (keyword == "PREVIOUS" && second == "VALUE" && third == "FORM") canonical_name = "previous_value_form";
   else if (keyword == "VARIABLE" && second == "DECLARATION") canonical_name = "variable_declaration";
-  else if (keyword == "DONOR" && second == "PROFILE" && third == "OPTIONS") canonical_name = "donor_profile_options";
+  else if (keyword == "REFERENCE" && second == "PROFILE" && third == "OPTIONS") canonical_name = "reference_profile_options";
   else if (keyword == "NEW" && second == "SURFACE" && third == "STMT") canonical_name = "new_surface_stmt";
   else if (keyword == "TOPOLOGY" && second == "ASSIGN") canonical_name = "topology_assign";
   else if (keyword == "FRAME" && second == "BOUND") canonical_name = "frame_bound";
@@ -1040,7 +1040,7 @@ const StatementSurfaceDescriptor* DescriptorForStatementTokens(
   else if (keyword == "RETURN" && second == "SHAPE") canonical_name = "return_shape";
   else if (keyword == "STORAGE" && second == "FILESPACE") canonical_name = "filespace_name";
   else if (keyword == "STORAGE" && second == "AOF") canonical_name = "aof_mode";
-  else if (keyword == "STORAGE" && second == "DONOR") canonical_name = "donor_log_mode";  // donor compatibility, not authority
+  else if (keyword == "STORAGE" && second == "REFERENCE") canonical_name = "reference_log_mode";  // reference compatibility, not authority
   else if (keyword == "STORAGE" && second == "TIER") canonical_name = "storage_tier";
   else if (keyword == "STORAGE" && second == "SECRET") canonical_name = "secret_storage";
   else if (keyword == "STORAGE" && second == "SHADOW") canonical_name = "shadow_name";
@@ -1415,7 +1415,7 @@ AstDocument BuildAst(const CstDocument& cst) {
       (keyword == "LIMBO" && second == "STMT") ||
       (keyword == "PRE" && second == "SPLIT" && third == "CLAUSE") ||
       (keyword == "SALVAGE" && second == "OPTIONS") ||
-      (keyword == "DONOR" && second == "PROFILE" && third == "STMT") ||
+      (keyword == "REFERENCE" && second == "PROFILE" && third == "STMT") ||
       (keyword == "RETURNING" && second == "CLAUSE") ||
       (keyword == "HISTORICAL" && second == "READ" && third == "CLAUSE") ||
       (keyword == "ARTIFACT" && second == "REF") ||
@@ -1472,7 +1472,7 @@ AstDocument BuildAst(const CstDocument& cst) {
         (second == "CONTINUE" && third == "STMT"))) ||
       (keyword == "CALL" && second != "TARGET" && second != "ARG" &&
        !IsParenthesizedCallInvocation(cst)) ||
-      (keyword == "DONOR" && second == "PROFILE" && third == "OPTIONS") ||
+      (keyword == "REFERENCE" && second == "PROFILE" && third == "OPTIONS") ||
       (keyword == "NEW" && second == "SURFACE" && third == "STMT") ||
       (keyword == "CH" && second == "SYSTEM" && third == "TARGET") ||
       (keyword == "CLEANUP" && second == "CONTROL" && third == "STMT") ||

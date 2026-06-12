@@ -57,7 +57,7 @@ IndexFamilyDescriptor D(IndexFamily family, const char* id, IndexPersistenceClas
 }
 
 IndexFamilyDescriptor P(IndexFamily family, const char* id, const char* policy) {
-  auto desc = D(family, id, IndexPersistenceClass::policy_blocked, IndexKeyModel::donor_defined,
+  auto desc = D(family, id, IndexPersistenceClass::policy_blocked, IndexKeyModel::reference_defined,
                 "policy_blocked", policy, false, false, false, true);
   desc.completion = IndexCompletionStatus::policy_blocked_alpha;
   desc.persistent = false;
@@ -158,10 +158,10 @@ const std::vector<IndexFamilyDescriptor>& BuiltinIndexFamilyDescriptors() {
       D(IndexFamily::vector_ivf, "vector_ivf", IndexPersistenceClass::persistent, IndexKeyModel::vector_key, "vector_ivf", "native_ivf", false, true, false, true),
       D(IndexFamily::columnar_zone, "columnar_zone", IndexPersistenceClass::persistent, IndexKeyModel::zone_summary, "columnar_zone", "native_columnar_zone", false, false, false),
       D(IndexFamily::document_path, "document_path", IndexPersistenceClass::persistent, IndexKeyModel::token_key, "full_text", "native_document_path", false, false, false),
-      D(IndexFamily::graph, "graph", IndexPersistenceClass::persistent, IndexKeyModel::donor_defined, "graph", "native_graph_lookup", false, false, false),
-      D(IndexFamily::temporary_work, "temporary_work", IndexPersistenceClass::memory_only, IndexKeyModel::donor_defined, "in_memory", "native_temporary_work", false, false, false),
-      D(IndexFamily::in_memory, "in_memory", IndexPersistenceClass::memory_primary_persisted_cold_start, IndexKeyModel::donor_defined, "in_memory", "native_in_memory", false, false, false),
-      D(IndexFamily::donor_emulated, "donor_emulated", IndexPersistenceClass::donor_emulated, IndexKeyModel::donor_defined, "donor_emulated", "native_donor_emulated", false, false, false),
+      D(IndexFamily::graph, "graph", IndexPersistenceClass::persistent, IndexKeyModel::reference_defined, "graph", "native_graph_lookup", false, false, false),
+      D(IndexFamily::temporary_work, "temporary_work", IndexPersistenceClass::memory_only, IndexKeyModel::reference_defined, "in_memory", "native_temporary_work", false, false, false),
+      D(IndexFamily::in_memory, "in_memory", IndexPersistenceClass::memory_primary_persisted_cold_start, IndexKeyModel::reference_defined, "in_memory", "native_in_memory", false, false, false),
+      D(IndexFamily::reference_emulated, "reference_emulated", IndexPersistenceClass::reference_emulated, IndexKeyModel::reference_defined, "reference_emulated", "native_reference_emulated", false, false, false),
       P(IndexFamily::policy_blocked, "advanced_vector_policy_blocked", "SB_POLICY_INDEX_ADVANCED_VECTOR_NOT_ACCEPTED_ALPHA")};
   return descriptors;
 }
@@ -195,11 +195,11 @@ BuiltinIndexFamilyPhysicalCapabilityStates() {
       CompleteCapability(IndexFamily::graph),
       CompleteCapability(IndexFamily::temporary_work),
       CompleteCapability(IndexFamily::in_memory),
-      Capability(IndexFamily::donor_emulated,
+      Capability(IndexFamily::reference_emulated,
                  IndexFamilyPhysicalCapabilityBlocker::contract_only,
-                 "INDEX.CAPABILITY.DONOR_EMULATED.CONTRACT_ONLY_NON_AUTHORITY_MAPPING",
-                 "index.capability.donor_emulated.contract_only_non_authority_mapping",
-                 "donor-emulated indexes expose semantic mapping only; they must map to native ScratchBird physical providers and cannot own visibility, finality, or recovery"),
+                 "INDEX.CAPABILITY.REFERENCE_EMULATED.CONTRACT_ONLY_NON_AUTHORITY_MAPPING",
+                 "index.capability.reference_emulated.contract_only_non_authority_mapping",
+                 "reference-emulated indexes expose semantic mapping only; they must map to native ScratchBird physical providers and cannot own visibility, finality, or recovery"),
       Capability(IndexFamily::policy_blocked,
                  IndexFamilyPhysicalCapabilityBlocker::policy_blocked,
                  "INDEX.CAPABILITY.POLICY_BLOCKED.NOT_ACCEPTED_ALPHA",
@@ -243,7 +243,7 @@ const char* IndexPersistenceClassName(IndexPersistenceClass persistence) {
     case IndexPersistenceClass::memory_primary_persisted_cold_start: return "memory_primary_persisted_cold_start";
     case IndexPersistenceClass::memory_only: return "memory_only";
     case IndexPersistenceClass::virtual_catalog: return "virtual_catalog";
-    case IndexPersistenceClass::donor_emulated: return "donor_emulated";
+    case IndexPersistenceClass::reference_emulated: return "reference_emulated";
     case IndexPersistenceClass::policy_blocked: return "policy_blocked";
   }
   return "unknown";
@@ -260,7 +260,7 @@ const char* IndexKeyModelName(IndexKeyModel key_model) {
     case IndexKeyModel::expression_key: return "expression_key";
     case IndexKeyModel::predicate_filtered_key: return "predicate_filtered_key";
     case IndexKeyModel::covering_payload: return "covering_payload";
-    case IndexKeyModel::donor_defined: return "donor_defined";
+    case IndexKeyModel::reference_defined: return "reference_defined";
   }
   return "unknown";
 }

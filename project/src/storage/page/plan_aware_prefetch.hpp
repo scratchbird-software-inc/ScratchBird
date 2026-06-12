@@ -54,7 +54,7 @@ struct PlanAwarePrefetchDescriptor {
   bool full_payload_prefetch = false;
   u64 byte_cost = 0;
   u64 page_cost = 0;
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool write_ahead_log_recovery_or_finality_authority = false;

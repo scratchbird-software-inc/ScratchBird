@@ -58,7 +58,7 @@ struct TemporaryWorkAuthorityProof {
   bool security_recheck_required = true;
   bool security_context_bound = false;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool index_finality_authority_claimed = false;
   bool transaction_finality_authority_claimed = false;

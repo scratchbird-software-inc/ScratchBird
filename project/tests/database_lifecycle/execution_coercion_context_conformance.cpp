@@ -274,32 +274,32 @@ void TestCharacterLengthAndTextFailureIdentity() {
       "EDR-007 failed to preserve invalid text representation identity");
 }
 
-void TestDonorAndDomainContexts() {
+void TestReferenceAndDomainContexts() {
   const auto int32 =
       Descriptor(0x50, "int32", engine::ExecutionTypeFamily::signed_integer, 32);
-  const auto donor_text =
-      Descriptor(0x51, "donor-text", engine::ExecutionTypeFamily::character, 0,
+  const auto reference_text =
+      Descriptor(0x51, "reference-text", engine::ExecutionTypeFamily::character, 0,
                  true, 32);
 
   auto request =
-      Request(int32, donor_text,
-              engine::ExecutionCoercionCategory::donor_compatibility_explicit);
+      Request(int32, reference_text,
+              engine::ExecutionCoercionCategory::reference_compatibility_explicit);
   RequireFailure(request,
                  engine::ExecutionCoercionFailureIdentity::explicit_cast_required,
                  "EXPLICIT_CAST_REQUIRED",
-                 "EDR-007 accepted donor compatibility without explicit cast");
+                 "EDR-007 accepted reference compatibility without explicit cast");
 
   request.context.explicit_cast = true;
   RequireFailure(request,
-                 engine::ExecutionCoercionFailureIdentity::donor_profile_required,
-                 "DONOR_PROFILE_REQUIRED",
-                 "EDR-007 accepted donor compatibility without donor profile");
+                 engine::ExecutionCoercionFailureIdentity::reference_profile_required,
+                 "REFERENCE_PROFILE_REQUIRED",
+                 "EDR-007 accepted reference compatibility without reference profile");
 
-  request.context.donor_compatibility_profile = true;
+  request.context.reference_compatibility_profile = true;
   RequireOk(
       request,
-      engine::ExecutionCoercionCategory::donor_compatibility_explicit,
-      "EDR-007 rejected donor compatibility with explicit donor profile");
+      engine::ExecutionCoercionCategory::reference_compatibility_explicit,
+      "EDR-007 rejected reference compatibility with explicit reference profile");
 
   const auto domain_int =
       DomainDescriptor(0x60, "positive-int",
@@ -353,7 +353,7 @@ int main() {
   TestValueStateAndNullabilityFailures();
   TestLosslessAndLossyCoercionRules();
   TestCharacterLengthAndTextFailureIdentity();
-  TestDonorAndDomainContexts();
+  TestReferenceAndDomainContexts();
   TestForbiddenCategory();
   return EXIT_SUCCESS;
 }

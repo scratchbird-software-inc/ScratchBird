@@ -25,9 +25,9 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityBoundary =
-    "memory_support_bundle.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority";
+    "memory_support_bundle.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority";
 constexpr const char* kExpandedAuthorityBoundary =
-    "memory_support_bundle.authority_scope=evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
+    "memory_support_bundle.authority_scope=evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
 constexpr const char* kProtectedExcluded = "<protected-material-excluded>";
 constexpr const char* kTruncatedSuffix = "...<truncated>";
 
@@ -444,7 +444,7 @@ MemorySupportBundleResult BuildMemorySupportBundleEvidence(
   result.evidence.push_back(
       "memory_support_bundle.no_authority.authorization_security=true");
   result.evidence.push_back("memory_support_bundle.no_authority.recovery=true");
-  result.evidence.push_back("memory_support_bundle.no_authority.parser_donor_wal=true");
+  result.evidence.push_back("memory_support_bundle.no_authority.parser_reference_wal=true");
   result.evidence.push_back(
       "memory_support_bundle.no_authority.benchmark_optimizer_index_agent=true");
 

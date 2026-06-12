@@ -1,2 +1,0 @@
---log_bin
---binlog_do_db=foo

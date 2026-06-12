@@ -109,11 +109,11 @@ engine::ExecutionComparisonKeyDescriptor DomainKey() {
   return key;
 }
 
-engine::ExecutionComparisonKeyDescriptor DonorKey() {
-  auto key = Key(0x14, engine::ExecutionComparisonKeyKind::donor_compatible,
-                 Descriptor(0x24, "donor_key",
+engine::ExecutionComparisonKeyDescriptor ReferenceKey() {
+  auto key = Key(0x14, engine::ExecutionComparisonKeyKind::reference_compatible,
+                 Descriptor(0x24, "reference_key",
                             engine::ExecutionTypeFamily::opaque));
-  key.donor_profile_name = "edr033.donor.compat";
+  key.reference_profile_name = "edr033.reference.compat";
   key.lossy = true;
   key.requires_recheck = true;
   return key;
@@ -161,8 +161,8 @@ void TestValidComparisonKeys() {
           "EDR-033 rejected valid collation comparison key");
   Require(engine::ValidateExecutionComparisonKeyDescriptor(DomainKey()).ok(),
           "EDR-033 rejected valid domain comparison key");
-  Require(engine::ValidateExecutionComparisonKeyDescriptor(DonorKey()).ok(),
-          "EDR-033 rejected valid donor-compatible comparison key");
+  Require(engine::ValidateExecutionComparisonKeyDescriptor(ReferenceKey()).ok(),
+          "EDR-033 rejected valid reference-compatible comparison key");
 
   auto null_key = NumericKey();
   null_key.value_state = engine::ExecutionValueState::sql_null;
@@ -335,17 +335,17 @@ void TestFamilyAndResourceFailures() {
   RequireStatus(key, engine::ExecutionComparisonKeyStatus::domain_uuid_mismatch,
                 "EDR-033 accepted domain UUID mismatch");
 
-  key = DonorKey();
-  key.donor_profile_name.clear();
+  key = ReferenceKey();
+  key.reference_profile_name.clear();
   RequireStatus(key,
-                engine::ExecutionComparisonKeyStatus::donor_profile_required,
-                "EDR-033 accepted donor key without donor profile");
+                engine::ExecutionComparisonKeyStatus::reference_profile_required,
+                "EDR-033 accepted reference key without reference profile");
 
-  key = DonorKey();
+  key = ReferenceKey();
   key.requires_recheck = false;
   RequireStatus(key,
-                engine::ExecutionComparisonKeyStatus::donor_recheck_required,
-                "EDR-033 accepted lossy donor key without recheck");
+                engine::ExecutionComparisonKeyStatus::reference_recheck_required,
+                "EDR-033 accepted lossy reference key without recheck");
 }
 
 }  // namespace

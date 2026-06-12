@@ -65,7 +65,7 @@ bool HasAuthorityDrift(const OptimizerCrashReopenAuthorityFlags& authority) {
          authority.authorization_security_authority ||
          authority.recovery_authority ||
          authority.parser_authority ||
-         authority.donor_authority ||
+         authority.reference_authority ||
          authority.wal_authority ||
          authority.benchmark_authority ||
          authority.optimizer_plan_authority ||
@@ -239,10 +239,10 @@ void ValidateCommonFields(
     AddDiagnostic(validation, record,
                   "SB_OPT_CRASH_REOPEN.SYNTHETIC_OR_PLACEHOLDER");
   }
-  if (!record.donor_reference_only || record.donor_as_authority ||
-      record.uses_donor_storage_or_finality_for_scratchbird) {
+  if (!record.reference_reference_only || record.reference_as_authority ||
+      record.uses_reference_storage_or_finality_for_scratchbird) {
     AddDiagnostic(validation, record,
-                  "SB_OPT_CRASH_REOPEN.DONOR_AUTHORITY_DRIFT");
+                  "SB_OPT_CRASH_REOPEN.REFERENCE_AUTHORITY_DRIFT");
   }
   if (record.production_benchmark_clean_claim) {
     AddDiagnostic(validation, record,

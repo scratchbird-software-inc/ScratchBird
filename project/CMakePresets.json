@@ -1,0 +1,43 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "public-release-linux",
+      "displayName": "Public Release Linux",
+      "description": "Configures the public source-review release profile without private parser source lanes.",
+      "generator": "Unix Makefiles",
+      "binaryDir": "${sourceParentDir}/build/public-release-linux",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SB_BUILD_PUBLIC_RELEASE_CORRECTNESS": "ON",
+        "SB_BUILD_PUBLIC_STANDALONE_OUTPUT": "ON",
+        "SB_BUILD_TESTS": "ON",
+        "SB_BUILD_DATABASE_LIFECYCLE_TESTS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "public-release-linux",
+      "configurePreset": "public-release-linux",
+      "jobs": 4
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "public-release-linux",
+      "configurePreset": "public-release-linux",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    }
+  ]
+}

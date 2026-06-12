@@ -276,8 +276,8 @@ void TestValidationAndSerialization() {
           "serialized surface missing support-bundle correlation id");
   Require(Contains(json, "\"parser_finality_authority\":false"),
           "serialized surface missing parser finality denial");
-  Require(Contains(json, "\"donor_finality_authority\":false"),
-          "serialized surface missing donor finality denial");
+  Require(Contains(json, "\"reference_finality_authority\":false"),
+          "serialized surface missing reference finality denial");
   Require(!Contains(json, "docs" "/execution-plans"), "serialized surface depends on execution_plan path");
 
   auto invalid = snapshot;
@@ -304,8 +304,8 @@ void TestEngineSurface() {
   Require(result.management_api_ready, "CDP-033 management API flag not ready");
   Require(result.support_bundle_ready, "CDP-033 support bundle flag not ready");
   Require(result.sys_view_contract_ready, "CDP-033 sys view contract flag not ready");
-  Require(!result.parser_finality_authority && !result.donor_finality_authority,
-          "CDP-033 result claimed parser or donor finality");
+  Require(!result.parser_finality_authority && !result.reference_finality_authority,
+          "CDP-033 result claimed parser or reference finality");
   Require(FieldValue(result, "native_ingest_refusal_code") == "INGEST.QUOTA_REFUSED",
           "CDP-033 result missing native ingest refusal row");
   Require(FieldValue(result, "selected_join_plan_summary") ==

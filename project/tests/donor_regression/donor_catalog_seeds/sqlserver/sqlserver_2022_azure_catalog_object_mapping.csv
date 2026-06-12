@@ -1,2 +1,0 @@
-artifact_status,scope_correction,controlling_spec,required_replacement
-superseded_not_runtime_authority,SQL Server is not emulated; prior emulated catalog mapping rows are invalid,docs/specifications/chapters/implementation-guidance/appendix-commercial-capability-reference-families.md,Create CommercialCapabilityReferenceRecord rows for selected SQL Server capabilities instead of DonorCatalogObjectMappingRecord rows.

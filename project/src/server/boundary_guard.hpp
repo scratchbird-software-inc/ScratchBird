@@ -18,7 +18,7 @@ namespace scratchbird::server {
 
 enum class ForbiddenServerResponsibility {
   kSqlParsing,
-  kDonorDialectSemantics,
+  kReferenceDialectSemantics,
   kClientWireProtocolShaping,
   kEngineSemanticAuthority,
   kClusterAuthority,

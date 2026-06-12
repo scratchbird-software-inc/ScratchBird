@@ -81,7 +81,7 @@ PlannerReservationBackedMemoryResult Refuse(std::string route,
   result.evidence.push_back(kAnchor);
   result.evidence.push_back("planner.reservation_backed_memory.fail_closed=true");
   result.evidence.push_back(
-      "planner.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_index_or_agent_authority");
+      "planner.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_index_or_agent_authority");
   return result;
 }
 
@@ -91,7 +91,7 @@ PlannerReservationBackedMemoryResult BuildPlannerTemporaryWorkFromReservedResour
     scratchbird::core::memory::ReservationBackedMemoryResource* resource,
     std::string planning_route_label,
     u64 planned_node_count,
-    bool parser_or_donor_authority,
+    bool parser_or_reference_authority,
     bool memory_plan_authority) {
   if (resource == nullptr || !resource->active()) {
     return Refuse(std::move(planning_route_label),
@@ -105,11 +105,11 @@ PlannerReservationBackedMemoryResult BuildPlannerTemporaryWorkFromReservedResour
                   "planner.ceic_012.memory.request_invalid",
                   "planning_route_and_node_count_required");
   }
-  if (parser_or_donor_authority || memory_plan_authority) {
+  if (parser_or_reference_authority || memory_plan_authority) {
     return Refuse(std::move(planning_route_label),
                   "SB_CEIC_012_PLANNER_MEMORY.UNSAFE_AUTHORITY",
                   "planner.ceic_012.memory.unsafe_authority",
-                  "parser_donor_or_memory_plan_authority_refused");
+                  "parser_reference_or_memory_plan_authority_refused");
   }
   if (planned_node_count >
       std::numeric_limits<u64>::max() / sizeof(PlannerScratchNode)) {
@@ -158,7 +158,7 @@ PlannerReservationBackedMemoryResult BuildPlannerTemporaryWorkFromReservedResour
   result.evidence.push_back("planner.reservation_backed_memory.digest=" +
                             result.digest);
   result.evidence.push_back(
-      "planner.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_index_or_agent_authority");
+      "planner.reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_index_or_agent_authority");
   return result;
 }
 

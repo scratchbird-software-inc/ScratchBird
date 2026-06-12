@@ -89,9 +89,9 @@ OptimizerSafetyGateResult EvaluateOptimizerProductionBuildGate(
     result.ok = false;
     result.diagnostics.push_back("SB_OPT_PRODUCTION_GATE_POLICY_DEFAULT_STATS_FORBIDDEN");
   }
-  if (input.donor_produced_evidence_enabled) {
+  if (input.reference_produced_evidence_enabled) {
     result.ok = false;
-    result.diagnostics.push_back("SB_OPT_PRODUCTION_GATE_DONOR_EVIDENCE_FORBIDDEN");
+    result.diagnostics.push_back("SB_OPT_PRODUCTION_GATE_REFERENCE_EVIDENCE_FORBIDDEN");
   }
   if (input.relaxed_benchmark_clean_paths_enabled) {
     result.ok = false;

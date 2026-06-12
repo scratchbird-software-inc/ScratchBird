@@ -140,10 +140,10 @@ def main() -> int:
             errors.append(f"{fixture_id}: note must cite security context authority")
         if not any(token in note for token in ("mga relation", "builtin metadata", "schema context")):
             errors.append(f"{fixture_id}: note must cite engine catalog metadata authority")
-        if any(forbidden in note for forbidden in ("parser sql", "donor", "wal", "sqlite")):
-            if "without parser sql donor wal sqlite" not in note:
+        if any(forbidden in note for forbidden in ("parser sql", "reference", "wal", "sqlite")):
+            if "without parser sql reference wal sqlite" not in note:
                 errors.append(f"{fixture_id}: note cites forbidden authority without refusal wording")
-        if "cluster" in note and "without parser sql donor wal sqlite or cluster authority" not in note:
+        if "cluster" in note and "without parser sql reference wal sqlite or cluster authority" not in note:
             errors.append(f"{fixture_id}: note cites cluster without fail-closed wording")
 
     missing = REQUIRED_FIXTURES - seen_fixture_ids

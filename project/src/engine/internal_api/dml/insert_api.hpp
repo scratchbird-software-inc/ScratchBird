@@ -42,8 +42,8 @@ struct EngineInsertRowsRequest : EngineApiRequest {
   std::string conflict_target_column;
   std::vector<std::string> conflict_update_columns;
   bool strict_bulk_load_requested = false;
-  bool donor_unique_checks_relaxed = false;
-  bool donor_foreign_key_checks_relaxed = false;
+  bool reference_unique_checks_relaxed = false;
+  bool reference_foreign_key_checks_relaxed = false;
 };
 struct EngineInsertRowsResult : EngineApiResult {
   EngineApiU64 inserted_count = 0;

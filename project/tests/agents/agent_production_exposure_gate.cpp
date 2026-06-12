@@ -89,8 +89,8 @@ void RequireNoAuthorityDrift(const agents::AgentProductionExposureRecord& record
           "parser authority drift: " + record.agent_type_id);
   Require(!record.authority_safety.client_authority,
           "client authority drift: " + record.agent_type_id);
-  Require(!record.authority_safety.donor_authority,
-          "donor authority drift: " + record.agent_type_id);
+  Require(!record.authority_safety.reference_authority,
+          "reference authority drift: " + record.agent_type_id);
   Require(!record.authority_safety.sidecar_authority,
           "sidecar authority drift: " + record.agent_type_id);
   Require(!record.authority_safety.transaction_finality_authority,

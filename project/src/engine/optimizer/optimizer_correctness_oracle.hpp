@@ -17,7 +17,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: CEIC_052_OPTIMIZER_CORRECTNESS_ORACLE
 // Optimizer correctness-oracle evidence compares an engine baseline result with
 // an optimized engine result. It is evidence only. It is not transaction
-// finality, visibility, authorization/security, recovery, parser, donor, WAL,
+// finality, visibility, authorization/security, recovery, parser, reference, WAL,
 // benchmark, optimizer-plan, index-finality, provider-finality, cluster, or
 // agent-action authority.
 inline constexpr const char* kOptimizerCorrectnessOracleSchemaId =
@@ -55,7 +55,7 @@ struct OptimizerCorrectnessAuthorityFlags {
   bool authorization_security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -125,9 +125,9 @@ struct OptimizerCorrectnessOracleCase {
   bool exact_rerank_required = false;
   bool mga_recheck_required = true;
   bool security_recheck_required = true;
-  bool donor_reference_only = true;
-  bool donor_as_authority = false;
-  bool uses_donor_storage_or_finality_for_scratchbird = false;
+  bool reference_reference_only = true;
+  bool reference_as_authority = false;
+  bool uses_reference_storage_or_finality_for_scratchbird = false;
 
   OptimizerCorrectnessClusterMode cluster_mode =
       OptimizerCorrectnessClusterMode::kNoCluster;

@@ -150,7 +150,7 @@ struct RouteRunCapture {
   bool result_contract_hash_matches_runtime = true;
   bool mga_visibility_evidence_present = true;
   bool security_recheck_evidence_present = true;
-  bool donor_parser_client_authority = false;
+  bool reference_parser_client_authority = false;
 };
 
 struct ABValidation {
@@ -292,9 +292,9 @@ opt::BenchmarkMethodologyRunEvidence MethodologyEvidence(
   run.profiler_source_labels = capture.profiler_source_labels;
   run.latest_scratchbird_baseline_id = "scratchbird-main:orh287";
   run.latest_scratchbird_baseline_p50_us = 160.0;
-  run.donor_equivalent_baseline_id = "firebird-equivalent:methodology-only";
-  run.donor_equivalent_engine = "firebird";
-  run.donor_equivalent_baseline_p50_us = 190.0;
+  run.reference_equivalent_baseline_id = "firebird-equivalent:methodology-only";
+  run.reference_equivalent_engine = "firebird";
+  run.reference_equivalent_baseline_p50_us = 190.0;
   run.methodology_only = true;
   run.performance_proof = false;
   run.benchmark_clean_claim = false;
@@ -355,9 +355,9 @@ void ValidateCapture(const RouteRunCapture& capture,
     AddDiagnostic(validation,
                   capture.run_id + ":ORH_AB_BISECT_EXACT_FALLBACK_REASON_MISSING");
   }
-  if (capture.donor_parser_client_authority) {
+  if (capture.reference_parser_client_authority) {
     AddDiagnostic(validation,
-                  capture.run_id + ":ORH_AB_BISECT_UNSAFE_DONOR_PARSER_CLIENT_AUTHORITY");
+                  capture.run_id + ":ORH_AB_BISECT_UNSAFE_REFERENCE_PARSER_CLIENT_AUTHORITY");
   }
   if (!capture.mga_visibility_evidence_present ||
       !capture.security_recheck_evidence_present ||
@@ -567,7 +567,7 @@ void ContractOnlyAndMissingRuntimeFailClosed() {
 void MetadataAuthorityAndArtifactNegativesFailClosed() {
   auto captures = ValidCaptureSet();
   captures[0].metadata.stale_artifact = true;
-  captures[1].donor_parser_client_authority = true;
+  captures[1].reference_parser_client_authority = true;
   captures[2].metadata.reproducible = false;
   captures[3].mga_visibility_evidence_present = false;
   captures[4].security_recheck_evidence_present = false;
@@ -582,7 +582,7 @@ void MetadataAuthorityAndArtifactNegativesFailClosed() {
                         "ORH_AB_BISECT_STALE_BENCHMARK_ARTIFACT"),
           "stale artifact diagnostic missing");
   Require(HasDiagnostic(validation.diagnostics,
-                        "ORH_AB_BISECT_UNSAFE_DONOR_PARSER_CLIENT_AUTHORITY"),
+                        "ORH_AB_BISECT_UNSAFE_REFERENCE_PARSER_CLIENT_AUTHORITY"),
           "unsafe authority diagnostic missing");
   Require(HasDiagnostic(validation.diagnostics,
                         "ORH_AB_BISECT_RUN_METADATA_NOT_REPRODUCIBLE"),

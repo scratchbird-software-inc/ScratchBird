@@ -19,7 +19,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: OEIC_PRODUCTION_ANALYZE_STATISTICS
 // Production ANALYZE collection is a catalog/statistics update path only. It
 // consumes engine-owned scan evidence and writes optimizer statistics; it never
-// becomes row visibility, transaction finality, security, parser, donor, or
+// becomes row visibility, transaction finality, security, parser, reference, or
 // recovery authority.
 enum class OptimizerProductionAnalyzeSampleMethod {
   kFullScan,
@@ -43,7 +43,7 @@ struct OptimizerProductionAnalyzeAuthority {
   bool redaction_policy_bound = false;
   bool stats_epoch_authority = false;
 
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_finality_authority = false;
   bool client_visibility_authority = false;
   bool metric_finality_authority = false;

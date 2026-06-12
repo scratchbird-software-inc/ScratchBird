@@ -197,7 +197,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!artifacts.envelope.parser_executes_sql,
           "CAST lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "CAST lowering allowed donor/file effects");
+          "CAST lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload, "\"operation_id\":\"query.cast_value\""),
           "CAST payload missing exact operation id");
   Require(Contains(artifacts.envelope.payload,
@@ -224,8 +224,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!Contains(artifacts.envelope.payload, "SELECT") &&
               !Contains(artifacts.envelope.payload, "CAST("),
           "CAST payload embedded source SQL text as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "CAST payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "CAST payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

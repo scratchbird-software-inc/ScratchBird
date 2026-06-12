@@ -277,8 +277,8 @@ void RequireCommonMergeEvidence(const api::EngineMergeRowsResult& result) {
   Require(HasEvidence(result, "mga_finality_authority",
                       "engine_transaction_inventory"),
           "merge finality authority evidence missing");
-  Require(HasEvidence(result, "parser_or_donor_authority", "false"),
-          "merge parser/donor authority evidence missing");
+  Require(HasEvidence(result, "parser_or_reference_authority", "false"),
+          "merge parser/reference authority evidence missing");
 }
 
 void VerifyRowUuidMerge(const api::EngineRequestContext& context) {
@@ -413,8 +413,8 @@ void VerifyDeleteBranch(const api::EngineRequestContext& context) {
   Require(HasEvidence(deleted, "mga_finality_authority",
                       "engine_transaction_inventory"),
           "delete-branch MERGE finality evidence missing");
-  Require(HasEvidence(deleted, "parser_or_donor_authority", "false"),
-          "delete-branch MERGE parser/donor evidence missing");
+  Require(HasEvidence(deleted, "parser_or_reference_authority", "false"),
+          "delete-branch MERGE parser/reference evidence missing");
 }
 
 void VerifyRollbackMergeNotVisible(const std::filesystem::path& database_path) {

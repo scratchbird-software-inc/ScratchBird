@@ -46,7 +46,7 @@ struct QueryMemoryContext {
   std::string engine_id;
   std::string operation_id;
   bool engine_mga_authoritative = true;
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool wal_recovery_or_finality_authority = false;

@@ -107,8 +107,8 @@ void RequireBenchmarkSupportEvidence(
           "vector metadata visibility authority must be false");
   Require(HasEvidence(evidence, "vector_metadata_finality_authority=false"),
           "vector metadata finality authority must be false");
-  Require(HasEvidence(evidence, "parser_or_donor_authority=false"),
-          "parser/donor authority must be false");
+  Require(HasEvidence(evidence, "parser_or_reference_authority=false"),
+          "parser/reference authority must be false");
   Require(HasEvidence(evidence, "write_ahead_or_finality_authority=false"),
           "write-ahead/finality authority must be false");
   Require(HasEvidence(evidence, "benchmark_clean=true"),
@@ -282,10 +282,10 @@ void ProveUnsafeInputsRefused() {
 
   auto parser = DefaultVectorTrainingRecallLifecycleProfile(
       IndexVectorAlgorithm::hnsw);
-  parser.parser_or_donor_authority = true;
+  parser.parser_or_reference_authority = true;
   RequireRefused(
       parser,
-      "INDEX.VECTOR_RECALL_LIFECYCLE.UNSAFE_PARSER_OR_DONOR_AUTHORITY");
+      "INDEX.VECTOR_RECALL_LIFECYCLE.UNSAFE_PARSER_OR_REFERENCE_AUTHORITY");
 
   auto finality = DefaultVectorTrainingRecallLifecycleProfile(
       IndexVectorAlgorithm::hnsw);

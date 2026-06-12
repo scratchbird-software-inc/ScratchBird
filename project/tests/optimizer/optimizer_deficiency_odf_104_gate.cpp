@@ -52,7 +52,7 @@ void RequireEvidenceHygiene(const std::vector<std::string>& evidence) {
   for (const auto& item : evidence) {
     for (const auto forbidden :
          {"docs/", "execution-plans", "findings", "contracts", "references",
-          "parser_or_donor_authority=true",
+          "parser_or_reference_authority=true",
           "provider_transaction_finality_authority=true",
           "provider_visibility_authority=true",
           "provider_security_policy_authority=true",
@@ -266,8 +266,8 @@ void ExpectFallback(const Request& request,
                 "ODF-104 scalar fallback result changed");
   Require(EvidenceHas(result.evidence, "native_sblr.route=scalar_fallback"),
           "ODF-104 scalar fallback evidence missing");
-  Require(EvidenceHas(result.evidence, "parser_or_donor_authority=false"),
-          "ODF-104 parser/donor non-authority evidence missing");
+  Require(EvidenceHas(result.evidence, "parser_or_reference_authority=false"),
+          "ODF-104 parser/reference non-authority evidence missing");
   Require(EvidenceHas(result.evidence,
                       "write_after_stream_finality_or_recovery_authority=false"),
           "ODF-104 write-after non-authority evidence missing");
@@ -283,8 +283,8 @@ void ExpectRefusal(const Request& request,
           "ODF-104 refusal diagnostic changed");
   Require(EvidenceHas(result.evidence, "native_sblr.route=refused"),
           "ODF-104 refusal evidence missing");
-  Require(EvidenceHas(result.evidence, "parser_or_donor_authority=false"),
-          "ODF-104 refusal parser/donor non-authority evidence missing");
+  Require(EvidenceHas(result.evidence, "parser_or_reference_authority=false"),
+          "ODF-104 refusal parser/reference non-authority evidence missing");
   Require(EvidenceHas(result.evidence,
                       "write_after_stream_finality_or_recovery_authority=false"),
           "ODF-104 refusal write-after non-authority evidence missing");
@@ -306,8 +306,8 @@ void HotStableTemplatesUseNativeRouteForEveryKind() {
             "ODF-104 native route evidence missing");
     Require(EvidenceHas(result.evidence, "native_sblr.scalar_equivalence=verified"),
             "ODF-104 scalar equivalence evidence missing");
-    Require(EvidenceHas(result.evidence, "parser_or_donor_authority=false"),
-            "ODF-104 native parser/donor non-authority evidence missing");
+    Require(EvidenceHas(result.evidence, "parser_or_reference_authority=false"),
+            "ODF-104 native parser/reference non-authority evidence missing");
     Require(EvidenceHas(result.evidence,
                         "write_after_stream_finality_or_recovery_authority=false"),
             "ODF-104 native write-after non-authority evidence missing");

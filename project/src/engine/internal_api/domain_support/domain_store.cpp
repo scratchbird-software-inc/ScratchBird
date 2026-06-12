@@ -223,7 +223,7 @@ std::vector<std::string> DomainStringFields(const DomainRecord& record) {
       record.method_binding_envelope,
       record.localized_names_envelope,
       record.comment_envelope,
-      record.donor_alias_envelope,
+      record.reference_alias_envelope,
   };
 }
 
@@ -254,7 +254,7 @@ bool AssignDomainStringFields(const std::vector<std::string>& fields, DomainReco
   record->method_binding_envelope = fields[index++];
   record->localized_names_envelope = fields[index++];
   record->comment_envelope = fields[index++];
-  record->donor_alias_envelope = fields[index++];
+  record->reference_alias_envelope = fields[index++];
   return true;
 }
 
@@ -686,7 +686,7 @@ std::string MakeDomainEvent(const char* action, const DomainRecord& record) {
          EncodeCrudText(record.method_binding_envelope) + "\t" +
          EncodeCrudText(record.localized_names_envelope) + "\t" +
          EncodeCrudText(record.comment_envelope) + "\t" +
-         EncodeCrudText(record.donor_alias_envelope);
+         EncodeCrudText(record.reference_alias_envelope);
 }
 
 std::optional<DomainBinaryAction> DomainBinaryActionFromText(const std::string& action) {
@@ -733,7 +733,7 @@ bool ParseTextDomainEvent(const std::string& line,
   if (parts.size() > 25) { record->method_binding_envelope = HexDecode(parts[25]); }
   if (parts.size() > 26) { record->localized_names_envelope = HexDecode(parts[26]); }
   if (parts.size() > 27) { record->comment_envelope = HexDecode(parts[27]); }
-  if (parts.size() > 28) { record->donor_alias_envelope = HexDecode(parts[28]); }
+  if (parts.size() > 28) { record->reference_alias_envelope = HexDecode(parts[28]); }
   return true;
 }
 
@@ -1224,7 +1224,7 @@ EngineDescriptor DomainDescriptor(const DomainRecord& record) {
   AppendEncodedDescriptorField(&descriptor.encoded_descriptor, "method_binding", record.method_binding_envelope);
   AppendEncodedDescriptorField(&descriptor.encoded_descriptor, "localized_names", record.localized_names_envelope);
   AppendEncodedDescriptorField(&descriptor.encoded_descriptor, "comment", record.comment_envelope);
-  AppendEncodedDescriptorField(&descriptor.encoded_descriptor, "donor_aliases", record.donor_alias_envelope);
+  AppendEncodedDescriptorField(&descriptor.encoded_descriptor, "reference_aliases", record.reference_alias_envelope);
   return descriptor;
 }
 

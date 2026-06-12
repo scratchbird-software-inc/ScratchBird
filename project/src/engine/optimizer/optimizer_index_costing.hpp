@@ -20,7 +20,7 @@ namespace scratchbird::engine::optimizer {
 
 // SEARCH_KEY: OEIC_INDEX_COSTING_ENTERPRISE_CLOSURE
 // Enterprise index costing consumes maintained stats and route capabilities. It
-// never treats an index, donor, metric, or benchmark as row truth, transaction
+// never treats an index, reference, metric, or benchmark as row truth, transaction
 // finality, visibility, security, authorization, or recovery authority.
 enum class EnterpriseIndexAccessIntent {
   kEqualityLookup,
@@ -57,7 +57,7 @@ struct EnterpriseIndexCostAuthority {
   bool stale_manifest = false;
   bool synthetic_or_fixture_evidence = false;
 
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_finality_authority = false;
   bool client_visibility_authority = false;
   bool metric_finality_authority = false;

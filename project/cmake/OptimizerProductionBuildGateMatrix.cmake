@@ -8,7 +8,7 @@
 
 # OEIC_OPTIMIZER_PRODUCTION_BUILD_GATE_MATRIX: CTest-visible proof that the
 # optimizer production CMake gate accepts clean production settings and refuses
-# fixture/default/placeholder/donor/parser/debug/live-cluster-stub paths.
+# fixture/default/placeholder/compatibility/parser/debug/live-cluster-stub paths.
 
 set(_sb_gate_script "${CMAKE_CURRENT_LIST_DIR}/OptimizerProductionBuildGate.cmake")
 
@@ -39,7 +39,7 @@ set(_sb_base_args
   -DSB_OPTIMIZER_ALLOW_POLICY_DEFAULT_STATS_IN_PRODUCTION=OFF
   -DSB_OPTIMIZER_ALLOW_RELAXED_METRICS_IN_PRODUCTION=OFF
   -DSB_OPTIMIZER_ALLOW_PLACEHOLDER_RUNTIME_EVIDENCE_IN_PRODUCTION=OFF
-  -DSB_OPTIMIZER_ALLOW_DONOR_AUTHORITY_IN_PRODUCTION=OFF
+  -DSB_OPTIMIZER_ALLOW_COMPAT_AUTHORITY_IN_PRODUCTION=OFF
   -DSB_OPTIMIZER_ALLOW_PARSER_SHORTCUTS_IN_PRODUCTION=OFF
   -DSB_OPTIMIZER_ALLOW_CLUSTER_STUB_LIVE_CLAIMS=OFF
   -DSB_OPTIMIZER_ALLOW_DEBUG_ONLY_PATHS_IN_PRODUCTION=OFF
@@ -62,8 +62,8 @@ _sb_optimizer_gate_case(relaxed_metrics FALSE
   ${_sb_base_args} -DSB_OPTIMIZER_ALLOW_RELAXED_METRICS_IN_PRODUCTION=ON)
 _sb_optimizer_gate_case(placeholder_evidence FALSE
   ${_sb_base_args} -DSB_OPTIMIZER_ALLOW_PLACEHOLDER_RUNTIME_EVIDENCE_IN_PRODUCTION=ON)
-_sb_optimizer_gate_case(donor_authority FALSE
-  ${_sb_base_args} -DSB_OPTIMIZER_ALLOW_DONOR_AUTHORITY_IN_PRODUCTION=ON)
+_sb_optimizer_gate_case(reference_authority FALSE
+  ${_sb_base_args} -DSB_OPTIMIZER_ALLOW_COMPAT_AUTHORITY_IN_PRODUCTION=ON)
 _sb_optimizer_gate_case(parser_shortcut FALSE
   ${_sb_base_args} -DSB_OPTIMIZER_ALLOW_PARSER_SHORTCUTS_IN_PRODUCTION=ON)
 _sb_optimizer_gate_case(cluster_stub_claim FALSE

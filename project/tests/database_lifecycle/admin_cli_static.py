@@ -46,7 +46,7 @@ FORBIDDEN_SHORTCUTS = [
     "sqlite3",
     "PRAGMA",
     "journal_mode",
-    "donor shortcut",
+    "reference shortcut",
     "placeholder lifecycle",
 ]
 

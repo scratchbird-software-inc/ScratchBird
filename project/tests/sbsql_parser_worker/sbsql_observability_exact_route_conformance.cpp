@@ -531,8 +531,8 @@ void RequireExactLowering(const ObservabilityRowEvidence& row) {
           EvidenceMessage(row, "no_sql_engine_execution",
                           "observability lowering allowed parser SQL execution"));
   Require(!artifacts.envelope.real_file_effects,
-          EvidenceMessage(row, "no_donor_execution",
-                          "observability lowering allowed donor/file effects"));
+          EvidenceMessage(row, "no_reference_execution",
+                          "observability lowering allowed reference/file effects"));
   Require(!Contains(artifacts.envelope.payload, row.sql),
           EvidenceMessage(row, "no_sql_text_authority",
                           "observability envelope embedded source SQL text"));
@@ -546,11 +546,11 @@ void RequireExactLowering(const ObservabilityRowEvidence& row) {
           EvidenceMessage(row, "no_sql_engine_execution",
                           "observability payload did not prove parser_executes_sql=false"));
   Require(Contains(artifacts.envelope.payload, "\"real_file_effects\":false"),
-          EvidenceMessage(row, "no_donor_execution",
+          EvidenceMessage(row, "no_reference_execution",
                           "observability payload did not prove real_file_effects=false"));
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          EvidenceMessage(row, "no_donor_execution",
-                          "observability payload carried donor authority"));
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          EvidenceMessage(row, "no_reference_execution",
+                          "observability payload carried reference authority"));
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "\"wal_recovery_authority\":true") &&
               !Contains(artifacts.envelope.payload, "\"recovery_authority\":true"),

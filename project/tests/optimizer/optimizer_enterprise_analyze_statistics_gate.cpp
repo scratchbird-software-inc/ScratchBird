@@ -253,7 +253,7 @@ bool ProductionAnalyzeInvalidatesPinnedStats() {
 bool ProductionAnalyzeRejectsUnsafeAuthorityAndBenchmarkOverclaim() {
   opt::OptimizerStatisticsStore store;
   auto unsafe = BaseRequest();
-  unsafe.authority.parser_or_donor_authority = true;
+  unsafe.authority.parser_or_reference_authority = true;
   const auto unsafe_result = opt::RunOptimizerProductionAnalyze(unsafe, &store);
 
   auto overclaim = BaseRequest();
@@ -261,7 +261,7 @@ bool ProductionAnalyzeRejectsUnsafeAuthorityAndBenchmarkOverclaim() {
   const auto overclaim_result = opt::RunOptimizerProductionAnalyze(overclaim, &store);
 
   return Require(!unsafe_result.accepted,
-                 "parser/donor authority was accepted") &&
+                 "parser/reference authority was accepted") &&
          Require(HasStatus(unsafe_result.validation_statuses,
                            "SB_OPT_ANALYZE_UNSAFE_AUTHORITY"),
                  "unsafe authority diagnostic missing") &&

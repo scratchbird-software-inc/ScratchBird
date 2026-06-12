@@ -134,7 +134,7 @@ opt::OptimizerCorrectnessOracleCase Case(
   oracle_case.exact_rerank_required = exact_rerank;
   oracle_case.mga_recheck_required = true;
   oracle_case.security_recheck_required = true;
-  oracle_case.donor_reference_only = true;
+  oracle_case.reference_reference_only = true;
   return oracle_case;
 }
 
@@ -245,9 +245,9 @@ void UnsafeAuthorityAndSyntheticEvidenceFailClosed() {
   oracle_case.authority.transaction_finality_authority = true;
   oracle_case.authority.visibility_authority = true;
   oracle_case.authority.parser_authority = true;
-  oracle_case.donor_reference_only = false;
-  oracle_case.donor_as_authority = true;
-  oracle_case.uses_donor_storage_or_finality_for_scratchbird = true;
+  oracle_case.reference_reference_only = false;
+  oracle_case.reference_as_authority = true;
+  oracle_case.uses_reference_storage_or_finality_for_scratchbird = true;
   const auto validation =
       opt::ValidateOptimizerCorrectnessOracleCase(oracle_case);
   Require(!validation.ok,
@@ -257,8 +257,8 @@ void UnsafeAuthorityAndSyntheticEvidenceFailClosed() {
           "CEIC-052 synthetic production diagnostic missing");
   Require(HasDiagnostic(validation.diagnostics, "RESULT_FIELDS_MISSING"),
           "CEIC-052 placeholder result-contract diagnostic missing");
-  Require(HasDiagnostic(validation.diagnostics, "DONOR_AUTHORITY_DRIFT"),
-          "CEIC-052 donor authority diagnostic missing");
+  Require(HasDiagnostic(validation.diagnostics, "REFERENCE_AUTHORITY_DRIFT"),
+          "CEIC-052 reference authority diagnostic missing");
   Require(HasDiagnostic(validation.diagnostics, "FORBIDDEN_AUTHORITY"),
           "CEIC-052 forbidden authority diagnostic missing");
 }

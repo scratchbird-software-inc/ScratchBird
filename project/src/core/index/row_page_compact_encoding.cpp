@@ -94,7 +94,7 @@ std::vector<std::string> BaseEvidence(RowPageCompactEncodingKind kind) {
       "row_page_compact.transaction_finality_authority=false",
       "row_page_compact.recovery_authority=false",
       "row_page_compact.authorization_authority=false",
-      "row_page_compact.parser_client_or_donor_authority=false",
+      "row_page_compact.parser_client_or_reference_authority=false",
   };
 }
 
@@ -105,7 +105,7 @@ bool ValidateAuthority(const RowPageCompactAuthorityContext& authority) {
          authority.durable_mga_inventory_authority_available &&
          authority.normal_mga_visibility_authority_available &&
          authority.security_recheck_required &&
-         !authority.parser_client_or_donor_authority &&
+         !authority.parser_client_or_reference_authority &&
          !authority.compact_form_visibility_authority &&
          !authority.compact_form_finality_authority &&
          !authority.compact_form_recovery_authority;
@@ -341,7 +341,7 @@ RowPageCompactResult BuildRowPageCompactEncoding(
   policy.exact_uncompressed_fallback_available = true;
   policy.exact_semantic_equivalence_proven = true;
   policy.exact_binary_equivalence_proven = true;
-  policy.parser_or_donor_authority = false;
+  policy.parser_or_reference_authority = false;
   policy.wal_or_finality_authority = false;
   policy.uncompressed_bytes = built.serialized.size();
   policy.estimated_compressed_bytes = kEnvelopeHeaderBytes + compact_payload.size() +

@@ -37,7 +37,7 @@ struct PhysicalPlanNode {
   bool agent_evidence_required = false;
   bool agent_evidence_present = false;
   bool agent_evidence_trusted = false;
-  bool parser_or_donor_evidence_authority = false;
+  bool parser_or_reference_evidence_authority = false;
 };
 
 struct PhysicalPlanValidation {

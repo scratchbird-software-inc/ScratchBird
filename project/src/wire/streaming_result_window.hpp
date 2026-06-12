@@ -50,7 +50,7 @@ struct StreamingResultWindowRequest {
   bool client_backpressure = false;
   std::uint64_t legacy_fetch_row_bound = 0;
   bool ordering_key_present = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_visibility_or_finality_authority = false;
   bool write_ahead_or_finality_authority = false;
   bool base_row_mga_recheck_required = true;

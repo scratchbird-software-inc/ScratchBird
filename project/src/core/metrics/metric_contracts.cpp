@@ -1198,9 +1198,9 @@ MetricValidationResult PublishBackupProgressPercent(double progress_percent, std
 
 MetricValidationResult ObserveRestoreDrillDuration(double duration_microseconds, std::string result) {
   return ObserveHistogram("sb_restore_drill_duration_microseconds",
-                          Labels({{"component", "backup.runtime"}, {"result", std::move(result)}}),
+                          Labels({{"component", "restore.drill"}, {"result", std::move(result)}}),
                           duration_microseconds,
-                          "backup_runtime");
+                          "restore_drill_manager");
 }
 
 MetricValidationResult PublishPitrWindowAvailableSeconds(double available_seconds, std::string archive_class) {

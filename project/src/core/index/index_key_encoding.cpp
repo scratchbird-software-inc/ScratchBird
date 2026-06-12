@@ -72,7 +72,7 @@ byte NullRankFor(const IndexKeyEncodingComponent& component) {
   switch (component.null_placement) {
     case IndexKeyNullPlacement::nulls_first: return kNullRankFirst;
     case IndexKeyNullPlacement::nulls_last: return kNullRankLast;
-    case IndexKeyNullPlacement::donor_profile_default: return kNullRankLast;
+    case IndexKeyNullPlacement::reference_profile_default: return kNullRankLast;
   }
   return kNullRankLast;
 }
@@ -221,14 +221,14 @@ IndexKeyPrefixBoundsResult BuildEncodedPrefixBoundsInternal(
                                kOrderPreservingMagic.end());
 
   for (const auto& component : components) {
-    if (component.kind == IndexKeyComponentKind::donor_raw) {
-      return RefusePrefix("SB-INDEX-KEY-PREFIX-DONOR-RAW-REFUSED",
-                          "index.key_prefix.donor_raw_refused",
+    if (component.kind == IndexKeyComponentKind::reference_raw) {
+      return RefusePrefix("SB-INDEX-KEY-PREFIX-REFERENCE-RAW-REFUSED",
+                          "index.key_prefix.reference_raw_refused",
                           std::to_string(component.ordinal));
     }
-    if (component.null_placement == IndexKeyNullPlacement::donor_profile_default) {
-      return RefusePrefix("SB-INDEX-KEY-PREFIX-DONOR-NULLS-REFUSED",
-                          "index.key_prefix.donor_null_placement_refused",
+    if (component.null_placement == IndexKeyNullPlacement::reference_profile_default) {
+      return RefusePrefix("SB-INDEX-KEY-PREFIX-REFERENCE-NULLS-REFUSED",
+                          "index.key_prefix.reference_null_placement_refused",
                           std::to_string(component.ordinal));
     }
     if (!component.type_descriptor_uuid.valid()) {
@@ -314,14 +314,14 @@ IndexKeyEncodingResult EncodeIndexKey(const std::vector<IndexKeyEncodingComponen
   result.encoded.assign(kOrderPreservingMagic.begin(), kOrderPreservingMagic.end());
 
   for (const auto& component : components) {
-    if (component.kind == IndexKeyComponentKind::donor_raw) {
-      return RefuseEncoding("SB-INDEX-KEY-ENCODING-DONOR-RAW-REFUSED",
-                            "index.key_encoding.donor_raw_refused",
+    if (component.kind == IndexKeyComponentKind::reference_raw) {
+      return RefuseEncoding("SB-INDEX-KEY-ENCODING-REFERENCE-RAW-REFUSED",
+                            "index.key_encoding.reference_raw_refused",
                             std::to_string(component.ordinal));
     }
-    if (component.null_placement == IndexKeyNullPlacement::donor_profile_default) {
-      return RefuseEncoding("SB-INDEX-KEY-ENCODING-DONOR-NULLS-REFUSED",
-                            "index.key_encoding.donor_null_placement_refused",
+    if (component.null_placement == IndexKeyNullPlacement::reference_profile_default) {
+      return RefuseEncoding("SB-INDEX-KEY-ENCODING-REFERENCE-NULLS-REFUSED",
+                            "index.key_encoding.reference_null_placement_refused",
                             std::to_string(component.ordinal));
     }
     if (!component.type_descriptor_uuid.valid()) {

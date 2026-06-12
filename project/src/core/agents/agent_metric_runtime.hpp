@@ -12,7 +12,7 @@
 // SEARCH_KEY: ARHC_AGENT_RESOURCE_BUDGET_WORKER_CAPACITY
 // Runtime-only support for strict agent metric snapshots and bounded agent
 // work reservations. These records are admission/evidence controls only; they
-// are not transaction finality, visibility, recovery, parser, donor, or client
+// are not transaction finality, visibility, recovery, parser, reference, or client
 // authority.
 
 #include "agent_runtime.hpp"

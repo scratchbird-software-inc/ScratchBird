@@ -143,7 +143,7 @@ void TestNoSqlBackpressureSuppressesUnsafeResults() {
 void TestNoSqlBackpressureRefusesParserOrProviderAuthority() {
   impl::NoSqlBackpressureDebtAgentRequest request;
   request.authority = SafeBackpressureAuthority();
-  request.authority.parser_or_donor_authority = true;
+  request.authority.parser_or_reference_authority = true;
 
   impl::NoSqlBackpressureDebtEntry entry;
   entry.family = impl::NoSqlBackpressureDebtFamily::search;
@@ -153,7 +153,7 @@ void TestNoSqlBackpressureRefusesParserOrProviderAuthority() {
   request.entries.push_back(entry);
 
   const auto result = impl::RunNoSqlBackpressureDebtAgent(request);
-  Require(!result.ok(), "NoSQL backpressure accepted parser/donor authority");
+  Require(!result.ok(), "NoSQL backpressure accepted parser/reference authority");
   Require(result.diagnostic.diagnostic_code ==
               impl::kNoSqlBackpressureDebtUnsafeAuthority,
           "NoSQL backpressure unsafe-authority diagnostic drifted");

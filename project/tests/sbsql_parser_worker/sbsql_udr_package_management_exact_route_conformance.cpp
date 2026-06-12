@@ -252,7 +252,7 @@ void RequireExactLowering(const UdrRowEvidence& row) {
           EvidenceMessage(row, "no_sql_engine_execution",
                           "UDR lowering allowed parser SQL execution"));
   Require(!artifacts.envelope.real_file_effects,
-          EvidenceMessage(row, "no_donor_execution",
+          EvidenceMessage(row, "no_reference_execution",
                           "UDR lowering allowed parser file effects"));
   Require(!Contains(artifacts.envelope.payload, "SHOW UDR PACKAGES"),
           EvidenceMessage(row, "no_sql_text_authority", "UDR envelope embedded source SQL"));

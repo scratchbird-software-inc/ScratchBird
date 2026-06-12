@@ -152,7 +152,7 @@ void RequireAuthorityEvidence(
   Require(EvidenceHas(evidence, "CEIC-026_MEMORY_CLASS_POLICY_LEASES"),
           "CEIC-026 anchor evidence missing");
   Require(EvidenceHas(evidence,
-                      "not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority"),
+                      "not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority"),
           "CEIC-026 authority boundary evidence missing");
   Require(EvidenceHas(evidence,
                       "memory_class_policy_lease.no_authority.transaction_finality=true") ||

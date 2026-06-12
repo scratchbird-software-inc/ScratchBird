@@ -16,7 +16,7 @@ python3 project/tools/sb_public_spec_zero_grey_gate/public_spec_zero_grey_gate.p
 python3 project/tools/sb_public_spec_zero_grey_gate/public_spec_zero_grey_gate.py closure-regression \
   --registry-json public_audit_summary \
   --closed-execution_plan-root project/tools/sb_public_spec_zero_grey_gate/fixtures/public_release_foundation/public_proof \
-  --closed-execution_plan-root project/tests/donor_regression/fixtures/public_single_node_closure/public_proof \
+  --closed-execution_plan-root project/tests/reference_regression/fixtures/public_single_node_closure/public_proof \
   --max-public-open 29
 ```
 
@@ -50,7 +50,7 @@ overlays:
 python3 project/tools/sb_public_spec_zero_grey_gate/public_spec_zero_grey_gate.py write-registry \
   --inventory public_audit_summary \
   --closure-execution_plan-root project/tools/sb_public_spec_zero_grey_gate/fixtures/public_release_foundation/public_proof \
-  --closure-execution_plan-root project/tests/donor_regression/fixtures/public_single_node_closure/public_proof \
+  --closure-execution_plan-root project/tests/reference_regression/fixtures/public_single_node_closure/public_proof \
   --closure-execution_plan-root project/tests/cloud_ops/fixtures/public_p1_cloud_foundation/public_proof \
   --gap-id-authority public_audit_summary \
   --out-json public_audit_summary \

@@ -167,8 +167,8 @@ void RequireNoAuthorityOwned(
           "DPC-053 policy must not own parser execution");
   Require(!evidence.authority_flags.owns_timestamp_ordering,
           "DPC-053 policy must not own timestamp ordering");
-  Require(!evidence.authority_flags.owns_donor_storage,
-          "DPC-053 policy must not own donor storage");
+  Require(!evidence.authority_flags.owns_reference_storage,
+          "DPC-053 policy must not own reference storage");
   Require(!evidence.authority_flags.owns_sql_execution,
           "DPC-053 policy must not own SQL execution");
   Require(!evidence.authority_flags.owns_durable_commit,

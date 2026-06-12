@@ -515,7 +515,7 @@ bool HotPointLookupCandidateSafeForCache(
          candidate.requires_security_authorization_recheck &&
          !candidate.visibility_finality_authority &&
          !candidate.authorization_finality_authority &&
-         !candidate.parser_or_donor_finality_authority &&
+         !candidate.parser_or_reference_finality_authority &&
          !candidate.timestamp_or_uuid_order_finality_authority;
 }
 

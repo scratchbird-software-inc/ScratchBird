@@ -716,7 +716,7 @@ void PrintProof(std::string_view workload_id,
             << ",timestamp_finality_authority=false"
             << ",uuid_ordering_finality_authority=false"
             << ",event_stream_finality_authority=false"
-            << ",donor_finality_authority=false"
+            << ",reference_finality_authority=false"
             << ",write_ahead_finality_authority=false"
             << ",source_state=ctest_runtime_deterministic"
             << ",owner_ctest=dpc_specialized_index_benchmark_gate"

@@ -67,7 +67,7 @@ EngineApplyNumericOperationResult EngineApplyNumericOperation(const EngineApplyN
 
 struct EngineCanonicalizeDocumentValueRequest : EngineApiRequest {
   EngineTypedValue input_value;
-  std::string donor_profile;
+  std::string reference_profile;
   bool allow_hstore_domain = false;
 };
 struct EngineCanonicalizeDocumentValueResult : EngineApiResult {

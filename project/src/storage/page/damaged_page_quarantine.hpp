@@ -48,7 +48,7 @@ struct DamagedPageEvidence {
   bool repair_event_persisted_before_access = false;
   u64 repair_event_digest = 0;
   bool repair_evidence_is_transaction_authority = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool names_are_authority = false;
   bool operator_review_required = false;
   bool safe_quarantine_boundary_available = true;

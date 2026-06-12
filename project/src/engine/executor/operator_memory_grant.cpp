@@ -43,7 +43,7 @@ void AppendCommonEvidence(const ExecutorOperatorMemoryRequest& request,
                                  ExecutorQueryShapeForOperator(request.operator_kind))));
   result->evidence.push_back("executor.operator_memory.primitive=query_memory_arena");
   result->evidence.push_back(
-      "executor.operator_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "executor.operator_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
   result->evidence.push_back(
       "executor.operator_memory.transaction_inventory_authoritative=" +
       std::string(request.authority.transaction_inventory_authoritative ? "true" : "false"));
@@ -75,7 +75,7 @@ ExecutorOperatorMemoryResult Refuse(ExecutorOperatorMemoryRequest request,
 }
 
 bool UnsafeAuthority(const ExecutorOperatorMemoryAuthority& authority) {
-  return authority.parser_client_or_donor_memory_authority ||
+  return authority.parser_client_or_reference_memory_authority ||
          authority.memory_visibility_or_finality_authority ||
          authority.memory_recovery_authority ||
          authority.memory_authorization_authority;

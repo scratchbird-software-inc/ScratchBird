@@ -85,8 +85,8 @@ ParallelIndexConstraintPublicationResult Refuse(
   result.route_label = request.route_label;
   result.worker_count = request.worker_count;
   result.row_count = static_cast<u64>(request.rows.size());
-  result.parser_client_donor_authority =
-      request.authority.parser_client_or_donor_index_authority;
+  result.parser_client_reference_authority =
+      request.authority.parser_client_or_reference_index_authority;
   result.index_metadata_finality_authority =
       request.authority.index_metadata_visibility_or_finality_authority;
   result.index_metadata_recovery_authority =
@@ -98,8 +98,8 @@ ParallelIndexConstraintPublicationResult Refuse(
   AddEvidence(&result, "fail_closed", "true");
   AddEvidence(&result, "exact_fallback_available",
               Bool(request.exact_fallback_available));
-  AddEvidence(&result, "parser_client_donor_index_authority",
-              Bool(result.parser_client_donor_authority));
+  AddEvidence(&result, "parser_client_reference_index_authority",
+              Bool(result.parser_client_reference_authority));
   AddEvidence(&result, "index_metadata_visibility_finality_authority",
               Bool(result.index_metadata_finality_authority));
   AddEvidence(&result, "index_metadata_recovery_authority",
@@ -297,9 +297,9 @@ PublishParallelValidatedDeferredIndexGeneration(
                   {},
                   request);
   }
-  if (request.authority.parser_client_or_donor_index_authority) {
-    return Refuse("ORH_PARALLEL_INDEX_CONSTRAINT_VALIDATION.PARSER_CLIENT_DONOR_AUTHORITY",
-                  "orh.parallel_index_constraint.parser_client_donor_authority",
+  if (request.authority.parser_client_or_reference_index_authority) {
+    return Refuse("ORH_PARALLEL_INDEX_CONSTRAINT_VALIDATION.PARSER_CLIENT_REFERENCE_AUTHORITY",
+                  "orh.parallel_index_constraint.parser_client_reference_authority",
                   {},
                   request);
   }
@@ -424,7 +424,7 @@ PublishParallelValidatedDeferredIndexGeneration(
   AddEvidence(&result, "route_capability_consumed",
               capability->route_diagnostic_code);
   AddEvidence(&result, "corrected_route_capability_limits",
-              "donor_policy_hash_vector_text_refused_for_dml_ordered_write");
+              "reference_policy_hash_vector_text_refused_for_dml_ordered_write");
   AddEvidence(&result, "parallel_worker_count",
               std::to_string(result.worker_count));
   AddEvidence(&result, "mga_visibility_authority",

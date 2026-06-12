@@ -98,8 +98,8 @@ std::vector<std::string> RequiredMetrics() {
           "sys.metrics.datatype.decisions.domain_total",
           "sys.metrics.datatype.decisions.deferred_total",
           "sys.metrics.datatype.decisions.unsupported_total",
-          "sys.metrics.datatype.donor_mappings.total",
-          "sys.metrics.datatype.donor_mappings.incomplete_total",
+          "sys.metrics.datatype.reference_mappings.total",
+          "sys.metrics.datatype.reference_mappings.incomplete_total",
           "sys.metrics.datatype.diagnostics.unsupported_by_version_total",
           "sys.metrics.datatype.diagnostics.unsupported_by_policy_total",
           "sys.metrics.datatype.diagnostics.requires_cxx_udr_total",
@@ -146,8 +146,8 @@ engine::Uuid AddDecision(
       engine::NativeDomainDecisionClassRequiresNativeSubstrate(decision_class)
           ? family_name
           : "";
-  decision.donor_coverage_state =
-      engine::NativeDomainDonorCoverageState::complete_for_claimed_donors;
+  decision.reference_coverage_state =
+      engine::NativeDomainReferenceCoverageState::complete_for_claimed_references;
   decision.conformance_status =
       engine::NativeDomainDecisionClassIsUnsupportedOrDeferred(decision_class)
           ? engine::NativeDomainConformanceStatus::deferred
@@ -193,19 +193,19 @@ engine::Uuid AddDecision(
 
 void AddMapping(engine::NativeDomainDatatypeDecisionRegistry& registry,
                 engine::Uuid decision_uuid,
-                engine::NativeDomainDonorFamily donor_family,
-                std::string donor_type_name,
-                engine::NativeDomainDonorTypeCategory category,
+                engine::NativeDomainReferenceFamily reference_family,
+                std::string reference_type_name,
+                engine::NativeDomainReferenceTypeCategory category,
                 std::uint16_t& uuid_seed,
                 bool full_support_claimed = false,
                 engine::NativeDomainUnsupportedBehavior unsupported_behavior =
                     engine::NativeDomainUnsupportedBehavior::none) {
-  engine::DonorDatatypeMappingRecord mapping;
+  engine::ReferenceDatatypeMappingRecord mapping;
   mapping.mapping_uuid = Uuid(uuid_seed++);
-  mapping.donor_family = donor_family;
-  mapping.donor_version_range = "all-targeted";
-  mapping.donor_type_name = donor_type_name;
-  mapping.donor_type_category = category;
+  mapping.reference_family = reference_family;
+  mapping.reference_version_range = "all-targeted";
+  mapping.reference_type_name = reference_type_name;
+  mapping.reference_type_category = category;
   mapping.scratchbird_decision_uuid = decision_uuid;
   mapping.literal_policy_uuid = Uuid(uuid_seed++);
   mapping.bind_policy_uuid = Uuid(uuid_seed++);
@@ -216,33 +216,33 @@ void AddMapping(engine::NativeDomainDatatypeDecisionRegistry& registry,
   mapping.transport_policy_uuid = Uuid(uuid_seed++);
   mapping.diagnostic_policy_uuid = Uuid(uuid_seed++);
   mapping.unsupported_behavior = unsupported_behavior;
-  mapping.conformance_test_id = "NVD-CONF-" + donor_type_name;
+  mapping.conformance_test_id = "NVD-CONF-" + reference_type_name;
   mapping.parser_accepts_type = true;
   mapping.full_support_claimed = full_support_claimed;
-  mapping.mapping_hash = "mapping." + donor_type_name;
-  registry.donor_mappings.push_back(mapping);
+  mapping.mapping_hash = "mapping." + reference_type_name;
+  registry.reference_mappings.push_back(mapping);
 }
 
 void AddUnsupportedMapping(
     engine::NativeDomainDatatypeDecisionRegistry& registry,
     engine::Uuid decision_uuid,
-    std::string donor_type_name,
+    std::string reference_type_name,
     engine::NativeDomainUnsupportedBehavior unsupported_behavior,
     std::uint16_t& uuid_seed) {
-  engine::DonorDatatypeMappingRecord mapping;
+  engine::ReferenceDatatypeMappingRecord mapping;
   mapping.mapping_uuid = Uuid(uuid_seed++);
-  mapping.donor_family = engine::NativeDomainDonorFamily::oracle;
-  mapping.donor_version_range = "current-release";
-  mapping.donor_type_name = donor_type_name;
-  mapping.donor_type_category =
-      engine::NativeDomainDonorTypeCategory::unsupported;
+  mapping.reference_family = engine::NativeDomainReferenceFamily::oracle;
+  mapping.reference_version_range = "current-release";
+  mapping.reference_type_name = reference_type_name;
+  mapping.reference_type_category =
+      engine::NativeDomainReferenceTypeCategory::unsupported;
   mapping.scratchbird_decision_uuid = decision_uuid;
   mapping.diagnostic_policy_uuid = Uuid(uuid_seed++);
   mapping.unsupported_behavior = unsupported_behavior;
-  mapping.conformance_test_id = "NVD-CONF-" + donor_type_name;
+  mapping.conformance_test_id = "NVD-CONF-" + reference_type_name;
   mapping.parser_accepts_type = true;
-  mapping.mapping_hash = "mapping." + donor_type_name;
-  registry.donor_mappings.push_back(mapping);
+  mapping.mapping_hash = "mapping." + reference_type_name;
+  registry.reference_mappings.push_back(mapping);
 }
 
 void AddCompoundElement(
@@ -267,9 +267,9 @@ void AddCompoundElement(
 void AddFullSupportClaim(
     engine::NativeDomainDatatypeDecisionRegistry& registry,
     std::uint16_t& uuid_seed) {
-  engine::DonorFamilyFullSupportClaimRecord claim;
+  engine::ReferenceFamilyFullSupportClaimRecord claim;
   claim.claim_uuid = Uuid(uuid_seed++);
-  claim.donor_family = engine::NativeDomainDonorFamily::postgresql;
+  claim.reference_family = engine::NativeDomainReferenceFamily::postgresql;
   claim.expected_type_row_count = 1;
   claim.mapped_type_row_count = 1;
   claim.conformance_manifest_hash = "postgresql.full.support.rows";
@@ -311,9 +311,9 @@ engine::NativeDomainDatatypeDecisionRegistry ValidRegistry() {
                     engine::NativeDomainDecisionClass::native_substrate,
                     uuid_seed);
     AddMapping(registry, decision_uuid,
-               engine::NativeDomainDonorFamily::postgresql,
+               engine::NativeDomainReferenceFamily::postgresql,
                "pg_" + family_name,
-               engine::NativeDomainDonorTypeCategory::scalar, uuid_seed,
+               engine::NativeDomainReferenceTypeCategory::scalar, uuid_seed,
                family_name == "boolean");
   }
 
@@ -322,8 +322,8 @@ engine::NativeDomainDatatypeDecisionRegistry ValidRegistry() {
                   engine::NativeDomainDecisionClass::domain_over_native,
                   uuid_seed);
   AddMapping(registry, domain_uuid,
-             engine::NativeDomainDonorFamily::postgresql, "money",
-             engine::NativeDomainDonorTypeCategory::scalar, uuid_seed);
+             engine::NativeDomainReferenceFamily::postgresql, "money",
+             engine::NativeDomainReferenceTypeCategory::scalar, uuid_seed);
 
   const auto compound_uuid =
       AddDecision(registry, "postgresql_composite_domain",
@@ -331,43 +331,43 @@ engine::NativeDomainDatatypeDecisionRegistry ValidRegistry() {
                   uuid_seed);
   AddCompoundElement(registry, compound_uuid, uuid_seed);
   AddMapping(registry, compound_uuid,
-             engine::NativeDomainDonorFamily::postgresql, "composite",
-             engine::NativeDomainDonorTypeCategory::compound, uuid_seed);
+             engine::NativeDomainReferenceFamily::postgresql, "composite",
+             engine::NativeDomainReferenceTypeCategory::compound, uuid_seed);
 
   const auto opaque_uuid =
       AddDecision(registry, "opaque_extension_domain",
                   engine::NativeDomainDecisionClass::opaque_domain,
                   uuid_seed);
-  AddMapping(registry, opaque_uuid, engine::NativeDomainDonorFamily::redis,
-             "module_value", engine::NativeDomainDonorTypeCategory::opaque,
+  AddMapping(registry, opaque_uuid, engine::NativeDomainReferenceFamily::redis,
+             "module_value", engine::NativeDomainReferenceTypeCategory::opaque,
              uuid_seed);
 
   const auto locator_uuid =
       AddDecision(registry, "oracle_bfile_locator",
                   engine::NativeDomainDecisionClass::locator_domain,
                   uuid_seed);
-  AddMapping(registry, locator_uuid, engine::NativeDomainDonorFamily::oracle,
-             "BFILE", engine::NativeDomainDonorTypeCategory::locator,
+  AddMapping(registry, locator_uuid, engine::NativeDomainReferenceFamily::oracle,
+             "BFILE", engine::NativeDomainReferenceTypeCategory::locator,
              uuid_seed);
 
   const auto bridge_uuid =
       AddDecision(registry, "redis_module_cxx_bridge",
                   engine::NativeDomainDecisionClass::cxx_udr_bridge,
                   uuid_seed);
-  AddMapping(registry, bridge_uuid, engine::NativeDomainDonorFamily::redis,
+  AddMapping(registry, bridge_uuid, engine::NativeDomainReferenceFamily::redis,
              "trusted_module_value",
-             engine::NativeDomainDonorTypeCategory::extension, uuid_seed);
+             engine::NativeDomainReferenceTypeCategory::extension, uuid_seed);
 
   const auto render_uuid =
       AddDecision(registry, "rowid_render_only_metadata",
                   engine::NativeDomainDecisionClass::render_only_metadata,
                   uuid_seed);
   AddMapping(registry, render_uuid,
-             engine::NativeDomainDonorFamily::firebird, "DB_KEY",
-             engine::NativeDomainDonorTypeCategory::pseudo, uuid_seed);
+             engine::NativeDomainReferenceFamily::firebird, "DB_KEY",
+             engine::NativeDomainReferenceTypeCategory::pseudo, uuid_seed);
 
   const auto deferred_uuid =
-      AddDecision(registry, "future_donor_type",
+      AddDecision(registry, "future_reference_type",
                   engine::NativeDomainDecisionClass::version_deferred,
                   uuid_seed);
   AddUnsupportedMapping(
@@ -479,21 +479,21 @@ void TestCompoundOpaqueBridgeFailures() {
 
 void TestMappingAndFullSupportFailures() {
   auto registry = ValidRegistry();
-  registry.donor_mappings.erase(registry.donor_mappings.begin());
+  registry.reference_mappings.erase(registry.reference_mappings.begin());
   RequireStatus(registry,
                 engine::NativeDomainDatatypeDecisionStatus::
-                    donor_mapping_missing,
-                "NVD accepted decision without donor mapping");
+                    reference_mapping_missing,
+                "NVD accepted decision without reference mapping");
 
   registry = ValidRegistry();
-  registry.donor_mappings[0].literal_policy_uuid = {};
+  registry.reference_mappings[0].literal_policy_uuid = {};
   RequireStatus(registry,
                 engine::NativeDomainDatatypeDecisionStatus::
-                    donor_mapping_policy_missing,
-                "NVD accepted parser-visible donor mapping without policies");
+                    reference_mapping_policy_missing,
+                "NVD accepted parser-visible reference mapping without policies");
 
   registry = ValidRegistry();
-  registry.donor_mappings.back().unsupported_behavior =
+  registry.reference_mappings.back().unsupported_behavior =
       engine::NativeDomainUnsupportedBehavior::none;
   RequireStatus(registry,
                 engine::NativeDomainDatatypeDecisionStatus::
@@ -505,7 +505,7 @@ void TestMappingAndFullSupportFailures() {
   RequireStatus(registry,
                 engine::NativeDomainDatatypeDecisionStatus::
                     full_support_overclaim,
-                "NVD accepted donor full-support overclaim");
+                "NVD accepted reference full-support overclaim");
 }
 
 void TestGateDiagnosticMetricAuthorityFailures() {
@@ -531,11 +531,11 @@ void TestGateDiagnosticMetricAuthorityFailures() {
                 "NVD accepted missing local metric");
 
   registry = ValidRegistry();
-  registry.donor_compatibility_not_authority = false;
+  registry.reference_compatibility_not_authority = false;
   RequireStatus(registry,
                 engine::NativeDomainDatatypeDecisionStatus::
                     authority_invariant_violation,
-                "NVD accepted donor compatibility as datatype authority");
+                "NVD accepted reference compatibility as datatype authority");
 
   registry = ValidRegistry();
   registry.cluster_metrics_guarded_by_cluster_governance = false;

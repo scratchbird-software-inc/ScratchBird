@@ -304,7 +304,7 @@ EngineApiDiagnostic ValidateTransactionEvidenceSnapshot(
         "OPS.SUPPORT_BUNDLE.TRANSACTION_HORIZON_AUTHORITY_REQUIRED");
   }
   if (snapshot.support_bundle_is_authority || snapshot.parser_finality_authority ||
-      snapshot.client_finality_authority || snapshot.donor_finality_authority ||
+      snapshot.client_finality_authority || snapshot.reference_finality_authority ||
       snapshot.timestamp_finality_authority ||
       snapshot.uuid_ordering_finality_authority ||
       snapshot.event_stream_finality_authority ||
@@ -391,7 +391,7 @@ std::string RenderTransactionSupportBundleJson(
       << "\","
       << "\"parser_finality_authority\":false,"
       << "\"client_finality_authority\":false,"
-      << "\"donor_finality_authority\":false,"
+      << "\"reference_finality_authority\":false,"
       << "\"timestamp_finality_authority\":false,"
       << "\"uuid_ordering_finality_authority\":false,"
       << "\"event_stream_finality_authority\":false,"
@@ -436,7 +436,7 @@ void AddTransactionSupportBundleRows(
        {"horizons_authoritative", snapshot.horizons_authoritative ? "true" : "false"},
        {"parser_finality_authority", "false"},
        {"client_finality_authority", "false"},
-       {"donor_finality_authority", "false"},
+       {"reference_finality_authority", "false"},
        {"timestamp_finality_authority", "false"},
        {"uuid_ordering_finality_authority", "false"},
        {"event_stream_finality_authority", "false"},
@@ -698,7 +698,7 @@ void AddDurableCatalogActionRows(EnginePrepareSupportBundleResult* result,
           action.compensation_attempted ? "true" : "false"},
          {"parser_authority", "false"},
          {"client_authority", "false"},
-         {"donor_authority", "false"},
+         {"reference_authority", "false"},
          {"sidecar_authority", "false"}});
   }
 }
@@ -743,7 +743,7 @@ void AddDurableCatalogResourceReservationRows(
          {"release_reason", reservation.release_reason},
          {"parser_authority", "false"},
          {"client_authority", "false"},
-         {"donor_authority", "false"},
+         {"reference_authority", "false"},
          {"benchmark_authority", "false"}});
   }
 }
@@ -1013,7 +1013,7 @@ EnginePrepareSupportBundleResult EnginePrepareSupportBundle(const EnginePrepareS
                                 .parser_finality_authority
                             ? "true"
                             : "false"},
-                       {"donor_finality_authority", request.performance_optimization_snapshot.donor_finality_authority ? "true" : "false"},
+                       {"reference_finality_authority", request.performance_optimization_snapshot.reference_finality_authority ? "true" : "false"},
                        {"wal_recovery_authority",
                         request.performance_optimization_snapshot
                                 .wal_recovery_authority

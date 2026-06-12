@@ -49,7 +49,7 @@ struct MemoryMetadataRecord {
   std::string schema_digest;
   bool authoritative_base_input_present = false;
   bool parser_or_client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool recovery_authority_claimed = false;
   bool payload_checksum_present = false;

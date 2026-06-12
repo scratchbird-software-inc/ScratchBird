@@ -83,7 +83,7 @@ agents::AgentOptimizerReadinessEvidence OptimizerReadiness() {
   evidence.transformation_memo_complete = true;
   evidence.workload_regression_complete = true;
   evidence.driver_explain_complete = true;
-  evidence.donor_comparison_complete = true;
+  evidence.reference_comparison_complete = true;
   evidence.memory_feedback_complete = true;
   evidence.index_readiness_coupling_complete = true;
   evidence.llvm_memory_accounting_complete = true;
@@ -291,7 +291,7 @@ void TestOptimizerBridgeUsesBoundary() {
           "optimizer bridge did not fail closed on missing index readiness");
 
   auto unsafe_feedback = BridgeRequest();
-  unsafe_feedback.feedback.parser_or_donor_authority = true;
+  unsafe_feedback.feedback.parser_or_reference_authority = true;
   refused = opt::EvaluateOptimizerAgentRecommendation(unsafe_feedback);
   Require(!refused.ok &&
               refused.diagnostic_code == "SB_OPTIMIZER_FEEDBACK.REJECTED_UNSAFE",

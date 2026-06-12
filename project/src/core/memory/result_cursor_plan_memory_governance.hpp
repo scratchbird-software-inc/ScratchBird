@@ -48,7 +48,7 @@ struct ResultCursorPlanMemoryAuthority {
   bool security_or_policy_checked = true;
   bool memory_evidence_only = true;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool transaction_finality_authority = false;
   bool visibility_authority = false;
   bool recovery_authority = false;

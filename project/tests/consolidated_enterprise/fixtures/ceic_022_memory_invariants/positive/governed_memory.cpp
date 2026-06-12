@@ -72,7 +72,7 @@ void GovernedMemoryExample(MemoryManager& manager,
   MemorySupportBundleRequest bundle;
   bundle.allow_protected_material = false;
   const char* authority_scope =
-      "memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
+      "memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
   (void)authority_scope;
   (void)bundle;
 }

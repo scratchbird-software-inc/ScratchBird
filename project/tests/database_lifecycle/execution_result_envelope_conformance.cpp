@@ -167,11 +167,11 @@ void TestExecutionResultEnvelopeMetadataAndColumnFailures() {
                 "EDR-006 accepted invalid result column descriptor");
 
   envelope = ValidEnvelope();
-  envelope.columns.front().donor_rendering_name.clear();
+  envelope.columns.front().reference_rendering_name.clear();
   RequireStatus(
       envelope,
       engine::ExecutionResultEnvelopeStatus::column_rendering_metadata_required,
-      "EDR-006 accepted column without donor rendering metadata");
+      "EDR-006 accepted column without reference rendering metadata");
 }
 
 void TestExecutionResultEnvelopeRowBatchFailures() {

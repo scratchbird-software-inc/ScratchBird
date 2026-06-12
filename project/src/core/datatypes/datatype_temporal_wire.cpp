@@ -181,8 +181,8 @@ WireProfilePolicy PolicyForProfile(const std::string& profile) {
   return policy;
 }
 
-DonorTemporalWireProfileResult Failure(std::string detail) {
-  DonorTemporalWireProfileResult result;
+ReferenceTemporalWireProfileResult Failure(std::string detail) {
+  ReferenceTemporalWireProfileResult result;
   result.status = ErrorStatus();
   result.diagnostic = MakeTemporalWireDiagnostic(result.status,
                                                  "SB_DATATYPE_WIRE_CONVERSION_REJECTED",
@@ -239,7 +239,7 @@ bool SplitOffsetSuffix(std::string* value, std::string* offset_text, int* offset
   return false;
 }
 
-bool ParseTemporalValue(const DonorTemporalWireProfileRequest& request,
+bool ParseTemporalValue(const ReferenceTemporalWireProfileRequest& request,
                         const WireProfilePolicy& policy,
                         ParsedTemporalWire* out) {
   ParsedTemporalWire parsed;
@@ -284,13 +284,13 @@ bool ParseTemporalValue(const DonorTemporalWireProfileRequest& request,
   return true;
 }
 
-std::string NormalizedEnvelope(const DonorTemporalWireProfileRequest& request,
+std::string NormalizedEnvelope(const ReferenceTemporalWireProfileRequest& request,
                                const ParsedTemporalWire& parsed) {
   std::ostringstream out;
   out << "type=" << CanonicalTypeName(parsed.canonical_type_id)
       << ";local=" << parsed.local_value
-      << ";donor=" << request.donor_engine
-      << ";donor_type=" << request.donor_type_or_family;
+      << ";reference=" << request.reference_engine
+      << ";reference_type=" << request.reference_type_or_family;
   if (parsed.has_offset) {
     out << ";offset=" << parsed.offset_text << ";offset_minutes=" << parsed.offset_minutes;
   }
@@ -304,7 +304,7 @@ std::string NormalizedEnvelope(const DonorTemporalWireProfileRequest& request,
 
 }  // namespace
 
-DonorTemporalWireProfileResult ValidateDonorTemporalWireProfile(const DonorTemporalWireProfileRequest& request) {
+ReferenceTemporalWireProfileResult ValidateReferenceTemporalWireProfile(const ReferenceTemporalWireProfileRequest& request) {
   const WireProfilePolicy policy = PolicyForProfile(request.wire_profile);
   if (policy.canonical_type_id == CanonicalTypeId::unknown) { return Failure("temporal_wire_profile_unknown"); }
   if (request.fractional_second_precision > 12) { return Failure("fractional_precision_unsupported"); }
@@ -325,7 +325,7 @@ DonorTemporalWireProfileResult ValidateDonorTemporalWireProfile(const DonorTempo
     }
   }
 
-  DonorTemporalWireProfileResult result;
+  ReferenceTemporalWireProfileResult result;
   result.status = OkStatus();
   result.canonical_type_id = parsed.canonical_type_id;
   result.normalized_value = NormalizedEnvelope(request, parsed);

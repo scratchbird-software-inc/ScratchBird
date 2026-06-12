@@ -31,7 +31,7 @@ This artifact moves fixture sharding and expected-result authority planning ahea
 - Every fixture must resolve its expected result from `SEMANTIC_ORACLE_AUTHORITY_MAP.csv` before it is emitted.
 - `native_future` rows must receive a concrete promotion/refusal expected result before executable fixture generation.
 - Cluster-private rows must include standalone fail-closed expected diagnostics and, where profile-enabled, cluster-profile expected behavior.
-- Donor aliases must compare donor/profile rendering only after native SBSQL expected behavior is resolved.
+- Reference aliases must compare reference/profile rendering only after native SBSQL expected behavior is resolved.
 
 ## Acceptance
 

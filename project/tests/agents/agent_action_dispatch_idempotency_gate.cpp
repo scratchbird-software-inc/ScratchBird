@@ -536,7 +536,7 @@ void TestLiveDispatchIdempotencyAndCatalogRecord() {
           "outcome verification not persisted");
   Require(!catalog.actions.front().parser_authority &&
               !catalog.actions.front().client_authority &&
-              !catalog.actions.front().donor_authority &&
+              !catalog.actions.front().reference_authority &&
               !catalog.actions.front().sidecar_authority,
           "durable action record claimed untrusted authority");
   Require(dispatch_count == 1, "unexpected dispatch count after first action");

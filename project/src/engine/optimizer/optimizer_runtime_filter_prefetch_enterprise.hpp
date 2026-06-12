@@ -41,7 +41,7 @@ struct EnterpriseRuntimeFilterPrefetchMetricSnapshot {
   bool engine_runtime_scope = false;
   bool redacted_for_explain = true;
   bool exact_fallback_available = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool recovery_or_wal_authority = false;

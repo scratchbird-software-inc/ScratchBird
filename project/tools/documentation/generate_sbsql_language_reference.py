@@ -261,8 +261,8 @@ def generate() -> str:
     lines.append("| Durable identity | Catalog UUIDs, not user-visible names. |")
     lines.append("| Parser authority | Parser creates parse/bind/lowering artifacts only. |")
     lines.append("| Engine authority | SBLR, descriptors, policies, grants, catalog UUIDs, and MGA state. |")
-    lines.append("| Recovery language | ScratchBird recovery is MGA-based; WAL wording is donor compatibility only. |")
-    lines.append("| Donor syntax | Donor profiles rewrite or refuse; donor syntax does not create native SBsql authority. |")
+    lines.append("| Recovery language | ScratchBird recovery is MGA-based; WAL wording is reference compatibility only. |")
+    lines.append("| Reference syntax | Reference profiles rewrite or refuse; reference syntax does not create native SBsql authority. |")
 
     lines.append(section_heading("2. Source Map"))
     lines.append("| Source key | Private path | SHA-256 | Search keys observed |")

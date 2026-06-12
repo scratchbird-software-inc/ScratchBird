@@ -11,7 +11,7 @@
 // SEARCH_KEY: SB_SERVER_RESOURCE_GOVERNANCE_ODF_106
 // Server-side admission API for ODF-106 runtime quota descriptors. The server
 // may present runtime policy descriptors to the engine-owned governance route;
-// it does not own finality, visibility, parser execution, donor behavior, or
+// it does not own finality, visibility, parser execution, reference behavior, or
 // recovery authority.
 
 #include "resource_governance_admission.hpp"

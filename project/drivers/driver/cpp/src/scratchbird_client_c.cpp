@@ -75,7 +75,7 @@ constexpr int64_t kMicrosPerSecond = 1000000LL;
 constexpr int64_t kMicrosPerDay = 86400LL * kMicrosPerSecond;
 constexpr int64_t kMicrosFrom1970To2000 = kMicrosPerDay * kDaysFrom1970To2000;
 constexpr const char* kAbiMemoryAuthorityScope =
-    "abi_memory_ownership_evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority";
+    "abi_memory_ownership_evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority";
 
 void set_error(sb_error* err, sb_error_code code, const std::string& message);
 

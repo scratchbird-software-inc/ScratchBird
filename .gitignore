@@ -10,6 +10,12 @@
 !/LICENSE
 !/NOTICE
 !/README.md
+!/SECURITY.md
+!/KNOWN_LIMITATIONS.md
+!/RELEASE_TERMS.md
+!/THIRD_PARTY_NOTICES.md
+!/SBOM.json
+!/REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md
 
 /build/
 /build-*/
@@ -43,19 +49,46 @@ __pycache__/
 *.tmp
 *.swp
 
-# Donor material in the public repository is limited to original regression
-# suites and compiled/downloaded tool harness payloads. Donor source trees,
+# External reference material in the public repository is limited to
+# ScratchBird-owned harnesses, manifests, locators, and CTest wiring. Raw
+# upstream regression payloads, downloaded/native tools, upstream source trees,
 # source archives, release-packet evidence extracts, and source-acquisition
-# manifests stay local/private and must not be tracked.
-project/tests/donor_regression/donor_release_acquisition/**
-!project/tests/donor_regression/donor_release_acquisition/
-!project/tests/donor_regression/donor_release_acquisition/**/
-!project/tests/donor_regression/donor_release_acquisition/**/regression/
-!project/tests/donor_regression/donor_release_acquisition/**/regression/**
+# payloads stay local/private and must not be tracked.
+#
+# Keep stale pre-rename external-reference payload locations out of public source.
+project/src/**/[d]onor*/
+project/src/**/*[d]onor*
+project/src/**/*[D]onor*
+project/src/**/reference_system*/
+project/src/**/*reference_system*
+project/src/**/*ReferenceSystem*
+project/src/udr/packages/[d]onor*/
+project/src/udr/packages/reference*/
+docs/documentation/compatibility-emulation/**
+docs/**/*[d]onor*
+docs/**/*[D]onor*
+docs/**/*reference-system*
+docs/**/*ReferenceSystem*
+project/docs/**/*[d]onor*
+project/docs/**/*[D]onor*
+project/docs/**/*reference-system*
+project/docs/**/*ReferenceSystem*
 
-!project/tests/donor_regression/donor_catalog_seeds/
-!project/tests/donor_regression/donor_catalog_seeds/**
-!project/tests/donor_regression/**/native_tool_harness/tools/
-!project/tests/donor_regression/**/native_tool_harness/tools/**
-!project/tests/donor_regression/firebird/original_firebird_qa/
-!project/tests/donor_regression/firebird/original_firebird_qa/**
+project/tests/reference_regression/reference_release_acquisition/**
+!project/tests/reference_regression/reference_release_acquisition/
+!project/tests/reference_regression/reference_release_acquisition/**/
+!project/tests/reference_regression/reference_release_acquisition/**/regression/
+!project/tests/reference_regression/reference_release_acquisition/**/regression/PUBLIC_REGRESSION_SCOPE.md
+!project/tests/reference_regression/reference_release_acquisition/**/regression/*_CANDIDATE.md
+!project/tests/reference_regression/reference_release_acquisition/**/regression/*_MANIFEST.csv
+!project/tests/reference_regression/reference_release_acquisition/**/regression/*_INDEX.csv
+
+!project/tests/reference_regression/reference_catalog_seeds/
+!project/tests/reference_regression/reference_catalog_seeds/**
+project/tests/reference_regression/**/native_tool_harness/tools/**
+project/tests/reference_regression/firebird/original_firebird_qa/**
+
+# Pre-rename local payloads may still exist in developer worktrees.
+project/tests/[d]onor_regression/[d]onor_release_acquisition/**
+project/tests/[d]onor_regression/**/native_tool_harness/tools/**
+project/tests/[d]onor_regression/firebird/original_firebird_qa/**

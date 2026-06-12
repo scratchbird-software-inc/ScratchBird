@@ -41,7 +41,7 @@ REQUIRED_FAMILY_FIELDS = (
     "corruption_evidence_status",
     "cleanup_evidence_status",
     "readiness_drift_gate_status",
-    "policy_donor_cluster_claim_boundary",
+    "policy_reference_cluster_claim_boundary",
     "auditor_timestamp_utc",
     "generation_metadata",
     "enterprise_ready",
@@ -153,7 +153,7 @@ def assert_manifest_shape(repo_root: pathlib.Path, data: dict) -> None:
         for field in ("supported_routes", "requires_exact_recheck", "requires_mga_recheck", "requires_security_recheck", "routes"):
             if field not in route:
                 raise AssertionError(f"{row['family_id']} missing route field {field}")
-        boundary = row["policy_donor_cluster_claim_boundary"]
+        boundary = row["policy_reference_cluster_claim_boundary"]
         for field in (
             "transaction_finality_authority",
             "visibility_authority",
@@ -161,7 +161,7 @@ def assert_manifest_shape(repo_root: pathlib.Path, data: dict) -> None:
             "security_authority",
             "recovery_authority",
             "parser_authority",
-            "donor_authority",
+            "reference_authority",
             "wal_authority",
             "benchmark_authority",
             "optimizer_plan_authority",
@@ -186,7 +186,7 @@ def assert_manifest_shape(repo_root: pathlib.Path, data: dict) -> None:
             "ceic_041_crash_matrix_claimed",
             "ceic_042_readiness_drift_claimed",
             "all_index_readiness_claimed",
-            "donor_dominance_claimed",
+            "reference_dominance_claimed",
             "enterprise_readiness_claimed",
         ):
             if classification.get(field) is not False:
@@ -222,7 +222,7 @@ def assert_manifest_shape(repo_root: pathlib.Path, data: dict) -> None:
                     raise AssertionError(f"{row['family_id']} {field} overclaims {row[field]['status']}")
             if row["metric_producer_status"]["status"] != "complete":
                 raise AssertionError(f"{row['family_id']} CEIC-040 metric producer must be complete")
-            if row["persistence_class"] not in {"donor_emulated", "policy_blocked"}:
+            if row["persistence_class"] not in {"reference_emulated", "policy_blocked"}:
                 for field in (
                     "crash_evidence_status",
                     "corruption_evidence_status",
@@ -266,7 +266,7 @@ def assert_manifest_shape(repo_root: pathlib.Path, data: dict) -> None:
         raise AssertionError("hash must not support ordered range")
 
     for enum_name, classification in (
-        ("donor_emulated", "donor_emulated_mapping_non_authority"),
+        ("reference_emulated", "reference_emulated_mapping_non_authority"),
         ("policy_blocked", "policy_blocked_non_runtime"),
     ):
         row = by_enum[enum_name]
@@ -330,15 +330,15 @@ def main() -> int:
             "stale manifest differs",
         )
 
-        donor_overclaim = load(generated)
-        for row in donor_overclaim["families"]:
-            if row["enum_name"] == "donor_emulated":
+        reference_overclaim = load(generated)
+        for row in reference_overclaim["families"]:
+            if row["enum_name"] == "reference_emulated":
                 row["storage_authority_status"]["status"] = "pending"
-        donor_path = temp_dir / "donor_overclaim.yaml"
-        write(donor_path, donor_overclaim)
+        reference_path = temp_dir / "reference_overclaim.yaml"
+        write(reference_path, reference_overclaim)
         expect_failure_contains(
-            [sys.executable, str(tool), "--repo-root", str(repo_root), "--manifest", str(donor_path)],
-            "donor_emulated storage authority must be blocked",
+            [sys.executable, str(tool), "--repo-root", str(repo_root), "--manifest", str(reference_path)],
+            "reference_emulated storage authority must be blocked",
         )
 
         persistent_overclaim = load(generated)

@@ -191,7 +191,7 @@ void AllOperatorKindsRequestAndReleaseArenaGrants() {
             "MMCH-020 query memory primitive evidence missing");
     Require(EvidenceHas(
                 result.evidence,
-                "executor.operator_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"),
+                "executor.operator_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"),
             "MMCH-020 authority boundary evidence missing");
     RequireEvidenceHygiene(result.evidence);
     grants.push_back({kind, result.grant_id});
@@ -235,7 +235,7 @@ void UnsafeOperatorMemoryRequestsFailClosed() {
   request.arena = &arena;
   request.resource_governance = Governance("mmch020.refuse", request.bytes, false);
   request.authority = Authority();
-  request.authority.parser_client_or_donor_memory_authority = true;
+  request.authority.parser_client_or_reference_memory_authority = true;
 
   auto refused = exec::RequestExecutorOperatorMemory(std::move(request));
   Require(!refused.ok() &&
@@ -267,7 +267,7 @@ void UnsafeOperatorMemoryRequestsFailClosed() {
 
 int main() {
   std::cout << "MMCH-020 authority_note=live_operator_memory_grants_evidence_only;"
-               "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+               "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   AllOperatorKindsRequestAndReleaseArenaGrants();
   UnsafeOperatorMemoryRequestsFailClosed();

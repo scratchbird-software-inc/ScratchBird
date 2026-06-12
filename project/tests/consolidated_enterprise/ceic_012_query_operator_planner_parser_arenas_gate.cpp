@@ -391,11 +391,11 @@ int main() {
   unsafe_request.route_label = "ceic-012-unsafe";
   unsafe_request.operation_id = "ceic-012-unsafe.operation";
   unsafe_request.provenance = RuntimeProvenance();
-  unsafe_request.authority.parser_or_donor_finality_authority = true;
+  unsafe_request.authority.parser_or_reference_finality_authority = true;
   const auto unsafe_resource =
       memory::AcquireReservationBackedMemoryResource(std::move(unsafe_request));
   Require(!unsafe_resource.ok() && unsafe_resource.fail_closed,
-          "CEIC-012 unsafe parser/donor authority did not fail closed");
+          "CEIC-012 unsafe parser/reference authority did not fail closed");
   ValidateResourceReleased(ledger, "unsafe-authority");
 
   auto small_resource = AcquireResource(

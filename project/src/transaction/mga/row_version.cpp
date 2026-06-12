@@ -303,9 +303,9 @@ HotStableRowHeadDecisionResult EvaluateHotStableRowHeadDecision(
   HotStableRowHeadDecisionResult result;
   result.status = RowVersionOkStatus();
 
-  if (input.parser_or_donor_authority) {
-    return HotStableRowHeadRefusal("SB-MGA-HOT-STABLE-HEAD-PARSER-DONOR-REFUSED",
-                                   "row_version.hot_stable_head.parser_donor_refused");
+  if (input.parser_or_reference_authority) {
+    return HotStableRowHeadRefusal("SB-MGA-HOT-STABLE-HEAD-PARSER-REFERENCE-REFUSED",
+                                   "row_version.hot_stable_head.parser_reference_refused");
   }
 
   if (!input.exact_index_keys_unchanged) {

@@ -581,7 +581,7 @@ NoSqlSqlFusionRouteResult ValidateNoSqlSqlFusionRoute(
     result.evidence.push_back("OPCH_NOSQL_SQL_FUSION_OPTIMIZER_ROUTES");
     result.evidence.push_back("nosql_sql_fusion.accepted=false");
     result.evidence.push_back("nosql_sql_fusion.parser_authority=false");
-    result.evidence.push_back("nosql_sql_fusion.donor_authority=false");
+    result.evidence.push_back("nosql_sql_fusion.reference_authority=false");
     result.evidence.push_back("nosql_sql_fusion.visibility_authority=false");
     result.evidence.push_back("nosql_sql_fusion.finality_authority=false");
   };
@@ -589,7 +589,7 @@ NoSqlSqlFusionRouteResult ValidateNoSqlSqlFusionRoute(
     refuse("SB_OPT_NOSQL_SQL_FUSION.ROUTE_LABEL_REQUIRED");
     return result;
   }
-  if (request.parser_or_donor_authority) {
+  if (request.parser_or_reference_authority) {
     refuse("SB_OPT_NOSQL_SQL_FUSION.UNSAFE_AUTHORITY");
     return result;
   }
@@ -647,7 +647,7 @@ NoSqlSqlFusionRouteResult ValidateNoSqlSqlFusionRoute(
   result.evidence.push_back("nosql_sql_fusion.mga_recheck_required=true");
   result.evidence.push_back("nosql_sql_fusion.security_recheck_required=true");
   result.evidence.push_back("nosql_sql_fusion.parser_authority=false");
-  result.evidence.push_back("nosql_sql_fusion.donor_authority=false");
+  result.evidence.push_back("nosql_sql_fusion.reference_authority=false");
   result.evidence.push_back("nosql_sql_fusion.visibility_authority=false");
   result.evidence.push_back("nosql_sql_fusion.finality_authority=false");
   return result;

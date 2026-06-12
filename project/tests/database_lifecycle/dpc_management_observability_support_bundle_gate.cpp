@@ -328,7 +328,7 @@ void TestSchemaAndValidation() {
   RequireSchemaField("parser_finality_authority",
                      "bool",
                      "authority_boundaries");
-  RequireSchemaField("donor_finality_authority",
+  RequireSchemaField("reference_finality_authority",
                      "bool",
                      "authority_boundaries");
   RequireSchemaField("wal_recovery_authority",
@@ -368,11 +368,11 @@ void TestSchemaAndValidation() {
           "DPC-061 missing message vector diagnostic mismatch");
 
   auto authority_drift = snapshot;
-  authority_drift.donor_finality_authority = true;
+  authority_drift.reference_finality_authority = true;
   const auto authority_refused =
       api::ValidatePerformanceOptimizationSurfaceSnapshot(authority_drift);
   Require(!authority_refused.ok,
-          "DPC-061 snapshot accepted donor finality authority");
+          "DPC-061 snapshot accepted reference finality authority");
   Require(Contains(authority_refused.detail, "non_authority_boundary"),
           "DPC-061 non-authority diagnostic mismatch");
 }
@@ -388,8 +388,8 @@ void TestManagementAndSupportBundleJson() {
   Require(result.management_api_ready && result.support_bundle_ready &&
               result.sys_view_contract_ready,
           "DPC-061 readiness flags were incomplete");
-  Require(!result.parser_finality_authority && !result.donor_finality_authority,
-          "DPC-061 result claimed parser or donor finality authority");
+  Require(!result.parser_finality_authority && !result.reference_finality_authority,
+          "DPC-061 result claimed parser or reference finality authority");
   Require(HasEvidence(result, "user_observability_surface", "DPC-061"),
           "DPC-061 result missing DPC-061 evidence marker");
   Require(HasEvidence(result,
@@ -425,8 +425,8 @@ void TestManagementAndSupportBundleJson() {
           "DPC-061 management JSON missing exact refusal diagnostic");
   Require(Contains(management_json, "\"parser_finality_authority\":false"),
           "DPC-061 management JSON missing parser non-authority");
-  Require(Contains(management_json, "\"donor_finality_authority\":false"),
-          "DPC-061 management JSON missing donor non-authority");
+  Require(Contains(management_json, "\"reference_finality_authority\":false"),
+          "DPC-061 management JSON missing reference non-authority");
   Require(Contains(management_json, "\"wal_recovery_authority\":false"),
           "DPC-061 management JSON missing WAL non-authority");
 
@@ -489,8 +489,8 @@ void TestShowManagementRows() {
           "DPC-061 SHOW MANAGEMENT missing support-bundle completeness");
   Require(HasRowField(result, "parser_finality_authority", "false"),
           "DPC-061 SHOW MANAGEMENT claimed parser finality authority");
-  Require(HasRowField(result, "donor_finality_authority", "false"),
-          "DPC-061 SHOW MANAGEMENT claimed donor finality authority");
+  Require(HasRowField(result, "reference_finality_authority", "false"),
+          "DPC-061 SHOW MANAGEMENT claimed reference finality authority");
   Require(HasRowField(result, "wal_recovery_authority", "false"),
           "DPC-061 SHOW MANAGEMENT claimed WAL recovery authority");
 }
@@ -582,8 +582,8 @@ void TestMetricsAuditAndMessageVectorEvidence() {
           "DPC-061 lifecycle metric missing exact diagnostic row");
   Require(HasRowField(recorded, "parser_finality_authority", "false"),
           "DPC-061 lifecycle metric claimed parser authority");
-  Require(HasRowField(recorded, "donor_finality_authority", "false"),
-          "DPC-061 lifecycle metric claimed donor authority");
+  Require(HasRowField(recorded, "reference_finality_authority", "false"),
+          "DPC-061 lifecycle metric claimed reference authority");
 
   api::EngineSysMetricsCurrentRequest diagnostics;
   diagnostics.context = Context();

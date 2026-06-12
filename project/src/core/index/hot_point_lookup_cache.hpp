@@ -71,7 +71,7 @@ struct HotPointLookupCandidate {
   bool requires_security_authorization_recheck = true;
   bool visibility_finality_authority = false;
   bool authorization_finality_authority = false;
-  bool parser_or_donor_finality_authority = false;
+  bool parser_or_reference_finality_authority = false;
   bool timestamp_or_uuid_order_finality_authority = false;
 };
 

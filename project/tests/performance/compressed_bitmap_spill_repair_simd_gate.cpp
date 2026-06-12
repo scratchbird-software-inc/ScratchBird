@@ -183,7 +183,7 @@ void TestCleanPersistedReopenAndPopcount() {
   Require(HasEvidence(serialized.evidence,
                       "candidate_set_finality_authority=false"),
           "candidate-set non-authority evidence missing");
-  Require(HasEvidence(serialized.evidence, "parser_or_donor_authority=false"),
+  Require(HasEvidence(serialized.evidence, "parser_or_reference_authority=false"),
           "parser/provider non-authority evidence missing");
   Require(HasEvidence(serialized.evidence,
                       "wal_recovery_or_finality_authority=false"),

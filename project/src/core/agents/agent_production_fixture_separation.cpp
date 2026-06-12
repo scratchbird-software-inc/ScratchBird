@@ -83,7 +83,7 @@ AgentProductionFixtureSeparationResult Finish(
   Add(&result.evidence,
       "agent_fixture_separation.parser_authority=false");
   Add(&result.evidence,
-      "agent_fixture_separation.donor_authority=false");
+      "agent_fixture_separation.reference_authority=false");
   Add(&result.evidence,
       "agent_fixture_separation.client_authority=false");
   return result;

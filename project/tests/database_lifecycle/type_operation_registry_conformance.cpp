@@ -154,7 +154,7 @@ engine::TypeOperationDiagnosticVector Diagnostic(
   diagnostic.security_epoch = entry.security_epoch;
   diagnostic.resource_epoch = entry.resource_epoch;
   diagnostic.implementation_version = entry.implementation_version;
-  diagnostic.donor_profile_uuid = entry.donor_profile_uuid;
+  diagnostic.reference_profile_uuid = entry.reference_profile_uuid;
   return diagnostic;
 }
 
@@ -327,22 +327,22 @@ engine::TypeOperationRegistry ValidRegistry() {
   AttachLlvm(llvm);
   registry.entries.push_back(llvm);
 
-  auto donor = ValidEntry(
-      0xd0, engine::TypeOperationKind::donor_method,
+  auto reference = ValidEntry(
+      0xd0, engine::TypeOperationKind::reference_method,
       "tor.sqlserver.geometry.starea", "geometry");
-  donor.implementation_target = engine::TypeOperationImplementationTarget::cpp_udr;
-  donor.domain_operation_present = true;
-  donor.domain_operation = ValidDomainOperation(Uuid(0x92));
-  donor.domain_operation_uuid = donor.domain_operation.operation_uuid;
-  donor.donor_method_binding_present = true;
-  donor.donor_profile_uuid = Uuid(0x93);
-  donor.donor_family = "sqlserver";
-  donor.donor_version_profile = "2022";
-  donor.donor_method_name = "STArea";
-  donor.inverse_rendering_policy = "render_as_donor_method";
-  donor.cache_key.donor_profile_uuid = donor.donor_profile_uuid;
-  AttachCppUdr(donor);
-  registry.entries.push_back(donor);
+  reference.implementation_target = engine::TypeOperationImplementationTarget::cpp_udr;
+  reference.domain_operation_present = true;
+  reference.domain_operation = ValidDomainOperation(Uuid(0x92));
+  reference.domain_operation_uuid = reference.domain_operation.operation_uuid;
+  reference.reference_method_binding_present = true;
+  reference.reference_profile_uuid = Uuid(0x93);
+  reference.reference_family = "sqlserver";
+  reference.reference_version_profile = "2022";
+  reference.reference_method_name = "STArea";
+  reference.inverse_rendering_policy = "render_as_reference_method";
+  reference.cache_key.reference_profile_uuid = reference.reference_profile_uuid;
+  AttachCppUdr(reference);
+  registry.entries.push_back(reference);
 
   return registry;
 }
@@ -465,7 +465,7 @@ void TestOverloadAndDescriptorFailures() {
       "TOR accepted mismatched result descriptor UUID");
 }
 
-void TestCastAggregateWindowAndDonorFailures() {
+void TestCastAggregateWindowAndReferenceFailures() {
   auto registry = ValidRegistry();
   registry.entries[1].cast_class = engine::TypeOperationCastClass::none;
   RequireRegistryStatus(
@@ -507,11 +507,11 @@ void TestCastAggregateWindowAndDonorFailures() {
       "TOR accepted removable window frame without inverse function");
 
   registry = ValidRegistry();
-  registry.entries[6].donor_method_name.clear();
+  registry.entries[6].reference_method_name.clear();
   RequireRegistryStatus(
       registry,
-      engine::TypeOperationRegistryStatus::donor_method_binding_invalid,
-      "TOR accepted incomplete donor method binding");
+      engine::TypeOperationRegistryStatus::reference_method_binding_invalid,
+      "TOR accepted incomplete reference method binding");
 }
 
 void TestUdrLlvmSblrAndCacheFailures() {
@@ -598,7 +598,7 @@ int main() {
   TestValidRegistryCoversTorGates();
   TestRegistryRowAndRegistrationFailures();
   TestOverloadAndDescriptorFailures();
-  TestCastAggregateWindowAndDonorFailures();
+  TestCastAggregateWindowAndReferenceFailures();
   TestUdrLlvmSblrAndCacheFailures();
   TestDiagnosticsAndMetricsFailures();
   std::cout << "type_operation_registry_conformance=passed\n";

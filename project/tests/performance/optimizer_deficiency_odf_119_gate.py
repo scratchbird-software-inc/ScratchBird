@@ -63,7 +63,7 @@ def main() -> int:
             "database_lifecycle": "fresh_database_per_run",
             "storage_backend": "scratchbird_mga_native_storage",
             "sync_policy": "engine_selected_sync_fence",
-            "donor_or_embedded_storage_backend": False,
+            "reference_or_embedded_storage_backend": False,
         },
         "route_controls": {
             "cluster_mode": "local_noncluster",
@@ -107,8 +107,8 @@ def main() -> int:
         },
         "authority_controls": {
             "engine_mga_transaction_authority": True,
-            "parser_client_donor_transaction_finality_shortcuts": False,
-            "donor_or_embedded_storage_transaction_truth": False,
+            "parser_client_reference_transaction_finality_shortcuts": False,
+            "reference_or_embedded_storage_transaction_truth": False,
             "selected_path_requires_mga_visibility_recheck": True,
         },
     }

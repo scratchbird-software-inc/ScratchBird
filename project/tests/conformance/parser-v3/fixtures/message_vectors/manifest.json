@@ -41,5 +41,5 @@
   ],
   "fixture_family": "message_vector_fixtures",
   "fixture_id": "DPR-FIX-005",
-  "forbidden_fixture_source": "raw donor status output"
+  "forbidden_fixture_source": "raw reference status output"
 }

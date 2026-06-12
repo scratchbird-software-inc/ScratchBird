@@ -173,10 +173,10 @@ def main() -> None:
         }
         if model.get("public_release_ready") is not False:
             problems.append(f"{manual_id}: doc_model marks public-release ready")
-        if manual_id.startswith("donor_") and "donor_documentation_legal_hold_pending_ip_lawyer" not in policy_blockers:
-            problems.append(f"{manual_id}: donor legal-hold publication blocker missing")
+        if manual_id.startswith("reference_") and "reference_documentation_legal_hold_pending_ip_lawyer" not in policy_blockers:
+            problems.append(f"{manual_id}: reference legal-hold publication blocker missing")
         if (
-            manual_id == "donor_interbase_migration_reference"
+            manual_id == "reference_interbase_migration_reference"
             and "closed_source_interbase_private_only_pending_legal_approval" not in policy_blockers
         ):
             problems.append(f"{manual_id}: InterBase closed-source publication blocker missing")

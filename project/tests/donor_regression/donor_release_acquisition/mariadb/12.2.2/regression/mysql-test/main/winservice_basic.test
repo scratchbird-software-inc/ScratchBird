@@ -1,5 +1,0 @@
-source include/windows.inc;
-let $datadir_name=data;
-let $service_name_prefix=mariadb;
-let $password=password;
-source winservice.inc;

@@ -87,7 +87,7 @@
     "parser_finality_authority": false,
     "client_finality_authority": false,
     "driver_finality_authority": false,
-    "donor_finality_authority": false,
+    "reference_finality_authority": false,
     "write_ahead_log_finality_authority": false,
     "timestamp_order_finality_authority": false,
     "uuid_order_finality_authority": false,

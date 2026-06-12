@@ -24,7 +24,7 @@ using scratchbird::core::platform::Subsystem;
 constexpr const char* kEvidenceAnchor =
     "CEIC-016_FOREIGN_MEMORY_RESERVATION_COVERAGE";
 constexpr const char* kAuthorityScope =
-    "foreign_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
+    "foreign_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -121,7 +121,7 @@ bool UnsafeAuthority(const ForeignMemoryReservationRequest& request,
   }
   if (authority.transaction_finality_authority || authority.visibility_authority ||
       authority.recovery_authority || authority.parser_authority ||
-      authority.donor_authority || authority.wal_authority ||
+      authority.reference_authority || authority.wal_authority ||
       authority.benchmark_authority || authority.support_bundle_authority ||
       authority.optimizer_plan_authority || authority.index_finality_authority ||
       authority.agent_action_authority || authority.authorization_authority ||

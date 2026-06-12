@@ -240,8 +240,8 @@ RewriteDecision SelectMaterializedSummaryRewrite(const MaterializedSummaryRewrit
     AddUniqueDiagnostic(&decision.diagnostics, "SB_OPT_REWRITE_BASE_ROW_SECURITY_RECHECK_MISSING");
     selectable = false;
   }
-  if (input.parser_or_donor_authority) {
-    AddUniqueDiagnostic(&decision.diagnostics, "SB_OPT_REWRITE_UNSAFE_PARSER_DONOR_AUTHORITY");
+  if (input.parser_or_reference_authority) {
+    AddUniqueDiagnostic(&decision.diagnostics, "SB_OPT_REWRITE_UNSAFE_PARSER_REFERENCE_AUTHORITY");
     selectable = false;
   }
   if (!input.mga_compatible || input.unsafe_state) {
@@ -277,8 +277,8 @@ RewriteDecision SelectCommonSubexpressionReuse(const CommonSubexpressionReuseInp
     AddUniqueDiagnostic(&decision.diagnostics, "SB_OPT_REWRITE_EQUIVALENCE_PROOF_MISSING");
     selectable = false;
   }
-  if (input.parser_or_donor_authority) {
-    AddUniqueDiagnostic(&decision.diagnostics, "SB_OPT_REWRITE_UNSAFE_PARSER_DONOR_AUTHORITY");
+  if (input.parser_or_reference_authority) {
+    AddUniqueDiagnostic(&decision.diagnostics, "SB_OPT_REWRITE_UNSAFE_PARSER_REFERENCE_AUTHORITY");
     selectable = false;
   }
   if (!input.mga_compatible || input.unsafe_state) {

@@ -37,7 +37,7 @@ struct LateMaterializationPlan {
   bool security_authorization_recheck_required = true;
   bool redaction_gate_required = true;
   bool top_k_pruning_required = true;
-  bool parser_or_donor_finality_or_visibility_authority = false;
+  bool parser_or_reference_finality_or_visibility_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool provider_finality_or_visibility_authority = false;
   bool wal_recovery_or_finality_authority = false;

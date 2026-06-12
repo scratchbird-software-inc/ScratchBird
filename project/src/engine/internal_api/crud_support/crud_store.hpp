@@ -41,7 +41,7 @@ inline constexpr const char* kCrudIndexFamilyExpression = "expression";
 inline constexpr const char* kCrudIndexFamilyPartial = "partial";
 inline constexpr const char* kCrudIndexFamilyCovering = "covering";
 inline constexpr const char* kCrudIndexFamilyInMemory = "in_memory";
-inline constexpr const char* kCrudIndexFamilyDonorEmulated = "donor_emulated";
+inline constexpr const char* kCrudIndexFamilyReferenceEmulated = "reference_emulated";
 
 struct CrudTableRecord {
   std::uint64_t creator_tx = 0;

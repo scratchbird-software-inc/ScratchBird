@@ -134,9 +134,9 @@ void AppendFrameOwnershipEvidence(std::vector<std::string>* evidence,
                       std::to_string(snapshot.active_frame_shard_count));
   evidence->push_back("page_cache.sharded_snapshot_order=shard_id_ascending");
   evidence->push_back(
-      "page_cache.frame_authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority");
+      "page_cache.frame_authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority");
   evidence->push_back(
-      "page_cache.enterprise_frame_authority_scope=evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority");
+      "page_cache.enterprise_frame_authority_scope=evidence_only_not_transaction_finality_row_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority");
   evidence->push_back(
       "page_cache.cluster_scope=external_cluster_provider_only_no_local_cluster_page_cache_authority");
 }

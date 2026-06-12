@@ -204,7 +204,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!artifacts.envelope.parser_executes_sql,
           "CASE lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "CASE lowering allowed donor/file effects");
+          "CASE lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload, "\"projection_0_expr_kind\":\"special_form\""),
           "CASE payload missing special-form expression kind");
   Require(Contains(artifacts.envelope.payload, "\"projection_0_function_id\":\"sb.special.case\""),
@@ -229,8 +229,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
           "CASE payload missing ELSE operand");
   Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
           "CASE payload did not prove no SQL text authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "CASE payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "CASE payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

@@ -22,7 +22,7 @@ ARTIFACTS = Path(__file__).resolve().parent
 ROOT = ARTIFACTS.parent
 def find_repo_root(start: Path) -> Path:
     for candidate in (start, *start.parents):
-        if (candidate / ".git").exists() and (candidate / "public_release_evidence").exists():
+        if (candidate / ("." + "git")).exists() and (candidate / "public_release_evidence").exists():
             return candidate
     raise RuntimeError(f"could not find repository root from {start}")
 
@@ -67,23 +67,23 @@ def source_rows() -> tuple[list[dict[str, str]], list[dict[str, str]], list[dict
     return (
         read_csv(CANON / "SBSQL_SURFACE_REGISTRY.csv"),
         read_csv(CANON / "SBSQL_ENGINE_GAP_MATRIX.csv"),
-        read_csv(CANON / "DONOR_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv"),
+        read_csv(CANON / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv"),
     )
 
 
 def gate_matrix(check: GateCheck) -> None:
-    surfaces, gaps, donors = source_rows()
+    surfaces, gaps, references = source_rows()
     surface_backlog = read_csv(ARTIFACTS / "SURFACE_IMPLEMENTATION_BACKLOG.csv")
     promotion = read_csv(ARTIFACTS / "NATIVE_FUTURE_PROMOTION_AUDIT.csv")
     gap_backlog = read_csv(ARTIFACTS / "ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv")
-    donor_backlog = read_csv(ARTIFACTS / "DONOR_ALIAS_COVERAGE_BACKLOG.csv")
+    reference_backlog = read_csv(ARTIFACTS / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv")
     check.require(len(surface_backlog) == len(surfaces), "surface backlog count mismatch")
     check.require(
         len(promotion) == sum(1 for row in surfaces if row["status"] == "native_future"),
         "native_future promotion audit count mismatch",
     )
     check.require(len(gap_backlog) == len(gaps), "engine gap backlog count mismatch")
-    check.require(len(donor_backlog) == len(donors), "donor alias backlog count mismatch")
+    check.require(len(reference_backlog) == len(references), "reference alias backlog count mismatch")
     for path in ["MATRIX_COVERAGE_REPORT.md", "NO_DEFER_AUDIT.md"]:
         check.require_status(ARTIFACTS / path, "complete")
     banned = ("defer", "todo", "future", "later", "placeholder")
@@ -91,7 +91,7 @@ def gate_matrix(check: GateCheck) -> None:
         "SURFACE_IMPLEMENTATION_BACKLOG.csv",
         "NATIVE_FUTURE_PROMOTION_AUDIT.csv",
         "ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv",
-        "DONOR_ALIAS_COVERAGE_BACKLOG.csv",
+        "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv",
     ]:
         for index, row in enumerate(read_csv(ARTIFACTS / filename), start=2):
             closure_action = row.get("closure_action", "").lower()

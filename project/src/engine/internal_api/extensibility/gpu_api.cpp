@@ -59,7 +59,7 @@ bool RequestsAuthorityBypass(const EngineApiRequest& request) {
 
 bool RequestsForbiddenGpuInput(const EngineApiRequest& request) {
   return HasOptionToken(request, "raw_sql") ||
-         HasOptionToken(request, "donor_text") ||
+         HasOptionToken(request, "reference_text") ||
          HasOptionToken(request, "parser_ast") ||
          HasOptionToken(request, "client_protocol_frame");
 }

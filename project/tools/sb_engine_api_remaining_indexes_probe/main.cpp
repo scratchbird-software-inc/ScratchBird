@@ -148,7 +148,7 @@ EngineCreateTableResult CreateIndexedTable(const EngineRequestContext& tx_contex
   request.table_columns.push_back(Column("score", "int32", 10));
   request.table_columns.push_back(Column("city", "text", 11));
   request.table_columns.push_back(Column("tag", "text", 12));
-  request.table_columns.push_back(Column("donor_key", "text", 13));
+  request.table_columns.push_back(Column("reference_key", "text", 13));
   return EngineCreateTable(request);
 }
 
@@ -238,9 +238,9 @@ int main(int argc, char** argv) {
   const auto table_result = CreateIndexedTable(setup_context);
   const auto table = table_result.table_object;
 
-  const auto ada = InsertProbeRow(setup_context, table, {{"id", "1"}, {"name", "Ada"}, {"age", "37"}, {"status", "active"}, {"body", "hello database engine"}, {"bbox", "0,0,2,2"}, {"embedding", "0,0"}, {"embedding_hnsw", "0,0"}, {"embedding_ivf", "0,0"}, {"score", "10"}, {"city", "London"}, {"tag", "hot"}, {"donor_key", "d1"}});
-  const auto grace = InsertProbeRow(setup_context, table, {{"id", "2"}, {"name", "Grace"}, {"age", "45"}, {"status", "inactive"}, {"body", "graph vector search"}, {"bbox", "5,5,6,6"}, {"embedding", "10,10"}, {"embedding_hnsw", "10,10"}, {"embedding_ivf", "10,10"}, {"score", "25"}, {"city", "Paris"}, {"tag", "cold"}, {"donor_key", "d2"}});
-  const auto lin = InsertProbeRow(setup_context, table, {{"id", "3"}, {"name", "Lin"}, {"age", "31"}, {"status", "active"}, {"body", "hello vector world"}, {"bbox", "1,1,3,3"}, {"embedding", "1,1"}, {"embedding_hnsw", "1,1"}, {"embedding_ivf", "1,1"}, {"score", "15"}, {"city", "London"}, {"tag", "warm"}, {"donor_key", "d3"}});
+  const auto ada = InsertProbeRow(setup_context, table, {{"id", "1"}, {"name", "Ada"}, {"age", "37"}, {"status", "active"}, {"body", "hello database engine"}, {"bbox", "0,0,2,2"}, {"embedding", "0,0"}, {"embedding_hnsw", "0,0"}, {"embedding_ivf", "0,0"}, {"score", "10"}, {"city", "London"}, {"tag", "hot"}, {"reference_key", "d1"}});
+  const auto grace = InsertProbeRow(setup_context, table, {{"id", "2"}, {"name", "Grace"}, {"age", "45"}, {"status", "inactive"}, {"body", "graph vector search"}, {"bbox", "5,5,6,6"}, {"embedding", "10,10"}, {"embedding_hnsw", "10,10"}, {"embedding_ivf", "10,10"}, {"score", "25"}, {"city", "Paris"}, {"tag", "cold"}, {"reference_key", "d2"}});
+  const auto lin = InsertProbeRow(setup_context, table, {{"id", "3"}, {"name", "Lin"}, {"age", "31"}, {"status", "active"}, {"body", "hello vector world"}, {"bbox", "1,1,3,3"}, {"embedding", "1,1"}, {"embedding_hnsw", "1,1"}, {"embedding_ivf", "1,1"}, {"score", "15"}, {"city", "London"}, {"tag", "warm"}, {"reference_key", "d3"}});
   const std::string ada_row_uuid = ada.row_uuids.empty() ? std::string{} : ada.row_uuids.front().canonical;
 
   const bool create_all_indexes =
@@ -258,7 +258,7 @@ int main(int argc, char** argv) {
       CreateIndex(setup_context, table, "partial", "ix_active_name", {"name", "where_eq:status=active"}).ok &&
       CreateIndex(setup_context, table, "covering", "ix_city_cover", {"city", "include:name"}).ok &&
       CreateIndex(setup_context, table, "in_memory", "ix_tag_memory", {"tag"}).ok &&
-      CreateIndex(setup_context, table, "donor_emulated", "ix_donor_key", {"donor_key"}).ok &&
+      CreateIndex(setup_context, table, "reference_emulated", "ix_reference_key", {"reference_key"}).ok &&
       CreateIndex(setup_context, table, "btree_unique", "ix_id_unique", {"id", "unique"}).ok;
 
   const auto btree_range = Select(setup_context, table, "column_range", "age", {"30", "40"});
@@ -274,7 +274,7 @@ int main(int argc, char** argv) {
   const auto partial = Select(setup_context, table, "partial_index_probe", "status=active", {});
   const auto covering = Select(setup_context, table, "column_equals", "city", {"London"});
   const auto in_memory = Select(setup_context, table, "column_equals", "tag", {"hot"});
-  const auto donor = Select(setup_context, table, "column_equals", "donor_key", {"d1"});
+  const auto reference = Select(setup_context, table, "column_equals", "reference_key", {"d1"});
 
   const bool btree_supported = btree_range.ok && btree_range.visible_count == 2 && HasIndexFamilyEvidence(btree_range, "btree");
   const bool hash_supported = hash_eq.ok && hash_eq.visible_count == 1 && HasIndexFamilyEvidence(hash_eq, "hash");
@@ -289,7 +289,7 @@ int main(int argc, char** argv) {
   const bool partial_supported = partial.ok && partial.visible_count == 2 && HasIndexFamilyEvidence(partial, "partial");
   const bool covering_supported = covering.ok && covering.visible_count == 2 && HasIndexFamilyEvidence(covering, "covering");
   const bool in_memory_supported = in_memory.ok && in_memory.visible_count == 1 && HasIndexFamilyEvidence(in_memory, "in_memory");
-  const bool donor_emulated_supported = donor.ok && donor.visible_count == 1 && HasIndexFamilyEvidence(donor, "donor_emulated");
+  const bool reference_emulated_supported = reference.ok && reference.visible_count == 1 && HasIndexFamilyEvidence(reference, "reference_emulated");
 
   EngineInsertRowsRequest duplicate_insert;
   duplicate_insert.context = setup_context;
@@ -320,7 +320,7 @@ int main(int argc, char** argv) {
   const auto reopen_tx = Begin(base);
   const auto reopen_context = TxContext(base, reopen_tx);
   const auto reopen_hash = Select(reopen_context, table, "column_equals", "id", {"1"});
-  const auto unsupported_range_hash = Select(reopen_context, table, "column_range", "donor_key", {"a", "z"});
+  const auto unsupported_range_hash = Select(reopen_context, table, "column_range", "reference_key", {"a", "z"});
   const bool reopen_supported = reopen_hash.ok && reopen_hash.visible_count == 1 && HasIndexFamilyEvidence(reopen_hash, "hash");
   const bool unsupported_rejected = !unsupported_range_hash.ok && HasDiagnostic(unsupported_range_hash, "SB_ENGINE_API_UNSUPPORTED_PROFILE");
   const bool reopen_commit = Commit(reopen_context);
@@ -330,7 +330,7 @@ int main(int argc, char** argv) {
   const bool ok = create_all_indexes && btree_supported && hash_supported && bitmap_supported && full_text_supported &&
                   spatial_supported && vector_exact_supported && vector_hnsw_supported && vector_ivf_supported &&
                   columnar_zone_supported && expression_supported && partial_supported && covering_supported &&
-                  in_memory_supported && donor_emulated_supported && unique_enforced && setup_commit &&
+                  in_memory_supported && reference_emulated_supported && unique_enforced && setup_commit &&
                   rollback_update_visible_in_tx && rollback_update_done && rollback_update_hidden && rollback_read_commit &&
                   rollback_delete_restored && unsupported_rejected && reopen_commit;
 
@@ -349,7 +349,7 @@ int main(int argc, char** argv) {
   PrintBool("partial_supported", partial_supported, true);
   PrintBool("covering_supported", covering_supported, true);
   PrintBool("in_memory_supported", in_memory_supported, true);
-  PrintBool("donor_emulated_supported", donor_emulated_supported, true);
+  PrintBool("reference_emulated_supported", reference_emulated_supported, true);
   PrintBool("unique_enforced", unique_enforced, true);
   PrintBool("rollback_update_hidden", rollback_update_hidden, true);
   PrintBool("rollback_delete_restored", rollback_delete_restored, true);

@@ -116,7 +116,7 @@ def validate_optimizer_source_anchors(errors: list[str], route_text: str, runtim
         (
             "OEIC_OPTIMIZER_PRODUCTION_BUILD_GATE",
             "placeholder_runtime_evidence_enabled",
-            "donor_produced_evidence_enabled",
+            "reference_produced_evidence_enabled",
             "parser_execution_shortcuts_enabled",
             "cluster_stub_live_claims_enabled",
             "SB_OPT_PRODUCTION_GATE_PLACEHOLDER_RUNTIME_EVIDENCE_FORBIDDEN",
@@ -173,15 +173,15 @@ def validate_optimizer_source_anchors(errors: list[str], route_text: str, runtim
         errors,
         route_text,
         ROUTE_GATE,
-        "donor method evidence-only proof",
+        "reference method evidence-only proof",
         (
-            "OEIC_SCALE_DONOR_COMPARISON_SUITE",
-            "DonorMethodEvidence",
-            "DonorEngines",
+            "OEIC_SCALE_REFERENCE_COMPARISON_SUITE",
+            "ReferenceMethodEvidence",
+            "ReferenceEngines",
             "ValidateBestMethodBenchmarkEquivalence",
-            "donor_reference_only = engine != \"scratchbird\"",
-            "uses_donor_storage_or_finality_for_scratchbird = false",
-            "engine_mga_or_donor_native_reference_only",
+            "reference_reference_only = engine != \"scratchbird\"",
+            "uses_reference_storage_or_finality_for_scratchbird = false",
+            "engine_mga_or_reference_native_reference_only",
         ),
     )
     require_tokens(
@@ -259,14 +259,14 @@ def validate_optimizer_source_anchors(errors: list[str], route_text: str, runtim
         errors,
         runtime_text,
         RUNTIME_BENCHMARK,
-        "donor evidence-only authority rejection",
+        "reference evidence-only authority rejection",
         (
             "ValidateBestMethodBenchmarkEquivalence",
-            "IsDonorEngine",
-            "donor_reference_only",
-            "uses_donor_storage_or_finality_for_scratchbird",
+            "IsReferenceEngine",
+            "reference_reference_only",
+            "uses_reference_storage_or_finality_for_scratchbird",
             "HasAuthorityDrift",
-            "DONOR_AUTHORITY_DRIFT",
+            "REFERENCE_AUTHORITY_DRIFT",
             "MGA_AUTHORITY_DRIFT",
         ),
     )
@@ -306,7 +306,7 @@ def validate_cmake_registration(
             "add_executable(\n  optimizer_enterprise_route_validation_gate",
             "add_test(\n  NAME optimizer_enterprise_route_validation_gate",
             "OEIC-080;OEIC-081;OEIC-082;OEIC-083;OEIC-084;OEIC-085",
-            "benchmark_clean;live_route;scale;donor;crash_restart;security",
+            "benchmark_clean;live_route;scale;reference;crash_restart;security",
         ),
     )
     require_tokens(
@@ -486,7 +486,7 @@ def validate_consolidated_execution_plan(errors: list[str], repo_root: pathlib.P
 
     lowered_artifact = artifact_text.lower()
     for forbidden in (
-        "donor dominance complete",
+        "reference dominance complete",
         "all product enterprise readiness",
         "cluster production readiness",
         "ceic-051 complete",
@@ -502,7 +502,7 @@ def validate_consolidated_execution_plan(errors: list[str], repo_root: pathlib.P
         "not security authority",
         "not recovery authority",
         "not parser authority",
-        "not donor authority",
+        "not reference authority",
         "not wal authority",
         "not benchmark authority",
         "cluster routes remain external-provider-only",

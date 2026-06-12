@@ -46,7 +46,7 @@ OperatorFusionExecutionResult Refuse(std::string code, std::string evidence) {
   Add(&result.evidence, "operator_fusion.exact_recheck_required=true");
   Add(&result.evidence, "operator_fusion.mga_visibility_recheck_required=true");
   Add(&result.evidence, "operator_fusion.security_recheck_required=true");
-  Add(&result.evidence, "parser_or_donor_finality_or_visibility_authority=false");
+  Add(&result.evidence, "parser_or_reference_finality_or_visibility_authority=false");
   Add(&result.evidence, "client_finality_or_visibility_authority=false");
   Add(&result.evidence, "provider_finality_or_visibility_authority=false");
   Add(&result.evidence,
@@ -72,9 +72,9 @@ idx::CandidateSetAuthorityContext PlanAuthority(
   authority.exact_rerank_source_available =
       authority.exact_rerank_source_available &&
       plan.exact_rerank_source_available;
-  authority.parser_or_donor_finality_or_visibility_authority =
-      authority.parser_or_donor_finality_or_visibility_authority ||
-      plan.parser_or_donor_finality_or_visibility_authority;
+  authority.parser_or_reference_finality_or_visibility_authority =
+      authority.parser_or_reference_finality_or_visibility_authority ||
+      plan.parser_or_reference_finality_or_visibility_authority;
   authority.client_finality_or_visibility_authority =
       authority.client_finality_or_visibility_authority ||
       plan.client_finality_or_visibility_authority;
@@ -126,7 +126,7 @@ bool SupportedShape(const OperatorFusionPipelinePlan& plan) {
 }
 
 bool UnsafeProviderAuthority(const OperatorFusionProviderResult& result) {
-  return result.parser_or_donor_finality_or_visibility_authority ||
+  return result.parser_or_reference_finality_or_visibility_authority ||
          result.client_finality_or_visibility_authority ||
          result.provider_finality_or_visibility_authority ||
          result.write_ahead_log_finality_or_visibility_authority;
@@ -173,7 +173,7 @@ OperatorFusionExecutionResult ValidatePlan(
                   "security_barrier_proof_required");
   }
   const auto scoped_authority = PlanAuthority(plan, authority);
-  if (scoped_authority.parser_or_donor_finality_or_visibility_authority ||
+  if (scoped_authority.parser_or_reference_finality_or_visibility_authority ||
       scoped_authority.client_finality_or_visibility_authority ||
       scoped_authority.provider_finality_or_visibility_authority ||
       scoped_authority.wal_recovery_or_finality_authority) {
@@ -607,7 +607,7 @@ OperatorFusionExecutionResult ExecuteOperatorFusionPipeline(
   Add(&result.evidence, "operator_fusion.mga_visibility_recheck_required=true");
   Add(&result.evidence, "operator_fusion.security_recheck_required=true");
   Add(&result.evidence, "mga_finality_authority=engine_transaction_inventory");
-  Add(&result.evidence, "parser_or_donor_finality_or_visibility_authority=false");
+  Add(&result.evidence, "parser_or_reference_finality_or_visibility_authority=false");
   Add(&result.evidence, "client_finality_or_visibility_authority=false");
   Add(&result.evidence, "provider_finality_or_visibility_authority=false");
   Add(&result.evidence,

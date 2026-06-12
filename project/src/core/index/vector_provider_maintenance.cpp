@@ -41,7 +41,7 @@ void AddBool(std::vector<std::string>* values,
 
 bool ProofAuthoritySafe(const VectorProviderMaintenanceProof& proof) {
   return !proof.parser_finality_authority_claimed &&
-         !proof.donor_finality_authority_claimed &&
+         !proof.reference_finality_authority_claimed &&
          !proof.provider_finality_authority_claimed &&
          !proof.index_finality_authority_claimed &&
          !proof.write_ahead_log_finality_authority_claimed &&
@@ -70,7 +70,7 @@ bool ProviderAuthoritySafe(const VectorExactPhysicalProvider& provider) {
          !provider.security_authority_claimed &&
          !provider.transaction_finality_authority_claimed &&
          !provider.parser_finality_authority_claimed &&
-         !provider.donor_finality_authority_claimed &&
+         !provider.reference_finality_authority_claimed &&
          !provider.provider_finality_authority_claimed &&
          !provider.index_finality_authority_claimed &&
          !provider.write_ahead_log_finality_authority_claimed;
@@ -82,7 +82,7 @@ bool ProviderAuthoritySafe(const VectorHnswPhysicalProvider& provider) {
          !provider.security_authority_claimed &&
          !provider.transaction_finality_authority_claimed &&
          !provider.parser_finality_authority_claimed &&
-         !provider.donor_finality_authority_claimed &&
+         !provider.reference_finality_authority_claimed &&
          !provider.provider_finality_authority_claimed &&
          !provider.index_finality_authority_claimed &&
          !provider.write_ahead_log_finality_authority_claimed;
@@ -94,7 +94,7 @@ bool ProviderAuthoritySafe(const VectorIvfPqPhysicalProvider& provider) {
          !provider.security_authority_claimed &&
          !provider.transaction_finality_authority_claimed &&
          !provider.parser_finality_authority_claimed &&
-         !provider.donor_finality_authority_claimed &&
+         !provider.reference_finality_authority_claimed &&
          !provider.provider_finality_authority_claimed &&
          !provider.index_finality_authority_claimed &&
          !provider.write_ahead_log_finality_authority_claimed;
@@ -552,8 +552,8 @@ VectorExactRecheckProof ToVectorExactRecheckProof(
   recheck.evidence_ref = proof.evidence_ref;
   recheck.parser_finality_authority_claimed =
       proof.parser_finality_authority_claimed;
-  recheck.donor_finality_authority_claimed =
-      proof.donor_finality_authority_claimed;
+  recheck.reference_finality_authority_claimed =
+      proof.reference_finality_authority_claimed;
   recheck.provider_finality_authority_claimed =
       proof.provider_finality_authority_claimed;
   recheck.index_finality_authority_claimed =

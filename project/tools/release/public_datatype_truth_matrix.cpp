@@ -274,7 +274,7 @@ bool WireMetadataOk(const dt::DatatypeDescriptor& descriptor) {
   const auto metadata = api::RenderWireDriverMetadata(engine_descriptor);
   return !metadata.driver_display_type.empty() &&
          !metadata.canonical_type_family.empty() &&
-         metadata.donor_label_alias_only;
+         metadata.reference_label_alias_only;
 }
 
 api::EngineDatatypeIndexOptimizerAdmissionResult IndexOptimizerAdmission(
@@ -290,7 +290,7 @@ api::EngineDatatypeIndexOptimizerAdmissionResult IndexOptimizerAdmission(
   request.descriptor = std::move(engine_descriptor);
   request.support_path = policy_status == "implemented" ? "native_substrate" : "unsupported_by_version";
   request.index_stats_status = policy_status;
-  request.donor_label = "DONOR_ALIAS_" + descriptor.stable_name;
+  request.reference_label = "REFERENCE_ALIAS_" + descriptor.stable_name;
   return api::EvaluateDatatypeIndexOptimizerAdmission(request);
 }
 

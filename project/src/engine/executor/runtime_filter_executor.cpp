@@ -90,7 +90,7 @@ RuntimeFilterExecutionResult Refuse(std::string code, std::string evidence) {
   Add(&result.evidence, "runtime_filter.exact_recheck_required=true");
   Add(&result.evidence, "runtime_filter.mga_visibility_recheck_required=true");
   Add(&result.evidence, "runtime_filter.security_recheck_required=true");
-  Add(&result.evidence, "parser_or_donor_finality_or_visibility_authority=false");
+  Add(&result.evidence, "parser_or_reference_finality_or_visibility_authority=false");
   Add(&result.evidence, "client_finality_or_visibility_authority=false");
   Add(&result.evidence, "provider_finality_or_visibility_authority=false");
   Add(&result.evidence,
@@ -99,7 +99,7 @@ RuntimeFilterExecutionResult Refuse(std::string code, std::string evidence) {
 }
 
 bool DescriptorAuthoritySafe(const opt::RuntimeFilterDescriptor& descriptor) {
-  return !descriptor.parser_or_donor_finality_or_visibility_authority &&
+  return !descriptor.parser_or_reference_finality_or_visibility_authority &&
          !descriptor.client_finality_or_visibility_authority &&
          !descriptor.provider_finality_or_visibility_authority &&
          !descriptor.write_ahead_log_finality_or_visibility_authority;
@@ -187,7 +187,7 @@ RuntimeFilterExecutionResult ValidateProviderRows(
     return Refuse("SB_RUNTIME_FILTER_EXECUTOR.PROVIDER_FINAL_ROWS_REFUSED",
                   "provider_returned_final_rows");
   }
-  if (provider_result.parser_or_donor_finality_or_visibility_authority ||
+  if (provider_result.parser_or_reference_finality_or_visibility_authority ||
       provider_result.client_finality_or_visibility_authority ||
       provider_result.provider_finality_or_visibility_authority ||
       provider_result.write_ahead_log_finality_or_visibility_authority) {
@@ -366,7 +366,7 @@ RuntimeFilterExecutionResult ExecuteRuntimeFilterPushdown(
   Add(&result.evidence, "runtime_filter.exact_recheck_required=true");
   Add(&result.evidence, "runtime_filter.mga_visibility_recheck_required=true");
   Add(&result.evidence, "runtime_filter.security_recheck_required=true");
-  Add(&result.evidence, "parser_or_donor_finality_or_visibility_authority=false");
+  Add(&result.evidence, "parser_or_reference_finality_or_visibility_authority=false");
   Add(&result.evidence, "client_finality_or_visibility_authority=false");
   Add(&result.evidence, "provider_finality_or_visibility_authority=false");
   Add(&result.evidence,

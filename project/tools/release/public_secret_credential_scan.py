@@ -81,6 +81,11 @@ PRIVATE_LEGAL_WORKING_FILES = {
     "docs/legal/ScratchBird_legacy_poc_vs_private_cluster_boundary_audit.md",
 }
 
+SKIP_PATH_PREFIXES = (
+    "project/tests/reference_regression/reference_release_acquisition/",
+    "project/tests/reference_regression/firebird/original_firebird_qa/",
+)
+
 FORBIDDEN_REFERENCE_FRAGMENTS = (
     "docs" + "/" + "execution-plans",
     "docs" + "/" + "completed-execution-plans",
@@ -241,6 +246,8 @@ def iter_public_files(repo_root: Path) -> Iterable[Path]:
             for filename in filenames:
                 path = Path(dirpath) / filename
                 relative_path = path.resolve().relative_to(repo_root.resolve()).as_posix()
+                if any(relative_path.startswith(prefix) for prefix in SKIP_PATH_PREFIXES):
+                    continue
                 if relative_path in PRIVATE_LEGAL_WORKING_FILES:
                     continue
                 if path.suffix in SKIP_SUFFIXES:

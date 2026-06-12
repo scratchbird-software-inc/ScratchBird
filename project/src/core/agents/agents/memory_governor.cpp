@@ -112,7 +112,7 @@ MemoryGovernorResult EvaluateMemoryGovernorGrant(
   }
   if (!snapshot.memory_metrics_authoritative ||
       !snapshot.resource_reservation_authoritative ||
-      snapshot.parser_authority || snapshot.donor_authority) {
+      snapshot.parser_authority || snapshot.reference_authority) {
     return Finish(MemoryGovernorDecisionKind::refused, ErrorStatus(),
                   "SB_AGENT_MEMORY_GOVERNOR_AUTHORITY_UNTRUSTED",
                   "agents.memory_governor.untrusted_authority",

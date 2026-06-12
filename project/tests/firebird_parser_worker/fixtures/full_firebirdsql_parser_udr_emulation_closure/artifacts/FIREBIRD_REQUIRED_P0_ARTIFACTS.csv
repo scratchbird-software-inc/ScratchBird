@@ -1,8 +1,8 @@
 artifact,status,owner,purpose,blocks
 FIREBIRD_SOURCE_AUTHORITY_MAP.csv,present,coordinator,Maps Firebird specs source files seed manifests and reference packets to implementation areas,FFPE-001
 FIREBIRD_SOURCE_HASH_AUDIT.md,present,coordinator,Records hashes and release evidence for local Firebird source/reference inputs,FFPE-001
-CLEAN_ROOM_PROVENANCE_POLICY.md,present,coordinator,Defines clean-room source-use and no donor implementation code copy rules,FFPE-001
-CLEAN_ROOM_SOURCE_USE_AUDIT.md,present,coordinator,Audits generated implementation for clean-room provenance and donor source use,FFPE-017
+CLEAN_ROOM_PROVENANCE_POLICY.md,present,coordinator,Defines clean-room source-use and no reference implementation code copy rules,FFPE-001
+CLEAN_ROOM_SOURCE_USE_AUDIT.md,present,coordinator,Audits generated implementation for clean-room provenance and reference source use,FFPE-017
 FIREBIRD_PACKAGE_BOUNDARY_MAP.csv,present,coordinator,Defines allowed Firebird-owned sharing and forbidden cross-dialect dependencies,FFPE-001
 FIREBIRD_VERSION_PROFILE_MATRIX.csv,present,profile worker,Maps every supported Firebird profile difference to implementation or emulation ownership with zero unassigned rows,FFPE-001
 FIREBIRD_SURFACE_IMPLEMENTATION_BACKLOG.csv,present,registry worker,Expanded row backlog for every Firebird implemented emulated invalid-input diagnostic and authority-violation diagnostic surface,FFPE-001
@@ -13,21 +13,21 @@ FIREBIRD_BUILTIN_FUNCTION_MATRIX.csv,present,expression worker,Maps Firebird bui
 FIREBIRD_CATALOG_OVERLAY_MATRIX.csv,present,catalog worker,Maps RDB$ MON$ SEC$ and optional INFORMATION_SCHEMA projection definitions and mutation rules,FFPE-008
 FIREBIRD_NON_FILE_EMULATION_POLICY.csv,present,emulation worker,Defines emulated report and authority-violation diagnostic behavior for file storage admin and service commands,FFPE-010
 FIREBIRD_DIAGNOSTIC_STATUS_VECTOR_MATRIX.csv,present,diagnostics worker,Maps canonical diagnostics to Firebird status vectors SQLCODE SQLSTATE warnings SQLDA and result metadata,FFPE-016
-FIREBIRD_CTEST_VARIATION_MATRIX.csv,present,conformance worker,Assigns parser UDR engine donor-native and differential tests to every Firebird surface row,FFPE-018
-CTEST_TIERING_POLICY.md,present,conformance worker,Defines fast standard exhaustive donor_native differential_oracle and soak CTest tiers,FFPE-015B
-DONOR_TOOL_SANDBOX_POLICY.md,present,conformance worker,Defines donor tool isolation loopback-only timeout network cleanup and no-install policy,FFPE-015A
-DONOR_NATIVE_RESULT_NORMALIZATION_POLICY.md,present,conformance worker,Defines normalization for paths timestamps page ids transaction ids object ids warnings and environment-specific text,FFPE-015D
+FIREBIRD_CTEST_VARIATION_MATRIX.csv,present,conformance worker,Assigns parser UDR engine reference-native and differential tests to every Firebird surface row,FFPE-018
+CTEST_TIERING_POLICY.md,present,conformance worker,Defines fast standard exhaustive reference_native differential_oracle and soak CTest tiers,FFPE-015B
+REFERENCE_TOOL_SANDBOX_POLICY.md,present,conformance worker,Defines reference tool isolation loopback-only timeout network cleanup and no-install policy,FFPE-015A
+REFERENCE_NATIVE_RESULT_NORMALIZATION_POLICY.md,present,conformance worker,Defines normalization for paths timestamps page ids transaction ids object ids warnings and environment-specific text,FFPE-015D
 OPERATIONAL_FAILURE_INVENTORY_POLICY.md,present,conformance worker,Defines preserved logs failure manifests rerun commands and complete failure inventory handling,FFPE-015D
-FIREBIRD_DONOR_NATIVE_REGRESSION_MANIFEST.csv,present,conformance worker,Lists original donor tool/regression cases and classifications,FFPE-015B
-FIREBIRD_QA_DONOR_REPLAY_MANIFEST.csv,present,conformance worker,Lists Firebird QA candidate tests grouped by top-level path and replay family with candidate-indexed replay status,FFPE-015B
-FIREBIRD_QA_DONOR_REPLAY_FAMILY_MANIFEST.csv,present,conformance worker,Summarizes Firebird QA replay families and candidate test counts,FFPE-015B
+FIREBIRD_REFERENCE_NATIVE_REGRESSION_MANIFEST.csv,present,conformance worker,Lists original reference tool/regression cases and classifications,FFPE-015B
+FIREBIRD_QA_REFERENCE_REPLAY_MANIFEST.csv,present,conformance worker,Lists Firebird QA candidate tests grouped by top-level path and replay family with candidate-indexed replay status,FFPE-015B
+FIREBIRD_QA_REFERENCE_REPLAY_FAMILY_MANIFEST.csv,present,conformance worker,Summarizes Firebird QA replay families and candidate test counts,FFPE-015B
 FIREBIRD_QA_CANDIDATE_ASSET_HASH_MANIFEST.csv,present,conformance worker,Hashes Firebird QA candidate data config backup database and support files for replay scaffolding,FFPE-015B
-FIREBIRD_FULL_DONOR_REGRESSION_HARNESS.md,present,conformance worker,Defines full Firebird QA replay inventory and final zero-row closure gates,FFPE-015B
-FIREBIRD_DONOR_TOOL_BUILD_MANIFEST.csv,present,conformance worker,Lists Firebird tools to build as test-only artifacts and expected binary paths,FFPE-015A
+FIREBIRD_FULL_REFERENCE_REGRESSION_HARNESS.md,present,conformance worker,Defines full Firebird QA replay inventory and final zero-row closure gates,FFPE-015B
+FIREBIRD_REFERENCE_TOOL_BUILD_MANIFEST.csv,present,conformance worker,Lists Firebird tools to build as test-only artifacts and expected binary paths,FFPE-015A
 WIRE_API_FULL_SCOPE_IMPLEMENTATION_MAP.md,present,bridge worker,Maps all Firebird wire API service replication proxy and bridge surfaces to implementation or emulation owners,FFPE-015
 AGENT_IMPLEMENTATION_ORCHESTRATION_POLICY.md,present,agent manager,Defines agent ownership five-minute refresh testing escalation and evidence policy for continuous implementation,FFPE-001
 AGENT_EXECUTION_STATUS.csv,present,agent manager,Tracks active completed blocked and test-pending agent assignments during implementation,FFPE-001
 FIREBIRD_UPGRADE_INSTALL_DRIFT_MATRIX.csv,present,UDR installer worker,Maps install upgrade reinstall verify force-reinstall repair drift and silent-repair diagnostic tests,FFPE-014A
-FIREBIRD_FUZZ_MALICIOUS_INPUT_MATRIX.csv,present,hardening worker,Maps SQL BLR wire parameter buffer service and donor-tool fuzz inputs to expected diagnostics,FFPE-017A
+FIREBIRD_FUZZ_MALICIOUS_INPUT_MATRIX.csv,present,hardening worker,Maps SQL BLR wire parameter buffer service and reference-tool fuzz inputs to expected diagnostics,FFPE-017A
 FIREBIRD_RUNTIME_ABSENCE_MATRIX.csv,present,hardening worker,Maps absent disabled incompatible untrusted and policy-denied parser UDR package cases,FFPE-017B
-FIREBIRD_DEFINITION_OF_DONE.md,present,coordinator,Defines closure criteria for implementation tests diagnostics docs and donor-native regression,FFPE-018
+FIREBIRD_DEFINITION_OF_DONE.md,present,coordinator,Defines closure criteria for implementation tests diagnostics docs and reference-native regression,FFPE-018

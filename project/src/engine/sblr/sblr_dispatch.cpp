@@ -746,7 +746,7 @@ bool IsStorageTierMigrationControlOperation(std::string_view operation_id) {
 }
 
 bool IsMigrationControlOperation(std::string_view operation_id) {
-  return operation_id == "op.migration.begin_from_donor" ||
+  return operation_id == "op.migration.begin_from_reference" ||
          operation_id == "op.migration.alter";
 }
 
@@ -1035,7 +1035,7 @@ api::EngineMemoryManagementRequest TypedMemoryManagementRequest(
   typed.transaction_finality_authority = false;
   typed.visibility_authority = false;
   typed.recovery_authority = false;
-  typed.donor_or_wal_recovery_authority = false;
+  typed.reference_or_wal_recovery_authority = false;
   typed.private_provider_dispatch_requested = false;
   return typed;
 }
@@ -1126,7 +1126,7 @@ api::EngineFilespaceDiscoveryRequest TypedFilespaceDiscoveryRequest(
   typed.parser_storage_authority = false;
   typed.transaction_finality_authority = false;
   typed.recovery_authority = false;
-  typed.donor_or_wal_recovery_authority = false;
+  typed.reference_or_wal_recovery_authority = false;
   typed.mutation_requested = false;
   return typed;
 }
@@ -1159,7 +1159,7 @@ api::EngineFilespacePackageRequest TypedFilespacePackageRequest(
   typed.parser_storage_authority = false;
   typed.transaction_finality_authority = false;
   typed.recovery_authority = false;
-  typed.donor_or_wal_recovery_authority = false;
+  typed.reference_or_wal_recovery_authority = false;
   typed.private_provider_dispatch_requested = false;
   return typed;
 }
@@ -1676,7 +1676,7 @@ bool IsDomainRuntimeOption(std::string_view option) {
          option.starts_with("method_binding:") ||
          option.starts_with("comment:") ||
          option.starts_with("localized_comment:") ||
-         option.starts_with("donor_alias:");
+         option.starts_with("reference_alias:");
 }
 
 api::EngineCreateDomainRequest TypedCreateDomainRequest(const SblrDispatchRequest& request) {
@@ -1841,8 +1841,8 @@ api::EngineInsertRowsRequest TypedInsertRowsRequest(const SblrDispatchRequest& r
     }
   }
   typed.strict_bulk_load_requested = api::SecurityOptionBool(base, "strict_bulk_load_requested:", false);
-  typed.donor_unique_checks_relaxed = api::SecurityOptionBool(base, "donor_unique_checks_relaxed:", false);
-  typed.donor_foreign_key_checks_relaxed = api::SecurityOptionBool(base, "donor_foreign_key_checks_relaxed:", false);
+  typed.reference_unique_checks_relaxed = api::SecurityOptionBool(base, "reference_unique_checks_relaxed:", false);
+  typed.reference_foreign_key_checks_relaxed = api::SecurityOptionBool(base, "reference_foreign_key_checks_relaxed:", false);
   return typed;
 }
 
@@ -2123,7 +2123,7 @@ api::EngineApiResult EngineReadSystemVariable(
     result.diagnostics.push_back(api::MakeEngineApiDiagnostic(
         diagnostic_id,
         "engine.system_variable.exact_refusal",
-        "donor variable compatibility surface is refused by fixed policy "
+        "reference variable compatibility surface is refused by fixed policy "
         "before engine side effects",
         true));
     result.evidence.push_back({"sblr_operation",
@@ -2134,10 +2134,10 @@ api::EngineApiResult EngineReadSystemVariable(
     if (!variable_id.empty()) {
       result.evidence.push_back({"canonical_variable_id", variable_id});
     }
-    const std::string donor_source =
-        api::SecurityOptionValue(base, "donor_source_spelling:");
-    if (!donor_source.empty()) {
-      result.evidence.push_back({"donor_source_spelling", donor_source});
+    const std::string reference_source =
+        api::SecurityOptionValue(base, "reference_source_spelling:");
+    if (!reference_source.empty()) {
+      result.evidence.push_back({"reference_source_spelling", reference_source});
     }
     const std::string refusal_function =
         api::SecurityOptionValue(base, "refusal_function_id:");
@@ -2211,10 +2211,10 @@ api::EngineApiResult EngineReadSystemVariable(
                              "expression.system_variable_read"});
   result.evidence.push_back({"sblr_opcode", "SBLR_SYSTEM_VARIABLE_READ"});
   result.evidence.push_back({"canonical_variable_id", variable_id});
-  const std::string donor_source =
-      api::SecurityOptionValue(base, "donor_source_spelling:");
-  if (!donor_source.empty()) {
-    result.evidence.push_back({"donor_source_spelling", donor_source});
+  const std::string reference_source =
+      api::SecurityOptionValue(base, "reference_source_spelling:");
+  if (!reference_source.empty()) {
+    result.evidence.push_back({"reference_source_spelling", reference_source});
   }
   result.evidence.push_back({"mga_visibility_authority",
                              "unchanged_context_read_no_lock_no_snapshot_mutation"});
@@ -2900,8 +2900,8 @@ api::EnginePlanImportRowsRequest TypedPlanImportRowsRequest(const SblrDispatchRe
   if (typed.format.format_family.empty()) typed.format.format_family = "csv";
   typed.import_policy.strict_bulk_load_requested =
       api::SecurityOptionBool(base, "strict_bulk_load_requested:", false);
-  typed.import_policy.donor_relaxed_semantics_requested =
-      api::SecurityOptionBool(base, "donor_relaxed_semantics_requested:", false);
+  typed.import_policy.reference_relaxed_semantics_requested =
+      api::SecurityOptionBool(base, "reference_relaxed_semantics_requested:", false);
   ApplyImportRejectPolicyOptions(base, &typed.import_policy);
   return typed;
 }
@@ -2954,8 +2954,8 @@ api::EngineExecuteImportRowsRequest TypedExecuteImportRowsRequest(
   typed.format.header_policy = api::SecurityOptionValue(base, "header_policy:");
   typed.import_policy.strict_bulk_load_requested =
       api::SecurityOptionBool(base, "strict_bulk_load_requested:", false);
-  typed.import_policy.donor_relaxed_semantics_requested =
-      api::SecurityOptionBool(base, "donor_relaxed_semantics_requested:", false);
+  typed.import_policy.reference_relaxed_semantics_requested =
+      api::SecurityOptionBool(base, "reference_relaxed_semantics_requested:", false);
   ApplyImportRejectPolicyOptions(base, &typed.import_policy);
   ApplyImportCheckpointPolicyOptions(base, &typed.checkpoint_policy);
   typed.canonical_rows = base.rows;
@@ -3383,7 +3383,7 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (IsFilespacePackageOperation(op)) result.api_result = api::EngineFilespacePackageOperation(TypedFilespacePackageRequest(request));
   else if (IsShardPlacementDescriptorOperation(op)) result.api_result = api::EnginePlanShardPlacementOperation(TypedShardPlacementDescriptorRequest(request));
   else if (IsMigrationControlOperation(op)) {
-    if (op == "op.migration.begin_from_donor") {
+    if (op == "op.migration.begin_from_reference") {
       result.api_result = api::EngineBeginMigration(TypedRequest<api::EngineBeginMigrationRequest>(request));
     } else {
       result.api_result = api::EngineAlterMigration(TypedRequest<api::EngineAlterMigrationRequest>(request));

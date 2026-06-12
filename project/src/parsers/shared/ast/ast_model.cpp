@@ -41,7 +41,7 @@ std::string JsonEscape(std::string_view input) {
 std::string ToString(ParserMode value) {
   switch (value) {
     case ParserMode::kNativeSbsql: return "native_sbsql";
-    case ParserMode::kDonor: return "donor";
+    case ParserMode::kReference: return "reference";
     case ParserMode::kMeta: return "meta";
     case ParserMode::kToolLocal: return "tool_local";
     case ParserMode::kRefusalOnly: return "refusal_only";
@@ -49,15 +49,15 @@ std::string ToString(ParserMode value) {
   return "unknown";
 }
 
-std::string ToString(DonorMode value) {
+std::string ToString(ReferenceMode value) {
   switch (value) {
-    case DonorMode::kNone: return "none";
-    case DonorMode::kFirebird: return "firebird";
-    case DonorMode::kPostgreSql: return "postgresql";
-    case DonorMode::kMySqlMariaDb: return "mysql_mariadb";
-    case DonorMode::kSqlite: return "sqlite";
-    case DonorMode::kDuckDb: return "duckdb";
-    case DonorMode::kOther: return "other";
+    case ReferenceMode::kNone: return "none";
+    case ReferenceMode::kFirebird: return "firebird";
+    case ReferenceMode::kPostgreSql: return "postgresql";
+    case ReferenceMode::kMySqlMariaDb: return "mysql_mariadb";
+    case ReferenceMode::kSqlite: return "sqlite";
+    case ReferenceMode::kDuckDb: return "duckdb";
+    case ReferenceMode::kOther: return "other";
   }
   return "unknown";
 }
@@ -87,7 +87,7 @@ ShowIdentityAst MakeShowIdentityAst(ShowIdentityKind show_kind,
   ShowIdentityAst ast;
   ast.header.ast_format_version = 1;
   ast.header.parser_mode = ParserMode::kNativeSbsql;
-  ast.header.donor_mode = DonorMode::kNone;
+  ast.header.reference_mode = ReferenceMode::kNone;
   ast.header.family = AstFamily::kShowIdentity;
   ast.header.command_family_candidate = "sbsql.identity_session";
   ast.header.surface_key_candidate = std::move(surface_key_candidate);
@@ -104,7 +104,7 @@ std::string SerializeToJson(const ShowIdentityAst& ast) {
   out << "  \"ast_format_version\": " << ast.header.ast_format_version << ",\n";
   out << "  \"ast_node\": \"" << JsonEscape(ToString(ast.header.family)) << "\",\n";
   out << "  \"parser_mode\": \"" << JsonEscape(ToString(ast.header.parser_mode)) << "\",\n";
-  out << "  \"donor_mode\": \"" << JsonEscape(ToString(ast.header.donor_mode)) << "\",\n";
+  out << "  \"reference_mode\": \"" << JsonEscape(ToString(ast.header.reference_mode)) << "\",\n";
   out << "  \"command_family_candidate\": \"" << JsonEscape(ast.header.command_family_candidate) << "\",\n";
   out << "  \"surface_key_candidate\": \"" << JsonEscape(ast.header.surface_key_candidate) << "\",\n";
   out << "  \"source_encoding\": \"" << JsonEscape(ast.header.source_encoding) << "\",\n";

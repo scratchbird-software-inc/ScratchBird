@@ -23,8 +23,8 @@ SBSFC056-collect-marker,SBSQL-D03ED69E33B7,collect,sb.aggregate.collect,sb.aggre
 SBSFC056-collect-expr,SBSQL-A1B94C83C5F1,collect_expr,sb.aggregate.collect_expr,sb.aggregate.collect_expr,positive,[],json_document,"[""alpha""]",,collect wraps the bounded expression value in a JSON array
 SBSFC056-domain-stack-marker,SBSQL-5550BDA0A76C,domain_stack,sb.scalar.domain_stack,sb.scalar.domain_stack,positive,[],json_document,[],,domain_stack marker returns an empty stack
 SBSFC056-domain-stack-value,SBSQL-1906412209C9,domain_stack_value,sb.scalar.domain_stack_value,sb.scalar.domain_stack_value,positive,[],json_document,"[{""value"":""alpha"",""domain"":""character""}]",,domain_stack value records descriptor metadata
-SBSFC056-donor-only,SBSQL-8F66D89149F5,donor_only,sb.scalar.donor_only,sb.scalar.donor_only,positive,[],character,surface.donor_only,,donor-only marker is implemented
-SBSFC056-donor-rewrite,SBSQL-F785EAF383DE,donor_rewrite,sb.scalar.donor_rewrite,sb.scalar.donor_rewrite,positive,[],character,surface.donor_rewrite,,donor rewrite marker is implemented
+SBSFC056-reference-only,SBSQL-8F66D89149F5,reference_only,sb.scalar.reference_only,sb.scalar.reference_only,positive,[],character,surface.reference_only,,reference-only marker is implemented
+SBSFC056-reference-rewrite,SBSQL-F785EAF383DE,reference_rewrite,sb.scalar.reference_rewrite,sb.scalar.reference_rewrite,positive,[],character,surface.reference_rewrite,,reference rewrite marker is implemented
 SBSFC056-element,SBSQL-FD0DF4067008,element,sb.multiset.element,sb.multiset.element,positive,[],json_document,"""solo""",,element uses the existing singleton multiset route
 SBSFC056-expr-match-recognize,SBSQL-1A8470FC95E7,expr.match_recognize.v1,sb.expr.match_recognize.v1,sb.expr.match_recognize.v1,positive,[],json_document,"{""kind"":""match_recognize"",""version"":""v1"",""pattern"":""PATTERN(A+)""}",,expression match_recognize descriptor is implemented
 SBSFC056-fusion,SBSQL-9F6F909938A0,fusion,sb.multiset.fusion,sb.multiset.fusion,positive,[],json_document,"[1,2,2,3]",,fusion uses the existing multiset route

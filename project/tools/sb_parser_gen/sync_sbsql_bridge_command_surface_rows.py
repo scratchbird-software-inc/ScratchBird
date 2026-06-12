@@ -141,7 +141,7 @@ def validation_fixture_id(surface) -> str:
 
 
 def backlog_row(surface) -> dict[str, str]:
-    engine_behavior = "execute_bridge_udr_route_without_sql_text_or_donor_finality"
+    engine_behavior = "execute_bridge_udr_route_without_sql_text_or_reference_finality"
     if surface.cluster_route:
         engine_behavior = "compile_gate_to_cluster_provider_stub_or_public_unsupported_vector"
     elif surface.expected_refusal_code == "UDR.BRIDGE.SANDBOX_DENIED":
@@ -205,7 +205,7 @@ def oracle_row(surface) -> dict[str, str]:
             "expected parser bridge command route, SBLR bridge operation envelope, "
             f"opcode {surface.opcode}, UDR operation {surface.effective_udr_operation}, "
             "MGA-preserving local and remote transaction authority"
-            f"{refusal}, and donor-specific rendering derived from the universal bridge ABI"
+            f"{refusal}, and reference-specific rendering derived from the universal bridge ABI"
         ),
         "status": "closed_by_semantic_oracle_authority_gate",
     }

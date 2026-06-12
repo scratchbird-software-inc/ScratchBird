@@ -34,7 +34,7 @@ namespace {
 
 constexpr const char* kDetectorKind = "connection_checkout_leak_detector";
 constexpr const char* kAuthorityScope =
-    "driver_checkout_leak_evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_donor_or_benchmark_authority";
+    "driver_checkout_leak_evidence_only_not_transaction_finality_visibility_authorization_recovery_parser_reference_or_benchmark_authority";
 
 struct StackTraceEvidence {
     std::string status;

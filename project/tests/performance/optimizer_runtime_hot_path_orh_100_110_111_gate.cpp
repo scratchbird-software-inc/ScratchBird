@@ -439,7 +439,7 @@ void ProveSnapshotCacheVolatilityAuthorityAndNegativeRefusals() {
   authority.transaction_finality_authority_cached = true;
   authority.recovery_authority_cached = true;
   authority.parser_execution_authority_cached = true;
-  authority.donor_behavior_authority_cached = true;
+  authority.reference_behavior_authority_cached = true;
   authority.durability_log_authority_cached = true;
   const auto authority_decision = cache.Lookup(authority);
   Require(authority_decision.diagnostic_code ==

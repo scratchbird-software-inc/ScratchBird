@@ -68,8 +68,8 @@ index::Ceic036CanonicalKeyOrderingFuzzRequest ValidRequest() {
   index::Ceic036CanonicalKeyOrderingFuzzRequest request;
   request.semantic_profile = StableProfile();
   request.typed_comparable_payload_contract_declared = true;
-  request.donor_comparison_recorded = true;
-  request.donor_comparison_evidence_only = true;
+  request.reference_comparison_recorded = true;
+  request.reference_comparison_evidence_only = true;
   return request;
 }
 
@@ -133,8 +133,8 @@ void ValidFuzzProofCoversRequiredOrderingSurfaces() {
           "CEIC-036 partial predicate implication proof missing");
   Require(result.prefix_bounds_proven,
           "CEIC-036 prefix lower/upper bound proof missing");
-  Require(!result.donor_comparison_authority,
-          "CEIC-036 donor comparison must remain non-authority");
+  Require(!result.reference_comparison_authority,
+          "CEIC-036 reference comparison must remain non-authority");
   Require(!result.enterprise_readiness_claimed,
           "CEIC-036 must not claim enterprise readiness");
   Require(!result.all_index_readiness_claimed,
@@ -151,8 +151,8 @@ void ValidFuzzProofCoversRequiredOrderingSurfaces() {
           "CEIC-036 typed contract evidence missing");
   Require(EvidenceHas(result, "deterministic_fuzz_vectors=320"),
           "CEIC-036 deterministic fuzz count evidence missing");
-  Require(EvidenceHas(result, "donor_authority=false"),
-          "CEIC-036 donor non-authority evidence missing");
+  Require(EvidenceHas(result, "reference_authority=false"),
+          "CEIC-036 reference non-authority evidence missing");
   Require(EvidenceHas(result, "transaction_finality_authority=false"),
           "CEIC-036 transaction non-authority evidence missing");
 }
@@ -179,12 +179,12 @@ void RequestRefusalsFailClosed() {
                  "SB-CEIC-036-UNSTABLE-PROFILE-REFUSED",
                  "unstable semantic profile was not refused by CEIC-036 proof");
 
-  auto donor_authority = ValidRequest();
-  donor_authority.donor_comparison_evidence_only = false;
+  auto reference_authority = ValidRequest();
+  reference_authority.reference_comparison_evidence_only = false;
   RequireRefused(index::ProveCeic036CanonicalKeyOrderingAndEncodingFuzz(
-                     donor_authority),
-                 "SB-CEIC-036-DONOR-AUTHORITY-REFUSED",
-                 "donor comparison authority was not refused");
+                     reference_authority),
+                 "SB-CEIC-036-REFERENCE-AUTHORITY-REFUSED",
+                 "reference comparison authority was not refused");
 }
 
 void AuthorityClaimsFailClosed() {
@@ -198,7 +198,7 @@ void AuthorityClaimsFailClosed() {
       {&Claims::transaction_finality_authority, "transaction finality"},
       {&Claims::recovery_authority, "recovery authority"},
       {&Claims::parser_authority, "parser authority"},
-      {&Claims::donor_authority, "donor authority"},
+      {&Claims::reference_authority, "reference authority"},
       {&Claims::wal_authority, "WAL authority"},
       {&Claims::benchmark_authority, "benchmark authority"},
       {&Claims::optimizer_plan_authority, "optimizer authority"},
@@ -217,25 +217,25 @@ void AuthorityClaimsFailClosed() {
 }
 
 void EncoderAndComparatorRefusalsFailClosed() {
-  auto donor_raw = Component({'r', 'a', 'w'});
-  donor_raw.kind = index::IndexKeyComponentKind::donor_raw;
-  const auto donor_raw_result =
-      index::EncodeIndexKey({donor_raw}, StableProfile());
-  Require(!donor_raw_result.ok() &&
-              donor_raw_result.diagnostic.diagnostic_code ==
-                  "SB-INDEX-KEY-ENCODING-DONOR-RAW-REFUSED",
-          "donor_raw key encoding was not refused");
+  auto reference_raw = Component({'r', 'a', 'w'});
+  reference_raw.kind = index::IndexKeyComponentKind::reference_raw;
+  const auto reference_raw_result =
+      index::EncodeIndexKey({reference_raw}, StableProfile());
+  Require(!reference_raw_result.ok() &&
+              reference_raw_result.diagnostic.diagnostic_code ==
+                  "SB-INDEX-KEY-ENCODING-REFERENCE-RAW-REFUSED",
+          "reference_raw key encoding was not refused");
 
-  auto donor_nulls = Component({});
-  donor_nulls.is_null = true;
-  donor_nulls.null_placement =
-      index::IndexKeyNullPlacement::donor_profile_default;
-  const auto donor_nulls_result =
-      index::EncodeIndexKey({donor_nulls}, StableProfile());
-  Require(!donor_nulls_result.ok() &&
-              donor_nulls_result.diagnostic.diagnostic_code ==
-                  "SB-INDEX-KEY-ENCODING-DONOR-NULLS-REFUSED",
-          "donor profile default null placement was not refused");
+  auto reference_nulls = Component({});
+  reference_nulls.is_null = true;
+  reference_nulls.null_placement =
+      index::IndexKeyNullPlacement::reference_profile_default;
+  const auto reference_nulls_result =
+      index::EncodeIndexKey({reference_nulls}, StableProfile());
+  Require(!reference_nulls_result.ok() &&
+              reference_nulls_result.diagnostic.diagnostic_code ==
+                  "SB-INDEX-KEY-ENCODING-REFERENCE-NULLS-REFUSED",
+          "reference profile default null placement was not refused");
 
   auto missing_type = Component({'a'});
   missing_type.type_descriptor_uuid = {};

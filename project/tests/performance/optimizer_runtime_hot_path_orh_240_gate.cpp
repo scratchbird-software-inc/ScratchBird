@@ -261,12 +261,12 @@ void TestCurrentRowMapRebuildAndAdvisoryLookup() {
           "current-row map admitted missing durable MGA proof");
 
   auto parser_claim = facts;
-  parser_claim.parser_client_or_donor_authority = true;
+  parser_claim.parser_client_or_reference_authority = true;
   auto parser_refusal = mga::LookupCurrentRowMap(&rebuilt.map, parser_claim);
   Require(!parser_refusal.accepted &&
               parser_refusal.refusal_reason ==
-                  "parser_client_or_donor_authority_forbidden",
-          "current-row map admitted parser/client/donor authority");
+                  "parser_client_or_reference_authority_forbidden",
+          "current-row map admitted parser/client/reference authority");
   Require(rebuilt.map.counters.accepted >= 1 &&
               rebuilt.map.counters.stale_refusals >= 1 &&
               rebuilt.map.counters.authority_refusals >= 2,

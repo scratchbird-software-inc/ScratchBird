@@ -11,7 +11,7 @@
 // SEARCH_KEY: CEIC_080_AGENT_PACKAGE_PLUGIN_ACTUATOR_PROVENANCE
 // Package provenance is an admission/evidence control for agent plugins,
 // actuator providers, and agent binaries. It is never transaction finality,
-// visibility, recovery, parser, donor, benchmark, optimizer-plan, index,
+// visibility, recovery, parser, reference, benchmark, optimizer-plan, index,
 // provider-finality, cluster, memory, or action authority.
 
 #include "agent_runtime.hpp"
@@ -106,7 +106,7 @@ struct AgentPackageProvenanceRecord {
   bool security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;

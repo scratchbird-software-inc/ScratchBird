@@ -25,7 +25,7 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityScope =
-    "optimizer.planner_typed_slab.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_plan_or_index_finality_authority";
+    "optimizer.planner_typed_slab.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_plan_or_index_finality_authority";
 
 struct PlannerNode {
   u64 node_id = 0;
@@ -83,7 +83,7 @@ PlannerTypedSlabWorkAreaResult BuildPlannerTypedSlabWorkArea(
                   "route_and_candidate_count_required");
   }
   if (!request.catalog_stats_authoritative ||
-      request.parser_or_donor_authority ||
+      request.parser_or_reference_authority ||
       request.memory_plan_authority) {
     return Refuse(std::move(request),
                   "SB_CEIC_013_PLANNER_TYPED_SLAB.UNSAFE_AUTHORITY",

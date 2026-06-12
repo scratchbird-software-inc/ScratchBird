@@ -18,7 +18,7 @@ namespace scratchbird::engine::optimizer {
 // Selectivity drift and plan-stability reports are bounded optimizer
 // observability evidence only. They may inform support bundles, feedback
 // quarantine, and diagnostics, but they are not transaction finality,
-// visibility, authorization/security, recovery, parser, donor, WAL, benchmark,
+// visibility, authorization/security, recovery, parser, reference, WAL, benchmark,
 // optimizer-plan, index-finality, provider-finality, cluster, or agent-action
 // authority.
 inline constexpr const char* kOptimizerSelectivityObservabilitySchemaId =
@@ -81,7 +81,7 @@ struct OptimizerSelectivityObservabilityAuthorityFlags {
   bool authorization_security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -268,9 +268,9 @@ struct OptimizerSelectivityObservabilityReport {
   std::string optimizer_profile;
   bool production_observability_claim = false;
   bool evidence_only = true;
-  bool donor_reference_only = true;
-  bool donor_as_authority = false;
-  bool uses_donor_storage_or_finality_for_scratchbird = false;
+  bool reference_reference_only = true;
+  bool reference_as_authority = false;
+  bool uses_reference_storage_or_finality_for_scratchbird = false;
   OptimizerObservabilityClusterMode cluster_mode =
       OptimizerObservabilityClusterMode::kNoCluster;
   std::string external_cluster_provider_id;

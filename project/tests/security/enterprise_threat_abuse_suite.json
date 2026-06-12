@@ -129,7 +129,7 @@
     {
       "case_id": "enterprise_threat_uuid_spoofing",
       "category": "uuid_spoofing",
-      "threat": "A donor/client UUID or malformed UUID is used as durable ScratchBird identity.",
+      "threat": "A reference/client UUID or malformed UUID is used as durable ScratchBird identity.",
       "expected_result": "fail_closed",
       "diagnostic_codes": [
         "SB-UUID-TYPED-ENGINE-IDENTITY-NOT-V7",

@@ -170,7 +170,7 @@ void RequireAuthorityEvidence(const memory::MemoryFairnessDecision& decision) {
           "CEIC-025 evidence anchor missing");
   Require(EvidenceHas(
               decision,
-              "memory_fairness.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority"),
+              "memory_fairness.authority_scope=evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority"),
           "CEIC-025 authority boundary evidence missing");
   Require(BundleHas(decision,
                     "memory_fairness.integrated_support_bundle_closure",

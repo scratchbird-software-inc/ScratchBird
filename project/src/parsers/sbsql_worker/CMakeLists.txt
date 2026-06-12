@@ -24,8 +24,9 @@ add_library(sbl_sbsql_parser_pipeline STATIC
   lexer/lexer.cpp
   cst/cst.cpp
   ast/ast.cpp
-  expression/donor_variable_compatibility.cpp
   expression/expression_catalog.cpp
+  expression/reference_variable_compatibility.cpp
+  resources/language_resource_contract.cpp
   statement/statement_catalog.cpp
   binder/binder.cpp
   lowering/lowering.cpp

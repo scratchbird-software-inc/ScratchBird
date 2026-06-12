@@ -75,7 +75,7 @@ struct ForeignMemoryAuthority {
   bool visibility_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool support_bundle_authority = false;

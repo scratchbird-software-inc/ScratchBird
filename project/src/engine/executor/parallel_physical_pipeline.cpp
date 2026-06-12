@@ -179,7 +179,7 @@ bool WorkerClaimsForbiddenAuthority(
          lane.worker_claims_security_authority ||
          lane.worker_claims_publication_authority ||
          lane.worker_claims_recovery_authority ||
-         lane.parser_or_donor_finality_or_visibility_authority ||
+         lane.parser_or_reference_finality_or_visibility_authority ||
          lane.write_after_stream_finality_or_recovery_authority ||
          lane.timestamp_finality_authority ||
          lane.uuid_ordering_finality_authority;
@@ -192,7 +192,7 @@ bool WorkerResultClaimsForbiddenAuthority(
          worker_result.worker_claims_security_authority ||
          worker_result.worker_claims_publication_authority ||
          worker_result.worker_claims_recovery_authority ||
-         worker_result.parser_or_donor_finality_or_visibility_authority ||
+         worker_result.parser_or_reference_finality_or_visibility_authority ||
          worker_result.write_after_stream_finality_or_recovery_authority ||
          worker_result.timestamp_finality_authority ||
          worker_result.uuid_ordering_finality_authority;

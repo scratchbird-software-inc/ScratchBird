@@ -45,7 +45,7 @@ struct RepairIdentityRequest {
   bool repair_event_persisted_before_mutation = true;
   u64 repair_event_digest = 0;
   bool repair_evidence_is_transaction_authority = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool names_are_authority = false;
   bool authoritative_payload_proof = false;
   bool logical_payload_changed = false;

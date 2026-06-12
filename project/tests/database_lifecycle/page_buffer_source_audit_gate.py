@@ -9,7 +9,7 @@
 
 """MMCH-051 source audit for page-buffer allocation ownership.
 
-This is a production-claim gate, not a parser/client/donor authority source.
+This is a production-claim gate, not a parser/client/reference authority source.
 It rejects raw page-buffer heap allocation in storage paths and verifies that
 the approved MemoryManager-backed page-frame APIs are present.
 """
@@ -132,7 +132,7 @@ def main() -> int:
 
     print(
         f"{SEARCH_KEY}: authority_note=source_audit_evidence_only;"
-        "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+        "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
     )
     if findings:
         for finding in findings:

@@ -269,8 +269,8 @@ void RequireExactLowering(const DropCase& drop_case, const PipelineArtifacts& ar
   Require(!Contains(artifacts.envelope.payload, "replay_") &&
               !Contains(artifacts.envelope.payload, drop_case.sql),
           "DROP object payload embedded target identifier or SQL text as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "DROP object payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "DROP object payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

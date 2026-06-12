@@ -52,7 +52,7 @@ SHOW_MANAGEMENT_FIELDS = (
     "agent_worker_status",
     "resource_governor_state",
     "parser_finality_authority",
-    "donor_finality_authority",
+    "reference_finality_authority",
 )
 DIAGNOSTIC_POLICY = {
     "diagnostic_run": True,
@@ -66,7 +66,7 @@ DIAGNOSTIC_POLICY = {
         "optimized-over-baseline performance win claim."
     ),
     "forbidden_shortcuts": [
-        "no donor engine execution",
+        "no reference engine execution",
         "no parser-owned finality",
         "no WAL authority shortcut",
         "no SQLite shortcut",
@@ -538,7 +538,7 @@ def parse_show_management(stdout: str) -> dict[str, str]:
                 "agent_worker_status": values[17],
                 "resource_governor_state": values[26],
                 "parser_finality_authority": values[35],
-                "donor_finality_authority": values[36],
+                "reference_finality_authority": values[36],
             }
             candidates.append(fields)
     if len(candidates) != 1:
@@ -550,7 +550,7 @@ def parse_show_management(stdout: str) -> dict[str, str]:
         "plan_cache_enabled": "true",
         "descriptor_metadata_cache_enabled": "true",
         "parser_finality_authority": "false",
-        "donor_finality_authority": "false",
+        "reference_finality_authority": "false",
     }
     for key, value in expected.items():
         if fields.get(key) != value:
@@ -595,7 +595,7 @@ def run_show_management(route: Route) -> dict[str, Any]:
             "agent_worker_status": fields["agent_worker_status"],
             "resource_governor_state": fields["resource_governor_state"],
             "parser_finality_authority": fields["parser_finality_authority"],
-            "donor_finality_authority": fields["donor_finality_authority"],
+            "reference_finality_authority": fields["reference_finality_authority"],
         },
         "result_hash": support.hash_text("|".join(fields[name] for name in SHOW_MANAGEMENT_FIELDS)),
         "stdout_path": str(out_path),

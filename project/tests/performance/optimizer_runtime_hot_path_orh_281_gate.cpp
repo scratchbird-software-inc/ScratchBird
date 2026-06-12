@@ -124,7 +124,7 @@ memory::QueryMemoryContext ArenaContext(bool unsafe_authority = false) {
   context.engine_id = "orh281.engine";
   context.operation_id = "orh281.allocator.hot_path";
   context.engine_mga_authoritative = true;
-  context.parser_or_donor_finality_or_visibility_authority = unsafe_authority;
+  context.parser_or_reference_finality_or_visibility_authority = unsafe_authority;
   return context;
 }
 
@@ -267,10 +267,10 @@ void TestAuthorityAndProofRefusals() {
   memory::QueryMemoryArena arena(ArenaContext(), ArenaLimits(), &allocator);
 
   auto parser = Request(&arena);
-  parser.authority.parser_client_or_donor_allocator_authority = true;
+  parser.authority.parser_client_or_reference_allocator_authority = true;
   RequireRejected(exec::ExecuteAllocatorHotPath(parser),
                   "ORH_ALLOCATOR_LIFETIME_UNSAFE_AUTHORITY",
-                  "parser/client/donor allocator authority");
+                  "parser/client/reference allocator authority");
 
   auto finality = Request(&arena);
   finality.authority.allocator_visibility_or_finality_authority = true;

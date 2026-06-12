@@ -20,7 +20,7 @@ Generated: 2026-05-07 20:25:22 EDT
 - Surface backlog rows: 2617.
 - Promotion audit rows: 0.
 - Engine gap backlog rows: 932.
-- Donor alias backlog rows: 312.
+- Reference alias backlog rows: 312.
 - Registry-family batches: 77.
 - Slice queue rows: 44.
 

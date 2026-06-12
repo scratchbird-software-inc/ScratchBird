@@ -153,7 +153,7 @@ LateMaterializationResult Fail(LateMaterializationResult result,
 }
 
 bool HasUnsafeAuthorityDrift(const LateMaterializationPlan& plan) {
-  return plan.parser_or_donor_finality_or_visibility_authority ||
+  return plan.parser_or_reference_finality_or_visibility_authority ||
          plan.client_finality_or_visibility_authority ||
          plan.provider_finality_or_visibility_authority ||
          plan.wal_recovery_or_finality_authority;

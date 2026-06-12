@@ -25,7 +25,7 @@ using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
 constexpr const char* kAuthorityBoundary =
-    "mga_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_wal_or_benchmark_authority";
+    "mga_memory.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_wal_or_benchmark_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::transaction_mga};
@@ -153,12 +153,12 @@ MgaTransactionMemoryResult MgaTransactionMemoryGovernor::Acquire(
                       "transaction.mga.memory.missing_inventory_authority",
                       "mga_inventory_authority_required");
   }
-  if (request.authority.parser_or_client_authority || request.authority.donor_authority ||
+  if (request.authority.parser_or_client_authority || request.authority.reference_authority ||
       request.authority.wal_or_redo_authority ||
       request.authority.memory_pressure_finality_authority) {
     return FailClosed(request, "mga_memory_unsafe_authority",
                       "transaction.mga.memory.unsafe_authority",
-                      "parser_client_donor_wal_or_memory_finality_authority_claimed");
+                      "parser_client_reference_wal_or_memory_finality_authority_claimed");
   }
   if (AddWouldOverflow(snapshot_.current_bytes, request.bytes) ||
       (hard_limit_bytes_ != 0 &&

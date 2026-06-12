@@ -17,7 +17,7 @@ FORBIDDEN_LINK_TOKENS = (
     "libtommath",
     "libtomcrypt",
     "firebird-5.0.4-release-src",
-    "donor/firebird",
+    "reference/firebird",
 )
 
 FORBIDDEN_SOURCE_TOKENS = (
@@ -51,7 +51,7 @@ def check_binary(binary: Path) -> None:
     lowered = output.lower()
     for token in FORBIDDEN_LINK_TOKENS:
         if token in lowered:
-            raise SystemExit(f"forbidden donor/runtime dependency {token} in {binary}: {output}")
+            raise SystemExit(f"forbidden reference/runtime dependency {token} in {binary}: {output}")
 
 
 def check_source_tree(root: Path) -> None:
@@ -64,7 +64,7 @@ def check_source_tree(root: Path) -> None:
         lowered = text.lower()
         for token in FORBIDDEN_SOURCE_TOKENS:
             if token in lowered:
-                raise SystemExit(f"forbidden donor runtime token {token} in {path}")
+                raise SystemExit(f"forbidden reference runtime token {token} in {path}")
 
 
 def main() -> int:

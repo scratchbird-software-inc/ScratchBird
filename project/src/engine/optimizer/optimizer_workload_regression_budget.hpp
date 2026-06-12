@@ -20,7 +20,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: CEIC_056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET
 // Workload regression budget records are optimizer proof-control evidence only.
 // They do not authorize execution and are not transaction finality, visibility,
-// authorization/security, recovery, parser, donor, WAL, benchmark,
+// authorization/security, recovery, parser, reference, WAL, benchmark,
 // optimizer-plan, index-finality, provider-finality, cluster, or agent-action
 // authority.
 inline constexpr const char* kOptimizerWorkloadRegressionBudgetSchemaId =
@@ -83,7 +83,7 @@ struct OptimizerWorkloadRegressionAuthorityFlags {
   bool authorization_security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -185,9 +185,9 @@ struct OptimizerWorkloadRegressionBudgetRecord {
   bool correctness_oracle_attached = false;
   OptimizerCorrectnessOracleCase correctness_oracle_case;
 
-  bool donor_reference_only = true;
-  bool donor_as_authority = false;
-  bool uses_donor_storage_or_finality_for_scratchbird = false;
+  bool reference_reference_only = true;
+  bool reference_as_authority = false;
+  bool uses_reference_storage_or_finality_for_scratchbird = false;
 
   OptimizerWorkloadRegressionClusterMode cluster_mode =
       OptimizerWorkloadRegressionClusterMode::kNoCluster;

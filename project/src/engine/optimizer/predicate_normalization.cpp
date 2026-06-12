@@ -582,8 +582,8 @@ std::string CanonicalizeSblrExpressionNode(
       node.parser_execution_authority_claimed) {
     AddSblrDiagnostic(result, "sblr_expression_parser_sql_authority_refused");
   }
-  if (node.donor_or_legacy_authority_claimed) {
-    AddSblrDiagnostic(result, "sblr_expression_donor_authority_refused");
+  if (node.reference_or_legacy_authority_claimed) {
+    AddSblrDiagnostic(result, "sblr_expression_reference_authority_refused");
   }
   if (node.name_authority_claimed) {
     AddSblrDiagnostic(result, "sblr_expression_name_authority_refused");
@@ -717,7 +717,7 @@ CanonicalSblrExpression CanonicalizeSblrExpressionTree(
     result.evidence.push_back("canonical_sblr_expression_digest=" +
                               result.digest);
     result.evidence.push_back("parser_sql_expression_authority=false");
-    result.evidence.push_back("donor_expression_authority=false");
+    result.evidence.push_back("reference_expression_authority=false");
     result.evidence.push_back("name_expression_authority=false");
     result.evidence.push_back("mga_visibility_recheck_required=true");
     result.evidence.push_back(
@@ -938,7 +938,7 @@ SblrExpressionIndexMatchResult MatchSblrExpressionToIndex(
   result.evidence.push_back(
       "sblr_expression_match_parser_sql_authority=false");
   result.evidence.push_back(
-      "sblr_expression_match_donor_authority=false");
+      "sblr_expression_match_reference_authority=false");
   result.matches = expression_matched && result.refusal_reasons.empty();
   return result;
 }

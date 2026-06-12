@@ -58,7 +58,7 @@ void RequireReclamationEvidence(const mem::BackgroundMemoryReclamationResult& re
           "MMCH-019 evidence marker missing");
   Require(EvidenceHas(
               result.evidence,
-              "background_reclamation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"),
+              "background_reclamation.authority_scope=evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"),
           "MMCH-019 authority boundary evidence missing");
 }
 
@@ -437,7 +437,7 @@ void PageCacheAndSpillRecordsUseRealSubsystemPaths() {
 
 int main() {
   std::cout << "MMCH-019 authority_note=background_memory_reclamation_evidence_only;"
-               "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+               "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   IdleArenaDiagnosticsAndQueryStateAreReclaimed();
   BudgetsCancellationAndAuthorityFailClosed();

@@ -310,8 +310,8 @@ bool AnyAuthorityClaimed(const Ceic036AuthorityBoundaryClaims& claims,
        "recovery_authority"},
       {&Ceic036AuthorityBoundaryClaims::parser_authority,
        "parser_authority"},
-      {&Ceic036AuthorityBoundaryClaims::donor_authority,
-       "donor_authority"},
+      {&Ceic036AuthorityBoundaryClaims::reference_authority,
+       "reference_authority"},
       {&Ceic036AuthorityBoundaryClaims::wal_authority,
        "wal_authority"},
       {&Ceic036AuthorityBoundaryClaims::benchmark_authority,
@@ -518,11 +518,11 @@ ProveCeic036CanonicalKeyOrderingAndEncodingFuzz(
                   "ceic036.raw_numeric_textual_ordering_refused",
                   "numeric keys require typed comparable payload bytes");
   }
-  if (request.donor_comparison_recorded &&
-      !request.donor_comparison_evidence_only) {
-    return Refuse("SB-CEIC-036-DONOR-AUTHORITY-REFUSED",
-                  "ceic036.donor_authority_refused",
-                  "donor comparisons may be evidence only");
+  if (request.reference_comparison_recorded &&
+      !request.reference_comparison_evidence_only) {
+    return Refuse("SB-CEIC-036-REFERENCE-AUTHORITY-REFUSED",
+                  "ceic036.reference_authority_refused",
+                  "reference comparisons may be evidence only");
   }
   std::string authority_detail;
   if (AnyAuthorityClaimed(request.authority_claims, &authority_detail)) {
@@ -534,13 +534,13 @@ ProveCeic036CanonicalKeyOrderingAndEncodingFuzz(
   result.status = OkStatus();
   result.typed_comparable_payload_contract_proven = true;
   result.raw_textual_numeric_ordering_rejected = true;
-  result.donor_comparison_authority = false;
+  result.reference_comparison_authority = false;
   result.authority_claims = {};
   result.evidence.push_back("ceic_search_key=CEIC_036_CANONICAL_KEY_ORDERING_ENCODING_FUZZ_GATES");
   result.evidence.push_back("typed_comparable_payload_contract=true");
   result.evidence.push_back("raw_textual_numeric_ordering_authority=false");
-  result.evidence.push_back("donor_comparison_evidence_only=" +
-                            std::string(request.donor_comparison_recorded
+  result.evidence.push_back("reference_comparison_evidence_only=" +
+                            std::string(request.reference_comparison_recorded
                                             ? "true"
                                             : "not_recorded"));
   result.evidence.push_back("visibility_authority=false");
@@ -548,7 +548,7 @@ ProveCeic036CanonicalKeyOrderingAndEncodingFuzz(
   result.evidence.push_back("transaction_finality_authority=false");
   result.evidence.push_back("recovery_authority=false");
   result.evidence.push_back("parser_authority=false");
-  result.evidence.push_back("donor_authority=false");
+  result.evidence.push_back("reference_authority=false");
   result.evidence.push_back("wal_authority=false");
   result.evidence.push_back("benchmark_authority=false");
   result.evidence.push_back("optimizer_plan_authority=false");

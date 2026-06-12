@@ -83,7 +83,7 @@ enum class IndexProviderAdmissionStatus : u32 {
   static_capability_only = 3,
   unsupported_family = 4,
   non_persistent_family = 5,
-  donor_emulated_non_runtime = 6,
+  reference_emulated_non_runtime = 6,
   policy_blocked_non_runtime = 7,
   route_capability_required = 8,
   route_not_supported = 9,
@@ -103,7 +103,7 @@ struct IndexProviderAuthorityBoundary {
   bool security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;

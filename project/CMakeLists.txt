@@ -225,8 +225,8 @@ option(SB_OPTIMIZER_ALLOW_RELAXED_METRICS_IN_PRODUCTION
 option(SB_OPTIMIZER_ALLOW_PLACEHOLDER_RUNTIME_EVIDENCE_IN_PRODUCTION
   "Test-only: allow placeholder runtime evidence in production optimizer routes"
   OFF)
-option(SB_OPTIMIZER_ALLOW_DONOR_AUTHORITY_IN_PRODUCTION
-  "Test-only: allow donor optimizer evidence authority in production profiles"
+option(SB_OPTIMIZER_ALLOW_COMPAT_AUTHORITY_IN_PRODUCTION
+  "Test-only: allow compatibility optimizer evidence authority in production profiles"
   OFF)
 option(SB_OPTIMIZER_ALLOW_PARSER_SHORTCUTS_IN_PRODUCTION
   "Test-only: allow parser execution shortcuts in production optimizer routes"
@@ -1253,8 +1253,8 @@ option(SB_BUILD_ENGINE_API_COMPLETION_PROBE "Build the engine API completion rea
 option(SB_BUILD_ENGINE_API_DOMAIN_PROBE "Build the engine API domain foundation probe" OFF)
 option(SB_BUILD_WIRE_DRIVER_DATATYPE_METADATA_PROBE "Build the wire/driver datatype metadata probe" OFF)
 option(SB_BUILD_DATATYPE_STORAGE_BACKUP_REPLICATION_PROBE "Build the datatype storage/backup/replication transport probe" OFF)
-option(SB_BUILD_DONOR_DATATYPE_COVERAGE_PROBE "Build the donor datatype coverage/conformance probe" OFF)
-option(SB_BUILD_DONOR_EXACT_REGISTRY_PROBE "Build the donor exact datatype registry probe" OFF)
+option(SB_BUILD_COMPAT_DATATYPE_COVERAGE_PROBE "Build the compatibility datatype coverage/conformance probe" OFF)
+option(SB_BUILD_COMPAT_EXACT_REGISTRY_PROBE "Build the compatibility exact datatype registry probe" OFF)
 option(SB_BUILD_CANONICAL_DATATYPE_CLOSURE_PROBE "Build the canonical datatype closure/conformance probe" OFF)
 option(SB_BUILD_DATATYPE_INDEX_OPTIMIZER_ADMISSION_PROBE "Build the datatype index/statistics/optimizer admission probe" OFF)
 option(SB_BUILD_DOMAIN_FULL_FUNCTIONALITY_PROBE "Build the domain full functionality conformance probe" OFF)
@@ -1266,13 +1266,13 @@ option(SB_BUILD_DOMAIN_METHOD_DISPATCH_PROBE "Build the domain method dispatch v
 option(SB_BUILD_DOMAIN_SBLR_PREDICATE_PROBE "Build the domain SBLR predicate validation probe" OFF)
 option(SB_BUILD_DECIMAL_DECFLOAT_CLOSURE_PROBE "Build the decimal/decimal-float closure validation probe" OFF)
 option(SB_BUILD_REAL128_SPECIAL_VALUE_PROBE "Build the real128 special-value validation probe" OFF)
-option(SB_BUILD_DONOR_TIMEZONE_WIRE_PROFILE_PROBE "Build the donor timezone wire-profile validation probe" OFF)
+option(SB_BUILD_COMPAT_TIMEZONE_WIRE_PROFILE_PROBE "Build the compatibility timezone wire-profile validation probe" OFF)
 option(SB_BUILD_DOCUMENT_CANONICALIZATION_PROBE "Build the document canonicalization validation probe" OFF)
 option(SB_BUILD_ADVANCED_DATATYPE_FAMILY_PROBE "Build the advanced datatype family validation probe" OFF)
-if((SB_BUILD_ENGINE_API_COMPLETION_PROBE OR SB_BUILD_ENGINE_API_DOMAIN_PROBE OR SB_BUILD_WIRE_DRIVER_DATATYPE_METADATA_PROBE OR SB_BUILD_DATATYPE_STORAGE_BACKUP_REPLICATION_PROBE OR SB_BUILD_DONOR_DATATYPE_COVERAGE_PROBE OR SB_BUILD_CANONICAL_DATATYPE_CLOSURE_PROBE OR SB_BUILD_DATATYPE_INDEX_OPTIMIZER_ADMISSION_PROBE OR SB_BUILD_DOMAIN_FULL_FUNCTIONALITY_PROBE OR SB_BUILD_SBLR_API_MATRIX_PROBE OR SB_BUILD_DOMAIN_PATH_MASKING_PROBE OR SB_BUILD_DOMAIN_GRANT_ENFORCEMENT_PROBE OR SB_BUILD_DOMAIN_ENCRYPTION_KEY_POLICY_PROBE OR SB_BUILD_DOMAIN_METHOD_DISPATCH_PROBE OR SB_BUILD_DOMAIN_SBLR_PREDICATE_PROBE) AND NOT TARGET sb_core_uuid)
+if((SB_BUILD_ENGINE_API_COMPLETION_PROBE OR SB_BUILD_ENGINE_API_DOMAIN_PROBE OR SB_BUILD_WIRE_DRIVER_DATATYPE_METADATA_PROBE OR SB_BUILD_DATATYPE_STORAGE_BACKUP_REPLICATION_PROBE OR SB_BUILD_COMPAT_DATATYPE_COVERAGE_PROBE OR SB_BUILD_CANONICAL_DATATYPE_CLOSURE_PROBE OR SB_BUILD_DATATYPE_INDEX_OPTIMIZER_ADMISSION_PROBE OR SB_BUILD_DOMAIN_FULL_FUNCTIONALITY_PROBE OR SB_BUILD_SBLR_API_MATRIX_PROBE OR SB_BUILD_DOMAIN_PATH_MASKING_PROBE OR SB_BUILD_DOMAIN_GRANT_ENFORCEMENT_PROBE OR SB_BUILD_DOMAIN_ENCRYPTION_KEY_POLICY_PROBE OR SB_BUILD_DOMAIN_METHOD_DISPATCH_PROBE OR SB_BUILD_DOMAIN_SBLR_PREDICATE_PROBE) AND NOT TARGET sb_core_uuid)
   add_subdirectory(src/core/uuid)
 endif()
-if((SB_BUILD_ENGINE_API_DOMAIN_PROBE OR SB_BUILD_WIRE_DRIVER_DATATYPE_METADATA_PROBE OR SB_BUILD_DATATYPE_STORAGE_BACKUP_REPLICATION_PROBE OR SB_BUILD_DONOR_DATATYPE_COVERAGE_PROBE OR SB_BUILD_CANONICAL_DATATYPE_CLOSURE_PROBE OR SB_BUILD_DATATYPE_INDEX_OPTIMIZER_ADMISSION_PROBE OR SB_BUILD_DOMAIN_FULL_FUNCTIONALITY_PROBE OR SB_BUILD_DOMAIN_PATH_MASKING_PROBE OR SB_BUILD_DOMAIN_GRANT_ENFORCEMENT_PROBE OR SB_BUILD_DOMAIN_ENCRYPTION_KEY_POLICY_PROBE OR SB_BUILD_DOMAIN_METHOD_DISPATCH_PROBE OR SB_BUILD_DOMAIN_SBLR_PREDICATE_PROBE) AND NOT TARGET sb_engine_internal_api)
+if((SB_BUILD_ENGINE_API_DOMAIN_PROBE OR SB_BUILD_WIRE_DRIVER_DATATYPE_METADATA_PROBE OR SB_BUILD_DATATYPE_STORAGE_BACKUP_REPLICATION_PROBE OR SB_BUILD_COMPAT_DATATYPE_COVERAGE_PROBE OR SB_BUILD_CANONICAL_DATATYPE_CLOSURE_PROBE OR SB_BUILD_DATATYPE_INDEX_OPTIMIZER_ADMISSION_PROBE OR SB_BUILD_DOMAIN_FULL_FUNCTIONALITY_PROBE OR SB_BUILD_DOMAIN_PATH_MASKING_PROBE OR SB_BUILD_DOMAIN_GRANT_ENFORCEMENT_PROBE OR SB_BUILD_DOMAIN_ENCRYPTION_KEY_POLICY_PROBE OR SB_BUILD_DOMAIN_METHOD_DISPATCH_PROBE OR SB_BUILD_DOMAIN_SBLR_PREDICATE_PROBE) AND NOT TARGET sb_engine_internal_api)
   add_subdirectory(src/engine/internal_api)
 endif()
 if(SB_BUILD_ENGINE_API_COMPLETION_PROBE)
@@ -1287,11 +1287,11 @@ endif()
 if(SB_BUILD_DATATYPE_STORAGE_BACKUP_REPLICATION_PROBE)
   add_subdirectory(tools/sb_datatype_storage_backup_replication_probe)
 endif()
-if(SB_BUILD_DONOR_DATATYPE_COVERAGE_PROBE)
-  add_subdirectory(tools/sb_donor_datatype_coverage_probe)
+if(SB_BUILD_COMPAT_DATATYPE_COVERAGE_PROBE)
+  add_subdirectory(tools/sb_reference_datatype_coverage_probe)
 endif()
-if(SB_BUILD_DONOR_EXACT_REGISTRY_PROBE)
-  add_subdirectory(tools/sb_donor_exact_registry_probe)
+if(SB_BUILD_COMPAT_EXACT_REGISTRY_PROBE)
+  add_subdirectory(tools/sb_reference_exact_registry_probe)
 endif()
 if(SB_BUILD_CANONICAL_DATATYPE_CLOSURE_PROBE)
   add_subdirectory(tools/sb_canonical_datatype_closure_probe)
@@ -1329,14 +1329,14 @@ endif()
 if(SB_BUILD_REAL128_SPECIAL_VALUE_PROBE)
   add_subdirectory(tools/sb_real128_special_value_probe)
 endif()
-if(SB_BUILD_DONOR_TIMEZONE_WIRE_PROFILE_PROBE AND NOT TARGET sb_core_resources)
+if(SB_BUILD_COMPAT_TIMEZONE_WIRE_PROFILE_PROBE AND NOT TARGET sb_core_resources)
   add_subdirectory(src/core/resources)
 endif()
-if(SB_BUILD_DONOR_TIMEZONE_WIRE_PROFILE_PROBE AND NOT TARGET sb_core_datatypes)
+if(SB_BUILD_COMPAT_TIMEZONE_WIRE_PROFILE_PROBE AND NOT TARGET sb_core_datatypes)
   add_subdirectory(src/core/datatypes)
 endif()
-if(SB_BUILD_DONOR_TIMEZONE_WIRE_PROFILE_PROBE)
-  add_subdirectory(tools/sb_donor_timezone_wire_profile_probe)
+if(SB_BUILD_COMPAT_TIMEZONE_WIRE_PROFILE_PROBE)
+  add_subdirectory(tools/sb_reference_timezone_wire_profile_probe)
 endif()
 if(SB_BUILD_DOCUMENT_CANONICALIZATION_PROBE AND NOT TARGET sb_core_datatypes)
   add_subdirectory(src/core/datatypes)
@@ -1729,7 +1729,7 @@ option(SB_BUILD_SBLR_FUNCTION_COMPLETION_GATE "Build the SBLR function-family co
 option(SB_BUILD_SBLR_FUNCTION_PROPERTY_PROBE "Build the SBLR function property/conformance probe" OFF)
 option(SB_BUILD_SBLR_AGGREGATE_SPILL_PROBE "Build the SBLR aggregate spill/persistence probe" OFF)
 option(SB_BUILD_SBLR_FUNCTION_FAMILY_PROBE "Build the SBLR function-family conformance probe" OFF)
-option(SB_BUILD_SBLR_DONOR_ALIAS_PROBE "Build the SBLR donor alias conformance probe" OFF)
+option(SB_BUILD_SBLR_COMPAT_ALIAS_PROBE "Build the SBLR compatibility alias conformance probe" OFF)
 option(SB_BUILD_SBLR_PLUGIN_ALIAS_PROBE "Build the SBLR plugin/extension alias conformance probe" OFF)
 option(SB_BUILD_SBLR_EXPRESSION_RUNTIME_PROBE "Build the SBLR expression runtime conformance probe" OFF)
 option(SB_BUILD_SBLR_PAYLOAD_PRESERVATION_PROBE "Build the SBLR value payload preservation probe" OFF)
@@ -1813,7 +1813,7 @@ if(SB_BUILD_SBLR_FUNCTION_FAMILY_PROBE)
   add_subdirectory(tools/sb_sblr_function_family_probe)
 endif()
 
-if(SB_BUILD_SBLR_DONOR_ALIAS_PROBE)
+if(SB_BUILD_SBLR_COMPAT_ALIAS_PROBE)
   if(NOT TARGET sb_engine_internal_api)
     add_subdirectory(src/engine/internal_api)
   endif()
@@ -1823,7 +1823,7 @@ if(SB_BUILD_SBLR_DONOR_ALIAS_PROBE)
   if(NOT TARGET sb_engine_functions)
     add_subdirectory(src/engine/functions)
   endif()
-  add_subdirectory(tools/sb_sblr_donor_alias_probe)
+  add_subdirectory(tools/sb_sblr_reference_alias_probe)
 endif()
 
 if(SB_BUILD_SBLR_PLUGIN_ALIAS_PROBE)
@@ -2604,10 +2604,14 @@ option(SB_BUILD_SB_LISTENER "Build the standalone sb_listener executable product
 option(SB_BUILD_SERVER "Build the standalone sb_server executable product skeleton" OFF)
 option(SB_BUILD_SERVER_BOUNDARY_GUARD "Build the sb_server forbidden dependency boundary guard" OFF)
 option(SB_BUILD_SERVER_EVENT_NOTIFICATIONS "Build sb_server event notification routing support" OFF)
-option(SB_BUILD_DATABASE_LIFECYCLE_TESTS "Build database lifecycle contract/registry CTest gates" ON)
+option(SB_BUILD_DATABASE_LIFECYCLE_TESTS "Build database lifecycle contract/registry CTest gates" OFF)
 if(SB_BUILD_PUBLIC_RELEASE_CORRECTNESS)
   set(SB_BUILD_SERVER ON CACHE BOOL
     "Build server core for public release correctness startup gates" FORCE)
+  set(SB_BUILD_SB_LISTENER ON CACHE BOOL
+    "Build listener runtime for public release correctness gates" FORCE)
+  set(SB_BUILD_SBMN_MANAGER ON CACHE BOOL
+    "Build node manager for public release correctness gates" FORCE)
 endif()
 if(SB_BUILD_DATABASE_LIFECYCLE_TESTS)
   set(SB_BUILD_SBMN_MANAGER ON)
@@ -2866,83 +2870,83 @@ option(SB_BUILD_SBSQL_PARSER_WORKER "Build the native SBSQL parser-worker produc
 option(SB_BUILD_SBSQL_PARSER_WORKER_TESTS "Build the SBSQL parser-worker vertical-slice conformance probes" OFF)
 option(SB_BUILD_SBU_SBSQL_PARSER_SUPPORT "Build the trusted SBSQL parser-support UDR package" OFF)
 option(SB_BUILD_NATIVE_PARSER_WORKER "Build the native SBWP parser-worker product vertical slice" OFF)
-option(SB_BUILD_FIREBIRD_PARSER_WORKER "Build the Firebird donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_FIREBIRD_PARSER_WORKER "Build the Firebird compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_FIREBIRD_PARSER_WORKER_TESTS "Build the Firebird parser-worker vertical-slice conformance probes" OFF)
 option(SB_BUILD_SBU_FIREBIRD_PARSER_SUPPORT "Build the trusted Firebird parser-support UDR package" OFF)
-option(SB_BUILD_MYSQL_PARSER_WORKER "Build the MySQL donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_MYSQL_PARSER_WORKER "Build the MySQL compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_MYSQL_PARSER_WORKER_TESTS "Build the MySQL parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_MYSQL_PARSER_SUPPORT "Build the trusted MySQL parser-support UDR package" OFF)
-option(SB_BUILD_POSTGRESQL_PARSER_WORKER "Build the PostgreSQL donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_POSTGRESQL_PARSER_WORKER "Build the PostgreSQL compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_POSTGRESQL_PARSER_WORKER_TESTS "Build the PostgreSQL parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_POSTGRESQL_PARSER_SUPPORT "Build the trusted PostgreSQL parser-support UDR package" OFF)
-option(SB_BUILD_SQLITE_PARSER_WORKER "Build the SQLite donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_SQLITE_PARSER_WORKER "Build the SQLite compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_SQLITE_PARSER_WORKER_TESTS "Build the SQLite parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_SQLITE_PARSER_SUPPORT "Build the trusted SQLite parser-support UDR package" OFF)
-option(SB_BUILD_MARIADB_PARSER_WORKER "Build the MariaDB donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_MARIADB_PARSER_WORKER "Build the MariaDB compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_MARIADB_PARSER_WORKER_TESTS "Build the MariaDB parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_MARIADB_PARSER_SUPPORT "Build the trusted MariaDB parser-support UDR package" OFF)
-option(SB_BUILD_DUCKDB_PARSER_WORKER "Build the DuckDB donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_DUCKDB_PARSER_WORKER "Build the DuckDB compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_DUCKDB_PARSER_WORKER_TESTS "Build the DuckDB parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_DUCKDB_PARSER_SUPPORT "Build the trusted DuckDB parser-support UDR package" OFF)
-option(SB_BUILD_CLICKHOUSE_PARSER_WORKER "Build the ClickHouse donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_CLICKHOUSE_PARSER_WORKER "Build the ClickHouse compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_CLICKHOUSE_PARSER_WORKER_TESTS "Build the ClickHouse parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_CLICKHOUSE_PARSER_SUPPORT "Build the trusted ClickHouse parser-support UDR package" OFF)
-option(SB_BUILD_TIDB_PARSER_WORKER "Build the TiDB donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_TIDB_PARSER_WORKER "Build the TiDB compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_TIDB_PARSER_WORKER_TESTS "Build the TiDB parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_TIDB_PARSER_SUPPORT "Build the trusted TiDB parser-support UDR package" OFF)
-option(SB_BUILD_VITESS_PARSER_WORKER "Build the Vitess donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_VITESS_PARSER_WORKER "Build the Vitess compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_VITESS_PARSER_WORKER_TESTS "Build the Vitess parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_VITESS_PARSER_SUPPORT "Build the trusted Vitess parser-support UDR package" OFF)
-option(SB_BUILD_COCKROACHDB_PARSER_WORKER "Build the CockroachDB donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_COCKROACHDB_PARSER_WORKER "Build the CockroachDB compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_COCKROACHDB_PARSER_WORKER_TESTS "Build the CockroachDB parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_COCKROACHDB_PARSER_SUPPORT "Build the trusted CockroachDB parser-support UDR package" OFF)
-option(SB_BUILD_YUGABYTEDB_PARSER_WORKER "Build the YugabyteDB donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_YUGABYTEDB_PARSER_WORKER "Build the YugabyteDB compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_YUGABYTEDB_PARSER_WORKER_TESTS "Build the YugabyteDB parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_YUGABYTEDB_PARSER_SUPPORT "Build the trusted YugabyteDB parser-support UDR package" OFF)
-option(SB_BUILD_CASSANDRA_PARSER_WORKER "Build the Cassandra donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_CASSANDRA_PARSER_WORKER "Build the Cassandra compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_CASSANDRA_PARSER_WORKER_TESTS "Build the Cassandra parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_CASSANDRA_PARSER_SUPPORT "Build the trusted Cassandra parser-support UDR package" OFF)
-option(SB_BUILD_MONGODB_PARSER_WORKER "Build the MongoDB donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_MONGODB_PARSER_WORKER "Build the MongoDB compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_MONGODB_PARSER_WORKER_TESTS "Build the MongoDB parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_MONGODB_PARSER_SUPPORT "Build the trusted MongoDB parser-support UDR package" OFF)
-option(SB_BUILD_REDIS_PARSER_WORKER "Build the Redis donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_REDIS_PARSER_WORKER "Build the Redis compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_REDIS_PARSER_WORKER_TESTS "Build the Redis parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_REDIS_PARSER_SUPPORT "Build the trusted Redis parser-support UDR package" OFF)
-option(SB_BUILD_OPENSEARCH_SQL_PPL_PARSER_WORKER "Build the OpenSearch SQL/PPL donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_OPENSEARCH_SQL_PPL_PARSER_WORKER "Build the OpenSearch SQL/PPL compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_OPENSEARCH_SQL_PPL_PARSER_WORKER_TESTS "Build the OpenSearch SQL/PPL parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_OPENSEARCH_SQL_PPL_PARSER_SUPPORT "Build the trusted OpenSearch SQL/PPL parser-support UDR package" OFF)
-option(SB_BUILD_OPENSEARCH_PARSER_WORKER "Build the OpenSearch REST donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_OPENSEARCH_PARSER_WORKER "Build the OpenSearch REST compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_OPENSEARCH_PARSER_WORKER_TESTS "Build the OpenSearch REST parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_OPENSEARCH_PARSER_SUPPORT "Build the trusted OpenSearch REST parser-support UDR package" OFF)
-option(SB_BUILD_NEO4J_PARSER_WORKER "Build the Neo4j donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_NEO4J_PARSER_WORKER "Build the Neo4j compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_NEO4J_PARSER_WORKER_TESTS "Build the Neo4j parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_NEO4J_PARSER_SUPPORT "Build the trusted Neo4j parser-support UDR package" OFF)
-option(SB_BUILD_INFLUXDB_PARSER_WORKER "Build the InfluxDB donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_INFLUXDB_PARSER_WORKER "Build the InfluxDB compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_INFLUXDB_PARSER_WORKER_TESTS "Build the InfluxDB parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_INFLUXDB_PARSER_SUPPORT "Build the trusted InfluxDB parser-support UDR package" OFF)
-option(SB_BUILD_MILVUS_PARSER_WORKER "Build the Milvus donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_MILVUS_PARSER_WORKER "Build the Milvus compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_MILVUS_PARSER_WORKER_TESTS "Build the Milvus parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_MILVUS_PARSER_SUPPORT "Build the trusted Milvus parser-support UDR package" OFF)
-option(SB_BUILD_DOLT_PARSER_WORKER "Build the Dolt donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_DOLT_PARSER_WORKER "Build the Dolt compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_DOLT_PARSER_WORKER_TESTS "Build the Dolt parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_DOLT_PARSER_SUPPORT "Build the trusted Dolt parser-support UDR package" OFF)
-option(SB_BUILD_APACHE_IGNITE_PARSER_WORKER "Build the Apache Ignite donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_APACHE_IGNITE_PARSER_WORKER "Build the Apache Ignite compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_APACHE_IGNITE_PARSER_WORKER_TESTS "Build the Apache Ignite parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_APACHE_IGNITE_PARSER_SUPPORT "Build the trusted Apache Ignite parser-support UDR package" OFF)
-option(SB_BUILD_TIKV_PARSER_WORKER "Build the TiKV donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_TIKV_PARSER_WORKER "Build the TiKV compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_TIKV_PARSER_WORKER_TESTS "Build the TiKV parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_TIKV_PARSER_SUPPORT "Build the trusted TiKV parser-support UDR package" OFF)
-option(SB_BUILD_FOUNDATIONDB_PARSER_WORKER "Build the FoundationDB donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_FOUNDATIONDB_PARSER_WORKER "Build the FoundationDB compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_FOUNDATIONDB_PARSER_WORKER_TESTS "Build the FoundationDB parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_FOUNDATIONDB_PARSER_SUPPORT "Build the trusted FoundationDB parser-support UDR package" OFF)
-option(SB_BUILD_IMMUDB_PARSER_WORKER "Build the immudb donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_IMMUDB_PARSER_WORKER "Build the immudb compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_IMMUDB_PARSER_WORKER_TESTS "Build the immudb parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_IMMUDB_PARSER_SUPPORT "Build the trusted immudb parser-support UDR package" OFF)
-option(SB_BUILD_XTDB_PARSER_WORKER "Build the XTDB donor parser-worker product vertical slice" OFF)
+option(SB_BUILD_XTDB_PARSER_WORKER "Build the XTDB compatibility parser-worker product vertical slice" OFF)
 option(SB_BUILD_XTDB_PARSER_WORKER_TESTS "Build the XTDB parser-worker conformance probes" OFF)
 option(SB_BUILD_SBU_XTDB_PARSER_SUPPORT "Build the trusted XTDB parser-support UDR package" OFF)
-option(SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS
-  "Build donor SQL parser and parser-support UDR proof gates"
+option(SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS
+  "Build compatibility SQL parser and parser-support UDR proof gates"
   OFF)
 if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
   set(SB_BUILD_SBSQL_PARSER_WORKER ON CACHE BOOL
@@ -2951,22 +2955,13 @@ if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
   set(SB_BUILD_SBU_SBSQL_PARSER_SUPPORT ON CACHE BOOL
     "Build the trusted SBSQL parser-support UDR package"
     FORCE)
-  set(SB_BUILD_FIREBIRD_PARSER_WORKER ON CACHE BOOL
-    "Build the Firebird donor parser-worker product vertical slice"
-    FORCE)
-  set(SB_BUILD_SBU_FIREBIRD_PARSER_SUPPORT ON CACHE BOOL
-    "Build the trusted Firebird parser-support UDR package"
-    FORCE)
-  set(SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS ON CACHE BOOL
-    "Build donor SQL parser and parser-support UDR proof gates"
-    FORCE)
 endif()
 if(SB_BUILD_TESTS)
-  set(SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS ON CACHE BOOL
-    "Build donor SQL parser and parser-support UDR proof gates"
+  set(SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS ON CACHE BOOL
+    "Build compatibility SQL parser and parser-support UDR proof gates"
     FORCE)
   set(SB_BUILD_FIREBIRD_PARSER_WORKER ON CACHE BOOL
-    "Build the Firebird donor parser-worker product vertical slice"
+    "Build the Firebird compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_FIREBIRD_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the Firebird parser-worker vertical-slice conformance probes"
@@ -2975,7 +2970,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted Firebird parser-support UDR package"
     FORCE)
   set(SB_BUILD_MYSQL_PARSER_WORKER ON CACHE BOOL
-    "Build the MySQL donor parser-worker product vertical slice"
+    "Build the MySQL compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_MYSQL_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the MySQL parser-worker conformance probes"
@@ -2984,7 +2979,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted MySQL parser-support UDR package"
     FORCE)
   set(SB_BUILD_POSTGRESQL_PARSER_WORKER ON CACHE BOOL
-    "Build the PostgreSQL donor parser-worker product vertical slice"
+    "Build the PostgreSQL compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_POSTGRESQL_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the PostgreSQL parser-worker conformance probes"
@@ -2993,7 +2988,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted PostgreSQL parser-support UDR package"
     FORCE)
   set(SB_BUILD_SQLITE_PARSER_WORKER ON CACHE BOOL
-    "Build the SQLite donor parser-worker product vertical slice"
+    "Build the SQLite compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_SQLITE_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the SQLite parser-worker conformance probes"
@@ -3002,7 +2997,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted SQLite parser-support UDR package"
     FORCE)
   set(SB_BUILD_MARIADB_PARSER_WORKER ON CACHE BOOL
-    "Build the MariaDB donor parser-worker product vertical slice"
+    "Build the MariaDB compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_MARIADB_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the MariaDB parser-worker conformance probes"
@@ -3011,7 +3006,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted MariaDB parser-support UDR package"
     FORCE)
   set(SB_BUILD_DUCKDB_PARSER_WORKER ON CACHE BOOL
-    "Build the DuckDB donor parser-worker product vertical slice"
+    "Build the DuckDB compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_DUCKDB_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the DuckDB parser-worker conformance probes"
@@ -3020,7 +3015,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted DuckDB parser-support UDR package"
     FORCE)
   set(SB_BUILD_CLICKHOUSE_PARSER_WORKER ON CACHE BOOL
-    "Build the ClickHouse donor parser-worker product vertical slice"
+    "Build the ClickHouse compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_CLICKHOUSE_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the ClickHouse parser-worker conformance probes"
@@ -3029,7 +3024,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted ClickHouse parser-support UDR package"
     FORCE)
   set(SB_BUILD_TIDB_PARSER_WORKER ON CACHE BOOL
-    "Build the TiDB donor parser-worker product vertical slice"
+    "Build the TiDB compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_TIDB_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the TiDB parser-worker conformance probes"
@@ -3038,7 +3033,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted TiDB parser-support UDR package"
     FORCE)
   set(SB_BUILD_VITESS_PARSER_WORKER ON CACHE BOOL
-    "Build the Vitess donor parser-worker product vertical slice"
+    "Build the Vitess compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_VITESS_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the Vitess parser-worker conformance probes"
@@ -3047,7 +3042,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted Vitess parser-support UDR package"
     FORCE)
   set(SB_BUILD_COCKROACHDB_PARSER_WORKER ON CACHE BOOL
-    "Build the CockroachDB donor parser-worker product vertical slice"
+    "Build the CockroachDB compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_COCKROACHDB_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the CockroachDB parser-worker conformance probes"
@@ -3056,7 +3051,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted CockroachDB parser-support UDR package"
     FORCE)
   set(SB_BUILD_YUGABYTEDB_PARSER_WORKER ON CACHE BOOL
-    "Build the YugabyteDB donor parser-worker product vertical slice"
+    "Build the YugabyteDB compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_YUGABYTEDB_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the YugabyteDB parser-worker conformance probes"
@@ -3065,7 +3060,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted YugabyteDB parser-support UDR package"
     FORCE)
   set(SB_BUILD_CASSANDRA_PARSER_WORKER ON CACHE BOOL
-    "Build the Cassandra donor parser-worker product vertical slice"
+    "Build the Cassandra compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_CASSANDRA_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the Cassandra parser-worker conformance probes"
@@ -3074,7 +3069,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted Cassandra parser-support UDR package"
     FORCE)
   set(SB_BUILD_MONGODB_PARSER_WORKER ON CACHE BOOL
-    "Build the MongoDB donor parser-worker product vertical slice"
+    "Build the MongoDB compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_MONGODB_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the MongoDB parser-worker conformance probes"
@@ -3083,7 +3078,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted MongoDB parser-support UDR package"
     FORCE)
   set(SB_BUILD_REDIS_PARSER_WORKER ON CACHE BOOL
-    "Build the Redis donor parser-worker product vertical slice"
+    "Build the Redis compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_REDIS_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the Redis parser-worker conformance probes"
@@ -3092,7 +3087,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted Redis parser-support UDR package"
     FORCE)
   set(SB_BUILD_OPENSEARCH_SQL_PPL_PARSER_WORKER ON CACHE BOOL
-    "Build the OpenSearch SQL/PPL donor parser-worker product vertical slice"
+    "Build the OpenSearch SQL/PPL compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_OPENSEARCH_SQL_PPL_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the OpenSearch SQL/PPL parser-worker conformance probes"
@@ -3101,7 +3096,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted OpenSearch SQL/PPL parser-support UDR package"
     FORCE)
   set(SB_BUILD_OPENSEARCH_PARSER_WORKER ON CACHE BOOL
-    "Build the OpenSearch REST donor parser-worker product vertical slice"
+    "Build the OpenSearch REST compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_OPENSEARCH_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the OpenSearch REST parser-worker conformance probes"
@@ -3110,7 +3105,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted OpenSearch REST parser-support UDR package"
     FORCE)
   set(SB_BUILD_NEO4J_PARSER_WORKER ON CACHE BOOL
-    "Build the Neo4j donor parser-worker product vertical slice"
+    "Build the Neo4j compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_NEO4J_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the Neo4j parser-worker conformance probes"
@@ -3119,7 +3114,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted Neo4j parser-support UDR package"
     FORCE)
   set(SB_BUILD_INFLUXDB_PARSER_WORKER ON CACHE BOOL
-    "Build the InfluxDB donor parser-worker product vertical slice"
+    "Build the InfluxDB compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_INFLUXDB_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the InfluxDB parser-worker conformance probes"
@@ -3128,7 +3123,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted InfluxDB parser-support UDR package"
     FORCE)
   set(SB_BUILD_MILVUS_PARSER_WORKER ON CACHE BOOL
-    "Build the Milvus donor parser-worker product vertical slice"
+    "Build the Milvus compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_MILVUS_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the Milvus parser-worker conformance probes"
@@ -3137,7 +3132,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted Milvus parser-support UDR package"
     FORCE)
   set(SB_BUILD_DOLT_PARSER_WORKER ON CACHE BOOL
-    "Build the Dolt donor parser-worker product vertical slice"
+    "Build the Dolt compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_DOLT_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the Dolt parser-worker conformance probes"
@@ -3146,7 +3141,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted Dolt parser-support UDR package"
     FORCE)
   set(SB_BUILD_APACHE_IGNITE_PARSER_WORKER ON CACHE BOOL
-    "Build the Apache Ignite donor parser-worker product vertical slice"
+    "Build the Apache Ignite compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_APACHE_IGNITE_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the Apache Ignite parser-worker conformance probes"
@@ -3155,7 +3150,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted Apache Ignite parser-support UDR package"
     FORCE)
   set(SB_BUILD_TIKV_PARSER_WORKER ON CACHE BOOL
-    "Build the TiKV donor parser-worker product vertical slice"
+    "Build the TiKV compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_TIKV_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the TiKV parser-worker conformance probes"
@@ -3164,7 +3159,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted TiKV parser-support UDR package"
     FORCE)
   set(SB_BUILD_FOUNDATIONDB_PARSER_WORKER ON CACHE BOOL
-    "Build the FoundationDB donor parser-worker product vertical slice"
+    "Build the FoundationDB compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_FOUNDATIONDB_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the FoundationDB parser-worker conformance probes"
@@ -3173,7 +3168,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted FoundationDB parser-support UDR package"
     FORCE)
   set(SB_BUILD_IMMUDB_PARSER_WORKER ON CACHE BOOL
-    "Build the immudb donor parser-worker product vertical slice"
+    "Build the immudb compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_IMMUDB_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the immudb parser-worker conformance probes"
@@ -3182,7 +3177,7 @@ if(SB_BUILD_TESTS)
     "Build the trusted immudb parser-support UDR package"
     FORCE)
   set(SB_BUILD_XTDB_PARSER_WORKER ON CACHE BOOL
-    "Build the XTDB donor parser-worker product vertical slice"
+    "Build the XTDB compatibility parser-worker product vertical slice"
     FORCE)
   set(SB_BUILD_XTDB_PARSER_WORKER_TESTS ON CACHE BOOL
     "Build the XTDB parser-worker conformance probes"
@@ -3240,151 +3235,151 @@ endif()
 
 if(SB_BUILD_FIREBIRD_PARSER_WORKER OR SB_BUILD_FIREBIRD_PARSER_WORKER_TESTS OR SB_BUILD_SBU_FIREBIRD_PARSER_SUPPORT)
   if(NOT TARGET sbl_firebird_parser_pipeline)
-    add_subdirectory(src/parsers/donor/firebird)
+    add_subdirectory(src/parsers/compatibility/firebird)
   endif()
 endif()
 
-if(SB_BUILD_MYSQL_PARSER_WORKER OR SB_BUILD_MYSQL_PARSER_WORKER_TESTS OR SB_BUILD_SBU_MYSQL_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_MYSQL_PARSER_WORKER OR SB_BUILD_MYSQL_PARSER_WORKER_TESTS OR SB_BUILD_SBU_MYSQL_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_mysql_parser_pipeline)
-    add_subdirectory(src/parsers/donor/mysql)
+    add_subdirectory(src/parsers/compatibility/mysql)
   endif()
 endif()
 
-if(SB_BUILD_POSTGRESQL_PARSER_WORKER OR SB_BUILD_POSTGRESQL_PARSER_WORKER_TESTS OR SB_BUILD_SBU_POSTGRESQL_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_POSTGRESQL_PARSER_WORKER OR SB_BUILD_POSTGRESQL_PARSER_WORKER_TESTS OR SB_BUILD_SBU_POSTGRESQL_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_postgresql_parser_pipeline)
-    add_subdirectory(src/parsers/donor/postgresql)
+    add_subdirectory(src/parsers/compatibility/postgresql)
   endif()
 endif()
 
-if(SB_BUILD_SQLITE_PARSER_WORKER OR SB_BUILD_SQLITE_PARSER_WORKER_TESTS OR SB_BUILD_SBU_SQLITE_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_SQLITE_PARSER_WORKER OR SB_BUILD_SQLITE_PARSER_WORKER_TESTS OR SB_BUILD_SBU_SQLITE_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_sqlite_parser_pipeline)
-    add_subdirectory(src/parsers/donor/sqlite)
+    add_subdirectory(src/parsers/compatibility/sqlite)
   endif()
 endif()
 
-if(SB_BUILD_MARIADB_PARSER_WORKER OR SB_BUILD_MARIADB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_MARIADB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_MARIADB_PARSER_WORKER OR SB_BUILD_MARIADB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_MARIADB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_mariadb_parser_pipeline)
-    add_subdirectory(src/parsers/donor/mariadb)
+    add_subdirectory(src/parsers/compatibility/mariadb)
   endif()
 endif()
 
-if(SB_BUILD_DUCKDB_PARSER_WORKER OR SB_BUILD_DUCKDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_DUCKDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_DUCKDB_PARSER_WORKER OR SB_BUILD_DUCKDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_DUCKDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_duckdb_parser_pipeline)
-    add_subdirectory(src/parsers/donor/duckdb)
+    add_subdirectory(src/parsers/compatibility/duckdb)
   endif()
 endif()
 
-if(SB_BUILD_CLICKHOUSE_PARSER_WORKER OR SB_BUILD_CLICKHOUSE_PARSER_WORKER_TESTS OR SB_BUILD_SBU_CLICKHOUSE_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_CLICKHOUSE_PARSER_WORKER OR SB_BUILD_CLICKHOUSE_PARSER_WORKER_TESTS OR SB_BUILD_SBU_CLICKHOUSE_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_clickhouse_parser_pipeline)
-    add_subdirectory(src/parsers/donor/clickhouse)
+    add_subdirectory(src/parsers/compatibility/clickhouse)
   endif()
 endif()
 
-if(SB_BUILD_TIDB_PARSER_WORKER OR SB_BUILD_TIDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_TIDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_TIDB_PARSER_WORKER OR SB_BUILD_TIDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_TIDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_tidb_parser_pipeline)
-    add_subdirectory(src/parsers/donor/tidb)
+    add_subdirectory(src/parsers/compatibility/tidb)
   endif()
 endif()
 
-if(SB_BUILD_VITESS_PARSER_WORKER OR SB_BUILD_VITESS_PARSER_WORKER_TESTS OR SB_BUILD_SBU_VITESS_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_VITESS_PARSER_WORKER OR SB_BUILD_VITESS_PARSER_WORKER_TESTS OR SB_BUILD_SBU_VITESS_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_vitess_parser_pipeline)
-    add_subdirectory(src/parsers/donor/vitess)
+    add_subdirectory(src/parsers/compatibility/vitess)
   endif()
 endif()
 
-if(SB_BUILD_COCKROACHDB_PARSER_WORKER OR SB_BUILD_COCKROACHDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_COCKROACHDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_COCKROACHDB_PARSER_WORKER OR SB_BUILD_COCKROACHDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_COCKROACHDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_cockroachdb_parser_pipeline)
-    add_subdirectory(src/parsers/donor/cockroachdb)
+    add_subdirectory(src/parsers/compatibility/cockroachdb)
   endif()
 endif()
 
-if(SB_BUILD_YUGABYTEDB_PARSER_WORKER OR SB_BUILD_YUGABYTEDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_YUGABYTEDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_YUGABYTEDB_PARSER_WORKER OR SB_BUILD_YUGABYTEDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_YUGABYTEDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_yugabytedb_parser_pipeline)
-    add_subdirectory(src/parsers/donor/yugabytedb)
+    add_subdirectory(src/parsers/compatibility/yugabytedb)
   endif()
 endif()
 
-if(SB_BUILD_CASSANDRA_PARSER_WORKER OR SB_BUILD_CASSANDRA_PARSER_WORKER_TESTS OR SB_BUILD_SBU_CASSANDRA_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_CASSANDRA_PARSER_WORKER OR SB_BUILD_CASSANDRA_PARSER_WORKER_TESTS OR SB_BUILD_SBU_CASSANDRA_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_cassandra_parser_pipeline)
-    add_subdirectory(src/parsers/donor/cassandra)
+    add_subdirectory(src/parsers/compatibility/cassandra)
   endif()
 endif()
 
-if(SB_BUILD_MONGODB_PARSER_WORKER OR SB_BUILD_MONGODB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_MONGODB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_MONGODB_PARSER_WORKER OR SB_BUILD_MONGODB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_MONGODB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_mongodb_parser_pipeline)
-    add_subdirectory(src/parsers/donor/mongodb)
+    add_subdirectory(src/parsers/compatibility/mongodb)
   endif()
 endif()
 
-if(SB_BUILD_REDIS_PARSER_WORKER OR SB_BUILD_REDIS_PARSER_WORKER_TESTS OR SB_BUILD_SBU_REDIS_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_REDIS_PARSER_WORKER OR SB_BUILD_REDIS_PARSER_WORKER_TESTS OR SB_BUILD_SBU_REDIS_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_redis_parser_pipeline)
-    add_subdirectory(src/parsers/donor/redis)
+    add_subdirectory(src/parsers/compatibility/redis)
   endif()
 endif()
 
-if(SB_BUILD_OPENSEARCH_SQL_PPL_PARSER_WORKER OR SB_BUILD_OPENSEARCH_SQL_PPL_PARSER_WORKER_TESTS OR SB_BUILD_SBU_OPENSEARCH_SQL_PPL_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_OPENSEARCH_SQL_PPL_PARSER_WORKER OR SB_BUILD_OPENSEARCH_SQL_PPL_PARSER_WORKER_TESTS OR SB_BUILD_SBU_OPENSEARCH_SQL_PPL_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_opensearch_sql_ppl_parser_pipeline)
-    add_subdirectory(src/parsers/donor/opensearch_sql_ppl)
+    add_subdirectory(src/parsers/compatibility/opensearch_sql_ppl)
   endif()
 endif()
 
-if(SB_BUILD_OPENSEARCH_PARSER_WORKER OR SB_BUILD_OPENSEARCH_PARSER_WORKER_TESTS OR SB_BUILD_SBU_OPENSEARCH_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_OPENSEARCH_PARSER_WORKER OR SB_BUILD_OPENSEARCH_PARSER_WORKER_TESTS OR SB_BUILD_SBU_OPENSEARCH_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_opensearch_parser_pipeline)
-    add_subdirectory(src/parsers/donor/opensearch)
+    add_subdirectory(src/parsers/compatibility/opensearch)
   endif()
 endif()
 
-if(SB_BUILD_NEO4J_PARSER_WORKER OR SB_BUILD_NEO4J_PARSER_WORKER_TESTS OR SB_BUILD_SBU_NEO4J_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_NEO4J_PARSER_WORKER OR SB_BUILD_NEO4J_PARSER_WORKER_TESTS OR SB_BUILD_SBU_NEO4J_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_neo4j_parser_pipeline)
-    add_subdirectory(src/parsers/donor/neo4j)
+    add_subdirectory(src/parsers/compatibility/neo4j)
   endif()
 endif()
 
-if(SB_BUILD_INFLUXDB_PARSER_WORKER OR SB_BUILD_INFLUXDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_INFLUXDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_INFLUXDB_PARSER_WORKER OR SB_BUILD_INFLUXDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_INFLUXDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_influxdb_parser_pipeline)
-    add_subdirectory(src/parsers/donor/influxdb)
+    add_subdirectory(src/parsers/compatibility/influxdb)
   endif()
 endif()
 
-if(SB_BUILD_MILVUS_PARSER_WORKER OR SB_BUILD_MILVUS_PARSER_WORKER_TESTS OR SB_BUILD_SBU_MILVUS_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_MILVUS_PARSER_WORKER OR SB_BUILD_MILVUS_PARSER_WORKER_TESTS OR SB_BUILD_SBU_MILVUS_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_milvus_parser_pipeline)
-    add_subdirectory(src/parsers/donor/milvus)
+    add_subdirectory(src/parsers/compatibility/milvus)
   endif()
 endif()
 
-if(SB_BUILD_DOLT_PARSER_WORKER OR SB_BUILD_DOLT_PARSER_WORKER_TESTS OR SB_BUILD_SBU_DOLT_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_DOLT_PARSER_WORKER OR SB_BUILD_DOLT_PARSER_WORKER_TESTS OR SB_BUILD_SBU_DOLT_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_dolt_parser_pipeline)
-    add_subdirectory(src/parsers/donor/dolt)
+    add_subdirectory(src/parsers/compatibility/dolt)
   endif()
 endif()
 
-if(SB_BUILD_APACHE_IGNITE_PARSER_WORKER OR SB_BUILD_APACHE_IGNITE_PARSER_WORKER_TESTS OR SB_BUILD_SBU_APACHE_IGNITE_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_APACHE_IGNITE_PARSER_WORKER OR SB_BUILD_APACHE_IGNITE_PARSER_WORKER_TESTS OR SB_BUILD_SBU_APACHE_IGNITE_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_apache_ignite_parser_pipeline)
-    add_subdirectory(src/parsers/donor/apache_ignite)
+    add_subdirectory(src/parsers/compatibility/apache_ignite)
   endif()
 endif()
 
-if(SB_BUILD_TIKV_PARSER_WORKER OR SB_BUILD_TIKV_PARSER_WORKER_TESTS OR SB_BUILD_SBU_TIKV_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_TIKV_PARSER_WORKER OR SB_BUILD_TIKV_PARSER_WORKER_TESTS OR SB_BUILD_SBU_TIKV_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_tikv_parser_pipeline)
-    add_subdirectory(src/parsers/donor/tikv)
+    add_subdirectory(src/parsers/compatibility/tikv)
   endif()
 endif()
 
-if(SB_BUILD_FOUNDATIONDB_PARSER_WORKER OR SB_BUILD_FOUNDATIONDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_FOUNDATIONDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_FOUNDATIONDB_PARSER_WORKER OR SB_BUILD_FOUNDATIONDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_FOUNDATIONDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_foundationdb_parser_pipeline)
-    add_subdirectory(src/parsers/donor/foundationdb)
+    add_subdirectory(src/parsers/compatibility/foundationdb)
   endif()
 endif()
 
-if(SB_BUILD_IMMUDB_PARSER_WORKER OR SB_BUILD_IMMUDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_IMMUDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_IMMUDB_PARSER_WORKER OR SB_BUILD_IMMUDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_IMMUDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_immudb_parser_pipeline)
-    add_subdirectory(src/parsers/donor/immudb)
+    add_subdirectory(src/parsers/compatibility/immudb)
   endif()
 endif()
 
-if(SB_BUILD_XTDB_PARSER_WORKER OR SB_BUILD_XTDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_XTDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS)
+if(SB_BUILD_XTDB_PARSER_WORKER OR SB_BUILD_XTDB_PARSER_WORKER_TESTS OR SB_BUILD_SBU_XTDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS)
   if(NOT TARGET sbl_xtdb_parser_pipeline)
-    add_subdirectory(src/parsers/donor/xtdb)
+    add_subdirectory(src/parsers/compatibility/xtdb)
   endif()
 endif()
 
@@ -3392,99 +3387,99 @@ if(SB_BUILD_SBU_FIREBIRD_PARSER_SUPPORT AND NOT TARGET sbu_firebird_parser_suppo
   add_subdirectory(src/udr/sbu_firebird_parser_support)
 endif()
 
-if((SB_BUILD_SBU_MYSQL_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_mysql_parser_support)
+if((SB_BUILD_SBU_MYSQL_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_mysql_parser_support)
   add_subdirectory(src/udr/sbu_mysql_parser_support)
 endif()
 
-if((SB_BUILD_SBU_POSTGRESQL_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_postgresql_parser_support)
+if((SB_BUILD_SBU_POSTGRESQL_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_postgresql_parser_support)
   add_subdirectory(src/udr/sbu_postgresql_parser_support)
 endif()
 
-if((SB_BUILD_SBU_SQLITE_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_sqlite_parser_support)
+if((SB_BUILD_SBU_SQLITE_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_sqlite_parser_support)
   add_subdirectory(src/udr/sbu_sqlite_parser_support)
 endif()
 
-if((SB_BUILD_SBU_MARIADB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_mariadb_parser_support)
+if((SB_BUILD_SBU_MARIADB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_mariadb_parser_support)
   add_subdirectory(src/udr/sbu_mariadb_parser_support)
 endif()
 
-if((SB_BUILD_SBU_DUCKDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_duckdb_parser_support)
+if((SB_BUILD_SBU_DUCKDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_duckdb_parser_support)
   add_subdirectory(src/udr/sbu_duckdb_parser_support)
 endif()
 
-if((SB_BUILD_SBU_CLICKHOUSE_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_clickhouse_parser_support)
+if((SB_BUILD_SBU_CLICKHOUSE_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_clickhouse_parser_support)
   add_subdirectory(src/udr/sbu_clickhouse_parser_support)
 endif()
 
-if((SB_BUILD_SBU_TIDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_tidb_parser_support)
+if((SB_BUILD_SBU_TIDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_tidb_parser_support)
   add_subdirectory(src/udr/sbu_tidb_parser_support)
 endif()
 
-if((SB_BUILD_SBU_VITESS_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_vitess_parser_support)
+if((SB_BUILD_SBU_VITESS_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_vitess_parser_support)
   add_subdirectory(src/udr/sbu_vitess_parser_support)
 endif()
 
-if((SB_BUILD_SBU_COCKROACHDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_cockroachdb_parser_support)
+if((SB_BUILD_SBU_COCKROACHDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_cockroachdb_parser_support)
   add_subdirectory(src/udr/sbu_cockroachdb_parser_support)
 endif()
 
-if((SB_BUILD_SBU_YUGABYTEDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_yugabytedb_parser_support)
+if((SB_BUILD_SBU_YUGABYTEDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_yugabytedb_parser_support)
   add_subdirectory(src/udr/sbu_yugabytedb_parser_support)
 endif()
 
-if((SB_BUILD_SBU_CASSANDRA_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_cassandra_parser_support)
+if((SB_BUILD_SBU_CASSANDRA_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_cassandra_parser_support)
   add_subdirectory(src/udr/sbu_cassandra_parser_support)
 endif()
 
-if((SB_BUILD_SBU_MONGODB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_mongodb_parser_support)
+if((SB_BUILD_SBU_MONGODB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_mongodb_parser_support)
   add_subdirectory(src/udr/sbu_mongodb_parser_support)
 endif()
 
-if((SB_BUILD_SBU_REDIS_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_redis_parser_support)
+if((SB_BUILD_SBU_REDIS_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_redis_parser_support)
   add_subdirectory(src/udr/sbu_redis_parser_support)
 endif()
 
-if((SB_BUILD_SBU_OPENSEARCH_SQL_PPL_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_opensearch_sql_ppl_parser_support)
+if((SB_BUILD_SBU_OPENSEARCH_SQL_PPL_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_opensearch_sql_ppl_parser_support)
   add_subdirectory(src/udr/sbu_opensearch_sql_ppl_parser_support)
 endif()
 
-if((SB_BUILD_SBU_OPENSEARCH_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_opensearch_parser_support)
+if((SB_BUILD_SBU_OPENSEARCH_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_opensearch_parser_support)
   add_subdirectory(src/udr/sbu_opensearch_parser_support)
 endif()
 
-if((SB_BUILD_SBU_NEO4J_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_neo4j_parser_support)
+if((SB_BUILD_SBU_NEO4J_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_neo4j_parser_support)
   add_subdirectory(src/udr/sbu_neo4j_parser_support)
 endif()
 
-if((SB_BUILD_SBU_INFLUXDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_influxdb_parser_support)
+if((SB_BUILD_SBU_INFLUXDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_influxdb_parser_support)
   add_subdirectory(src/udr/sbu_influxdb_parser_support)
 endif()
 
-if((SB_BUILD_SBU_MILVUS_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_milvus_parser_support)
+if((SB_BUILD_SBU_MILVUS_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_milvus_parser_support)
   add_subdirectory(src/udr/sbu_milvus_parser_support)
 endif()
 
-if((SB_BUILD_SBU_DOLT_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_dolt_parser_support)
+if((SB_BUILD_SBU_DOLT_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_dolt_parser_support)
   add_subdirectory(src/udr/sbu_dolt_parser_support)
 endif()
 
-if((SB_BUILD_SBU_APACHE_IGNITE_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_apache_ignite_parser_support)
+if((SB_BUILD_SBU_APACHE_IGNITE_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_apache_ignite_parser_support)
   add_subdirectory(src/udr/sbu_apache_ignite_parser_support)
 endif()
 
-if((SB_BUILD_SBU_TIKV_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_tikv_parser_support)
+if((SB_BUILD_SBU_TIKV_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_tikv_parser_support)
   add_subdirectory(src/udr/sbu_tikv_parser_support)
 endif()
 
-if((SB_BUILD_SBU_FOUNDATIONDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_foundationdb_parser_support)
+if((SB_BUILD_SBU_FOUNDATIONDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_foundationdb_parser_support)
   add_subdirectory(src/udr/sbu_foundationdb_parser_support)
 endif()
 
-if((SB_BUILD_SBU_IMMUDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_immudb_parser_support)
+if((SB_BUILD_SBU_IMMUDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_immudb_parser_support)
   add_subdirectory(src/udr/sbu_immudb_parser_support)
 endif()
 
-if((SB_BUILD_SBU_XTDB_PARSER_SUPPORT OR SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_xtdb_parser_support)
+if((SB_BUILD_SBU_XTDB_PARSER_SUPPORT OR SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS) AND NOT TARGET sbu_xtdb_parser_support)
   add_subdirectory(src/udr/sbu_xtdb_parser_support)
 endif()
 
@@ -3492,29 +3487,29 @@ if(SB_BUILD_FIREBIRD_PARSER_WORKER_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}
   add_subdirectory(tests/firebird_parser_worker)
 endif()
 
-if(SB_BUILD_DONOR_SQL_PARSER_FIRST_TRANCHE_TESTS
-   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/donor_sql_parser_first_tranche/CMakeLists.txt")
+if(SB_BUILD_COMPAT_SQL_PARSER_FIRST_TRANCHE_TESTS
+   AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/compatibility_sql_parser_first_tranche/CMakeLists.txt")
   if(NOT TARGET sbl_firebird_parser_pipeline)
-    add_subdirectory(src/parsers/donor/firebird)
+    add_subdirectory(src/parsers/compatibility/firebird)
   endif()
   if(NOT TARGET sbu_firebird_parser_support)
     add_subdirectory(src/udr/sbu_firebird_parser_support)
   endif()
-  foreach(sb_donor_sql_parser_target
+  foreach(sb_compatibility_sql_parser_target
       sqlite mariadb duckdb clickhouse
       tidb vitess cockroachdb yugabytedb
       cassandra mongodb redis opensearch_sql_ppl
       opensearch neo4j influxdb milvus
       dolt apache_ignite tikv foundationdb
       immudb xtdb)
-    if(NOT TARGET sbl_${sb_donor_sql_parser_target}_parser_pipeline)
-      add_subdirectory(src/parsers/donor/${sb_donor_sql_parser_target})
+    if(NOT TARGET sbl_${sb_compatibility_sql_parser_target}_parser_pipeline)
+      add_subdirectory(src/parsers/compatibility/${sb_compatibility_sql_parser_target})
     endif()
-    if(NOT TARGET sbu_${sb_donor_sql_parser_target}_parser_support)
-      add_subdirectory(src/udr/sbu_${sb_donor_sql_parser_target}_parser_support)
+    if(NOT TARGET sbu_${sb_compatibility_sql_parser_target}_parser_support)
+      add_subdirectory(src/udr/sbu_${sb_compatibility_sql_parser_target}_parser_support)
     endif()
   endforeach()
-  add_subdirectory(tests/donor_sql_parser_first_tranche)
+  add_subdirectory(tests/compatibility_sql_parser_first_tranche)
 endif()
 
 if(SB_BUILD_DATABASE_LIFECYCLE_TESTS)
@@ -3528,19 +3523,19 @@ if(SB_BUILD_DATABASE_LIFECYCLE_TESTS)
     add_subdirectory(src/udr/sbu_sbsql_parser_support)
   endif()
   if(NOT TARGET sbl_firebird_parser_pipeline)
-    add_subdirectory(src/parsers/donor/firebird)
+    add_subdirectory(src/parsers/compatibility/firebird)
   endif()
   if(NOT TARGET sbu_firebird_parser_support)
     add_subdirectory(src/udr/sbu_firebird_parser_support)
   endif()
   if(NOT TARGET sbl_mysql_parser_pipeline)
-    add_subdirectory(src/parsers/donor/mysql)
+    add_subdirectory(src/parsers/compatibility/mysql)
   endif()
   if(NOT TARGET sbu_mysql_parser_support)
     add_subdirectory(src/udr/sbu_mysql_parser_support)
   endif()
   if(NOT TARGET sbl_postgresql_parser_pipeline)
-    add_subdirectory(src/parsers/donor/postgresql)
+    add_subdirectory(src/parsers/compatibility/postgresql)
   endif()
   if(NOT TARGET sbu_postgresql_parser_support)
     add_subdirectory(src/udr/sbu_postgresql_parser_support)
@@ -3619,23 +3614,23 @@ if(SB_BUILD_AI_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/ai/CMakeLists.txt")
   add_subdirectory(ai)
 endif()
 
-option(SB_BUILD_DONOR_REGRESSION_GATES
-  "Build donor compatibility profile and regression-import CTest gates"
+option(SB_BUILD_COMPAT_REGRESSION_GATES
+  "Build compatibility compatibility profile and regression-import CTest gates"
   OFF)
 if(SB_BUILD_TESTS)
-  set(SB_BUILD_DONOR_REGRESSION_GATES ON CACHE BOOL
-    "Build donor compatibility profile and regression-import CTest gates" FORCE)
+  set(SB_BUILD_COMPAT_REGRESSION_GATES ON CACHE BOOL
+    "Build compatibility compatibility profile and regression-import CTest gates" FORCE)
 endif()
-if(SB_BUILD_DONOR_REGRESSION_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/donor_regression/CMakeLists.txt")
-  add_subdirectory(tests/donor_regression)
+if(SB_BUILD_COMPAT_REGRESSION_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_regression/CMakeLists.txt")
+  add_subdirectory(tests/reference_regression)
 endif()
 
 option(SB_BUILD_SBLR_SURFACE_GUARDRAIL_GATES
-  "Build donor/SBLR surface public guardrail inventory CTest gates"
+  "Build compatibility/SBLR surface public guardrail inventory CTest gates"
   OFF)
 if(SB_BUILD_TESTS OR SB_BUILD_PUBLIC_RELEASE_CORRECTNESS)
   set(SB_BUILD_SBLR_SURFACE_GUARDRAIL_GATES ON CACHE BOOL
-    "Build donor/SBLR surface public guardrail inventory CTest gates" FORCE)
+    "Build compatibility/SBLR surface public guardrail inventory CTest gates" FORCE)
 endif()
 if(SB_BUILD_SBLR_SURFACE_GUARDRAIL_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/sblr_surface/CMakeLists.txt")
   add_subdirectory(tests/sblr_surface)
@@ -3739,60 +3734,6 @@ sb_public_brand_target(sbp_sbsql "SBParser" "ScratchBird Core Parser" "runtime")
 sb_public_brand_target(sbl_sbsql_parser_pipeline "SBParser_pipeline" "ScratchBird Core Parser Pipeline" "runtime")
 sb_public_brand_target(sbl_sbsql_parser_worker_core "SBParser_core" "ScratchBird Core Parser Worker Core" "runtime")
 sb_public_brand_target(sbu_sbsql_parser_support "SBParser_udr" "ScratchBird Core Parser UDR" "runtime")
-
-set(SB_PUBLIC_DONOR_PARSER_BRANDS
-  "firebird|SB_FBSQL_Parser|ScratchBird Firebird Parser"
-  "mysql|SB_MYSQL_Parser|ScratchBird MySQL Parser"
-  "postgresql|SB_PGSQL_Parser|ScratchBird PostgreSQL Parser"
-  "sqlite|SB_SQLITE_Parser|ScratchBird SQLite Parser"
-  "mariadb|SB_MARIADB_Parser|ScratchBird MariaDB Parser"
-  "duckdb|SB_DUCKDB_Parser|ScratchBird DuckDB Parser"
-  "clickhouse|SB_CLICKHOUSE_Parser|ScratchBird ClickHouse Parser"
-  "tidb|SB_TIDB_Parser|ScratchBird TiDB Parser"
-  "vitess|SB_VITESS_Parser|ScratchBird Vitess Parser"
-  "cockroachdb|SB_COCKROACHDB_Parser|ScratchBird CockroachDB Parser"
-  "yugabytedb|SB_YUGABYTEDB_Parser|ScratchBird YugabyteDB Parser"
-  "cassandra|SB_CASSANDRA_Parser|ScratchBird Cassandra Parser"
-  "mongodb|SB_MONGODB_Parser|ScratchBird MongoDB Parser"
-  "redis|SB_REDIS_Parser|ScratchBird Redis Parser"
-  "opensearch_sql_ppl|SB_OPENSEARCH_SQL_PPL_Parser|ScratchBird OpenSearch SQL/PPL Parser"
-  "opensearch|SB_OPENSEARCH_Parser|ScratchBird OpenSearch REST Parser"
-  "neo4j|SB_NEO4J_Parser|ScratchBird Neo4j Parser"
-  "influxdb|SB_INFLUXDB_Parser|ScratchBird InfluxDB Parser"
-  "milvus|SB_MILVUS_Parser|ScratchBird Milvus Parser"
-  "dolt|SB_DOLT_Parser|ScratchBird Dolt Parser"
-  "apache_ignite|SB_APACHE_IGNITE_Parser|ScratchBird Apache Ignite Parser"
-  "tikv|SB_TIKV_Parser|ScratchBird TiKV Parser"
-  "foundationdb|SB_FOUNDATIONDB_Parser|ScratchBird FoundationDB Parser"
-  "immudb|SB_IMMUDB_Parser|ScratchBird immudb Parser"
-  "xtdb|SB_XTDB_Parser|ScratchBird XTDB Parser"
-)
-foreach(sb_public_donor_parser_brand IN LISTS SB_PUBLIC_DONOR_PARSER_BRANDS)
-  string(REPLACE "|" ";" sb_public_donor_parser_fields "${sb_public_donor_parser_brand}")
-  list(GET sb_public_donor_parser_fields 0 sb_public_donor_parser_target)
-  list(GET sb_public_donor_parser_fields 1 sb_public_donor_parser_short_brand)
-  list(GET sb_public_donor_parser_fields 2 sb_public_donor_parser_full_name)
-  sb_public_brand_target(
-    "sbp_${sb_public_donor_parser_target}"
-    "${sb_public_donor_parser_short_brand}"
-    "${sb_public_donor_parser_full_name}"
-    "runtime")
-  sb_public_brand_target(
-    "sbl_${sb_public_donor_parser_target}_parser_pipeline"
-    "${sb_public_donor_parser_short_brand}_pipeline"
-    "${sb_public_donor_parser_full_name} Pipeline"
-    "runtime")
-  sb_public_brand_target(
-    "sbu_${sb_public_donor_parser_target}_parser_support"
-    "${sb_public_donor_parser_short_brand}_udr"
-    "${sb_public_donor_parser_full_name} UDR"
-    "runtime")
-endforeach()
-unset(sb_public_donor_parser_brand)
-unset(sb_public_donor_parser_fields)
-unset(sb_public_donor_parser_target)
-unset(sb_public_donor_parser_short_brand)
-unset(sb_public_donor_parser_full_name)
 
 sb_public_brand_target(sb_isql "SBsql" "ScratchBird SQL" "cli")
 sb_public_brand_target(sb_admin "SBadm" "ScratchBird Administrator" "cli")

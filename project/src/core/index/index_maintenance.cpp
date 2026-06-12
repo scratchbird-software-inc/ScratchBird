@@ -166,7 +166,7 @@ IndexDmlMaintenanceStrategy ClassifyIndexDmlMaintenanceStrategy(
         "index.dml_maintenance.family_not_admitted",
         "family is not accepted as a physical implementation");
   }
-  if (descriptor->persistence == IndexPersistenceClass::donor_emulated ||
+  if (descriptor->persistence == IndexPersistenceClass::reference_emulated ||
       descriptor->persistence == IndexPersistenceClass::policy_blocked ||
       capability->blocker != IndexFamilyPhysicalCapabilityBlocker::none) {
     return RefuseStrategy(
@@ -284,7 +284,7 @@ IndexDmlMaintenanceStrategy ClassifyIndexDmlMaintenanceStrategy(
   AddEvidence(&strategy, "benchmark_clean",
               BoolText(strategy.benchmark_clean));
   AddEvidence(&strategy, "transaction_finality_authority", "false");
-  AddEvidence(&strategy, "parser_or_donor_authority", "false");
+  AddEvidence(&strategy, "parser_or_reference_authority", "false");
   return strategy;
 }
 

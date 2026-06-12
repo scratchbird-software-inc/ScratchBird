@@ -7,7 +7,7 @@ Date: 2026-05-08
 
 ## Boundary Rule
 
-ScratchBird engine execution remains SBLR/internal-procedure only. SQL text, donor syntax, parser ASTs, wire protocol frames, and unresolved names must terminate in parser, parser-support UDR, server admission, or API bridge layers before engine execution.
+ScratchBird engine execution remains SBLR/internal-procedure only. SQL text, reference syntax, parser ASTs, wire protocol frames, and unresolved names must terminate in parser, parser-support UDR, server admission, or API bridge layers before engine execution.
 
 Final invariant wording:
 

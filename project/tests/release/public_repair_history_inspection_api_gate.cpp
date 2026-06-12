@@ -392,10 +392,10 @@ bool EngineInspectionProof(const Fixture& fixture,
               "missing repair ledger path should not fabricate repair events") && ok;
 
   auto authority_drift = request;
-  authority_drift.inspection.parser_or_donor_authority = true;
+  authority_drift.inspection.parser_or_reference_authority = true;
   const auto drift = api::EngineInspectRepairHistory(authority_drift);
   ok = Expect(!drift.ok,
-              "engine inspection should reject parser or donor authority") && ok;
+              "engine inspection should reject parser or reference authority") && ok;
   ok = Expect(!drift.diagnostics.empty() &&
                   drift.diagnostics.front().code ==
                       "SB-REPAIR-HISTORY-AUTHORITY-REFUSED",

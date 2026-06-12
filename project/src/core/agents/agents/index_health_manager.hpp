@@ -51,7 +51,7 @@ struct IndexHealthManagerSnapshot {
   bool index_visible = true;
   bool index_unique_or_constraint_backed = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
 };
 
 struct IndexHealthManagerEvidenceField {

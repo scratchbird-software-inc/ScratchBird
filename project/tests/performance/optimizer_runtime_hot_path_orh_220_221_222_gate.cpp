@@ -236,7 +236,7 @@ void RequireIndexedOperatorEvidence(
                                 "security_recheck",
                                 "required") &&
               HasEngineEvidence(result.evidence,
-                                "parser_or_donor_authority",
+                                "parser_or_reference_authority",
                                 "false") &&
               HasEngineEvidence(result.evidence,
                                 "index_or_cache_finality_authority",
@@ -432,15 +432,15 @@ void PhysicalJoinSuiteConsumesNonIndexOperatorsAndBlocksIndexClaims() {
               !hash_select->supports_ordered_range &&
               hash_select->requires_exact_recheck,
           "ORH-220 hash route capability drifted");
-  const auto* donor_select = idx::FindBuiltinIndexRouteCapabilityState(
+  const auto* reference_select = idx::FindBuiltinIndexRouteCapabilityState(
       idx::IndexRouteKind::sql_select,
-      idx::IndexFamily::donor_emulated);
+      idx::IndexFamily::reference_emulated);
   const auto* policy_select = idx::FindBuiltinIndexRouteCapabilityState(
       idx::IndexRouteKind::sql_select,
       idx::IndexFamily::policy_blocked);
-  Require(donor_select != nullptr && !donor_select->route_complete() &&
+  Require(reference_select != nullptr && !reference_select->route_complete() &&
               policy_select != nullptr && !policy_select->route_complete(),
-          "ORH-220 donor/policy route capabilities became authoritative");
+          "ORH-220 reference/policy route capabilities became authoritative");
 
   PhysicalIndexFixture physical;
   auto nested = IndexedRequest(
@@ -535,16 +535,16 @@ void PhysicalJoinSuiteConsumesNonIndexOperatorsAndBlocksIndexClaims() {
               missing_mga_result.diagnostic_code ==
                   "SB-IRC060-MGA-PROOF-REQUIRED",
           "ORH-220 missing MGA proof did not fail closed");
-  auto unsafe_donor = IndexedRequest(
+  auto unsafe_reference = IndexedRequest(
       exec::IndexedPhysicalOperatorKind::indexed_nested_loop,
       &physical.tree);
-  unsafe_donor.outer_probes.push_back(point_probe);
-  unsafe_donor.parser_or_donor_authority = true;
-  const auto donor_result = exec::ExecuteIndexedPhysicalOperator(unsafe_donor);
-  Require(!donor_result.ok &&
-              donor_result.diagnostic_code ==
-                  "SB-IRC060-PARSER-DONOR-AUTHORITY-FORBIDDEN",
-          "ORH-220 parser/donor authority did not fail closed");
+  unsafe_reference.outer_probes.push_back(point_probe);
+  unsafe_reference.parser_or_reference_authority = true;
+  const auto reference_result = exec::ExecuteIndexedPhysicalOperator(unsafe_reference);
+  Require(!reference_result.ok &&
+              reference_result.diagnostic_code ==
+                  "SB-IRC060-PARSER-REFERENCE-AUTHORITY-FORBIDDEN",
+          "ORH-220 parser/reference authority did not fail closed");
 }
 
 agents::ResourceGovernanceQuotaVector Quotas(std::int64_t value) {

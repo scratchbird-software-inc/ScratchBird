@@ -50,7 +50,7 @@ enum class SpecializedPersistentProviderClosureStatus : u32 {
   admitted_specialized_provider_evidence = 1,
   unsupported_family = 2,
   already_closed_by_prior_slice = 3,
-  donor_emulated_non_runtime = 4,
+  reference_emulated_non_runtime = 4,
   policy_blocked_non_runtime = 5,
   cluster_external_provider_only = 6,
   provider_admission_not_admitted = 7,
@@ -78,7 +78,7 @@ struct SpecializedProviderAuthorityBoundary {
   bool security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool provider_authority = false;
   bool benchmark_authority = false;
@@ -98,7 +98,7 @@ struct SpecializedProviderSuccessorClaims {
   bool ceic_041_crash_corruption_matrix_claimed = false;
   bool ceic_042_readiness_drift_claimed = false;
   bool all_index_readiness_claimed = false;
-  bool donor_dominance_claimed = false;
+  bool reference_dominance_claimed = false;
   bool enterprise_readiness_claimed = false;
 };
 
@@ -213,7 +213,7 @@ struct SpecializedPersistentProviderClosureRequest {
   SpecializedExactFallbackRecheckProof exact_fallback_recheck;
   SpecializedProviderAuthorityBoundary authority_boundary;
   SpecializedProviderSuccessorClaims successor_claims;
-  bool donor_local_participation = false;
+  bool reference_local_participation = false;
   bool policy_local_participation = false;
   bool cluster_local_participation = false;
   bool durable_provider_evidence_claimed = true;
@@ -230,7 +230,7 @@ struct SpecializedPersistentProviderClosureResult {
   bool ceic_041_crash_corruption_matrix_claimed = false;
   bool ceic_042_readiness_drift_claimed = false;
   bool all_index_readiness_claimed = false;
-  bool donor_dominance_claimed = false;
+  bool reference_dominance_claimed = false;
   bool enterprise_readiness_claimed = false;
   SpecializedPersistentProviderClosureStatus closure_status =
       SpecializedPersistentProviderClosureStatus::

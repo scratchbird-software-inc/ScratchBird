@@ -106,7 +106,7 @@ NativeSblrSpecializationResult Refuse(std::string code,
   Add(&result.evidence, "native_sblr.fail_closed=true");
   Add(&result.evidence, "native_sblr.accelerator_only=true");
   Add(&result.evidence, "mga_finality_authority=engine_transaction_inventory");
-  Add(&result.evidence, "parser_or_donor_authority=false");
+  Add(&result.evidence, "parser_or_reference_authority=false");
   Add(&result.evidence, "provider_transaction_finality_authority=false");
   Add(&result.evidence, "provider_visibility_authority=false");
   Add(&result.evidence, "provider_security_policy_authority=false");
@@ -134,7 +134,7 @@ NativeSblrSpecializationResult ScalarFallback(
   Add(&result.evidence, "native_sblr.scalar_reference=exact");
   Add(&result.evidence, "native_sblr.accelerator_only=true");
   Add(&result.evidence, "mga_finality_authority=engine_transaction_inventory");
-  Add(&result.evidence, "parser_or_donor_authority=false");
+  Add(&result.evidence, "parser_or_reference_authority=false");
   Add(&result.evidence, "provider_transaction_finality_authority=false");
   Add(&result.evidence, "provider_visibility_authority=false");
   Add(&result.evidence, "provider_security_policy_authority=false");
@@ -170,7 +170,7 @@ NativeSblrSpecializationResult NativeSuccess(
   Add(&result.evidence, "native_sblr.scalar_equivalence=verified");
   Add(&result.evidence, "native_sblr.accelerator_only=true");
   Add(&result.evidence, "mga_finality_authority=engine_transaction_inventory");
-  Add(&result.evidence, "parser_or_donor_authority=false");
+  Add(&result.evidence, "parser_or_reference_authority=false");
   Add(&result.evidence, "provider_transaction_finality_authority=false");
   Add(&result.evidence, "provider_visibility_authority=false");
   Add(&result.evidence, "provider_security_policy_authority=false");
@@ -217,7 +217,7 @@ bool UnsafeProviderAuthority(const NativeSblrProviderManifest& provider) {
          provider.claims_visibility_authority ||
          provider.claims_security_policy_authority ||
          provider.claims_redaction_policy_authority ||
-         provider.claims_parser_or_donor_authority;
+         provider.claims_parser_or_reference_authority;
 }
 
 bool HotEnough(const NativeSblrHotness& hotness) {

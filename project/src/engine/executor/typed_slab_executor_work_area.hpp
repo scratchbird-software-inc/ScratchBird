@@ -26,7 +26,7 @@ struct ExecutorTypedSlabWorkAreaRequest {
   u64 frame_count = 0;
   bool engine_mga_snapshot_bound = true;
   bool transaction_inventory_authoritative = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool memory_finality_or_visibility_authority = false;
 };
 

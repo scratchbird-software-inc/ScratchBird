@@ -44,4 +44,4 @@ The conformance gate `project/tests/database_lifecycle/threat_model_conformance.
 
 `project/tests/database_lifecycle/threat_model_static.py` validates the required labels, diagnostics, redaction markers, service-file private mode evidence, and absence of threat-gate shortcut markers in P13T-owned files.
 
-No SQLite/PRAGMA/donor shortcut behavior is introduced. No parser, listener, driver, or donor state is accepted as finality or security authority.
+No SQLite/PRAGMA/reference shortcut behavior is introduced. No parser, listener, driver, or reference state is accepted as finality or security authority.

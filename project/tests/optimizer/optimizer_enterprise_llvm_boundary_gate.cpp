@@ -139,12 +139,12 @@ void TestForbiddenAuthorityInputsRefuse() {
               parser_result.diagnostic_detail == "parser_authority_forbidden",
           "parser AST authority was accepted by LLVM compile boundary");
 
-  auto donor = BaseRequest();
-  donor.module_payload = "sblr:predicate:donor_plan";
-  const auto donor_result = native::CompileNativeUnit(donor);
-  Require(!donor_result.ok &&
-              donor_result.diagnostic_detail == "donor_authority_forbidden",
-          "donor authority was accepted by LLVM compile boundary");
+  auto reference = BaseRequest();
+  reference.module_payload = "sblr:predicate:reference_plan";
+  const auto reference_result = native::CompileNativeUnit(reference);
+  Require(!reference_result.ok &&
+              reference_result.diagnostic_detail == "reference_authority_forbidden",
+          "reference authority was accepted by LLVM compile boundary");
 
   auto protocol = BaseRequest();
   protocol.module_payload = "sblr:protocol_frame:predicate";

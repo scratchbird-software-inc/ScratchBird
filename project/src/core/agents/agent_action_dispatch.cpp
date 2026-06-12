@@ -134,7 +134,7 @@ DurableAgentActionRecord BuildActionRecord(
   record.compensation_evidence_uuid = compensation_evidence_uuid;
   record.parser_authority = authority.parser_authority;
   record.client_authority = authority.client_authority;
-  record.donor_authority = authority.donor_authority;
+  record.reference_authority = authority.reference_authority;
   record.sidecar_authority = authority.sidecar_authority;
   return record;
 }
@@ -215,7 +215,7 @@ const char* AgentActionAuthoritySourceName(AgentActionAuthoritySource source) {
 AgentRuntimeStatus ValidateAgentActionAuthorityProvenance(
     const AgentActionAuthorityProvenance& provenance) {
   if (provenance.parser_authority || provenance.client_authority ||
-      provenance.donor_authority || provenance.sidecar_authority) {
+      provenance.reference_authority || provenance.sidecar_authority) {
     return AgentError("SB_AGENT_ACTION_AUTHORITY.UNTRUSTED_SOURCE",
                       AgentActionAuthoritySourceName(provenance.source));
   }
@@ -719,7 +719,7 @@ AgentActionDispatchResult DispatchAgentAction(
             contract->operator_approval_required,
         request.authority.parser_authority,
         request.authority.client_authority,
-        request.authority.donor_authority,
+        request.authority.reference_authority,
         request.authority.sidecar_authority);
     const auto safety_status =
         ValidateAgentActionSafetyEnvelope(safety_envelope);

@@ -282,24 +282,24 @@ def validate_authority_boundary(payload: dict[str, Any], component: str) -> None
     boundary = payload.get("authority_boundary")
     if isinstance(boundary, dict):
         require(boundary.get("parser_finality_authority") is False, f"{component} parser finality authority drifted")
-        require(boundary.get("donor_finality_authority") is False, f"{component} donor finality authority drifted")
+        require(boundary.get("reference_finality_authority") is False, f"{component} reference finality authority drifted")
         require(boundary.get("finality_visibility_authority") == "engine_mga", f"{component} engine MGA authority missing")
-        if "donor_engine_execution" in boundary:
-            require(boundary.get("donor_engine_execution") is False, f"{component} donor execution drifted")
+        if "reference_engine_execution" in boundary:
+            require(boundary.get("reference_engine_execution") is False, f"{component} reference execution drifted")
         return
     found_parser_false = False
-    found_donor_false = False
+    found_reference_false = False
     for record in walk_dicts(payload):
         if record.get("parser_finality_authority") in (False, "false"):
             found_parser_false = True
         elif "parser_finality_authority" in record:
             raise FinalGateError(f"{component} parser finality authority drifted")
-        if record.get("donor_finality_authority") in (False, "false"):
-            found_donor_false = True
-        elif "donor_finality_authority" in record:
-            raise FinalGateError(f"{component} donor finality authority drifted")
-    if found_parser_false != found_donor_false:
-        raise FinalGateError(f"{component} exposed incomplete parser/donor finality evidence")
+        if record.get("reference_finality_authority") in (False, "false"):
+            found_reference_false = True
+        elif "reference_finality_authority" in record:
+            raise FinalGateError(f"{component} reference finality authority drifted")
+    if found_parser_false != found_reference_false:
+        raise FinalGateError(f"{component} exposed incomplete parser/reference finality evidence")
 
 
 def walk_dicts(value: Any):
@@ -378,8 +378,8 @@ def build_payload(args: argparse.Namespace, work_root: Path, records: list[dict[
         "authority_boundary": {
             "finality_visibility_authority": "engine_mga",
             "parser_finality_authority": False,
-            "donor_finality_authority": False,
-            "donor_engine_execution": False,
+            "reference_finality_authority": False,
+            "reference_engine_execution": False,
         },
         "evidence_package_json": str(work_root / "evidence" / "cdp-final-regression-benchmark-gate.json"),
     }

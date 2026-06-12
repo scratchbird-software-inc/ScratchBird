@@ -94,7 +94,7 @@ bool ExpectParseCase(const ParseCase& test) {
                   Contains(result.parser_evidence_json,
                            "\"evidence_contract\":\"firebird_connection_sandbox_evidence.v1\"") &&
                   Contains(result.parser_evidence_json,
-                           "\"connection_sandbox_contract\":\"donor_connection_schema_root_v1\"") &&
+                           "\"connection_sandbox_contract\":\"reference_connection_schema_root_v1\"") &&
                   Contains(result.parser_evidence_json,
                            "\"user_object_resolution\":\"relative_to_connection_schema_root\"") &&
                   Contains(result.parser_evidence_json,
@@ -181,7 +181,7 @@ bool ExpectGbakLogicalStream(std::string_view sql,
   }
   if (!Expect(!result.scratchbird_lifecycle_api &&
                   !result.real_firebird_file_effects &&
-                  !result.donor_engine_sql_executed,
+                  !result.reference_engine_sql_executed,
               std::string("Firebird gbak logical stream claimed forbidden authority for: ") +
                   std::string(sql))) {
     return false;
@@ -211,7 +211,7 @@ bool ExpectGbakLogicalStream(std::string_view sql,
                   Contains(result.sblr_envelope,
                            "\"real_firebird_file_effects\":false") &&
                   Contains(result.sblr_envelope,
-                           "\"donor_engine_sql_executed\":false") &&
+                           "\"reference_engine_sql_executed\":false") &&
                   Contains(result.parser_evidence_json,
                            "\"parser_transaction_finality_authority\":false") &&
                   Contains(result.parser_evidence_json,

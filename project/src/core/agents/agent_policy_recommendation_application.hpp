@@ -10,7 +10,7 @@
 
 // SEARCH_KEY: AEIC_POLICY_RECOMMENDATION_APPLICATION_CONTRACT
 // Policy recommendations are consumed as durable, schema-validated advisory
-// records. They are not parser, client, donor, transaction, visibility,
+// records. They are not parser, client, reference, transaction, visibility,
 // finality, recovery, security, or automatic policy-apply authority.
 
 #include "agent_policy_schema.hpp"
@@ -46,7 +46,7 @@ struct AgentPolicyRecommendationApplicationRequest {
   bool no_auto_apply_required = true;
   bool parser_authority = false;
   bool client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool sidecar_authority = false;
   bool transaction_authority = false;
   bool visibility_authority = false;

@@ -42,7 +42,7 @@ AdaptiveCardinalityFeedbackResult Refuse(
   }
   AddEvidence(&result, "adaptive_feedback.benchmark_clean=false");
   AddEvidence(&result, "adaptive_feedback.parser_authority=false");
-  AddEvidence(&result, "adaptive_feedback.donor_authority=false");
+  AddEvidence(&result, "adaptive_feedback.reference_authority=false");
   AddEvidence(&result, "adaptive_feedback.client_authority=false");
   AddEvidence(&result, "adaptive_feedback.visibility_authority=false");
   AddEvidence(&result, "adaptive_feedback.finality_authority=false");
@@ -88,13 +88,13 @@ AdaptiveCardinalityFeedbackResult EvaluateAdaptiveCardinalityFeedback(
                   "ORH_ADAPTIVE_FEEDBACK_EXACT_FALLBACK_UNAVAILABLE",
                   "misestimate_quarantine_requires_exact_fallback");
   }
-  if (request.plan.benchmark_or_donor_dominance_claim) {
+  if (request.plan.benchmark_or_reference_dominance_claim) {
     return Refuse(request,
                   "ORH_ADAPTIVE_FEEDBACK_DOMINANCE_OVERCLAIM",
-                  "adaptive_feedback_is_not_donor_dominance");
+                  "adaptive_feedback_is_not_reference_dominance");
   }
-  if (request.authority.parser_client_or_donor_feedback_authority ||
-      request.feedback.parser_or_donor_authority ||
+  if (request.authority.parser_client_or_reference_feedback_authority ||
+      request.feedback.parser_or_reference_authority ||
       request.authority.feedback_visibility_or_finality_authority ||
       request.authority.feedback_recovery_authority ||
       !request.feedback.advisory_only) {
@@ -159,7 +159,7 @@ AdaptiveCardinalityFeedbackResult EvaluateAdaptiveCardinalityFeedback(
   AddEvidence(&result, "adaptive_feedback.result_equivalence=true");
   AddEvidence(&result, "adaptive_feedback.exact_fallback_available=true");
   AddEvidence(&result, "adaptive_feedback.parser_authority=false");
-  AddEvidence(&result, "adaptive_feedback.donor_authority=false");
+  AddEvidence(&result, "adaptive_feedback.reference_authority=false");
   AddEvidence(&result, "adaptive_feedback.client_authority=false");
   AddEvidence(&result, "adaptive_feedback.visibility_authority=false");
   AddEvidence(&result, "adaptive_feedback.finality_authority=false");

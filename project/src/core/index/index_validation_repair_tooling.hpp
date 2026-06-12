@@ -121,7 +121,7 @@ enum class IndexFamilyValidationRepairPath : u32 {
   persistent_physical = 1,
   memory_only_runtime = 2,
   memory_primary_cold_start = 3,
-  donor_semantic_mapping = 4,
+  reference_semantic_mapping = 4,
   policy_refusal = 5,
   unavailable = 6
 };
@@ -175,7 +175,7 @@ struct IndexFamilyValidationRepairResult {
   bool catalog_authority = false;
   bool parser_authority = false;
   bool provider_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool transaction_finality_authority = false;
   bool visibility_authority = false;
   bool security_authority = false;

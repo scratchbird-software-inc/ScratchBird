@@ -107,7 +107,7 @@ const char* CurrentRowMapProvenanceName(CurrentRowMapProvenance provenance) {
       return "engine_authoritative_base_rows";
     case CurrentRowMapProvenance::parser_claim: return "parser_claim";
     case CurrentRowMapProvenance::client_claim: return "client_claim";
-    case CurrentRowMapProvenance::donor_claim: return "donor_claim";
+    case CurrentRowMapProvenance::reference_claim: return "reference_claim";
     case CurrentRowMapProvenance::index_or_cache_claim:
       return "index_or_cache_claim";
     case CurrentRowMapProvenance::unknown: return "unknown";
@@ -128,10 +128,10 @@ CurrentRowMapDecision EvaluateCurrentRowMapEntry(
     const CurrentRowMapEntry& entry,
     const CurrentRowMapObservedFacts& observed) {
   auto decision = StartDecision(entry, observed);
-  if (observed.parser_client_or_donor_authority) {
+  if (observed.parser_client_or_reference_authority) {
     ++decision.counters.authority_refusals;
     return Refuse(std::move(decision),
-                  "parser_client_or_donor_authority_forbidden");
+                  "parser_client_or_reference_authority_forbidden");
   }
   if (!observed.durable_mga_inventory_proof ||
       !observed.transaction_horizon_authoritative ||

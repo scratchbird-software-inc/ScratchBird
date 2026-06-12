@@ -53,7 +53,7 @@ struct EngineFilespaceDiscoveryRequest : EngineStorageManagementRequest {
   bool parser_storage_authority = false;
   bool transaction_finality_authority = false;
   bool recovery_authority = false;
-  bool donor_or_wal_recovery_authority = false;
+  bool reference_or_wal_recovery_authority = false;
   bool mutation_requested = false;
   bool execute_quarantine_actions = false;
   bool execute_release_actions = false;
@@ -88,7 +88,7 @@ struct EngineFilespaceDiscoveryResult : EngineStorageManagementResult {
   bool parser_storage_authority = false;
   bool transaction_finality_authority = false;
   bool recovery_authority = false;
-  bool donor_or_wal_recovery_authority = false;
+  bool reference_or_wal_recovery_authority = false;
   bool private_provider_dispatch = false;
 };
 
@@ -120,7 +120,7 @@ struct EngineFilespacePackageRequest : EngineStorageManagementRequest {
   bool parser_storage_authority = false;
   bool transaction_finality_authority = false;
   bool recovery_authority = false;
-  bool donor_or_wal_recovery_authority = false;
+  bool reference_or_wal_recovery_authority = false;
   bool private_provider_dispatch_requested = false;
 };
 
@@ -141,7 +141,7 @@ struct EngineFilespacePackageResult : EngineStorageManagementResult {
   bool parser_storage_authority = false;
   bool transaction_finality_authority = false;
   bool recovery_authority = false;
-  bool donor_or_wal_recovery_authority = false;
+  bool reference_or_wal_recovery_authority = false;
   bool private_provider_dispatch = false;
 };
 

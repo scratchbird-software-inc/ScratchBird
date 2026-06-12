@@ -578,7 +578,7 @@ bool RunRuntimeLifecycleCase() {
   ok = ok && ExpectResponseToken(transaction_start_text,
                                  "\"real_firebird_file_effects\":false");
   ok = ok && ExpectResponseToken(transaction_start_text,
-                                 "\"donor_engine_sql_executed\":false");
+                                 "\"reference_engine_sql_executed\":false");
   ok = ok && ExpectResponseToken(transaction_start_text,
                                  "\"parser_storage_authority\":false");
   ok = ok && ExpectResponseToken(
@@ -612,7 +612,7 @@ bool RunRuntimeLifecycleCase() {
                   commit_text,
                   "\"object_handle\":" + std::to_string(transaction_id));
   ok = ok && ExpectResponseToken(commit_text,
-                                 "\"donor_engine_sql_executed\":false");
+                                 "\"reference_engine_sql_executed\":false");
   ok = ok && ExpectResponseToken(commit_text,
                                  "\"parser_storage_authority\":false");
   ok = ok && ExpectResponseToken(
@@ -650,7 +650,7 @@ bool RunRuntimeLifecycleCase() {
                   rollback_text,
                   "\"object_handle\":" + std::to_string(transaction_id));
   ok = ok && ExpectResponseToken(rollback_text,
-                                 "\"donor_engine_sql_executed\":false");
+                                 "\"reference_engine_sql_executed\":false");
   ok = ok && ExpectResponseToken(rollback_text,
                                  "\"parser_storage_authority\":false");
   ok = ok && ExpectResponseToken(
@@ -674,7 +674,7 @@ bool RunRuntimeLifecycleCase() {
   ok = ok && ExpectResponseToken(event_queue_text,
                                  "\"real_firebird_file_effects\":false");
   ok = ok && ExpectResponseToken(event_queue_text,
-                                 "\"donor_engine_sql_executed\":false");
+                                 "\"reference_engine_sql_executed\":false");
   ok = ok && ExpectResponseToken(event_queue_text,
                                  "\"parser_storage_authority\":false");
   ok = ok && ExpectResponseToken(
@@ -695,7 +695,7 @@ bool RunRuntimeLifecycleCase() {
   ok = ok && ExpectResponseToken(event_cancel_text,
                                  "\"real_firebird_file_effects\":false");
   ok = ok && ExpectResponseToken(event_cancel_text,
-                                 "\"donor_engine_sql_executed\":false");
+                                 "\"reference_engine_sql_executed\":false");
   ok = ok && ExpectResponseToken(event_cancel_text,
                                  "\"parser_storage_authority\":false");
   ok = ok && ExpectResponseToken(

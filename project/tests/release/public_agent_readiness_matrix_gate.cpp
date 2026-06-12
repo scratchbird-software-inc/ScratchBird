@@ -58,7 +58,7 @@ struct MatrixRow {
   bool action_contract_implies_live_route = false;
   bool parser_authority = false;
   bool client_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool sidecar_authority = false;
   bool transaction_finality_authority = false;
   bool visibility_authority = false;
@@ -145,7 +145,7 @@ bool HasForbiddenAuthority(
     const agents::AgentProductionAuthoritySafety& authority) {
   return authority.parser_authority ||
          authority.client_authority ||
-         authority.donor_authority ||
+         authority.reference_authority ||
          authority.sidecar_authority ||
          authority.transaction_finality_authority ||
          authority.visibility_authority ||
@@ -208,7 +208,7 @@ MatrixRow BuildMatrixRow(
       record.action_contract_implies_live_route;
   row.parser_authority = record.authority_safety.parser_authority;
   row.client_authority = record.authority_safety.client_authority;
-  row.donor_authority = record.authority_safety.donor_authority;
+  row.reference_authority = record.authority_safety.reference_authority;
   row.sidecar_authority = record.authority_safety.sidecar_authority;
   row.transaction_finality_authority =
       record.authority_safety.transaction_finality_authority;
@@ -282,7 +282,7 @@ void ValidateRows(const std::vector<MatrixRow>& rows,
     Require(!row.action_contract_implies_live_route,
             "PCR-080 action contracts must not imply live routes");
     Require(!row.parser_authority && !row.client_authority &&
-                !row.donor_authority && !row.sidecar_authority &&
+                !row.reference_authority && !row.sidecar_authority &&
                 !row.transaction_finality_authority &&
                 !row.visibility_authority && !row.recovery_authority,
             "PCR-080 agent readiness must not claim engine authority");
@@ -372,7 +372,7 @@ void WriteMatrix(const std::filesystem::path& path,
          "production_live_enabled,production_surface_visible,"
          "real_subsystem_route_proven,workflow_route_proven,"
          "physical_mutation_route_proven,action_contract_implies_live_route,"
-         "parser_authority,client_authority,donor_authority,sidecar_authority,"
+         "parser_authority,client_authority,reference_authority,sidecar_authority,"
          "transaction_finality_authority,visibility_authority,"
          "recovery_authority\n";
   for (const auto& row : rows) {
@@ -408,7 +408,7 @@ void WriteMatrix(const std::filesystem::path& path,
         << BoolText(row.action_contract_implies_live_route) << ','
         << BoolText(row.parser_authority) << ','
         << BoolText(row.client_authority) << ','
-        << BoolText(row.donor_authority) << ','
+        << BoolText(row.reference_authority) << ','
         << BoolText(row.sidecar_authority) << ','
         << BoolText(row.transaction_finality_authority) << ','
         << BoolText(row.visibility_authority) << ','

@@ -53,7 +53,7 @@ The active test profile is supplied by policy and normally points at:
 Endpoint state is deployment-specific:
 
 - Native ScratchBird lanes are in scope for this component.
-- Donor emulation lanes may exist in a deployment profile, but AI support for
+- Reference emulation lanes may exist in a deployment profile, but AI support for
   non-native emulated engine modes remains out of scope.
 - Users, databases, ports, and secrets are read from the configured profile and
   secret provider.
@@ -178,7 +178,7 @@ PYTHONPATH=src tools/run_local_stack.sh
 ## 8. Run Live Contract Smoke Test
 
 The current shared static-example environment publishes only the native
-ScratchBird listener by default. If you have not started donor emulation
+ScratchBird listener by default. If you have not started reference emulation
 listeners separately, expect only `127.0.0.1:13092` to answer.
 
 ```bash

@@ -138,7 +138,7 @@ bool PageValid(const PhysicalBloomFilterPage& page) {
          page.exact_recheck_required_for_maybe_present &&
          !page.visibility_finality_authority &&
          !page.parser_finality_authority_claimed &&
-         !page.donor_finality_authority_claimed &&
+         !page.reference_finality_authority_claimed &&
          !page.provider_finality_authority_claimed &&
          !page.write_ahead_log_finality_authority_claimed;
 }
@@ -147,7 +147,7 @@ bool AuthorityClean(const PhysicalBloomEncodedKeyEvidence& key) {
   return key.authoritative_encoded_key_evidence &&
          key.engine_mga_visible &&
          !key.parser_finality_authority_claimed &&
-         !key.donor_finality_authority_claimed &&
+         !key.reference_finality_authority_claimed &&
          !key.provider_finality_authority_claimed &&
          !key.write_ahead_log_finality_authority_claimed;
 }
@@ -527,7 +527,7 @@ PhysicalBloomFilterBuildResult BuildPhysicalBloomFilterFromEncodedKeyEvidence(
   page.evidence.push_back("mga_recheck_required_for_positive=true");
   page.evidence.push_back("security_recheck_required_for_positive=true");
   page.evidence.push_back("visibility_finality_authority=false");
-  page.evidence.push_back("parser_donor_provider_finality_authority=false");
+  page.evidence.push_back("parser_reference_provider_finality_authority=false");
   page.evidence.push_back("write_ahead_log_finality_authority=false");
   SortPage(&page);
 
@@ -593,7 +593,7 @@ PhysicalBloomFilterSerializeResult SerializePhysicalBloomFilterPage(
   AppendU8(&out, page.exact_recheck_required_for_maybe_present ? 1 : 0);
   AppendU8(&out, page.visibility_finality_authority ? 1 : 0);
   AppendU8(&out, page.parser_finality_authority_claimed ? 1 : 0);
-  AppendU8(&out, page.donor_finality_authority_claimed ? 1 : 0);
+  AppendU8(&out, page.reference_finality_authority_claimed ? 1 : 0);
   AppendU8(&out, page.provider_finality_authority_claimed ? 1 : 0);
   AppendU8(&out, page.write_ahead_log_finality_authority_claimed ? 1 : 0);
   AppendBytes(&out, page.bitset);
@@ -673,7 +673,7 @@ PhysicalBloomFilterOpenResult OpenPhysicalBloomFilterPage(
   byte exact_recheck = 0;
   byte visibility_authority = 0;
   byte parser_authority = 0;
-  byte donor_authority = 0;
+  byte reference_authority = 0;
   byte provider_authority = 0;
   byte log_authority = 0;
   if (!reader.ReadU8(&mga_recheck) ||
@@ -681,7 +681,7 @@ PhysicalBloomFilterOpenResult OpenPhysicalBloomFilterPage(
       !reader.ReadU8(&exact_recheck) ||
       !reader.ReadU8(&visibility_authority) ||
       !reader.ReadU8(&parser_authority) ||
-      !reader.ReadU8(&donor_authority) ||
+      !reader.ReadU8(&reference_authority) ||
       !reader.ReadU8(&provider_authority) ||
       !reader.ReadU8(&log_authority) ||
       !reader.ReadBytes(&page.bitset)) {
@@ -694,7 +694,7 @@ PhysicalBloomFilterOpenResult OpenPhysicalBloomFilterPage(
   page.exact_recheck_required_for_maybe_present = exact_recheck != 0;
   page.visibility_finality_authority = visibility_authority != 0;
   page.parser_finality_authority_claimed = parser_authority != 0;
-  page.donor_finality_authority_claimed = donor_authority != 0;
+  page.reference_finality_authority_claimed = reference_authority != 0;
   page.provider_finality_authority_claimed = provider_authority != 0;
   page.write_ahead_log_finality_authority_claimed = log_authority != 0;
 

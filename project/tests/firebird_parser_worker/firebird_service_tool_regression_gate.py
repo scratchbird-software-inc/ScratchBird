@@ -14,7 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from firebird_donor_native_harness import normalize_firebird_donor_output
+from firebird_reference_native_harness import normalize_firebird_reference_output
 
 
 TOOL_PROBES = {
@@ -51,7 +51,7 @@ def read_manifest(path: Path) -> dict[str, dict[str, str]]:
         return {row["firebird_target"]: row for row in csv.DictReader(handle)}
 
 
-def donor_env(firebird_home: Path, output_dir: Path) -> dict[str, str]:
+def reference_env(firebird_home: Path, output_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
     lib_path = str(firebird_home / "lib")
     existing = env.get("LD_LIBRARY_PATH")
@@ -96,7 +96,7 @@ def main() -> int:
 
     missing = sorted(target for target in TOOL_PROBES if target not in manifest)
     if missing:
-        raise SystemExit(f"donor tool build manifest missing service targets: {missing}")
+        raise SystemExit(f"reference tool build manifest missing service targets: {missing}")
 
     parser_result = run([str(parser_probe)], cwd=output_dir)
     parser_raw = output_dir / "firebird_service_tool_parser_probe.raw.txt"
@@ -124,17 +124,17 @@ def main() -> int:
                 "ctest_gate": "firebird_service_tool_regression_gate",
             }
         )
-    env = donor_env(firebird_home, output_dir)
+    env = reference_env(firebird_home, output_dir)
     for target, (probe_args, fragments, allowed_statuses) in TOOL_PROBES.items():
         tool_path = firebird_home / "bin" / target
         if not tool_path.exists():
-            raise SystemExit(f"donor service tool missing: {tool_path}")
+            raise SystemExit(f"reference service tool missing: {tool_path}")
         result = run([str(tool_path), *probe_args], cwd=output_dir, env=env)
         raw_path = output_dir / f"{target}.raw.txt"
         normalized_path = output_dir / f"{target}.normalized.txt"
         raw_path.write_text(result.stdout)
         normalized_path.write_text(
-            normalize_firebird_donor_output(
+            normalize_firebird_reference_output(
                 result.stdout,
                 repo_root=repo_root,
                 temp_root=output_dir,
@@ -153,7 +153,7 @@ def main() -> int:
                 "raw_output": str(raw_path),
                 "normalized_output": str(normalized_path),
                 "scratchbird_runtime_classification": "emulated_service_or_authority_diagnostic",
-                "parser_operation_family": "donor_tool_metadata_probe",
+                "parser_operation_family": "reference_tool_metadata_probe",
                 "ctest_gate": "firebird_service_tool_regression_gate",
             }
         )
@@ -167,7 +167,7 @@ def main() -> int:
     report = output_dir / "FIREBIRD_SERVICE_TOOL_REGRESSION_SEED_REPORT.md"
     report.write_text(
         "# Firebird Service Tool Regression Seed Report\n\n"
-        f"Validated {len(report_rows)} donor service and utility tool probes.\n\n"
+        f"Validated {len(report_rows)} reference service and utility tool probes.\n\n"
         "Parser classification probe:\n\n"
         "```\n"
         f"{parser_result.stdout.strip()}\n"
@@ -175,7 +175,7 @@ def main() -> int:
     )
     print(
         "validated Firebird service-tool regression seed for "
-        f"{len(report_rows)} donor tool surfaces"
+        f"{len(report_rows)} reference tool surfaces"
     )
     return 0
 

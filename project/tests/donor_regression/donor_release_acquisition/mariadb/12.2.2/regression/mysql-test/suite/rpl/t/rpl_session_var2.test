@@ -1,3 +1,0 @@
-# Replication of session variables when semi-sync is on
-
---source rpl_session_var.test

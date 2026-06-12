@@ -169,7 +169,7 @@ void RequireComplete(idx::IndexFamily family) {
 }
 
 bool CompletedFamily(idx::IndexFamily family) {
-  return family != idx::IndexFamily::donor_emulated &&
+  return family != idx::IndexFamily::reference_emulated &&
          family != idx::IndexFamily::policy_blocked &&
          family != idx::IndexFamily::unknown;
 }
@@ -239,7 +239,7 @@ void RequireDescriptorStateParity() {
 }
 
 void RequireRuntimeRefusalsUseCapabilityDiagnostics() {
-  for (const auto family : {idx::IndexFamily::donor_emulated}) {
+  for (const auto family : {idx::IndexFamily::reference_emulated}) {
     const auto& state = RequireState(family);
     idx::IndexOptimizerRequest optimizer;
     optimizer.index_uuid = TestObjectUuid(0x71);
@@ -369,12 +369,12 @@ void RequireRouteCapabilityMatrixTruthfulness() {
               vector->requires_security_recheck,
           "HNSW vector route did not preserve exact-rerank/MGA/security requirements");
 
-  const auto* donor =
+  const auto* reference =
       idx::FindBuiltinIndexRouteCapabilityState(idx::IndexRouteKind::sql_select,
-                                                idx::IndexFamily::donor_emulated);
-  Require(donor != nullptr && !donor->route_complete() &&
-              !donor->family_physical_complete,
-          "donor-emulated route was promoted to physical capability");
+                                                idx::IndexFamily::reference_emulated);
+  Require(reference != nullptr && !reference->route_complete() &&
+              !reference->family_physical_complete,
+          "reference-emulated route was promoted to physical capability");
 }
 
 void RequirePolicyBlockedTruthfulness() {
@@ -412,44 +412,44 @@ void RequirePolicyBlockedTruthfulness() {
           "policy_blocked diagnostic missing fallback path");
 }
 
-void RequireDonorEmulatedNonPhysicalMappingSurface() {
+void RequireReferenceEmulatedNonPhysicalMappingSurface() {
   const auto* descriptor =
-      idx::FindBuiltinIndexFamily(idx::IndexFamily::donor_emulated);
-  Require(descriptor != nullptr, "donor_emulated descriptor missing");
-  Require(descriptor->persistence == idx::IndexPersistenceClass::donor_emulated,
-          "donor_emulated persistence class drifted");
-  Require(descriptor->key_model == idx::IndexKeyModel::donor_defined,
-          "donor_emulated key model drifted");
+      idx::FindBuiltinIndexFamily(idx::IndexFamily::reference_emulated);
+  Require(descriptor != nullptr, "reference_emulated descriptor missing");
+  Require(descriptor->persistence == idx::IndexPersistenceClass::reference_emulated,
+          "reference_emulated persistence class drifted");
+  Require(descriptor->key_model == idx::IndexKeyModel::reference_defined,
+          "reference_emulated key model drifted");
   Require(!descriptor->persistent,
-          "donor_emulated descriptor became persistent physical storage");
+          "reference_emulated descriptor became persistent physical storage");
 
-  const auto& state = RequireState(idx::IndexFamily::donor_emulated);
+  const auto& state = RequireState(idx::IndexFamily::reference_emulated);
   Require(!state.runtime_available,
-          "donor_emulated advertised runtime availability directly");
+          "reference_emulated advertised runtime availability directly");
   Require(!state.benchmark_clean,
-          "donor_emulated advertised benchmark-clean physical completion");
+          "reference_emulated advertised benchmark-clean physical completion");
   Require(!state.physically_complete(),
-          "donor_emulated became complete as its own physical family");
+          "reference_emulated became complete as its own physical family");
   Require(state.blocker ==
               idx::IndexFamilyPhysicalCapabilityBlocker::contract_only,
-          "donor_emulated blocker is not contract-only");
+          "reference_emulated blocker is not contract-only");
   Require(state.blocker_detail.find("semantic mapping only") !=
               std::string::npos,
-          "donor_emulated blocker does not name mapping-only semantics");
+          "reference_emulated blocker does not name mapping-only semantics");
   Require(state.blocker_detail.find("cannot own visibility") !=
               std::string::npos,
-          "donor_emulated blocker does not reject authority ownership");
+          "reference_emulated blocker does not reject authority ownership");
 }
 
 }  // namespace
 
 int main() {
   RequireDescriptorStateParity();
-  RequireDonorEmulatedNonPhysicalMappingSurface();
+  RequireReferenceEmulatedNonPhysicalMappingSurface();
   RequireBlocker(
-      idx::IndexFamily::donor_emulated,
+      idx::IndexFamily::reference_emulated,
       idx::IndexFamilyPhysicalCapabilityBlocker::contract_only,
-      "INDEX.CAPABILITY.DONOR_EMULATED.CONTRACT_ONLY_NON_AUTHORITY_MAPPING");
+      "INDEX.CAPABILITY.REFERENCE_EMULATED.CONTRACT_ONLY_NON_AUTHORITY_MAPPING");
   RequireComplete(idx::IndexFamily::btree);
   RequireComplete(idx::IndexFamily::unique_btree);
   RequireComplete(idx::IndexFamily::expression);

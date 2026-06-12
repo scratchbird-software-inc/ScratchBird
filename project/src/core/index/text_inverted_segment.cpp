@@ -77,7 +77,7 @@ bool LocatorValid(const TextInvertedRowLocator& locator) {
 
 bool DocumentAuthorityClean(const TextInvertedDocumentInput& document) {
   return !document.parser_finality_authority_claimed &&
-         !document.donor_finality_authority_claimed &&
+         !document.reference_finality_authority_claimed &&
          !document.provider_finality_authority_claimed &&
          !document.write_ahead_log_finality_authority_claimed &&
          !document.visibility_authority_claimed &&
@@ -97,7 +97,7 @@ bool DocumentValid(const TextInvertedDocumentInput& document) {
 
 bool RequestAuthorityClean(const TextInvertedSegmentBuildRequest& request) {
   return !request.parser_finality_authority_claimed &&
-         !request.donor_finality_authority_claimed &&
+         !request.reference_finality_authority_claimed &&
          !request.provider_finality_authority_claimed &&
          !request.write_ahead_log_finality_authority_claimed &&
          !request.visibility_authority_claimed &&
@@ -128,7 +128,7 @@ bool SegmentAuthorityClean(const TextInvertedSegment& segment) {
          !segment.security_authority_claimed &&
          !segment.transaction_finality_authority_claimed &&
          !segment.parser_finality_authority_claimed &&
-         !segment.donor_finality_authority_claimed &&
+         !segment.reference_finality_authority_claimed &&
          !segment.provider_finality_authority_claimed &&
          !segment.write_ahead_log_finality_authority_claimed;
 }
@@ -693,7 +693,7 @@ TextInvertedSegmentSealResult BuildSegment(
   segment.evidence.push_back("mga_recheck_required=true");
   segment.evidence.push_back("security_recheck_required=true");
   segment.evidence.push_back("visibility_security_finality_authority=false");
-  segment.evidence.push_back("parser_donor_provider_finality_authority=false");
+  segment.evidence.push_back("parser_reference_provider_finality_authority=false");
   segment.evidence.push_back("write_ahead_log_finality_authority=false");
   std::sort(segment.evidence.begin(), segment.evidence.end());
 
@@ -794,7 +794,7 @@ bool ReadStringVector(Reader* reader, std::vector<std::string>* out) {
 bool CandidateAuthorityClaimed(const TextInvertedMergeCandidate& candidate) {
   return candidate.merge_metadata_finality_authority ||
          candidate.parser_finality_authority_claimed ||
-         candidate.donor_finality_authority_claimed ||
+         candidate.reference_finality_authority_claimed ||
          candidate.provider_finality_authority_claimed ||
          candidate.write_ahead_log_finality_authority_claimed;
 }
@@ -1005,7 +1005,7 @@ TextInvertedSegmentSerializeResult SerializeTextInvertedSegmentArtifact(
   AppendBool(&out, segment.security_authority_claimed);
   AppendBool(&out, segment.transaction_finality_authority_claimed);
   AppendBool(&out, segment.parser_finality_authority_claimed);
-  AppendBool(&out, segment.donor_finality_authority_claimed);
+  AppendBool(&out, segment.reference_finality_authority_claimed);
   AppendBool(&out, segment.provider_finality_authority_claimed);
   AppendBool(&out, segment.write_ahead_log_finality_authority_claimed);
 
@@ -1124,7 +1124,7 @@ TextInvertedSegmentOpenResult OpenTextInvertedSegmentArtifact(
       !ReadBool(&reader, &segment.security_authority_claimed) ||
       !ReadBool(&reader, &segment.transaction_finality_authority_claimed) ||
       !ReadBool(&reader, &segment.parser_finality_authority_claimed) ||
-      !ReadBool(&reader, &segment.donor_finality_authority_claimed) ||
+      !ReadBool(&reader, &segment.reference_finality_authority_claimed) ||
       !ReadBool(&reader, &segment.provider_finality_authority_claimed) ||
       !ReadBool(&reader, &segment.write_ahead_log_finality_authority_claimed) ||
       !reader.ReadU32(&document_count)) {
@@ -1422,8 +1422,8 @@ TextInvertedMergeCandidate TextInvertedMergeCandidateFromSegment(
       segment.merge.merge_metadata_finality_authority;
   candidate.parser_finality_authority_claimed =
       segment.parser_finality_authority_claimed;
-  candidate.donor_finality_authority_claimed =
-      segment.donor_finality_authority_claimed;
+  candidate.reference_finality_authority_claimed =
+      segment.reference_finality_authority_claimed;
   candidate.provider_finality_authority_claimed =
       segment.provider_finality_authority_claimed;
   candidate.write_ahead_log_finality_authority_claimed =

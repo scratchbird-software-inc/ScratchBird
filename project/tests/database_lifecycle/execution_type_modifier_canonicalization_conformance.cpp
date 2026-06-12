@@ -108,11 +108,11 @@ void TestEquivalentCanonicalKeys() {
   text.collation_uuid = Uuid(0x40);
   engine::ExecutionTypeModifierCanonicalizationInput text_input;
   text_input.descriptor = text;
-  text_input.donor_modifiers = {{"  ZONE-MODE ", " UTF 8 "},
+  text_input.reference_modifiers = {{"  ZONE-MODE ", " UTF 8 "},
                                 {"Unsigned_Int", " YES "}};
   auto text_equivalent = text_input;
   text_equivalent.descriptor.modifier_flags = 0xffffu;
-  text_equivalent.donor_modifiers = {{"unsigned int", "yes"},
+  text_equivalent.reference_modifiers = {{"unsigned int", "yes"},
                                      {"zone_mode", "utf-8"}};
   const auto text_result =
       engine::CanonicalizeExecutionTypeModifiers(text_input);
@@ -120,7 +120,7 @@ void TestEquivalentCanonicalKeys() {
       engine::CanonicalizeExecutionTypeModifiers(text_equivalent);
   Require(text_result.ok(), "EDR-027 rejected valid text modifiers");
   Require(text_equivalent_result.ok(),
-          "EDR-027 rejected equivalent donor modifiers");
+          "EDR-027 rejected equivalent reference modifiers");
   Require(text_result.canonical_form.descriptor_identity_digest ==
               text_equivalent_result.canonical_form.descriptor_identity_digest,
           "EDR-027 produced different descriptor hashes for equivalent text");
@@ -356,7 +356,7 @@ void TestInvalidShapeAndResourceModifiers() {
       "EDR-027 accepted timezone on non-temporal descriptor");
 }
 
-void TestInvalidDomainAndDonorModifiers() {
+void TestInvalidDomainAndReferenceModifiers() {
   engine::ExecutionTypeModifierCanonicalizationInput input;
   input.descriptor = TypeDescriptor(0x90, "domain");
   input.descriptor.length = 64;
@@ -380,19 +380,19 @@ void TestInvalidDomainAndDonorModifiers() {
   input = {};
   input.descriptor = TypeDescriptor(0xa0, "text");
   input.descriptor.length = 64;
-  input.donor_modifiers = {{"", "value"}};
+  input.reference_modifiers = {{"", "value"}};
   RequireStatus(
       input,
       engine::ExecutionTypeModifierCanonicalizationStatus::
-          donor_modifier_name_required,
-      "EDR-027 accepted donor modifier without name");
+          reference_modifier_name_required,
+      "EDR-027 accepted reference modifier without name");
 
-  input.donor_modifiers = {{"Unsigned Int", "YES"}, {"unsigned_int", "yes"}};
+  input.reference_modifiers = {{"Unsigned Int", "YES"}, {"unsigned_int", "yes"}};
   RequireStatus(
       input,
       engine::ExecutionTypeModifierCanonicalizationStatus::
-          donor_modifier_duplicate,
-      "EDR-027 accepted duplicate canonical donor modifier");
+          reference_modifier_duplicate,
+      "EDR-027 accepted duplicate canonical reference modifier");
 }
 
 }  // namespace
@@ -402,6 +402,6 @@ int main() {
   TestValidModifierFamilies();
   TestInvalidNumericAndLengthModifiers();
   TestInvalidShapeAndResourceModifiers();
-  TestInvalidDomainAndDonorModifiers();
+  TestInvalidDomainAndReferenceModifiers();
   return EXIT_SUCCESS;
 }

@@ -9,7 +9,7 @@ Search key: `PUBLIC-RELEASE-FOUNDATION-CLOSURE`
 
 Close the first public zero-grey target set from the implementation inventory.
 This execution_plan does not attempt to close every public gap in one pass. It closes
-the foundation that later parser, donor, driver, cloud, and release work must
+the foundation that later parser, reference, driver, cloud, and release work must
 stand on:
 
 ```text
@@ -43,7 +43,7 @@ The target list is also recorded in
 
 - No placeholder, stub, or deferral may be used to mark a target gap closed.
 - The engine remains SBLR-only. SQL text remains parser input only.
-- The engine remains MGA-based. No WAL, redo-log, or donor transaction model may
+- The engine remains MGA-based. No WAL, redo-log, or reference transaction model may
   become recovery authority.
 - Catalog tables hold UUID authority. Human-readable names live only in resolver
   and projection layers.
@@ -112,7 +112,7 @@ must be reviewed and recorded as `PRF-040` evidence before any checkpoint,
 dirty-manifest, backup, delta, PITR, or page durability implementation slice
 starts. The model keeps recovery authority on MGA transaction inventory, page
 generation state, checkpoint records, dirty manifests, operation envelopes, and
-coverage proof. It forbids WAL, redo-log, donor transaction authority, or parser
+coverage proof. It forbids WAL, redo-log, reference transaction authority, or parser
 transaction authority as recovery truth.
 
 ## Required CTest Labels

@@ -109,7 +109,7 @@ bool CanonicalizeProperties(std::vector<GraphPropertyValue>* properties) {
 
 bool RecheckAuthorityClean(const GraphRecheckProof& proof) {
   return !proof.parser_finality_authority_claimed &&
-         !proof.donor_finality_authority_claimed &&
+         !proof.reference_finality_authority_claimed &&
          !proof.provider_finality_authority_claimed &&
          !proof.index_finality_authority_claimed &&
          !proof.write_ahead_log_finality_authority_claimed &&
@@ -130,7 +130,7 @@ bool RecheckProofValid(const GraphRecheckProof& proof) {
 
 bool DescriptorAuthorityClean(const GraphDescriptor& descriptor) {
   return !descriptor.parser_finality_authority_claimed &&
-         !descriptor.donor_finality_authority_claimed &&
+         !descriptor.reference_finality_authority_claimed &&
          !descriptor.provider_finality_authority_claimed &&
          !descriptor.index_finality_authority_claimed &&
          !descriptor.write_ahead_log_finality_authority_claimed;
@@ -160,7 +160,7 @@ bool ProviderAuthorityClean(const GraphAdjacencyPhysicalProvider& provider) {
          !provider.security_authority_claimed &&
          !provider.transaction_finality_authority_claimed &&
          !provider.parser_finality_authority_claimed &&
-         !provider.donor_finality_authority_claimed &&
+         !provider.reference_finality_authority_claimed &&
          !provider.provider_finality_authority_claimed &&
          !provider.index_finality_authority_claimed &&
          !provider.write_ahead_log_finality_authority_claimed;

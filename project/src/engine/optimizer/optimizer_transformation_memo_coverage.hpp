@@ -17,7 +17,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: CEIC_055_OPTIMIZER_TRANSFORMATION_MEMO_COVERAGE
 // Transformation memo evidence proves rewrite coverage and fail-closed
 // diagnostics. It is optimizer evidence only. It is not transaction finality,
-// visibility, authorization/security, recovery, parser, donor, WAL, benchmark,
+// visibility, authorization/security, recovery, parser, reference, WAL, benchmark,
 // optimizer-plan, index-finality, provider-finality, cluster, or agent-action
 // authority.
 inline constexpr const char* kOptimizerTransformationMemoSchemaId =
@@ -50,7 +50,7 @@ struct OptimizerTransformationAuthorityFlags {
   bool authorization_security_authority = false;
   bool recovery_authority = false;
   bool parser_authority = false;
-  bool donor_authority = false;
+  bool reference_authority = false;
   bool wal_authority = false;
   bool benchmark_authority = false;
   bool optimizer_plan_authority = false;
@@ -97,7 +97,7 @@ struct OptimizerTransformationRuleEvidence {
   bool deterministic_rule_position = false;
   bool memo_group_bounded = false;
   bool no_plan_authority_claim = true;
-  bool no_parser_donor_authority = true;
+  bool no_parser_reference_authority = true;
 
   bool predicate_scope_proven = false;
   bool predicate_side_effect_free = false;
@@ -125,9 +125,9 @@ struct OptimizerTransformationRuleEvidence {
   bool unsafe_materialized_view_authority = false;
   bool unsafe_fusion_provider_authority = false;
   bool placeholder_evidence = false;
-  bool donor_reference_only = true;
-  bool donor_as_authority = false;
-  bool uses_donor_storage_or_finality_for_scratchbird = false;
+  bool reference_reference_only = true;
+  bool reference_as_authority = false;
+  bool uses_reference_storage_or_finality_for_scratchbird = false;
   OptimizerTransformationAuthorityFlags authority;
 };
 
@@ -182,9 +182,9 @@ struct OptimizerTransformationMemoCoverageReport {
   bool memo_space_exhaustive_or_proven_bounded = false;
   bool semantic_canonicalization_proven = false;
   bool transformations_claim_final_plan_authority = false;
-  bool donor_reference_only = true;
-  bool donor_as_authority = false;
-  bool uses_donor_storage_or_finality_for_scratchbird = false;
+  bool reference_reference_only = true;
+  bool reference_as_authority = false;
+  bool uses_reference_storage_or_finality_for_scratchbird = false;
 
   OptimizerTransformationClusterMode cluster_mode =
       OptimizerTransformationClusterMode::kNoCluster;

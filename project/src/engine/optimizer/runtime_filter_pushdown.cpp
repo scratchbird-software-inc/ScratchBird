@@ -32,7 +32,7 @@ RuntimeFilterPushdownDecision Refuse(std::string code, std::string evidence) {
   Add(&result.evidence, "runtime_filter.exact_recheck_required=true");
   Add(&result.evidence, "runtime_filter.mga_visibility_recheck_required=true");
   Add(&result.evidence, "runtime_filter.security_recheck_required=true");
-  Add(&result.evidence, "parser_or_donor_finality_or_visibility_authority=false");
+  Add(&result.evidence, "parser_or_reference_finality_or_visibility_authority=false");
   Add(&result.evidence, "client_finality_or_visibility_authority=false");
   Add(&result.evidence, "provider_finality_or_visibility_authority=false");
   Add(&result.evidence,
@@ -130,7 +130,7 @@ RuntimeFilterCandidateDecision EvaluateCandidate(
                            "SB_RUNTIME_FILTER.EXACT_RECHECK_REQUIRED",
                            "exact_and_security_recheck_required");
   }
-  if (descriptor.parser_or_donor_finality_or_visibility_authority ||
+  if (descriptor.parser_or_reference_finality_or_visibility_authority ||
       descriptor.client_finality_or_visibility_authority ||
       descriptor.provider_finality_or_visibility_authority ||
       descriptor.write_ahead_log_finality_or_visibility_authority) {
@@ -199,7 +199,7 @@ void AddCommonEvidence(RuntimeFilterPushdownDecision* result) {
   Add(&result->evidence, "runtime_filter.exact_recheck_required=true");
   Add(&result->evidence, "runtime_filter.mga_visibility_recheck_required=true");
   Add(&result->evidence, "runtime_filter.security_recheck_required=true");
-  Add(&result->evidence, "parser_or_donor_finality_or_visibility_authority=false");
+  Add(&result->evidence, "parser_or_reference_finality_or_visibility_authority=false");
   Add(&result->evidence, "client_finality_or_visibility_authority=false");
   Add(&result->evidence, "provider_finality_or_visibility_authority=false");
   Add(&result->evidence,

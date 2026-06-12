@@ -29,7 +29,7 @@ enum class InsertBatchMode {
   multi_values,
   insert_select,
   copy_import,
-  donor_bulk,
+  reference_bulk,
   native_bulk
 };
 

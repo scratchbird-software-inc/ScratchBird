@@ -16,7 +16,7 @@ EXPECTED_CANDIDATE_COUNT = 1949
 EXPECTED_FAMILY_COUNT = 6
 EXPECTED_ASSET_COUNT = 171
 EXPECTED_GATE = "firebird_original_regression_replay_gate"
-EXPECTED_REPLAY_STATUS = "original_donor_replay_passed"
+EXPECTED_REPLAY_STATUS = "original_reference_replay_passed"
 EXPECTED_ASSET_STATUS = "candidate_hashed_for_replay"
 
 

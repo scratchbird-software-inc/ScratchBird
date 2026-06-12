@@ -83,7 +83,7 @@ enum class CanonicalWireTypeFamily : u16 {
 enum class CanonicalWireTypeFlag : u16 {
   inferred_before_bind = 1u << 0,
   extension_backed = 1u << 1,
-  donor_rendered_name_present = 1u << 2,
+  reference_rendered_name_present = 1u << 2,
   domain_wrapped_descriptor = 1u << 3,
   unsigned_numeric_rendering = 1u << 4,
   exact_numeric_rendering = 1u << 5,

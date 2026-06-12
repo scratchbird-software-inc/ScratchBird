@@ -406,8 +406,8 @@ def gates_for_item(kind: str, item: str) -> tuple[str, ...]:
         gates.add("database_lifecycle_admin_cli")
     if has("packaging", "runtime"):
         gates.add("database_lifecycle_packaging_service")
-    if has("donor"):
-        gates.add("database_lifecycle_donor_mapping")
+    if has("reference"):
+        gates.add("database_lifecycle_reference_mapping")
 
     if kind == "diagnostic":
         prefix = item.split(".", 1)[0]

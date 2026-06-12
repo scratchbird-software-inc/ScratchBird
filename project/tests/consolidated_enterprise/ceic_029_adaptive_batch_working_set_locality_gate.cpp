@@ -329,8 +329,8 @@ void RequireCeic029Evidence(const memory::AdaptiveBatchSizingDecision& decision)
                    "memory_adaptive_batch_working_set.no_authority.transaction_finality=true"),
           "CEIC-029 transaction finality non-authority missing");
   Require(Contains(decision.evidence,
-                   "memory_adaptive_batch_working_set.no_authority.parser_donor_wal=true"),
-          "CEIC-029 parser donor WAL non-authority missing");
+                   "memory_adaptive_batch_working_set.no_authority.parser_reference_wal=true"),
+          "CEIC-029 parser reference WAL non-authority missing");
   Require(Contains(decision.evidence,
                    "memory_adaptive_batch_working_set.no_authority.benchmark_optimizer_index_cluster_agent=true"),
           "CEIC-029 benchmark optimizer index cluster agent non-authority missing");

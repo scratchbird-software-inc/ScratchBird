@@ -16,7 +16,7 @@
 namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_WIRE_DRIVER_METADATA_API
-// Engine-owned metadata rendering for parser/driver packages. Names and donor
+// Engine-owned metadata rendering for parser/driver packages. Names and reference
 // labels remain aliases; canonical descriptors and UUID-backed domain
 // descriptors remain the authority.
 
@@ -25,8 +25,8 @@ struct EngineWireDriverMetadata {
   std::string canonical_type_name;
   std::string domain_uuid;
   std::string base_canonical_type_name;
-  std::string donor_dialect;
-  std::string donor_label;
+  std::string compatibility_dialect;
+  std::string reference_label;
   std::string driver_display_type;
   std::string canonical_type_family;
   std::string canonical_type_code;
@@ -49,7 +49,7 @@ struct EngineWireDriverMetadata {
   std::string wire_metadata_envelope;
   bool native_descriptor = false;
   bool domain_descriptor = false;
-  bool donor_label_alias_only = true;
+  bool reference_label_alias_only = true;
   bool opaque_render_only = false;
   bool comparison_supported = true;
   bool mutation_supported = true;
@@ -57,7 +57,7 @@ struct EngineWireDriverMetadata {
 };
 
 EngineWireDriverMetadata RenderWireDriverMetadata(const EngineDescriptor& descriptor,
-                                                  std::string donor_dialect = {},
-                                                  std::string donor_label = {});
+                                                  std::string compatibility_dialect = {},
+                                                  std::string reference_label = {});
 
 }  // namespace scratchbird::engine::internal_api

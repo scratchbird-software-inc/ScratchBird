@@ -47,7 +47,7 @@ bool HasForbiddenAuthority(
          authority.authorization_security_authority ||
          authority.recovery_authority ||
          authority.parser_authority ||
-         authority.donor_authority ||
+         authority.reference_authority ||
          authority.wal_authority ||
          authority.benchmark_authority ||
          authority.optimizer_plan_authority ||
@@ -497,12 +497,12 @@ ValidateOptimizerSelectivityObservabilityReport(
                !Empty(report.optimizer_profile),
                "optimizer_profile");
 
-  if (!report.evidence_only || !report.donor_reference_only ||
-      report.donor_as_authority ||
-      report.uses_donor_storage_or_finality_for_scratchbird) {
+  if (!report.evidence_only || !report.reference_reference_only ||
+      report.reference_as_authority ||
+      report.uses_reference_storage_or_finality_for_scratchbird) {
     AddDiagnostic(&validation,
                   prefix +
-                      ":SB_OPT_SELECTIVITY_OBSERVABILITY.DONOR_AUTHORITY_DRIFT");
+                      ":SB_OPT_SELECTIVITY_OBSERVABILITY.REFERENCE_AUTHORITY_DRIFT");
   }
   if (HasForbiddenAuthority(report.authority)) {
     AddDiagnostic(&validation,

@@ -20,7 +20,7 @@ namespace scratchbird::engine::optimizer {
 // SEARCH_KEY: OEIC_ROUTE_DRIVER_OPTIMIZER_METRICS
 // Route and driver-visible optimizer metrics record plan/result/explain
 // equivalence evidence only. They cannot provide transaction finality,
-// visibility, security, parser, donor, recovery, WAL, cluster, or benchmark
+// visibility, security, parser, reference, recovery, WAL, cluster, or benchmark
 // authority.
 
 struct OptimizerRouteMetricAuthority {
@@ -32,7 +32,7 @@ struct OptimizerRouteMetricAuthority {
   bool engine_scope_bound = false;
   bool exact_diagnostics_preserved = false;
   bool redaction_applied = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool client_finality_or_visibility_authority = false;
   bool metric_visibility_or_finality_authority = false;
   bool metric_recovery_authority = false;

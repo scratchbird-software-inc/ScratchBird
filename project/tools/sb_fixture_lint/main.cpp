@@ -49,7 +49,7 @@ const std::vector<std::string> kRequiredFixtureFields = {
     "row_kind",
     "edition_scope",
     "parser_mode",
-    "donor_mode",
+    "reference_mode",
     "input",
     "expected_parse",
     "expected_bind",

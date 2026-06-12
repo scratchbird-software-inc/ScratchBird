@@ -26,7 +26,7 @@ using scratchbird::core::platform::Subsystem;
 constexpr const char* kEvidenceAnchor =
     "CEIC-012_QUERY_OPERATOR_PLANNER_PARSER_ARENAS";
 constexpr const char* kAuthorityScope =
-    "reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_donor_benchmark_cluster_optimizer_index_or_agent_authority";
+    "reservation_backed_memory.authority_scope=evidence_only_not_transaction_finality_visibility_recovery_parser_reference_benchmark_cluster_optimizer_index_or_agent_authority";
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::memory};
@@ -59,7 +59,7 @@ bool UnsafeAuthority(const ReservationBackedMemoryResourceRequest& request,
     *reason = "security_or_policy_check_required";
     return true;
   }
-  if (authority.parser_or_donor_finality_authority ||
+  if (authority.parser_or_reference_finality_authority ||
       authority.memory_visibility_or_finality_authority ||
       authority.memory_recovery_authority ||
       authority.memory_authorization_authority ||

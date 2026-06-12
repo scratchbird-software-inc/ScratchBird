@@ -286,7 +286,7 @@ void VerifyCoverage(const std::vector<Row>& p0,
                        "engine_owned_mga_finality"),
               "P7 MGA/finality policy missing engine ownership " + source_import_id);
       Require(Contains(Field(p7_by_id.at(source_import_id), "mga_finality_policy"),
-                       "parser_donor_provider_finality_forbidden"),
+                       "parser_reference_provider_finality_forbidden"),
               "P7 MGA/finality policy permits non-engine finality " + source_import_id);
     }
 
@@ -307,8 +307,8 @@ void VerifyCoverage(const std::vector<Row>& p0,
                                                        "diagnostic_id"),
             "P7 diagnostic id mismatch " + source_import_id);
     Require(Contains(Field(proof, "parser_authority_policy"), "forbidden") &&
-                Contains(Field(proof, "donor_authority_policy"), "forbidden"),
-            "P7 parser/donor authority policy drift " + source_import_id);
+                Contains(Field(proof, "reference_authority_policy"), "forbidden"),
+            "P7 parser/reference authority policy drift " + source_import_id);
     Require(Contains(Field(proof, "raw_sql_authority_policy"), "not_authoritative"),
             "P7 raw SQL authority policy drift " + source_import_id);
     Require(Contains(Field(proof, "executable_gate_set"),
@@ -523,7 +523,7 @@ int main(int argc, char** argv) {
        "mga_finality_policy",
        "external_authority_policy",
        "parser_authority_policy",
-       "donor_authority_policy",
+       "reference_authority_policy",
        "raw_sql_authority_policy",
        "executable_gate_set",
        "final_proof_assertion",

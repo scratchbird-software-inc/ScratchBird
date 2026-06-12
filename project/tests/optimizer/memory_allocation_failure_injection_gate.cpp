@@ -96,7 +96,7 @@ mem::MemoryFailureInjectionConfiguration Config(mem::MemoryFailureInjectionRule 
   configuration.fixture_enabled = true;
   configuration.fixture_name = "mmch_014_allocation_failure_injection_gate";
   configuration.evidence_note =
-      "allocator_test_evidence_only_not_transaction_visibility_security_recovery_parser_donor_or_benchmark_authority";
+      "allocator_test_evidence_only_not_transaction_visibility_security_recovery_parser_reference_or_benchmark_authority";
   configuration.rules.push_back(std::move(rule));
   return configuration;
 }
@@ -112,7 +112,7 @@ void RequireInjected(const mem::AllocationResult& result, std::string_view rule_
   Require(DiagnosticArgEquals(
               result.diagnostic,
               "failure_injection_authority_scope",
-              "test_fixture_evidence_only_not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"),
+              "test_fixture_evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"),
           "MMCH-014 injected diagnostic authority scope changed");
 }
 
@@ -274,7 +274,7 @@ void PageBufferInjection() {
 
 int main() {
   std::cout << "MMCH-014 authority_note=allocation_failure_injection_evidence_only;"
-               "not_transaction_finality_visibility_security_recovery_parser_donor_or_benchmark_authority"
+               "not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"
             << '\n';
   NoHookByDefault();
   ProductionBlockedEnablementAndRefusal();

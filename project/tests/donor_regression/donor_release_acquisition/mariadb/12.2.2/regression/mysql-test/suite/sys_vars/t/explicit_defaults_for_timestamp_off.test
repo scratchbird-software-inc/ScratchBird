@@ -1,3 +1,0 @@
-set @@explicit_defaults_for_timestamp=0;
-
---source inc/explicit_defaults_for_timestamp.inc

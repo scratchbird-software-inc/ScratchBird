@@ -36,7 +36,7 @@ suite.
 - The engine remains the only authentication, authorization, transaction, and
   finality authority.
 - MGA remains the transaction/recovery model. Drivers, listeners, parsers,
-  donor tools, retry code, and hidden storage layers must not create alternate
+  reference tools, retry code, and hidden storage layers must not create alternate
   transaction truth.
 - Driver routes must exercise the real route for the lane being claimed:
   client/driver/tool, SBWP/TLS or admitted IPC, listener/manager as configured,
@@ -91,7 +91,7 @@ Implementation must not continue beyond P0 until these artifacts exist:
 - `artifacts/PACKAGING_DISTRIBUTION_EVIDENCE_MODEL.md`
 - `artifacts/PERFORMANCE_BUDGET_GATE.md`
 - `artifacts/DOCUMENTATION_SAMPLE_APP_GATE.md`
-- `artifacts/DONOR_DRIVER_COMPATIBILITY_ROUTE_GATE.md`
+- `artifacts/REFERENCE_DRIVER_COMPATIBILITY_ROUTE_GATE.md`
 - `artifacts/RELEASE_DECLARATION_GENERATOR_MODEL.md`
 - `artifacts/P0_EXECUTION_PLAN_CREATION_EVIDENCE.md`
 
@@ -118,7 +118,7 @@ artifact set.
 | Packaging/release evidence | Driver/adaptor/tool packages prove metadata, versioning, signing/SBOM where applicable, install smoke tests, and build-artifact isolation. |
 | Performance budgets | Real-route latency, throughput, TLS overhead, prepared execution, bulk transfer, and allocation regression budgets are explicit and enforced. |
 | Documentation/sample apps | Driver DSN, auth/TLS, diagnostics, transactions, metadata, and adapter sample applications are executable and cite the verified route. |
-| Donor compatibility route | Donor compatibility drivers and tools prove behavior through the admitted driver/wire/listener/parser/server/engine path, not parser-only shortcuts. |
+| Reference compatibility route | Reference compatibility drivers and tools prove behavior through the admitted driver/wire/listener/parser/server/engine path, not parser-only shortcuts. |
 | Release declaration | Machine-readable release declaration reports every checklist row and lane as supported, fail-closed, conditional N/A, or not implemented. |
 
 ## Agent Execution Model
@@ -159,7 +159,7 @@ This execution_plan is complete only when:
 - Driver/adaptor/tool package and documentation samples are reproducible from a
   clean checkout and do not write artifacts outside the build or package output
   directories.
-- Donor compatibility evidence uses the same admitted route as public clients.
+- Reference compatibility evidence uses the same admitted route as public clients.
 - Performance gates have explicit pass/fail budgets instead of descriptive
   benchmark output only.
 - `public_audit_summary`, the public

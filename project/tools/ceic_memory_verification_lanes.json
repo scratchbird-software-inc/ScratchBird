@@ -1,7 +1,7 @@
 {
   "search_key": "CEIC_022_MEMORY_VERIFICATION_LANES",
   "version": 1,
-  "authority_boundary": "memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority",
+  "authority_boundary": "memory_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority",
   "sanitizer_lanes": [
     {
       "id": "ceic-022-asan-linux",

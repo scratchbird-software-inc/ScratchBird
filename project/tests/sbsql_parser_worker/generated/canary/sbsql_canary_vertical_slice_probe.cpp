@@ -220,19 +220,19 @@ bool ValidateNativeNowClosureDecision() {
   return ok;
 }
 
-bool ValidateDonorAlias(const std::vector<CsvRow>& donor_aliases) {
-  const auto* alias = FindRow(donor_aliases, "donor_surface", "apache_ignite:query_select");
+bool ValidateReferenceAlias(const std::vector<CsvRow>& reference_aliases) {
+  const auto* alias = FindRow(reference_aliases, "reference_surface", "apache_ignite:query_select");
   bool ok = true;
-  ok &= Require(alias != nullptr, "missing donor alias canary row");
+  ok &= Require(alias != nullptr, "missing reference alias canary row");
   if (alias != nullptr) {
     ok &= Require(Field(*alias, "native_sbsql_surface") == "select",
-                  "donor alias does not map to native select");
+                  "reference alias does not map to native select");
     ok &= Require(Field(*alias, "mapping_status") ==
                       "mapped_by_profile_or_refused_with_exact_diagnostic",
-                  "donor alias lacks exact mapping/refusal policy");
+                  "reference alias lacks exact mapping/refusal policy");
     ok &= Require(Field(*alias, "diagnostic_target") ==
-                      "donor_profile_message_vector_rendering",
-                  "donor alias lacks donor rendering diagnostic target");
+                      "reference_profile_message_vector_rendering",
+                  "reference alias lacks reference rendering diagnostic target");
   }
   return ok;
 }
@@ -269,7 +269,7 @@ int main(int argc, char** argv) {
     const auto batches = ReadCsv(artifact_root + "/BATCH_ROW_MEMBERSHIP.csv");
     const auto oracles = ReadCsv(artifact_root + "/SEMANTIC_ORACLE_AUTHORITY_MAP.csv");
     const auto messages = ReadCsv(artifact_root + "/MESSAGE_VECTOR_COVERAGE_BACKLOG.csv");
-    const auto donor_aliases = ReadCsv(artifact_root + "/DONOR_ALIAS_COVERAGE_BACKLOG.csv");
+    const auto reference_aliases = ReadCsv(artifact_root + "/REFERENCE_ALIAS_COVERAGE_BACKLOG.csv");
 
     bool ok = true;
     ok &= ValidateSurface(batches, oracles, "SBSQL-E4E0E6EB328C",
@@ -280,7 +280,7 @@ int main(int argc, char** argv) {
     ok &= ValidateSurface(batches, oracles, "SBSQL-DF502F8DF4FA", "Accept");
     ok &= ValidateClusterFailClosed(messages);
     ok &= ValidateNativeNowClosureDecision();
-    ok &= ValidateDonorAlias(donor_aliases);
+    ok &= ValidateReferenceAlias(reference_aliases);
     ok &= ValidateMinimalParserRoute();
 
     if (!ok) return 1;

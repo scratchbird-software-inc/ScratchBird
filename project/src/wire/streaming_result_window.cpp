@@ -89,8 +89,8 @@ StreamingResultWindowDecision BaseDecision(
           "base_row_security_recheck_required",
           request.base_row_security_recheck_required);
   AddBool(&decision.evidence,
-          "parser_or_donor_authority",
-          request.parser_or_donor_authority);
+          "parser_or_reference_authority",
+          request.parser_or_reference_authority);
   AddBool(&decision.evidence,
           "client_visibility_or_finality_authority",
           request.client_visibility_or_finality_authority);
@@ -235,10 +235,10 @@ StreamingResultWindowRequest DefaultStreamingResultWindowRequest(
 StreamingResultWindowDecision EvaluateStreamingResultWindow(
     const StreamingResultWindowRequest& request) {
   auto decision = BaseDecision(request);
-  if (request.parser_or_donor_authority) {
+  if (request.parser_or_reference_authority) {
     return Refuse(std::move(decision),
-                  "WIRE.STREAMING_RESULT_WINDOW.UNSAFE_PARSER_OR_DONOR_AUTHORITY",
-                  "parser_or_donor_authority_forbidden");
+                  "WIRE.STREAMING_RESULT_WINDOW.UNSAFE_PARSER_OR_REFERENCE_AUTHORITY",
+                  "parser_or_reference_authority_forbidden");
   }
   if (request.client_visibility_or_finality_authority) {
     return Refuse(std::move(decision),

@@ -205,7 +205,7 @@ void DirectGovernorSurfaceLimitsAndCleanup() {
                    "CEIC-020_RESULT_CURSOR_PLAN_CACHE_PREPARED_MEMORY_GOVERNANCE"),
           "CEIC-020 cursor evidence marker missing");
   Require(Contains(cursor.evidence,
-                   "security_authorization_recovery_parser_donor"),
+                   "security_authorization_recovery_parser_reference"),
           "CEIC-020 authority boundary evidence missing authorization");
 
   auto frame1 = governor.Acquire(LeaseRequest(

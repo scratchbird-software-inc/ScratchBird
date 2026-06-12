@@ -59,7 +59,7 @@ bool ExternalAuthorityRequested(const VectorGenerationRequest& request) {
          request.timestamp_ordering_authority ||
          request.uuid_ordering_authority ||
          request.event_stream_authority ||
-         request.donor_authority ||
+         request.reference_authority ||
          request.write_ahead_authority;
 }
 
@@ -154,7 +154,7 @@ VectorGenerationEvidenceRow BuildEvidence(
   evidence.timestamp_ordering_authority = false;
   evidence.uuid_ordering_authority = false;
   evidence.event_stream_authority = false;
-  evidence.donor_authority = false;
+  evidence.reference_authority = false;
   evidence.write_ahead_authority = false;
   evidence.diagnostic_code = std::move(diagnostic_code);
   evidence.diagnostic_detail = std::move(detail);
@@ -358,7 +358,7 @@ bool VectorGenerationDescriptorAuthorityClean(
          !generation.timestamp_finality_authority_claimed &&
          !generation.uuid_ordering_finality_authority_claimed &&
          !generation.event_stream_finality_authority_claimed &&
-         !generation.donor_finality_authority_claimed &&
+         !generation.reference_finality_authority_claimed &&
          !generation.write_ahead_log_finality_authority_claimed;
 }
 
@@ -437,7 +437,7 @@ VectorGenerationLifecycleResult RequestVectorGeneration(
         generation,
         "INDEX.VECTOR_GENERATION.EXTERNAL_AUTHORITY_REJECTED",
         "index.vector_generation.external_authority_rejected",
-        "parser client timestamp UUID ordering event stream donor and write-ahead authority claims are forbidden");
+        "parser client timestamp UUID ordering event stream reference and write-ahead authority claims are forbidden");
   }
 
   return FinishLifecycle(ledger,

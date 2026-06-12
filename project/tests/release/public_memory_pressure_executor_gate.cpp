@@ -610,7 +610,7 @@ void RefusedPlannerDecisionIsNotExecutable(
   unsafe.current_bytes = 990;
   unsafe.soft_limit_bytes = 700;
   unsafe.hard_limit_bytes = 1000;
-  unsafe.parser_or_donor_authority = true;
+  unsafe.parser_or_reference_authority = true;
   decision = memory::PlanMemoryPressureResponse(memory::MemoryPressurePolicy{},
                                                 unsafe);
   Require(!decision.ok() && decision.fail_closed,

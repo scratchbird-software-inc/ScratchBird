@@ -65,7 +65,7 @@ OptimizerRouteEvidence AcceptedRoute(std::string digest,
   AddUnique(&route.evidence, "no_sql_backend_execution=true");
   AddUnique(&route.evidence, "mga_visibility_authority=engine_recheck_required");
   AddUnique(&route.evidence, "mga_finality_authority=engine_transaction_inventory");
-  AddUnique(&route.evidence, "parser_or_donor_finality_authority=false");
+  AddUnique(&route.evidence, "parser_or_reference_finality_authority=false");
   return route;
 }
 
@@ -79,7 +79,7 @@ OptimizerRouteEvidence RefusedRoute(std::string diagnostic,
   AddUnique(&route.evidence, "no_sql_backend_execution=true");
   AddUnique(&route.evidence, "mga_visibility_authority=engine_recheck_required");
   AddUnique(&route.evidence, "mga_finality_authority=engine_transaction_inventory");
-  AddUnique(&route.evidence, "parser_or_donor_finality_authority=false");
+  AddUnique(&route.evidence, "parser_or_reference_finality_authority=false");
   AddUnique(&route.evidence, "refusal_is_exact=true");
   return route;
 }

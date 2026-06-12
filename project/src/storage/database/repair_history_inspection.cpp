@@ -282,7 +282,7 @@ RepairHistoryInspectionResult InspectRepairHistory(
     const RepairHistoryInspectionRequest& request) {
   if (!request.durable_mga_inventory_authority ||
       request.repair_evidence_is_transaction_authority ||
-      request.parser_or_donor_authority ||
+      request.parser_or_reference_authority ||
       request.names_are_authority) {
     return InspectionError("SB-REPAIR-HISTORY-AUTHORITY-REFUSED",
                            "storage.repair_history_inspection.authority_refused");

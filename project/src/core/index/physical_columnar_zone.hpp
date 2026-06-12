@@ -88,7 +88,7 @@ struct PhysicalColumnarZoneRowEvidence {
   bool authoritative_columnar_page_evidence = true;
   bool physically_deleted = false;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
   bool summary_visibility_authority_claimed = false;
@@ -147,7 +147,7 @@ struct PhysicalColumnarZoneSegment {
   bool exact_recheck_required = true;
   bool visibility_finality_authority = false;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
   std::vector<PhysicalColumnarZoneRowGroupSummary> row_groups;

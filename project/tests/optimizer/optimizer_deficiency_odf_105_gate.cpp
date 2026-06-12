@@ -55,7 +55,7 @@ void RequireEvidenceHygiene(const std::vector<std::string>& evidence) {
   for (const auto& item : evidence) {
     for (const auto forbidden :
          {"docs/", "execution-plans", "findings", "contracts", "references",
-          "parser_or_donor_authority=true",
+          "parser_or_reference_authority=true",
           "provider_transaction_finality_authority=true",
           "provider_visibility_authority=true",
           "provider_security_policy_authority=true",
@@ -339,8 +339,8 @@ void ExpectFallback(const Request& request,
           "ODF-105 scalar fallback evidence missing");
   Require(EvidenceHas(result.evidence, "executor.scoring_kernel_route=odf105"),
           "ODF-105 executor route evidence missing");
-  Require(EvidenceHas(result.evidence, "parser_or_donor_authority=false"),
-          "ODF-105 parser/donor non-authority evidence missing");
+  Require(EvidenceHas(result.evidence, "parser_or_reference_authority=false"),
+          "ODF-105 parser/reference non-authority evidence missing");
   RequireEvidenceHygiene(result.evidence);
 }
 
@@ -355,8 +355,8 @@ void ExpectRefusal(const Request& request,
           "ODF-105 refusal evidence missing");
   Require(EvidenceHas(result.evidence, "executor.scoring_kernel_route=odf105"),
           "ODF-105 executor refusal route evidence missing");
-  Require(EvidenceHas(result.evidence, "parser_or_donor_authority=false"),
-          "ODF-105 refusal parser/donor non-authority evidence missing");
+  Require(EvidenceHas(result.evidence, "parser_or_reference_authority=false"),
+          "ODF-105 refusal parser/reference non-authority evidence missing");
   RequireEvidenceHygiene(result.evidence);
 }
 
@@ -460,9 +460,9 @@ void UnsafeAuthorityAndRawAccessRefuseClosed() {
                 "ODF-105 redaction authority claim was accepted");
 
   auto parser = BaseRequest(Kind::kTimeAggregate);
-  parser.provider.manifest.claims_parser_or_donor_authority = true;
+  parser.provider.manifest.claims_parser_or_reference_authority = true;
   ExpectRefusal(parser, "SB_SCORING_KERNEL.UNSAFE_PROVIDER_AUTHORITY",
-                "ODF-105 parser/donor authority claim was accepted");
+                "ODF-105 parser/reference authority claim was accepted");
 
   auto recovery = BaseRequest(Kind::kJsonPath);
   recovery.provider.manifest.claims_recovery_authority = true;

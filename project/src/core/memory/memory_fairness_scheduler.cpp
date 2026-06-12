@@ -19,7 +19,7 @@ using scratchbird::core::platform::MakeDiagnostic;
 using scratchbird::core::platform::StatusCode;
 
 constexpr const char* kFairnessAuthorityScope =
-    "evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_donor_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority";
+    "evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_cluster_or_agent_action_authority";
 
 Status FairnessStatus(StatusCode code, Severity severity) {
   return {code, severity, Subsystem::memory};
@@ -63,7 +63,7 @@ bool SafeProvenance(const HierarchicalMemoryBudgetProvenance& provenance,
     *reason = "engine_mga_and_memory_evidence_only_provenance_required";
     return false;
   }
-  if (provenance.parser_authority || provenance.donor_authority ||
+  if (provenance.parser_authority || provenance.reference_authority ||
       provenance.transaction_finality_authority ||
       provenance.visibility_authority || provenance.recovery_authority ||
       provenance.authorization_authority || provenance.benchmark_authority ||
@@ -118,7 +118,7 @@ DiagnosticRecord MakeFairnessDiagnostic(
       std::move(arguments),
       {},
       "core.memory.multi_tenant_memory_fairness_scheduler",
-      "Use CEIC-025 scheduling decisions only as memory admission evidence; do not treat memory evidence as transaction, security, recovery, parser, donor, optimizer, index, cluster, or agent authority.");
+      "Use CEIC-025 scheduling decisions only as memory admission evidence; do not treat memory evidence as transaction, security, recovery, parser, reference, optimizer, index, cluster, or agent authority.");
 }
 
 }  // namespace

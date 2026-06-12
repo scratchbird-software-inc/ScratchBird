@@ -293,7 +293,7 @@ void RequireGeneratedRegistryRows() {
     const char* row_id;
     const char* canonical_name;
   } expected_rows[] = {
-      {"SBSQL-1A0000000001", "migrate_from_donor"},
+      {"SBSQL-1A0000000001", "migrate_from_reference"},
       {"SBSQL-1A0000000002", "alter_migration"},
       {"SBSQL-1A0000000003", "show_migration"},
       {"SBSQL-1A0000000004", "show_migrations"},
@@ -442,17 +442,17 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
       "019f0000-0000-7000-8000-000000004301");
 
   const auto begin = RequireMigrationRoute(
-      "MIGRATE FROM DONOR postgres WITH PACKAGE pg_compat_pack;",
-      "op.migration.begin_from_donor",
-      "SBLR_MIGRATION_BEGIN_FROM_DONOR",
+      "MIGRATE FROM REFERENCE postgres WITH PACKAGE pg_compat_pack;",
+      "op.migration.begin_from_reference",
+      "SBLR_MIGRATION_BEGIN_FROM_REFERENCE",
       "EngineBeginMigration",
       "rs.migration.status.v1");
   Require(HasValue(begin.envelope.descriptor_refs, "sys.migration.context"),
           "Gate 004 begin migration descriptor missing");
-  Require(Contains(begin.envelope.payload, "\"donor_profile\":\"postgres\""),
-          "Gate 004 begin migration donor profile operand missing");
-  Require(Contains(begin.envelope.payload, "\"donor_package\":\"pg_compat_pack\""),
-          "Gate 004 begin migration donor package operand missing");
+  Require(Contains(begin.envelope.payload, "\"reference_profile\":\"postgres\""),
+          "Gate 004 begin migration reference profile operand missing");
+  Require(Contains(begin.envelope.payload, "\"reference_package\":\"pg_compat_pack\""),
+          "Gate 004 begin migration reference package operand missing");
   RequireSecurityRefusal(begin, context);
   auto begin_result = DispatchMigrationRoute(context, begin);
   Require(begin_result.api_result.ok, "Gate 004 begin migration API failed");
@@ -460,12 +460,12 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
           "Gate 004 begin migration result shape drifted");
   Require(HasEvidence(begin_result.api_result, "engine_api_function", "EngineBeginMigration"),
           "Gate 004 begin migration API evidence missing");
-  Require(HasEvidence(begin_result.api_result, "donor_profile", "postgres"),
-          "Gate 004 begin migration donor profile evidence missing");
-  Require(HasEvidence(begin_result.api_result, "donor_storage_authority_accepted", "false"),
-          "Gate 004 begin migration accepted donor storage authority");
-  Require(HasEvidence(begin_result.api_result, "donor_finality_accepted", "false"),
-          "Gate 004 begin migration accepted donor finality");
+  Require(HasEvidence(begin_result.api_result, "reference_profile", "postgres"),
+          "Gate 004 begin migration reference profile evidence missing");
+  Require(HasEvidence(begin_result.api_result, "reference_storage_authority_accepted", "false"),
+          "Gate 004 begin migration accepted reference storage authority");
+  Require(HasEvidence(begin_result.api_result, "reference_finality_accepted", "false"),
+          "Gate 004 begin migration accepted reference finality");
   Require(HasEvidence(begin_result.api_result, "private_cluster_execution", "false"),
           "Gate 004 begin migration entered private cluster execution");
   Require(HasEvidence(begin_result.api_result, "wal_recovery_authority", "false"),
@@ -523,10 +523,10 @@ std::string RequireMigrationEnginePath(const std::filesystem::path& path,
           "Gate 004 show migrations returned no rows");
   Require(FirstRowValue(show_all_result.api_result, "migration_uuid") == migration_uuid,
           "Gate 004 show migrations did not list migration UUID");
-  Require(FirstRowValue(show_all_result.api_result, "donor_storage_authority_accepted") == "false",
-          "Gate 004 show migrations row accepted donor storage authority");
-  Require(FirstRowValue(show_all_result.api_result, "donor_finality_accepted") == "false",
-          "Gate 004 show migrations row accepted donor finality");
+  Require(FirstRowValue(show_all_result.api_result, "reference_storage_authority_accepted") == "false",
+          "Gate 004 show migrations row accepted reference storage authority");
+  Require(FirstRowValue(show_all_result.api_result, "reference_finality_accepted") == "false",
+          "Gate 004 show migrations row accepted reference finality");
 
   CommitEngineTransaction(context);
   return migration_uuid;
@@ -564,10 +564,10 @@ void RequireMigrationReopenPath(const std::filesystem::path& path,
           "Gate 004 reopen show migration UUID drifted");
   Require(FirstRowValue(show_result.api_result, "state") == "running",
           "Gate 004 reopen show migration did not preserve running state");
-  Require(FirstRowValue(show_result.api_result, "donor_storage_authority_accepted") == "false",
-          "Gate 004 reopen show migration accepted donor storage authority");
-  Require(FirstRowValue(show_result.api_result, "donor_finality_accepted") == "false",
-          "Gate 004 reopen show migration accepted donor finality");
+  Require(FirstRowValue(show_result.api_result, "reference_storage_authority_accepted") == "false",
+          "Gate 004 reopen show migration accepted reference storage authority");
+  Require(FirstRowValue(show_result.api_result, "reference_finality_accepted") == "false",
+          "Gate 004 reopen show migration accepted reference finality");
 
   const auto show_all = RequireMigrationRoute(
       "SHOW MIGRATIONS;",
@@ -592,8 +592,8 @@ void RequireMigrationReopenPath(const std::filesystem::path& path,
 int main() {
   ConfigureMemoryFixture();
   RequireGeneratedRegistryRows();
-  RequireNegativeParserShape("MIGRATE FROM DONOR postgres;",
-                             "migrate_from_donor_requires_donor_profile_with_package_ref");
+  RequireNegativeParserShape("MIGRATE FROM REFERENCE postgres;",
+                             "migrate_from_reference_requires_reference_profile_with_package_ref");
   RequireNegativeParserShape("ALTER MIGRATION migration_1 STOP;",
                              "alter_migration_requires_ref_and_start_pause_resume_abort_or_finalize");
 

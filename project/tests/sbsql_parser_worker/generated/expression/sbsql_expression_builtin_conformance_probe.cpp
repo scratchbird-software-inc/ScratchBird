@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "expression/expression_catalog.hpp"
-#include "expression/donor_variable_compatibility.hpp"
+#include "expression/reference_variable_compatibility.hpp"
 #include "lexer/lexer.hpp"
 #include "registry/generated/sbsql_generated_registry.hpp"
 
@@ -33,16 +33,16 @@ bool IsExpressionRow(const GeneratedSurfaceRegistryRow& row) {
   return row.family == "expression_runtime";
 }
 
-bool IsDonorCompatibilityRow(const GeneratedSurfaceRegistryRow& row) {
-  return IsDonorVariableCompatibilitySurface(row.surface_id) ||
-         IsDonorVariableCompatibilitySpelling(row.canonical_name);
+bool IsReferenceCompatibilityRow(const GeneratedSurfaceRegistryRow& row) {
+  return IsReferenceVariableCompatibilitySurface(row.surface_id) ||
+         IsReferenceVariableCompatibilitySpelling(row.canonical_name);
 }
 
 bool ValidateGeneratedRegistryCoverage() {
   bool ok = true;
   std::size_t native_registry_count = 0;
   std::size_t total_registry_count = 0;
-  std::size_t donor_compatibility_count = 0;
+  std::size_t reference_compatibility_count = 0;
   std::size_t function_count = 0;
   std::size_t operator_count = 0;
   std::size_t variable_count = 0;
@@ -79,11 +79,11 @@ bool ValidateGeneratedRegistryCoverage() {
   for (const auto& row : GeneratedSurfaceRegistryRows()) {
     if (!IsExpressionRow(row)) continue;
     ++total_registry_count;
-    if (IsDonorCompatibilityRow(row)) {
-      ++donor_compatibility_count;
+    if (IsReferenceCompatibilityRow(row)) {
+      ++reference_compatibility_count;
       ok &= Require(FindExpressionSurfaceById(row.surface_id) == nullptr,
                     std::string(row.surface_id) +
-                        " donor compatibility row leaked into native expression descriptor catalog");
+                        " reference compatibility row leaked into native expression descriptor catalog");
       continue;
     }
     ++native_registry_count;
@@ -150,10 +150,10 @@ bool ValidateGeneratedRegistryCoverage() {
   ok &= Require(BuiltinExpressionSurfaceDescriptors().size() == native_registry_count,
                 "expression descriptor count does not match native registry row count");
   ok &= Require(total_registry_count == 1534, "expected 1534 expression_runtime rows");
-  ok &= Require(donor_compatibility_count == 27,
-                "expected 27 generated donor variable compatibility expression rows");
-  ok &= Require(BuiltinDonorVariableCompatibilityDescriptors().size() == 29,
-                "expected 29 donor variable compatibility descriptors");
+  ok &= Require(reference_compatibility_count == 27,
+                "expected 27 generated reference variable compatibility expression rows");
+  ok &= Require(BuiltinReferenceVariableCompatibilityDescriptors().size() == 29,
+                "expected 29 reference variable compatibility descriptors");
   ok &= Require(native_registry_count == 1507, "expected 1507 native expression_runtime rows");
   ok &= Require(function_count == 1505, "expected 1505 native expression function rows");
   ok &= Require(operator_count == 1, "expected 1 native expression operator row");
@@ -180,8 +180,8 @@ bool ValidateLookupAndBehaviorDescriptors() {
 
   const auto* rowcount = FindExpressionSurfaceByName("@@rowcount");
   ok &= Require(rowcount == nullptr, "@@ROWCOUNT must not be a native SBsql descriptor");
-  const auto* rowcount_compat = FindDonorVariableCompatibilityBySpelling("@@rowcount");
-  ok &= Require(rowcount_compat != nullptr, "missing @@ROWCOUNT donor compatibility descriptor");
+  const auto* rowcount_compat = FindReferenceVariableCompatibilityBySpelling("@@rowcount");
+  ok &= Require(rowcount_compat != nullptr, "missing @@ROWCOUNT reference compatibility descriptor");
   if (rowcount_compat != nullptr) {
     ok &= Require(rowcount_compat->canonical_variable_id == "ctx_last_row_count",
                   "@@ROWCOUNT canonical variable mismatch");
@@ -191,8 +191,8 @@ bool ValidateLookupAndBehaviorDescriptors() {
                   "@@ROWCOUNT SBLR opcode mismatch");
     ok &= Require(!rowcount_compat->native_sbsql_surface,
                   "@@ROWCOUNT must not be marked native SBsql");
-    ok &= Require(rowcount_compat->donor_parser_only,
-                  "@@ROWCOUNT must be donor-parser-only metadata");
+    ok &= Require(rowcount_compat->reference_parser_only,
+                  "@@ROWCOUNT must be reference-parser-only metadata");
     ok &= Require(!rowcount_compat->exact_refusal,
                   "@@ROWCOUNT should lower to a canonical variable read");
   }
@@ -256,7 +256,7 @@ bool ValidateLexerToCatalogBridge() {
     if (token.kind == TokenKind::kVariable && token.text == "@@ROWCOUNT") {
       saw_system_variable =
           FindExpressionSurfaceByName(token.text) == nullptr &&
-          FindDonorVariableCompatibilityBySpelling(token.text) != nullptr;
+          FindReferenceVariableCompatibilityBySpelling(token.text) != nullptr;
     }
     if (token.kind == TokenKind::kVariable && token.text == "@session_var") {
       saw_session_variable = FindExpressionSurfaceByName("@") != nullptr;
@@ -267,7 +267,7 @@ bool ValidateLexerToCatalogBridge() {
     }
   }
   ok &= Require(saw_system_variable,
-                "lexer token @@ROWCOUNT did not bridge to donor compatibility descriptor");
+                "lexer token @@ROWCOUNT did not bridge to reference compatibility descriptor");
   ok &= Require(saw_session_variable, "lexer token @session_var did not bridge to variable marker descriptor");
   ok &= Require(saw_function_identifier, "lexer token COALESCE did not bridge to function descriptor");
   return ok;

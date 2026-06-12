@@ -7,7 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "api_types.hpp"
-#include "expression/donor_variable_compatibility.hpp"
+#include "expression/reference_variable_compatibility.hpp"
 #include "expression/expression_catalog.hpp"
 #include "sblr_context_variables.hpp"
 #include "sblr_dispatch.hpp"
@@ -51,7 +51,7 @@ api::EngineRequestContext TestContext() {
 }
 
 sblr::SblrDispatchResult DispatchSystemVariable(std::string_view variable_id,
-                                                std::string_view donor_source = {}) {
+                                                std::string_view reference_source = {}) {
   sblr::SblrDispatchRequest request;
   request.context = TestContext();
   request.envelope = sblr::MakeSblrEnvelope(
@@ -63,22 +63,22 @@ sblr::SblrDispatchResult DispatchSystemVariable(std::string_view variable_id,
     request.envelope.operands.push_back(
         {"text", "variable_id", std::string(variable_id)});
   }
-  if (!donor_source.empty()) {
+  if (!reference_source.empty()) {
     request.envelope.operands.push_back(
-        {"text", "donor_source_spelling", std::string(donor_source)});
+        {"text", "reference_source_spelling", std::string(reference_source)});
   }
   return sblr::DispatchSblrOperation(request);
 }
 
-sblr::SblrDispatchResult DispatchDonorVariable(std::string_view donor_spelling) {
+sblr::SblrDispatchResult DispatchReferenceVariable(std::string_view reference_spelling) {
   const auto binding =
-      parser::LowerDonorVariableCompatibilityBySpelling(donor_spelling);
+      parser::LowerReferenceVariableCompatibilityBySpelling(reference_spelling);
   sblr::SblrDispatchRequest request;
   request.context = TestContext();
   request.envelope = sblr::MakeSblrEnvelope(
       binding.sblr_operation_id,
       binding.sblr_opcode,
-      "sbsql-missing-functionality-donor-variable-lowering-contract");
+      "sbsql-missing-functionality-reference-variable-lowering-contract");
   request.envelope.requires_transaction_context = false;
   for (const auto& operand : binding.operands) {
     request.envelope.operands.push_back(
@@ -154,19 +154,19 @@ bool ValidateParserCompatibilityContract() {
   std::size_t accepted_count = 0;
   std::size_t refusal_count = 0;
   for (const auto& descriptor :
-       parser::BuiltinDonorVariableCompatibilityDescriptors()) {
+       parser::BuiltinReferenceVariableCompatibilityDescriptors()) {
     ok &= Require(!descriptor.native_sbsql_surface,
-                  std::string(descriptor.donor_spelling) +
+                  std::string(descriptor.reference_spelling) +
                       " incorrectly marked native SBsql");
-    ok &= Require(descriptor.donor_parser_only,
-                  std::string(descriptor.donor_spelling) +
-                      " must be donor-parser-only metadata");
+    ok &= Require(descriptor.reference_parser_only,
+                  std::string(descriptor.reference_spelling) +
+                      " must be reference-parser-only metadata");
     ok &= Require(descriptor.sblr_operation_id ==
                       "expression.system_variable_read",
-                  std::string(descriptor.donor_spelling) +
+                  std::string(descriptor.reference_spelling) +
                       " must target SBLR system variable read");
     ok &= Require(descriptor.sblr_opcode == "SBLR_SYSTEM_VARIABLE_READ",
-                  std::string(descriptor.donor_spelling) +
+                  std::string(descriptor.reference_spelling) +
                       " must target SBLR_SYSTEM_VARIABLE_READ");
     if (!descriptor.surface_id.empty() &&
         descriptor.surface_id.rfind("SBSQL-", 0) == 0) {
@@ -174,29 +174,29 @@ bool ValidateParserCompatibilityContract() {
       ok &= Require(parser::FindExpressionSurfaceById(descriptor.surface_id) ==
                         nullptr,
                     std::string(descriptor.surface_id) +
-                        " donor variable row leaked into native expression catalog");
+                        " reference variable row leaked into native expression catalog");
     }
     if (descriptor.exact_refusal) {
       ++refusal_count;
       ok &= Require(!descriptor.diagnostic_id.empty(),
-                    std::string(descriptor.donor_spelling) +
+                    std::string(descriptor.reference_spelling) +
                         " exact refusal lacks diagnostic id");
     } else {
       ++accepted_count;
       ok &= Require(!descriptor.canonical_variable_id.empty(),
-                    std::string(descriptor.donor_spelling) +
-                        " accepted donor variable lacks canonical variable id");
+                    std::string(descriptor.reference_spelling) +
+                        " accepted reference variable lacks canonical variable id");
     }
   }
   ok &= Require(generated_row_count == 27,
-                "expected 27 generated donor variable compatibility rows");
+                "expected 27 generated reference variable compatibility rows");
   ok &= Require(accepted_count >= 14,
                 "expected accepted canonical variable translations");
   ok &= Require(refusal_count >= 10,
-                "expected explicit donor variable refusal translations");
+                "expected explicit reference variable refusal translations");
 
   const auto* rowcount =
-      parser::FindDonorVariableCompatibilityBySpelling("@@ROWCOUNT");
+      parser::FindReferenceVariableCompatibilityBySpelling("@@ROWCOUNT");
   ok &= Require(rowcount != nullptr, "missing @@ROWCOUNT compatibility row");
   if (rowcount != nullptr) {
     ok &= Require(rowcount->canonical_variable_id == "ctx_last_row_count",
@@ -206,7 +206,7 @@ bool ValidateParserCompatibilityContract() {
   }
 
   const auto* autocommit =
-      parser::FindDonorVariableCompatibilityBySpelling("@@autocommit");
+      parser::FindReferenceVariableCompatibilityBySpelling("@@autocommit");
   ok &= Require(autocommit != nullptr,
                 "missing @@autocommit compatibility row");
   if (autocommit != nullptr) {
@@ -222,12 +222,12 @@ bool ValidateParserCompatibilityContract() {
   ok &= Require(parser::FindExpressionSurfaceByName("SYSTEM_VAR('var')") !=
                     nullptr,
                 "SYSTEM_VAR('var') must remain native SBsql syntax");
-  ok &= Require(parser::FindDonorVariableCompatibilityBySpelling(
+  ok &= Require(parser::FindReferenceVariableCompatibilityBySpelling(
                     "SYSTEM_VAR('var')") == nullptr,
-                "SYSTEM_VAR('var') must not be donor-only compatibility metadata");
+                "SYSTEM_VAR('var') must not be reference-only compatibility metadata");
 
   const auto rowcount_binding =
-      parser::LowerDonorVariableCompatibilityBySpelling("@@ROWCOUNT");
+      parser::LowerReferenceVariableCompatibilityBySpelling("@@ROWCOUNT");
   ok &= Require(rowcount_binding.sblr_operation_id ==
                     "expression.system_variable_read",
                 "@@ROWCOUNT lowering operation mismatch");
@@ -239,7 +239,7 @@ bool ValidateParserCompatibilityContract() {
                 "@@ROWCOUNT lowering must not be an exact refusal");
 
   const auto autocommit_binding =
-      parser::LowerDonorVariableCompatibilityBySpelling("@@autocommit");
+      parser::LowerReferenceVariableCompatibilityBySpelling("@@autocommit");
   ok &= Require(autocommit_binding.exact_refusal,
                 "@@autocommit lowering must be an exact refusal");
   ok &= Require(autocommit_binding.diagnostic_id ==
@@ -297,9 +297,9 @@ bool ValidateDispatchRoute() {
                             "SBLR_SYSTEM_VARIABLE_READ"),
                 "rowcount SBLR opcode evidence missing");
   ok &= Require(HasEvidence(rowcount.api_result,
-                            "donor_source_spelling",
+                            "reference_source_spelling",
                             "@@ROWCOUNT"),
-                "rowcount donor source evidence missing");
+                "rowcount reference source evidence missing");
   ok &= Require(HasEvidence(rowcount.api_result,
                             "mga_visibility_authority",
                             "unchanged_context_read_no_lock_no_snapshot_mutation"),
@@ -346,7 +346,7 @@ bool ValidateDispatchRoute() {
                               "SB_DIAG_CONTEXT_VARIABLE_UNKNOWN"),
                 "unknown variable diagnostic mismatch");
 
-  const auto lowered_rowcount = DispatchDonorVariable("@@ROWCOUNT");
+  const auto lowered_rowcount = DispatchReferenceVariable("@@ROWCOUNT");
   ok &= Require(lowered_rowcount.envelope_validated,
                 "lowered @@ROWCOUNT envelope failed validation");
   ok &= Require(lowered_rowcount.accepted,
@@ -356,18 +356,18 @@ bool ValidateDispatchRoute() {
   ok &= Require(ReadSingleValue(lowered_rowcount.api_result) == "7",
                 "lowered @@ROWCOUNT value mismatch");
   ok &= Require(HasEvidence(lowered_rowcount.api_result,
-                            "donor_source_spelling",
+                            "reference_source_spelling",
                             "@@ROWCOUNT"),
-                "lowered @@ROWCOUNT donor source evidence missing");
+                "lowered @@ROWCOUNT reference source evidence missing");
 
-  const auto lowered_spid = DispatchDonorVariable("@@SPID");
+  const auto lowered_spid = DispatchReferenceVariable("@@SPID");
   ok &= Require(lowered_spid.api_result.ok,
                 "lowered @@SPID API result failed");
   ok &= Require(ReadSingleValue(lowered_spid.api_result) ==
                     "019f1000-0000-7000-8000-000000000003",
                 "lowered @@SPID value mismatch");
 
-  const auto lowered_autocommit = DispatchDonorVariable("@@autocommit");
+  const auto lowered_autocommit = DispatchReferenceVariable("@@autocommit");
   ok &= Require(lowered_autocommit.envelope_validated,
                 "lowered @@autocommit envelope failed validation");
   ok &= Require(lowered_autocommit.accepted,

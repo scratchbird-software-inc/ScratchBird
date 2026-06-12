@@ -69,7 +69,7 @@ IndexArtifactDecision PlanIndexArtifactOperation(const IndexArtifactRequest& req
                   metadata_validation.diagnostic.diagnostic_code);
   }
   if ((request.operation == IndexArtifactOperation::import_definition ||
-       request.operation == IndexArtifactOperation::donor_import) &&
+       request.operation == IndexArtifactOperation::reference_import) &&
       !request.policy_allows_import) {
     return Refuse("SB-INDEX-ARTIFACT-IMPORT-POLICY-REFUSED", "index.artifact.import_policy_refused", true);
   }
@@ -80,7 +80,7 @@ IndexArtifactDecision PlanIndexArtifactOperation(const IndexArtifactRequest& req
   decision.status = OkStatus();
   decision.allowed = true;
   decision.canonical_artifact_class = "index.definition:" + request.semantic_profile_id;
-  decision.emulated = !request.donor_name.empty();
+  decision.emulated = !request.reference_name.empty();
   decision.durable_metadata_valid = true;
   decision.checksum_profile_bound =
       request.durable_metadata.checksum_profile !=
@@ -95,7 +95,7 @@ IndexArtifactDecision PlanIndexArtifactOperation(const IndexArtifactRequest& req
       request.durable_metadata.provider_evidence_hash_bound;
   decision.family_validator_passed =
       request.durable_metadata.family_validator_passed;
-  decision.requires_rebuild = request.operation == IndexArtifactOperation::donor_import ||
+  decision.requires_rebuild = request.operation == IndexArtifactOperation::reference_import ||
                               request.operation == IndexArtifactOperation::seed_bind ||
                               !request.resource_epoch_current;
   decision.requires_verify = true;

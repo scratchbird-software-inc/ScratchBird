@@ -1,0 +1,26 @@
+{
+  "schema_id": "scratchbird.sblr_surface.fixture_hashes.v1",
+  "fixture_root": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03",
+  "hash_algorithm": "sha256",
+  "generated_resource_policy": {
+    "gate_kind": "determinism_drift_guardrail",
+    "intentional_update_path": "update promoted CSV fixtures and this hash manifest in the same reviewed change",
+    "product_completion_claim": false
+  },
+  "files": {
+    "REFERENCE_GAP_SUMMARY.csv": "08bd62c21604376964304d75d683bfa5575df6f63edb180593e433731c5d760e",
+    "REFERENCE_INTERNAL_META_OPCODE_CLEANUP_MATRIX.csv": "75e4953bb0fa86bcbc60655ca907ca79431431e3cad9d3b6bbe669571a8102a5",
+    "EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv": "b9438d77a4211d6a62c9d2ac7b4514f234f00de746bf8789d46b8f6ba2a7c203",
+    "IMPLEMENTATION_EXECUTION_PLAN_SEED_MATRIX.csv": "21421b6ce8e7f30bb91553a1f6a34f3675ac88d84aafec144eb194bfbacd9973",
+    "NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv": "9322171ca4fe996fc31bb8c6c8391d2496d498033472972ead0076d09d3c4e17",
+    "SBLR_STALE_DEFERRED_ALIAS_CLEANUP_MATRIX.csv": "c617a2a7a5fe7e16ff48bbdbace681e4434aa5f12e9622b006bfce29a7372f61",
+    "SBSQL_SBLR_FAMILY_RECONCILIATION_MATRIX.csv": "ba72ed9a96d33ae548e7f79b006ab893e94c48863553f28ddf6b27ec309ecf24",
+    "SERVER_AUTHORITY_ROLLUP.csv": "251f687d5580a1ffa2a8116ab12099287cce5d6f05c083b0991f052a979e0812",
+    "SERVER_AUTHORITY_SURFACE_MATRIX.csv": "ab54f8644c85809141c321a4e5f691137490bbc3abf96239d30e948874ff642b"
+  },
+  "json_files": {
+    "sblr_primary_family_snapshot.json": "a621d75a9d252e8b601ca94e16e201378074369d669fdbf4cd956cc69b3c786c",
+    "sblr_surface_traceability_manifest.json": "ad29455a2698ce40a7313bd5f718cde6df3eda7c868655d6fbfa060d0f15023c",
+    "sbsql_sync_requirements.json": "40f4591cdbceff5de15d64adc87505ac580a6b1466674185300c543352764253"
+  }
+}

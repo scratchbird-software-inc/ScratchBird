@@ -109,7 +109,7 @@ struct CompressionPolicyRequest {
   bool exact_uncompressed_fallback_available = true;
   bool exact_semantic_equivalence_proven = true;
   bool exact_binary_equivalence_proven = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool wal_or_finality_authority = false;
   bool update_hot = false;
   bool random_access = false;
@@ -137,7 +137,7 @@ struct CompressionPolicyDecision {
   bool exact_uncompressed_fallback_available = false;
   bool exact_semantic_equivalence_proven = false;
   bool exact_binary_equivalence_proven = false;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool wal_or_finality_authority = false;
   bool update_hot = false;
   bool random_access = false;

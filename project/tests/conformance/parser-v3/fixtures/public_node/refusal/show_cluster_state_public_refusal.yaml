@@ -4,7 +4,7 @@ surface_key: show.cluster.state
 row_kind: refusal_command
 edition_scope: refusal_public_safe
 parser_mode: native_sbsql
-donor_mode: none
+reference_mode: none
 input:
   command_text: "SHOW CLUSTER STATE;"
   source_encoding: utf8

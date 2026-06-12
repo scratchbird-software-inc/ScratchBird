@@ -330,7 +330,7 @@ void VerifyDiagnosticPolicyRows(const std::vector<Row>& diagnostic_rows) {
       Require(Contains(Field(row, "message_vector_code_policy"), "ENGINE_AUTHORITY") ||
                   Contains(Field(row, "success_vector"), "engine_mga"),
               "MGA message policy missing engine authority " + source_import_id);
-      Require(Contains(Field(row, "row_mutation_policy"), "parser_donor_provider") ||
+      Require(Contains(Field(row, "row_mutation_policy"), "parser_reference_provider") ||
                   Contains(Field(row, "notes"), "engine-owned"),
               "MGA finality ownership drift " + source_import_id);
     }

@@ -18,8 +18,8 @@ Owning slice: `FSPE-002`
 The lexer now preserves byte offsets, line/column spans, raw token text, quoted flags, literal family, keyword class, and render hints for:
 
 - whitespace, line comments, nested block comments, parser directives, and statement terminators;
-- bare, delimited, bracketed, and donor-quoted identifiers;
-- reserved/contextual/private/donor/refusal keyword classes;
+- bare, delimited, bracketed, and reference-quoted identifiers;
+- reserved/contextual/private/reference/refusal keyword classes;
 - integer, unsigned, int128, uint128, real128, decimal, float, hex, binary, and octal numeric literals;
 - string, national string, escaped string, binary, UUID, temporal, document/JSON, vector, regex, and range literals;
 - positional/named/ordinal parameters, variables, operators, symbols, and meta-command introducers.

@@ -6,11 +6,11 @@ ScratchBird Convergent Data Engine (SBcde, or SB) is an experimental database-en
 
 The project explores a convergent database-engine architecture: a single engine core with separate parser and protocol-facing components, internal UUID-based object identity, an SBLR execution boundary, and a multigenerational storage and transaction model.
 
-This repository is a public beta source release. It is intended to let interested developers, database engineers, driver authors, testers, translators, and reviewers examine the code, build it, run the available tests, and provide feedback.
+This repository is a public source-review beta release. It is intended to let interested developers, database engineers, driver authors, testers, translators, and reviewers examine the code, build it, run the available tests, and provide feedback.
 
 ## Release status
 
-This is a early beta release. This is the first public release of what was a totally private project.  There was a earlier project, but it was a proof of concept project and did not show more than the basic ideas whereas this is the opensource portion made public while the closed source cluster implementation is not made available.
+Public source-review release: this is an early beta release and the first public release of what was a private project. There was an earlier proof-of-concept project, but it did not show more than the basic ideas; this repository is the open-source portion made public while the closed-source cluster implementation is not made available.
 
 It is not presented as a production-ready system, a commercially supported product, or a drop-in replacement for any existing database engine. No claim is made about fitness for a particular use, operational suitability, performance, compatibility completeness, security certification, or support availability.
 
@@ -37,9 +37,18 @@ Public binary names are:
 - `SBsrv` - ScratchBird IPC Server
 - `SBmgr` - ScratchBird Single Node Manager
 - `SBParser` - ScratchBird Core Parser
-- `SB_FBSQL_Parser` - ScratchBird Firebird Parser
 
 `SBcmgr` is reserved for the ScratchBird Cluster Manager in cluster-enabled builds. The public standalone build does not emit `SBcmgr` unless a public cluster-manager target is present.
+
+Public Linux source-review build:
+
+```bash
+cd project
+cmake --preset public-release-linux
+cmake --build --preset public-release-linux
+ctest --preset public-release-linux
+python3 tools/release/verify_public_release_bundle.py ../build/public-release-linux/output/linux
+```
 
 ## Why this repository exists
 
@@ -62,9 +71,11 @@ During design and compatibility research, many existing database systems were st
 
 Reference systems studied include Apache Ignite, Cassandra, ClickHouse, CockroachDB, Dolt, DuckDB, Firebird, FoundationDB, immudb, InfluxDB, MariaDB, Milvus, MongoDB, MySQL, Neo4j, OpenSearch, PostgreSQL, Redis, SQLite, TiDB, TiKV, Vitess, XTDB, and YugabyteDB.
 
-These systems were used for research, comparison, requirements validation, and compatibility testing only. ScratchBird implementation source is not derived from donor engine source. Separately identified third-party and resource files retain their own upstream notices and licenses.
+These systems were used for research, comparison, requirements validation, and compatibility testing only. ScratchBird implementation source is not derived from reference-system source. Separately identified third-party and resource files retain their own upstream notices and licenses.
 
 Where this repository uses external tools, client binaries, server binaries, command-line utilities, drivers, test fixtures, or regression test suites from reference systems, those artifacts remain separate upstream materials governed by their own licenses. They are used only as external test targets or compatibility references.
+
+See `REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md` and `THIRD_PARTY_NOTICES.md` for the public repository boundary.
 
 ## Compatibility profiles
 
@@ -82,6 +93,8 @@ Benchmark results depend on hardware, operating system, compiler, configuration,
 
 Users and reviewers are encouraged to run the benchmark material themselves and report reproducible results, configuration details, failures, or suggested improvements.
 
+See `RELEASE_TERMS.md` and `KNOWN_LIMITATIONS.md` for release terminology and current public-release limits.
+
 ## Documentation
 
 Documentation in this repository may include generated material, implementation notes, manifests, test descriptions, and work-in-progress developer documentation.
@@ -93,6 +106,8 @@ Generated documentation should be treated as technical reference material, not a
 Do not report security-sensitive issues in public issues if the repository provides a private security reporting process.
 
 Security reports should include enough detail to reproduce the issue without including private credentials, production data, private keys, tokens, or sensitive logs.
+
+See `SECURITY.md` for reporting scope and supported-version policy.
 
 ## License
 

@@ -51,7 +51,7 @@ struct IndexedPhysicalOperatorRequest {
   bool durable_mga_inventory_proof = true;
   bool mga_visibility_recheck_planned = true;
   bool security_recheck_planned = true;
-  bool parser_or_donor_authority = false;
+  bool parser_or_reference_authority = false;
   bool index_or_cache_finality_authority = false;
 };
 

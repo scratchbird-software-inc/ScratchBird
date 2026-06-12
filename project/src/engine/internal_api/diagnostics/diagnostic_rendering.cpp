@@ -164,7 +164,7 @@ bool ValidateEngineRenderedResultEnvelope(const EngineRenderedResultEnvelope& en
   if (!envelope.canonical_diagnostics) { fail("canonical_diagnostics_must_be_true"); }
   if (!envelope.canonical_result_shape) { fail("canonical_result_shape_must_be_true"); }
   if (envelope.parser_finality_authority) { fail("parser_finality_authority_must_be_false"); }
-  if (envelope.donor_finality_authority) { fail("donor_finality_authority_must_be_false"); }
+  if (envelope.reference_finality_authority) { fail("reference_finality_authority_must_be_false"); }
   if (envelope.parser_package_uuid.empty()) { fail("parser_package_uuid_required"); }
   if (envelope.parser_package_version.empty()) { fail("parser_package_version_required"); }
   if (envelope.operation_id.empty()) { fail("operation_id_required"); }

@@ -51,7 +51,7 @@ struct DomainRecord {
   // Parser/request compatibility cache. Durable authority is SBNAME1 name registry.
   std::string localized_names_envelope;
   std::string comment_envelope;
-  std::string donor_alias_envelope;
+  std::string reference_alias_envelope;
   std::string validation_hook_status;
   bool dropped = false;
 };

@@ -204,8 +204,8 @@ void VerifyRoutePolicies(const std::vector<Row>& route_rows) {
             "cluster row present in P4 route matrix " + source_import_id);
     Require(Contains(Field(route, "parser_authority_policy"), "forbidden"),
             "parser authority not forbidden " + source_import_id);
-    Require(Contains(Field(route, "donor_authority_policy"), "forbidden"),
-            "donor authority not forbidden " + source_import_id);
+    Require(Contains(Field(route, "reference_authority_policy"), "forbidden"),
+            "reference authority not forbidden " + source_import_id);
     Require(Contains(Field(route, "mga_finality_policy"), "finality"),
             "MGA/finality policy missing " + source_import_id);
     route_classes.insert(Field(route, "engine_route_class"));
@@ -233,8 +233,8 @@ void VerifyRoutePolicies(const std::vector<Row>& route_rows) {
       ++mga_rows;
       Require(Contains(Field(route, "mga_finality_policy"), "engine_mga_finality"),
               "MGA finality not engine-owned " + source_import_id);
-      Require(Contains(Field(route, "mga_finality_policy"), "parser_donor_provider_finality_forbidden"),
-              "MGA donor/provider finality policy drift " + source_import_id);
+      Require(Contains(Field(route, "mga_finality_policy"), "parser_reference_provider_finality_forbidden"),
+              "MGA reference/provider finality policy drift " + source_import_id);
     }
     if (Field(route, "engine_route_class") == "engine_binding_resolution_guard") {
       ++binding_rows;
@@ -353,7 +353,7 @@ int main(int argc, char** argv) {
                   "dispatch_policy",
                   "refusal_policy",
                   "parser_authority_policy",
-                  "donor_authority_policy",
+                  "reference_authority_policy",
                   "mga_finality_policy",
                   "proof_test_name",
                   "proof_file",

@@ -218,7 +218,7 @@ void AddAuthorityEvidence(RouteCapture* capture) {
       "mga_visibility_authority=engine_transaction_inventory");
   capture->evidence.push_back(
       "transaction_finality_authority=engine_transaction_inventory");
-  capture->evidence.push_back("parser_client_donor_finality_authority=false");
+  capture->evidence.push_back("parser_client_reference_finality_authority=false");
   capture->evidence.push_back("security_redaction_rechecked=true");
 }
 
@@ -661,7 +661,7 @@ CaseValidation CompareCaptures(const GeneratedCase& test_case,
       !Has(optimized.evidence,
            "transaction_finality_authority=engine_transaction_inventory") ||
       !Has(optimized.evidence,
-           "parser_client_donor_finality_authority=false")) {
+           "parser_client_reference_finality_authority=false")) {
     validation.diagnostics.push_back(std::string(kRegressionFailed) +
                                      ".AUTHORITY_EVIDENCE_MISSING");
   }
@@ -707,9 +707,9 @@ void ProveOptimizerDifferentialCorpusStillMatches() {
   Require(evidence.find("mga_visibility_authority=engine_recheck_required") !=
               std::string::npos,
           "optimizer differential evidence missing MGA visibility recheck");
-  Require(evidence.find("parser_or_donor_finality_authority=false") !=
+  Require(evidence.find("parser_or_reference_finality_authority=false") !=
               std::string::npos,
-          "optimizer differential evidence missing parser/donor authority guard");
+          "optimizer differential evidence missing parser/reference authority guard");
 }
 
 platform::u64 UniqueMillis() {

@@ -69,21 +69,21 @@ opt::OptimizerBenchmarkSampleGroupEvidence BenchmarkSample(std::string phase) {
   return sample;
 }
 
-opt::OptimizerBenchmarkDonorMethodologyEvidence BenchmarkDonor() {
-  opt::OptimizerBenchmarkDonorMethodologyEvidence donor;
-  donor.donor_engine = "postgresql";
-  donor.donor_version = "ceic053-reference";
-  donor.donor_native_method = "donor_native_reference_only";
-  donor.comparable_status = "comparable";
-  donor.dataset_schema_mapping_digest = "sha256:ceic053-donor-dataset";
-  donor.workload_mapping_digest = "sha256:ceic053-donor-workload";
-  donor.route_equivalence_contract_hash = "sha256:ceic053-donor-route";
-  donor.donor_result_hash = "sha256:ceic053-donor-result";
-  donor.donor_transaction_policy =
+opt::OptimizerBenchmarkReferenceMethodologyEvidence BenchmarkReference() {
+  opt::OptimizerBenchmarkReferenceMethodologyEvidence reference;
+  reference.reference_engine = "postgresql";
+  reference.reference_version = "ceic053-reference";
+  reference.reference_native_method = "reference_native_reference_only";
+  reference.comparable_status = "comparable";
+  reference.dataset_schema_mapping_digest = "sha256:ceic053-reference-dataset";
+  reference.workload_mapping_digest = "sha256:ceic053-reference-workload";
+  reference.route_equivalence_contract_hash = "sha256:ceic053-reference-route";
+  reference.reference_result_hash = "sha256:ceic053-reference-result";
+  reference.reference_transaction_policy =
       "reference_only_scratchbird_mga_not_substituted";
-  donor.donor_timing_policy = "reference_methodology_only";
-  donor.donor_reference_only = true;
-  return donor;
+  reference.reference_timing_policy = "reference_methodology_only";
+  reference.reference_reference_only = true;
+  return reference;
 }
 
 opt::PersistedOptimizerBenchmarkEvidenceRecord BenchmarkRecord() {
@@ -127,7 +127,7 @@ opt::PersistedOptimizerBenchmarkEvidenceRecord BenchmarkRecord() {
   record.redaction_applied = true;
   record.production_benchmark_clean_claim = false;
   record.sample_groups = {BenchmarkSample("cold"), BenchmarkSample("warm")};
-  record.donor_methodology = {BenchmarkDonor()};
+  record.reference_methodology = {BenchmarkReference()};
   return record;
 }
 
@@ -376,31 +376,31 @@ void BenchmarkEvidenceMustUseCeic051Schema() {
           "CEIC-053 nested benchmark diagnostic missing");
 }
 
-void AuthorityDonorClusterAndBenchmarkOverclaimsFailClosed() {
+void AuthorityReferenceClusterAndBenchmarkOverclaimsFailClosed() {
   auto record = Record(opt::OptimizerPersistentArtifactKind::kPlanCache,
                        opt::OptimizerCrashPoint::kAfterPublish,
                        opt::OptimizerReopenDecision::kReloadAccepted);
   record.authority.transaction_finality_authority = true;
   record.authority.parser_authority = true;
-  record.donor_reference_only = false;
-  record.donor_as_authority = true;
-  record.uses_donor_storage_or_finality_for_scratchbird = true;
+  record.reference_reference_only = false;
+  record.reference_as_authority = true;
+  record.uses_reference_storage_or_finality_for_scratchbird = true;
   record.production_benchmark_clean_claim = true;
   const auto drift =
       opt::ValidateOptimizerCrashReopenPersistenceRecord(record);
-  Require(!drift.ok, "CEIC-053 authority/donor overclaim was accepted");
+  Require(!drift.ok, "CEIC-053 authority/reference overclaim was accepted");
   Require(HasDiagnostic(drift.diagnostics, "FORBIDDEN_AUTHORITY"),
           "CEIC-053 forbidden authority diagnostic missing");
-  Require(HasDiagnostic(drift.diagnostics, "DONOR_AUTHORITY_DRIFT"),
-          "CEIC-053 donor diagnostic missing");
+  Require(HasDiagnostic(drift.diagnostics, "REFERENCE_AUTHORITY_DRIFT"),
+          "CEIC-053 reference diagnostic missing");
   Require(HasDiagnostic(drift.diagnostics, "BENCHMARK_CLEAN_OVERCLAIM"),
           "CEIC-053 benchmark overclaim diagnostic missing");
 
   auto local_cluster = record;
   local_cluster.authority = {};
-  local_cluster.donor_reference_only = true;
-  local_cluster.donor_as_authority = false;
-  local_cluster.uses_donor_storage_or_finality_for_scratchbird = false;
+  local_cluster.reference_reference_only = true;
+  local_cluster.reference_as_authority = false;
+  local_cluster.uses_reference_storage_or_finality_for_scratchbird = false;
   local_cluster.production_benchmark_clean_claim = false;
   local_cluster.route_kind = "cluster";
   local_cluster.cluster_mode =
@@ -460,7 +460,7 @@ int main() {
   PartialCorruptPlaceholderEvidenceFailsClosed();
   CrashPointSemanticsFailClosed();
   BenchmarkEvidenceMustUseCeic051Schema();
-  AuthorityDonorClusterAndBenchmarkOverclaimsFailClosed();
+  AuthorityReferenceClusterAndBenchmarkOverclaimsFailClosed();
   MatrixGapsFailClosed();
   std::cout << "ceic_053_optimizer_crash_reopen_persistence_gate=pass\n";
   return EXIT_SUCCESS;

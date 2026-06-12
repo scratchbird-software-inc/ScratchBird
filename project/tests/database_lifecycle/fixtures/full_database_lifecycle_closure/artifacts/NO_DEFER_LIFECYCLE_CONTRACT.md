@@ -81,7 +81,7 @@ applicable item below is true.
    message-vector rendering, redaction, retryability, audit policy, and owner.
 8. Every implementation path preserves MGA transaction, rollback, recovery,
    cleanup, and finality authority.
-9. Parser, listener, manager, driver, adapter, tool, donor, UDR, cache,
+9. Parser, listener, manager, driver, adapter, tool, reference, UDR, cache,
    checkpoint, route, and job state do not become storage, catalog, security,
    transaction, or SBLR execution authority.
 10. Tests or static gates cover success, refusal, invalid transition,
@@ -255,7 +255,7 @@ narrower valid option.
 | `lifecycle.spec_to_test_traceability` | `implemented_engine_internal` as generator/static gate proving complete mapping. |
 | `lifecycle.upgrade_migration_refusal` | `implemented_engine_internal` plus open/reopen/format/migration/refusal tests. |
 | `lifecycle.security_threat_model_gate` | `implemented_engine_internal` as threat-model and abuse-case gates. |
-| `lifecycle.donor_mapping` | `implemented_full_route` for accepted mappings or `canonical_fail_closed` for emulated/non-file diagnostics. |
+| `lifecycle.reference_mapping` | `implemented_full_route` for accepted mappings or `canonical_fail_closed` for emulated/non-file diagnostics. |
 | `lifecycle.observability_diagnostics` | `implemented_full_route` or `implemented_engine_internal` per surface, with diagnostics, metrics, audit, and cache invalidation tests. |
 | `lifecycle.exhaustive_regression` | `implemented_engine_internal` as generated CTest/static coverage. |
 | `lifecycle.hardening_fault_injection` | `implemented_engine_internal` as fault injection and authority-drift gates. |
@@ -264,7 +264,7 @@ narrower valid option.
 ## Full-Route Requirements
 
 Any lifecycle operation exposed to a client, CLI, admin surface, parser profile,
-donor mapping, manager, listener, or IPC route must prove:
+reference mapping, manager, listener, or IPC route must prove:
 
 1. Client or command input reaches only the intended listener/parser/IPC/server
    route.
@@ -306,11 +306,11 @@ runtime-only by canonical rule.
 
 The coordinator must reject a slice if any patch or spec text:
 
-- Replaces MGA transaction finality with WAL, redo, undo, donor log, parser
+- Replaces MGA transaction finality with WAL, redo, undo, reference log, parser
   state, cache state, checkpoint state, file timestamp, UUID order, wall-clock
   order, route acknowledgement, or job status.
 - Performs rollback outside engine MGA methods.
-- Lets parser, listener, manager, driver, donor adapter, tool, UDR, or IPC glue
+- Lets parser, listener, manager, driver, reference adapter, tool, UDR, or IPC glue
   decide authentication, authorization, transaction finality, storage identity,
   catalog visibility, policy authority, or SBLR execution semantics.
 - Treats human-facing SQL names as durable identity instead of UUID and identity
@@ -350,7 +350,7 @@ Required dependent-slice validation:
    transition, operation family, and route maps to CTest or static gates.
 3. P16 exhaustive regression proves every lifecycle operation, state transition,
    invalid transition, datatype/resource/security variation, and route.
-4. P17 authority-drift gates prove no WAL, parser-finality, donor-authority, or
+4. P17 authority-drift gates prove no WAL, parser-finality, reference-authority, or
    cluster-path drift.
 5. P18 final audit proves zero open lifecycle spec, implementation, registry,
    diagnostic, and test gaps.

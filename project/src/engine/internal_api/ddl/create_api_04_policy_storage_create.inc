@@ -26,15 +26,15 @@
     else if (StartsWithLocal(profile, "domain_masking_policy:")) { record.masking_policy_envelope = profile.substr(22); }
     else if (StartsWithLocal(profile, "domain_visibility_policy:")) { record.visibility_policy_envelope = profile.substr(25); }
     else if (StartsWithLocal(profile, "domain_encryption_policy:")) { record.encryption_policy_ref = profile.substr(25); }
-    else if (StartsWithLocal(profile, "domain_donor_alias:")) {
-      if (!record.donor_alias_envelope.empty()) { record.donor_alias_envelope.push_back('|'); }
-      record.donor_alias_envelope.append(profile.substr(19));
+    else if (StartsWithLocal(profile, "domain_reference_alias:")) {
+      if (!record.reference_alias_envelope.empty()) { record.reference_alias_envelope.push_back('|'); }
+      record.reference_alias_envelope.append(profile.substr(19));
     }
   }
   for (const auto& profile : request.compatibility_profile.encoded_profiles) {
-    if (StartsWithLocal(profile, "donor_alias:")) {
-      if (!record.donor_alias_envelope.empty()) { record.donor_alias_envelope.push_back('|'); }
-      record.donor_alias_envelope.append(profile.substr(12));
+    if (StartsWithLocal(profile, "reference_alias:")) {
+      if (!record.reference_alias_envelope.empty()) { record.reference_alias_envelope.push_back('|'); }
+      record.reference_alias_envelope.append(profile.substr(12));
     }
   }
   for (const auto& option : request.option_envelopes) {
@@ -75,9 +75,9 @@
     } else if (StartsWithLocal(option, "localized_comment:")) {
       if (!record.comment_envelope.empty()) { record.comment_envelope.push_back('|'); }
       record.comment_envelope.append(option.substr(18));
-    } else if (StartsWithLocal(option, "donor_alias:")) {
-      if (!record.donor_alias_envelope.empty()) { record.donor_alias_envelope.push_back('|'); }
-      record.donor_alias_envelope.append(option.substr(12));
+    } else if (StartsWithLocal(option, "reference_alias:")) {
+      if (!record.reference_alias_envelope.empty()) { record.reference_alias_envelope.push_back('|'); }
+      record.reference_alias_envelope.append(option.substr(12));
     } else if (!option.empty()) {
       return MakeCrudDiagnosticResult<EngineCreateDomainResult>(
           request.context,

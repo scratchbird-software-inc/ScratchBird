@@ -77,7 +77,7 @@ struct TextInvertedDocumentInput {
   double norm = 0.0;
   std::string exact_source_recheck_evidence_ref;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
   bool visibility_authority_claimed = false;
@@ -157,7 +157,7 @@ struct TextInvertedSegment {
   bool security_authority_claimed = false;
   bool transaction_finality_authority_claimed = false;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
   std::vector<TextInvertedDocumentMetadata> documents;
@@ -180,7 +180,7 @@ struct TextInvertedSegmentBuildRequest {
   u64 sealed_sequence = 0;
   TextInvertedExactRecheckProof recheck_proof;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
   bool visibility_authority_claimed = false;
@@ -303,7 +303,7 @@ struct TextInvertedMergeCandidate {
   bool eligible = false;
   bool merge_metadata_finality_authority = false;
   bool parser_finality_authority_claimed = false;
-  bool donor_finality_authority_claimed = false;
+  bool reference_finality_authority_claimed = false;
   bool provider_finality_authority_claimed = false;
   bool write_ahead_log_finality_authority_claimed = false;
 };

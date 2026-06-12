@@ -40,7 +40,7 @@ struct OptimizerProductionBuildGateInput {
   bool legacy_only_defaults_enabled = false;
   bool local_default_statistics_enabled = false;
   bool policy_default_statistics_enabled = false;
-  bool donor_produced_evidence_enabled = false;
+  bool reference_produced_evidence_enabled = false;
   bool relaxed_benchmark_clean_paths_enabled = false;
   bool relaxed_metrics_enabled = false;
   bool placeholder_runtime_evidence_enabled = false;

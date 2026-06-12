@@ -25,7 +25,7 @@ The canonical authorities are:
 | `supported` | Row can close only with current spec, implementation, route, and test evidence. | Execute through the declared route and preserve engine finality evidence. |
 | `fail_closed` | Required rows remain open/release-blocking unless a manifest-listed release-scope spec excludes them. | Refuse before side effects with deterministic diagnostic, SQLSTATE/native status, message vector, finality state, and retryability. |
 | `conditional_n/a` | Allowed only for registry `conditional` rows with exact host API/runtime citation. | If a caller can still request the surface, return deterministic `FEATURE.CONDITIONAL_NOT_APPLICABLE`; otherwise no runtime surface is advertised. |
-| `not_implemented` | Release-blocking unless explicitly outside the target release scope. | Refuse with `FEATURE.NOT_IMPLEMENTED_RELEASE_BLOCKING`; do not emulate through parser, donor, or hidden storage. |
+| `not_implemented` | Release-blocking unless explicitly outside the target release scope. | Refuse with `FEATURE.NOT_IMPLEMENTED_RELEASE_BLOCKING`; do not emulate through parser, reference, or hidden storage. |
 
 ## Required Refusal Fields
 

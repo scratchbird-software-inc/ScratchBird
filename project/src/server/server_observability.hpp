@@ -76,7 +76,7 @@ struct ServerLifecycleObservabilityEvent {
   std::string state_before;
   std::string state_after;
   std::string private_detail;
-  std::string donor_profile_uuid;
+  std::string reference_profile_uuid;
   bool cache_invalidation_required = false;
   std::string cache_family;
   std::string cache_reason;

@@ -74,21 +74,21 @@ opt::OptimizerBenchmarkSampleGroupEvidence Sample(std::string phase) {
   return sample;
 }
 
-opt::OptimizerBenchmarkDonorMethodologyEvidence Donor(std::string engine) {
-  opt::OptimizerBenchmarkDonorMethodologyEvidence donor;
-  donor.donor_engine = engine;
-  donor.donor_version = "ceic057-donor-version";
-  donor.donor_native_method = "donor_native_best_route";
-  donor.comparable_status = "comparable";
-  donor.dataset_schema_mapping_digest = "sha256:ceic057-donor-dataset-" + engine;
-  donor.workload_mapping_digest = "sha256:ceic057-donor-workload-" + engine;
-  donor.route_equivalence_contract_hash = "sha256:ceic057-donor-route-" + engine;
-  donor.donor_result_hash = "sha256:ceic057-donor-result-" + engine;
-  donor.donor_transaction_policy =
-      "donor_reference_only_scratchbird_mga_not_substituted";
-  donor.donor_timing_policy = "prepared_warm_output_suppressed";
-  donor.donor_reference_only = true;
-  return donor;
+opt::OptimizerBenchmarkReferenceMethodologyEvidence Reference(std::string engine) {
+  opt::OptimizerBenchmarkReferenceMethodologyEvidence reference;
+  reference.reference_engine = engine;
+  reference.reference_version = "ceic057-reference-version";
+  reference.reference_native_method = "reference_native_best_route";
+  reference.comparable_status = "comparable";
+  reference.dataset_schema_mapping_digest = "sha256:ceic057-reference-dataset-" + engine;
+  reference.workload_mapping_digest = "sha256:ceic057-reference-workload-" + engine;
+  reference.route_equivalence_contract_hash = "sha256:ceic057-reference-route-" + engine;
+  reference.reference_result_hash = "sha256:ceic057-reference-result-" + engine;
+  reference.reference_transaction_policy =
+      "reference_reference_only_scratchbird_mga_not_substituted";
+  reference.reference_timing_policy = "prepared_warm_output_suppressed";
+  reference.reference_reference_only = true;
+  return reference;
 }
 
 opt::PersistedOptimizerBenchmarkEvidenceRecord BenchmarkFor(std::string route) {
@@ -132,7 +132,7 @@ opt::PersistedOptimizerBenchmarkEvidenceRecord BenchmarkFor(std::string route) {
   record.redaction_applied = true;
   record.production_benchmark_clean_claim = true;
   record.sample_groups = {Sample("cold"), Sample("warm")};
-  record.donor_methodology = {Donor("postgresql"), Donor("firebird")};
+  record.reference_methodology = {Reference("postgresql"), Reference("firebird")};
   return record;
 }
 
@@ -300,7 +300,7 @@ void StaleSyntheticAndAuthorityDriftFailClosed() {
   route.trusted_provenance = false;
   route.synthetic_statistics = true;
   route.authority.parser_authority = true;
-  route.authority.donor_authority = true;
+  route.authority.reference_authority = true;
   route.authority.wal_authority = true;
   route.authority.optimizer_plan_authority = true;
   const auto validation =

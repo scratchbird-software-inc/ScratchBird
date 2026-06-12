@@ -192,7 +192,7 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
   Require(!artifacts.envelope.parser_executes_sql,
           "CREATE STATISTICS lowering allowed parser SQL execution");
   Require(!artifacts.envelope.real_file_effects,
-          "CREATE STATISTICS lowering allowed donor/file effects");
+          "CREATE STATISTICS lowering allowed reference/file effects");
   Require(Contains(artifacts.envelope.payload,
                    "\"catalog_envelope_kind\":\"create_statistics_ddl\""),
           "CREATE STATISTICS payload missing catalog envelope kind");
@@ -220,8 +220,8 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
               !Contains(artifacts.envelope.payload, "replay_target") &&
               !Contains(artifacts.envelope.payload, std::string(kSql)),
           "CREATE STATISTICS payload embedded SQL text or identifier names as authority");
-  Require(!Contains(artifacts.envelope.payload, "donor"),
-          "CREATE STATISTICS payload carried donor authority");
+  Require(!Contains(artifacts.envelope.payload, "reference"),
+          "CREATE STATISTICS payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
               !Contains(artifacts.envelope.payload, "wal") &&
               !Contains(artifacts.envelope.payload, "recovery"),

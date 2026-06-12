@@ -26,7 +26,7 @@ The package owns:
 ## Identity rules
 
 - Database, session, and principal UUIDs in engine context are engine identity and must be UUIDv7.
-- UUIDv1 through UUIDv6 are donor/client compatibility values only and cannot be engine context identity.
+- UUIDv1 through UUIDv6 are reference/client compatibility values only and cannot be engine context identity.
 
 ## Non-scope
 
@@ -47,7 +47,7 @@ The built-in operation layer owns:
 
 - Built-in operations are engine-owned internal operations, not SQL commands.
 - Parser surfaces may render them as `SHOW` commands, but the engine operation remains SBLR/internal.
-- Result rows are canonical engine structures. Parser package shaping is still required before donor/client output.
+- Result rows are canonical engine structures. Parser package shaping is still required before reference/client output.
 - `SHOW DATABASE` returns database UUID identity, not name authority.
 - `SHOW VERSION` returns engine component/version metadata only.
 

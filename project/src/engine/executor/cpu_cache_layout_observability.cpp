@@ -54,7 +54,7 @@ CpuCacheLayoutObservationResult Refuse(
   result.diagnostic_code = std::move(code);
   result.diagnostic_detail = std::move(detail);
   result.metrics_authority =
-      request.authority.parser_client_or_donor_layout_authority ||
+      request.authority.parser_client_or_reference_layout_authority ||
       request.authority.layout_metrics_visibility_authority ||
       request.authority.layout_metrics_finality_authority ||
       request.authority.layout_metrics_security_authority ||
@@ -67,8 +67,8 @@ CpuCacheLayoutObservationResult Refuse(
       "exact_fallback_available",
       Bool(request.exact_fallback_available));
   Add(&result,
-      "parser_client_donor_layout_authority",
-      Bool(request.authority.parser_client_or_donor_layout_authority));
+      "parser_client_reference_layout_authority",
+      Bool(request.authority.parser_client_or_reference_layout_authority));
   Add(&result,
       "layout_metrics_visibility_authority",
       Bool(request.authority.layout_metrics_visibility_authority));
@@ -151,10 +151,10 @@ CpuCacheLayoutObservationResult ObserveCpuCacheLayoutHotPath(
                   "ORH_CPU_CACHE_LAYOUT.NO_RUNTIME_CONSUMPTION",
                   "layout evidence must be emitted by a consumed runtime path");
   }
-  if (request.authority.parser_client_or_donor_layout_authority) {
+  if (request.authority.parser_client_or_reference_layout_authority) {
     return Refuse(request,
                   "ORH_CPU_CACHE_LAYOUT.UNSAFE_LAYOUT_AUTHORITY",
-                  "parser/client/donor layout authority is forbidden");
+                  "parser/client/reference layout authority is forbidden");
   }
   if (request.authority.layout_metrics_visibility_authority ||
       request.authority.layout_metrics_finality_authority ||
@@ -183,10 +183,10 @@ CpuCacheLayoutObservationResult ObserveCpuCacheLayoutHotPath(
                   "ORH_CPU_CACHE_LAYOUT.STALE_ROUTE_CAPABILITY",
                   "route capability generation mismatch");
   }
-  if (request.benchmark_clean_claim || request.donor_dominance_claim) {
+  if (request.benchmark_clean_claim || request.reference_dominance_claim) {
     return Refuse(request,
                   "ORH_CPU_CACHE_LAYOUT.BENCHMARK_OVERCLAIM",
-                  "layout observability is not benchmark or donor dominance proof");
+                  "layout observability is not benchmark or reference dominance proof");
   }
   if (request.expected_family != request.observed_family) {
     return Refuse(request,

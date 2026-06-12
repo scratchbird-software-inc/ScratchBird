@@ -31,10 +31,10 @@ EXPECTED_FAMILIES = {
     "dml_upsert_variants": "SBSQL-MISS-GATE-008",
     "bulk_import_export": "SBSQL-MISS-GATE-009",
     "native_system_variables": "SBSQL-MISS-GATE-010",
-    "donor_variable_translation": "SBSQL-MISS-GATE-010",
+    "reference_variable_translation": "SBSQL-MISS-GATE-010",
     "last_day_builtin": "SBSQL-MISS-GATE-012",
     "acceleration_management": "SBSQL-MISS-GATE-012",
-    "donor_command_function_backfill": "SBSQL-MISS-GATE-014",
+    "reference_command_function_backfill": "SBSQL-MISS-GATE-014",
 }
 
 REQUIRED_COLUMNS = {

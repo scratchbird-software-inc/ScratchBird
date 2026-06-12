@@ -303,11 +303,11 @@ void TestRowPageCompactRepairBackupRestore() {
           "row page self-authoritative repair succeeded");
 
   auto unsafe = RowAuthority();
-  unsafe.parser_client_or_donor_authority = true;
+  unsafe.parser_client_or_reference_authority = true;
   auto unsafe_result =
       idx::BuildRowPageCompactEncoding({request.body, request.page_size, unsafe});
   Require(!unsafe_result.ok() && unsafe_result.fail_closed,
-          "parser/client/donor row-page compact authority accepted");
+          "parser/client/reference row-page compact authority accepted");
 
   auto authority_drift = RowAuthority();
   authority_drift.compact_form_visibility_authority = true;
@@ -358,14 +358,14 @@ void TestExactIndexPageCompactOrderingRepairAndRouteLimits() {
   Require(repaired.ok() && repaired.repaired,
           "exact index page repair from exact source failed");
 
-  const auto* donor = idx::FindBuiltinIndexRouteCapabilityState(
-      idx::IndexRouteKind::sql_select, idx::IndexFamily::donor_emulated);
+  const auto* reference = idx::FindBuiltinIndexRouteCapabilityState(
+      idx::IndexRouteKind::sql_select, idx::IndexFamily::reference_emulated);
   const auto* policy = idx::FindBuiltinIndexRouteCapabilityState(
       idx::IndexRouteKind::sql_select, idx::IndexFamily::policy_blocked);
   const auto* hash = idx::FindBuiltinIndexRouteCapabilityState(
       idx::IndexRouteKind::sql_select, idx::IndexFamily::hash);
-  Require(donor != nullptr && !donor->route_complete(),
-          "donor-emulated compact route treated as authority");
+  Require(reference != nullptr && !reference->route_complete(),
+          "reference-emulated compact route treated as authority");
   Require(policy != nullptr && !policy->route_complete(),
           "policy-blocked compact route treated as authority");
   Require(hash != nullptr && hash->supports_equality_lookup &&

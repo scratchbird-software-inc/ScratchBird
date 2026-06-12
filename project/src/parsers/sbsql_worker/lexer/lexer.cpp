@@ -93,7 +93,7 @@ std::string KeywordClass(std::string_view text) {
       "CLUSTER", "FAILOVER", "MEMBER", "NODE", "QUORUM", "RECONCILE",
       "THROTTLE", "TOPOLOGY",
   };
-  static const std::unordered_set<std::string> donor = {
+  static const std::unordered_set<std::string> reference = {
       "DELIMITER", "DESCRIBE", "EXPLAIN", "PRAGMA", "VACUUM",
   };
   static const std::unordered_set<std::string> refusal = {
@@ -103,7 +103,7 @@ std::string KeywordClass(std::string_view text) {
   const auto upper = ToUpperAscii(text);
   if (Contains(private_only, upper)) return "private_cluster";
   if (Contains(contextual, upper)) return "contextual_native";
-  if (Contains(donor, upper)) return "donor_contextual";
+  if (Contains(reference, upper)) return "reference_contextual";
   if (Contains(refusal, upper)) return "refusal_only";
   return {};
 }

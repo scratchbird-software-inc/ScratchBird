@@ -264,7 +264,7 @@ void CheckVariationManifest(const CsvTable& matrix, Harness* harness) {
       {"statement_surface_catalog", "1049"},
       {"sblr_operation_families", "16"},
       {"engine_gap_backlog", "932"},
-      {"donor_alias_backlog", "312"},
+      {"reference_alias_backlog", "312"},
       {"dynamic_stored_procedure_udr_sblr", "1"},
   };
   for (const auto& [scope, expected_count] : required) {
@@ -503,16 +503,16 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
   return summary;
 }
 
-void CheckEngineGapAndDonorClosure(const CsvTable& engine_gap,
-                                   const CsvTable& donor_alias,
-                                   const CsvTable& donor_fixtures,
+void CheckEngineGapAndReferenceClosure(const CsvTable& engine_gap,
+                                   const CsvTable& reference_alias,
+                                   const CsvTable& reference_fixtures,
                                    Harness* harness) {
   RequireColumns(engine_gap, {"gap_id", "validation_fixture_id", "status"}, harness);
-  RequireColumns(donor_alias,
-                 {"donor", "alias_kind", "native_sbsql_surface", "validation_fixture_id",
+  RequireColumns(reference_alias,
+                 {"reference", "alias_kind", "native_sbsql_surface", "validation_fixture_id",
                   "status"},
                  harness);
-  RequireColumns(donor_fixtures,
+  RequireColumns(reference_fixtures,
                  {"alias_kind", "fixture_root", "ctest_label", "status"},
                  harness);
 
@@ -536,24 +536,24 @@ void CheckEngineGapAndDonorClosure(const CsvTable& engine_gap,
   harness->Check(cluster_closed == 116,
                  "cluster fail-closed gap count changed from 116");
 
-  harness->Check(donor_alias.rows.size() == 312,
-                 "donor alias backlog count changed from 312");
-  std::set<std::string> donor_alias_kinds;
-  for (const auto& row : donor_alias.rows) {
-    donor_alias_kinds.insert(std::string(Field(row, "alias_kind")));
-    harness->Check(Field(row, "status") == "closed_by_donor_alias_rendering_gate",
-                   "donor alias is not closed " + std::string(Field(row, "donor")) + ":" +
+  harness->Check(reference_alias.rows.size() == 312,
+                 "reference alias backlog count changed from 312");
+  std::set<std::string> reference_alias_kinds;
+  for (const auto& row : reference_alias.rows) {
+    reference_alias_kinds.insert(std::string(Field(row, "alias_kind")));
+    harness->Check(Field(row, "status") == "closed_by_reference_alias_rendering_gate",
+                   "reference alias is not closed " + std::string(Field(row, "reference")) + ":" +
                        std::string(Field(row, "alias_kind")));
     harness->Check(!Field(row, "validation_fixture_id").empty(),
-                   "donor alias missing validation fixture");
+                   "reference alias missing validation fixture");
   }
-  harness->Check(donor_alias_kinds.size() >= 10,
-                 "donor alias coverage lost command variation breadth");
-  harness->Check(donor_fixtures.rows.size() >= 10,
-                 "donor rendering fixture manifest lost representative rows");
-  for (const auto& row : donor_fixtures.rows) {
+  harness->Check(reference_alias_kinds.size() >= 10,
+                 "reference alias coverage lost command variation breadth");
+  harness->Check(reference_fixtures.rows.size() >= 10,
+                 "reference rendering fixture manifest lost representative rows");
+  for (const auto& row : reference_fixtures.rows) {
     harness->Check(Field(row, "status") == "ready_for_generation",
-                   "donor fixture manifest row is not ready");
+                   "reference fixture manifest row is not ready");
   }
 }
 
@@ -801,7 +801,7 @@ int main(int argc, char** argv) {
   if (argc != 6) {
     std::cerr << "usage: " << argv[0]
               << " <artifact-root> <canonicalization-root> <replay-root>"
-              << " <donor-fixtures> <variation-matrix>\n";
+              << " <reference-fixtures> <variation-matrix>\n";
     return EXIT_FAILURE;
   }
 
@@ -809,7 +809,7 @@ int main(int argc, char** argv) {
     const std::filesystem::path artifact_root = argv[1];
     const std::filesystem::path canonicalization_root = argv[2];
     const std::filesystem::path replay_root = argv[3];
-    const std::filesystem::path donor_fixtures_path = argv[4];
+    const std::filesystem::path reference_fixtures_path = argv[4];
     const std::filesystem::path variation_matrix_path = argv[5];
 
     Harness harness;
@@ -825,10 +825,10 @@ int main(int argc, char** argv) {
         ReadLines(replay_root / "DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl"),
         &harness);
 
-    CheckEngineGapAndDonorClosure(
+    CheckEngineGapAndReferenceClosure(
         ReadCsv(artifact_root / "ENGINE_GAP_IMPLEMENTATION_BACKLOG.csv"),
-        ReadCsv(artifact_root / "DONOR_ALIAS_COVERAGE_BACKLOG.csv"),
-        ReadCsv(donor_fixtures_path),
+        ReadCsv(artifact_root / "REFERENCE_ALIAS_COVERAGE_BACKLOG.csv"),
+        ReadCsv(reference_fixtures_path),
         &harness);
     CheckDynamicStoredProcedureRoute(&harness);
 

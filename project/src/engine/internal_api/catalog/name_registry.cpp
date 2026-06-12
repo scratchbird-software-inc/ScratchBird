@@ -285,7 +285,7 @@ NameRegistryEntry MakeNameRegistryEntry(const EngineRequestContext& context,
   entry.parent_schema_uuid = scope_uuid;
   entry.language_tag = name.language_tag.empty() ? NameRegistryDefaultLanguage(context) : name.language_tag;
   entry.name_class = name.name_class.empty() ? (name.default_name ? "primary" : "alias") : name.name_class;
-  entry.donor_id = name.donor_id;
+  entry.reference_id = name.reference_id;
   entry.dialect_profile_uuid = name.dialect_profile_uuid;
   entry.identifier_profile_uuid = name.identifier_profile_uuid.empty() ? NameRegistryDefaultIdentifierProfile(context) : name.identifier_profile_uuid;
   entry.case_fold_profile_uuid = name.case_fold_profile_uuid;
@@ -321,7 +321,7 @@ EngineApiDiagnostic AppendNameRegistryEntry(const EngineRequestContext& context,
                       std::to_string(entry.creator_tx) + "\t" +
                       entry.name_entry_uuid + "\t" + entry.object_uuid + "\t" + entry.object_class + "\t" +
                       entry.scope_uuid + "\t" + entry.parent_object_uuid + "\t" + entry.parent_schema_uuid + "\t" +
-                      entry.language_tag + "\t" + entry.name_class + "\t" + entry.donor_id + "\t" +
+                      entry.language_tag + "\t" + entry.name_class + "\t" + entry.reference_id + "\t" +
                       entry.dialect_profile_uuid + "\t" + entry.identifier_profile_uuid + "\t" +
                       entry.case_fold_profile_uuid + "\t" + entry.quoted_identifier_profile_uuid + "\t" +
                       EncodeCrudText(entry.raw_name_text) + "\t" + EncodeCrudText(entry.display_name) + "\t" +
@@ -450,7 +450,7 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
     entry.parent_schema_uuid = parts[8];
     entry.language_tag = parts[9].empty() ? "en" : parts[9];
     entry.name_class = parts[10].empty() ? "primary" : parts[10];
-    entry.donor_id = parts[11];
+    entry.reference_id = parts[11];
     entry.dialect_profile_uuid = parts[12];
     entry.identifier_profile_uuid = parts[13].empty() ? "sbsql_v3" : parts[13];
     entry.case_fold_profile_uuid = parts[14];
