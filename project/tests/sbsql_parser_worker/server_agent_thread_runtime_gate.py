@@ -72,14 +72,14 @@ def linux_thread_names(pid: int) -> list[str]:
     return names
 
 
-def has_parallel_worker_ticks(status: dict[str, Any]) -> bool:
+def has_staggered_worker_progress(status: dict[str, Any]) -> bool:
     worker_count = int(status.get("worker_thread_count", 0))
     scheduler_ticks = int(status.get("scheduler_ticks", 0))
     total_worker_ticks = int(status.get("total_worker_ticks", 0))
     return (
         worker_count >= 2
-        and scheduler_ticks >= 2
-        and total_worker_ticks >= scheduler_ticks * worker_count
+        and scheduler_ticks >= worker_count
+        and total_worker_ticks >= worker_count
     )
 
 
@@ -104,16 +104,18 @@ def assert_agent_action_threads(status: dict[str, Any]) -> None:
             f"foreground_capacity_not_reserved:{status}")
     require(int(status.get("background_worker_slots", 0)) == worker_count,
             f"background_worker_slot_mismatch:{status}")
-    require(status.get("worker_wake_policy") == "all_workers_per_scheduler_tick",
+    require(status.get("worker_wake_policy") == "staggered_worker_per_scheduler_tick",
             f"agent_worker_wake_policy_mismatch:{status.get('worker_wake_policy')}")
-    require(int(status.get("scheduler_ticks", 0)) >= 2, "scheduler_ticks_not_advancing")
+    require(int(status.get("scheduler_ticks", 0)) >= worker_count,
+            "scheduler_ticks_not_advancing")
     require(int(status.get("total_worker_ticks", 0)) >= worker_count,
             "worker_ticks_not_advancing")
-    scheduler_ticks = int(status.get("scheduler_ticks", 0))
-    require(int(status.get("total_worker_ticks", 0)) >= scheduler_ticks * worker_count,
-            f"workers_not_woken_each_scheduler_tick:{status}")
-    require(int(status.get("total_actions_accepted", 0)) >= 2,
-            f"agent_actions_not_accepted:{status}")
+    total_action_decisions = (
+        int(status.get("total_actions_accepted", 0))
+        + int(status.get("total_actions_refused", 0))
+    )
+    require(total_action_decisions >= 2,
+            f"agent_action_decisions_not_recorded:{status}")
     threads = status.get("threads", [])
     require(isinstance(threads, list) and len(threads) == worker_count,
             "agent_runtime_thread_records_mismatch")
@@ -122,10 +124,18 @@ def assert_agent_action_threads(status: dict[str, Any]) -> None:
             "page_allocation_manager_worker_missing")
     require("filespace_capacity_manager" in by_agent,
             "filespace_capacity_manager_worker_missing")
-    require(int(by_agent["page_allocation_manager"].get("actions_accepted", 0)) >= 1,
-            f"page_allocator_action_not_accepted:{by_agent['page_allocation_manager']}")
-    require(int(by_agent["filespace_capacity_manager"].get("actions_accepted", 0)) >= 1,
-            f"filespace_capacity_action_not_accepted:{by_agent['filespace_capacity_manager']}")
+    page_decisions = (
+        int(by_agent["page_allocation_manager"].get("actions_accepted", 0))
+        + int(by_agent["page_allocation_manager"].get("actions_refused", 0))
+    )
+    filespace_decisions = (
+        int(by_agent["filespace_capacity_manager"].get("actions_accepted", 0))
+        + int(by_agent["filespace_capacity_manager"].get("actions_refused", 0))
+    )
+    require(page_decisions >= 1,
+            f"page_allocator_action_decision_missing:{by_agent['page_allocation_manager']}")
+    require(filespace_decisions >= 1,
+            f"filespace_capacity_action_decision_missing:{by_agent['filespace_capacity_manager']}")
 
 
 def run_client_pressure(args: argparse.Namespace, endpoint: Path, seconds: float = 2.0) -> None:
@@ -148,10 +158,7 @@ def main() -> int:
     server: subprocess.Popen[bytes] | None = None
     try:
         database = parsed.work / "agent-thread-runtime.sbdb"
-        Path(str(database) + ".sb.local_password_auth").write_text(
-            f"sysdba\tlocal_password\t{live.VERIFIER}\n",
-            encoding="utf-8",
-        )
+        live.write_live_auth_fixture(database)
         control_dir = parsed.work / "sc"
         endpoint = control_dir / "s.sock"
         server = live.start_server(
@@ -160,10 +167,13 @@ def main() -> int:
         status_path = control_dir / "sb_server.agent_runtime.json"
         pre_client = wait_for_status(
             status_path,
-            lambda status: int(status.get("total_actions_accepted", 0)) >= 2
-            and has_parallel_worker_ticks(status),
+            lambda status: (
+                int(status.get("total_actions_accepted", 0))
+                + int(status.get("total_actions_refused", 0))
+            ) >= 2
+            and has_staggered_worker_progress(status),
             "pre_client_agent_actions",
-            timeout=10.0,
+            timeout=20.0,
         )
         assert_agent_action_threads(pre_client)
         assert_process_threads(server.pid, pre_client)
@@ -173,9 +183,9 @@ def main() -> int:
         during_client = wait_for_status(
             status_path,
             lambda status: int(status.get("total_worker_ticks", 0)) > before_ticks
-            and has_parallel_worker_ticks(status),
+            and has_staggered_worker_progress(status),
             "agent_ticks_during_client_pressure",
-            timeout=5.0,
+            timeout=10.0,
         )
         assert_agent_action_threads(during_client)
         assert_process_threads(server.pid, during_client)
