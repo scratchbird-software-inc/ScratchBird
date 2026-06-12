@@ -29,6 +29,17 @@ from typing import Any
 DRIVER_MANIFEST = "project/drivers/DriverPackageManifest.csv"
 SURFACE_MANIFEST = "project/drivers/language/sbsql_language_surface_manifest.json"
 PROTOCOL_SCHEMA = "project/drivers/language/sbsql_editor_tool_protocol.schema.json"
+LANGUAGE_RESOURCE_CONTRACT_HPP = (
+    "project/src/parsers/sbsql_worker/resources/language_resource_contract.hpp"
+)
+LANGUAGE_RESOURCE_CONTRACT_CPP = (
+    "project/src/parsers/sbsql_worker/resources/language_resource_contract.cpp"
+)
+LANGUAGE_RESOURCE_RENDERING_CPP = "project/src/parsers/sbsql_worker/rendering/rendering.cpp"
+LANGUAGE_RESOURCE_CONFORMANCE_TEST = (
+    "project/tests/sbsql_parser_worker/sbsql_language_resource_contract_conformance.cpp"
+)
+SBSQL_PARSER_WORKER_CMAKE = "project/tests/sbsql_parser_worker/CMakeLists.txt"
 
 EXPECTED_SYNTAX_PROFILE_ORDER = [
     "explicit_syntax_profile",
@@ -76,6 +87,36 @@ EXPECTED_RENDERER_LOSSINESS_CLASSES = [
     "preferred_language_partial",
     "canonical_english_fallback",
     "not_renderable",
+]
+
+EXPECTED_PRIVACY_FAILURE_DIAGNOSTICS = [
+    "SBSQL.LANG_RESOURCE.MISSING",
+    "SBSQL.LANG_RESOURCE.UNSIGNED",
+    "SBSQL.LANG_RESOURCE.REVOKED",
+    "SBSQL.LANG_RESOURCE.EXPIRED",
+    "SBSQL.LANG_RESOURCE.INCOMPATIBLE",
+    "SBSQL.LANG_RESOURCE.UNSUPPORTED_CHANNEL",
+    "SBSQL.LANG_RESOURCE.AMBIGUOUS_FALLBACK",
+    "SBSQL.LANG_RESOURCE.RENDERER_NOT_RENDERABLE",
+    "SBSQL.LANG_RESOURCE.TOPOLOGY_DIALECT_UNICODE_UNSUPPORTED",
+    "SBSQL.LANG_RESOURCE.PREDICTIVE_RESOURCE_REFUSED",
+    "SBSQL.LANG_RESOURCE.LOCAL_DRAFT_SBLR_REFUSED",
+]
+
+EXPECTED_PRIVACY_REDACTION_FIELDS = [
+    "diagnostic_contract",
+    "failure_kind",
+    "disclosure_state",
+    "private_input_state",
+    "resource_identity_state",
+    "profile_identity_state",
+    "input_text_state",
+    "identifier_evidence_state",
+    "source_location_state",
+    "local_sblr_state",
+    "telemetry_redaction",
+    "support_bundle_redaction",
+    "server_revalidation_required",
 ]
 
 EXPECTED_DETERMINISTIC_VALIDATION = {
@@ -258,6 +299,54 @@ def validate_component(
     return errors
 
 
+def validate_language_resource_privacy_gate(repo_root: Path) -> list[str]:
+    errors: list[str] = []
+    paths = {
+        LANGUAGE_RESOURCE_CONTRACT_HPP: repo_root / LANGUAGE_RESOURCE_CONTRACT_HPP,
+        LANGUAGE_RESOURCE_CONTRACT_CPP: repo_root / LANGUAGE_RESOURCE_CONTRACT_CPP,
+        LANGUAGE_RESOURCE_RENDERING_CPP: repo_root / LANGUAGE_RESOURCE_RENDERING_CPP,
+        LANGUAGE_RESOURCE_CONFORMANCE_TEST: repo_root / LANGUAGE_RESOURCE_CONFORMANCE_TEST,
+        SBSQL_PARSER_WORKER_CMAKE: repo_root / SBSQL_PARSER_WORKER_CMAKE,
+    }
+    missing = [rel for rel, path in paths.items() if not path.is_file()]
+    if missing:
+        return [f"missing language-resource privacy gate file: {rel}" for rel in sorted(missing)]
+
+    try:
+        texts = {rel: path.read_text(encoding="utf-8") for rel, path in paths.items()}
+    except OSError as exc:
+        return [f"failed reading language-resource privacy gate source: {exc}"]
+
+    contract_text = (
+        texts[LANGUAGE_RESOURCE_CONTRACT_HPP] + "\n" +
+        texts[LANGUAGE_RESOURCE_CONTRACT_CPP]
+    )
+    test_text = texts[LANGUAGE_RESOURCE_CONFORMANCE_TEST]
+    rendering_text = texts[LANGUAGE_RESOURCE_RENDERING_CPP]
+    cmake_text = texts[SBSQL_PARSER_WORKER_CMAKE]
+
+    for code in EXPECTED_PRIVACY_FAILURE_DIAGNOSTICS:
+        if code not in contract_text:
+            errors.append(f"language-resource privacy diagnostic missing from contract: {code}")
+        if code not in test_text:
+            errors.append(f"language-resource privacy diagnostic missing from executable test: {code}")
+
+    for field in EXPECTED_PRIVACY_REDACTION_FIELDS:
+        if field not in contract_text:
+            errors.append(f"language-resource redaction field missing from contract: {field}")
+        if field not in test_text:
+            errors.append(f"language-resource redaction field missing from executable test: {field}")
+
+    if "IsPublicDiagnosticFieldAllowed" not in rendering_text:
+        errors.append("message-vector rendering must apply public diagnostic field filtering")
+    if "RenderMessageVectorSet" not in test_text or "MessageVectorToJson" not in test_text:
+        errors.append("language-resource privacy test must exercise text and JSON diagnostic renderers")
+    for label in ("SML-091", "SML-093"):
+        if label not in cmake_text:
+            errors.append(f"sbsql parser worker CMake labels must include {label}")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[3])
@@ -354,6 +443,8 @@ def main() -> int:
     rows_by_id = {row.get("component_id", ""): row for row in driver_rows}
     for component_id in sorted(driver_ids & component_ids):
         errors.extend(validate_component(component_by_id[component_id], rows_by_id[component_id], schema, str(resource_identity)))
+
+    errors.extend(validate_language_resource_privacy_gate(repo_root))
 
     if errors:
         print(f"sbsql_driver_language_surface_gate=failed: errors={len(errors)}", file=sys.stderr)

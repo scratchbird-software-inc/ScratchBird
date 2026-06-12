@@ -1105,6 +1105,161 @@ void CapturePreparedLanguageContext(ServerPreparedStatementRecord* prepared,
   prepared->resource_version_identity = language.resource_version_identity;
 }
 
+void BumpSessionLanguageResourceEpochs(ServerSessionRecord* session) {
+  if (session == nullptr) return;
+  session->language_resource_epoch =
+      session->language_resource_epoch == 0 ? 1 : session->language_resource_epoch + 1;
+  session->localized_name_epoch =
+      session->localized_name_epoch == 0 ? 1 : session->localized_name_epoch + 1;
+  session->message_resource_epoch =
+      session->message_resource_epoch == 0 ? 1 : session->message_resource_epoch + 1;
+  session->resource_epoch =
+      session->resource_epoch == 0 ? session->language_resource_epoch : session->resource_epoch + 1;
+  session->name_resolution_epoch =
+      session->name_resolution_epoch == 0
+          ? session->localized_name_epoch
+          : session->name_resolution_epoch + 1;
+}
+
+std::string LanguageSessionContextPacket(std::string_view operation_id,
+                                         const ServerSessionRecord& session,
+                                         std::string_view outcome,
+                                         bool mutated) {
+  const auto language = ServerLanguageContextForSession(session);
+  std::ostringstream out;
+  out << "operation_id=" << operation_id << "\n"
+      << "result_kind=language.session_context.v1\n"
+      << "outcome=" << outcome << "\n"
+      << "mutated_session_language=" << (mutated ? "true" : "false") << "\n"
+      << "server_session_language_context_authority=true\n"
+      << "parser_updates_session_language=false\n"
+      << "prepared_statement_reinterpretation=false\n"
+      << "language_profile_id=" << language.language_profile_id << "\n"
+      << "language_tag=" << language.language_tag << "\n"
+      << "default_language_tag=" << language.default_language_tag << "\n"
+      << "input_syntax_profile=" << language.input_syntax_profile << "\n"
+      << "input_language_fallback_tag=" << language.input_language_fallback_tag << "\n"
+      << "common_resource_hash=" << language.common_resource_hash << "\n"
+      << "language_resource_epoch=" << language.language_resource_epoch << "\n"
+      << "localized_name_epoch=" << language.localized_name_epoch << "\n"
+      << "message_resource_epoch=" << language.message_resource_epoch << "\n"
+      << "resource_compatibility_identity="
+      << language.resource_compatibility_identity << "\n"
+      << "resource_version_identity=" << language.resource_version_identity << "\n";
+  return out.str();
+}
+
+SessionOperationResult LanguageSessionControlResult(
+    ServerSessionRegistry* registry,
+    const std::array<std::uint8_t, 16>& request_uuid,
+    const std::array<std::uint8_t, 16>& session_uuid,
+    const std::string& operation_id,
+    const std::string& row_packet,
+    std::uint64_t row_count,
+    std::string detail) {
+  UpdateServerRequestLifecycleOperation(registry, request_uuid, operation_id);
+  CompleteServerRequestLifecycle(registry,
+                                 request_uuid,
+                                 ServerRequestLifecycleState::kCompleted,
+                                 detail.empty() ? "language_session_control_completed"
+                                                : detail);
+  SessionOperationResult result;
+  result.accepted = true;
+  result.response_message_type = static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult);
+  result.response_schema_id = kSchemaExecuteResultTestV1;
+  result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+  result.session_uuid = session_uuid;
+  result.payload = EncodeExecuteResult("accepted",
+                                       request_uuid,
+                                       {},
+                                       row_count,
+                                       operation_id,
+                                       row_packet,
+                                       std::move(detail));
+  return result;
+}
+
+bool IsLanguageSessionOperation(std::string_view operation_id) {
+  return operation_id == "language.session.set" ||
+         operation_id == "language.session.reset" ||
+         operation_id == "language.session.show";
+}
+
+bool IsLanguageBundleOperation(std::string_view operation_id) {
+  return operation_id == "language.bundle.load" ||
+         operation_id == "language.bundle.unload" ||
+         operation_id == "language.bundle.validate";
+}
+
+bool LanguageBundleManifestAdmitted(std::string_view encoded) {
+  return JsonBoolField(encoded, "admitted_bundle_manifest_attached", false) &&
+         JsonBoolField(encoded, "bundle_signature_verified", false) &&
+         JsonBoolField(encoded, "bundle_security_admitted", false) &&
+         JsonBoolField(encoded, "bundle_compatible_with_server", false) &&
+         JsonBoolField(encoded, "bundle_provenance_verified", false);
+}
+
+ServerLanguageBundleRecord LanguageBundleRecordFromEnvelope(
+    std::string_view encoded,
+    const ServerSessionRecord& session) {
+  ServerLanguageBundleRecord record;
+  record.bundle_uuid = JsonTextField(encoded, "bundle_uuid").value_or("");
+  record.language_profile_id =
+      JsonTextField(encoded, "language_profile_id")
+          .value_or(JsonTextField(encoded, "target_language_profile")
+                        .value_or(JsonTextField(encoded, "profile_uuid").value_or("")));
+  record.language_tag =
+      JsonTextField(encoded, "language_tag")
+          .value_or(JsonTextField(encoded, "exact_tag").value_or(""));
+  record.dialect_profile_uuid =
+      JsonTextField(encoded, "dialect_profile_uuid").value_or("");
+  record.topology_profile_uuid =
+      JsonTextField(encoded, "topology_profile_uuid").value_or("");
+  record.common_resource_hash =
+      JsonTextField(encoded, "common_resource_hash")
+          .value_or(session.common_resource_hash);
+  record.resource_hash =
+      JsonTextField(encoded, "resource_hash").value_or(record.common_resource_hash);
+  record.required_profile = JsonBoolField(encoded, "required_profile", false);
+  record.loaded = true;
+  return record;
+}
+
+bool LanguageBundleRecordIsComplete(const ServerLanguageBundleRecord& record) {
+  return !record.bundle_uuid.empty() &&
+         !record.language_profile_id.empty() &&
+         !record.language_tag.empty() &&
+         !record.common_resource_hash.empty() &&
+         !record.resource_hash.empty();
+}
+
+std::string LanguageBundleRegistryPacket(std::string_view operation_id,
+                                         const ServerLanguageBundleRecord& record,
+                                         std::string_view outcome,
+                                         bool mutated) {
+  std::ostringstream out;
+  out << "operation_id=" << operation_id << "\n"
+      << "result_kind=language.bundle_registry.v1\n"
+      << "outcome=" << outcome << "\n"
+      << "mutated_language_bundle_registry=" << (mutated ? "true" : "false") << "\n"
+      << "server_language_resource_registry_authority=true\n"
+      << "parser_language_library_admission=false\n"
+      << "load_or_unload_effects_executed_by_parser=false\n"
+      << "row_storage_touched=false\n"
+      << "mga_finality_claimed=false\n"
+      << "bundle_uuid=" << record.bundle_uuid << "\n"
+      << "language_profile_id=" << record.language_profile_id << "\n"
+      << "language_tag=" << record.language_tag << "\n"
+      << "dialect_profile_uuid=" << record.dialect_profile_uuid << "\n"
+      << "topology_profile_uuid=" << record.topology_profile_uuid << "\n"
+      << "common_resource_hash=" << record.common_resource_hash << "\n"
+      << "resource_hash=" << record.resource_hash << "\n"
+      << "loaded=" << (record.loaded ? "true" : "false") << "\n"
+      << "required_profile=" << (record.required_profile ? "true" : "false") << "\n"
+      << "language_resource_epoch=" << record.language_resource_epoch << "\n";
+  return out.str();
+}
+
 SessionOperationResult Failure(std::uint16_t response_type,
                                std::uint32_t schema,
                                std::array<std::uint8_t, 16> session_uuid,
@@ -3942,6 +4097,185 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
         admission.diagnostics,
         admission.diagnostics.empty() ? "sblr_admission_rejected"
                                       : admission.diagnostics.front().code);
+  }
+  if (IsLanguageSessionOperation(admission.operation_id)) {
+    if (admission.operation_id == "language.session.set") {
+      const std::string target_language_profile =
+          JsonTextField(encoded, "target_language_profile").value_or("");
+      if (target_language_profile.empty()) {
+        CompleteServerRequestLifecycle(registry,
+                                       request_record.request_uuid,
+                                       ServerRequestLifecycleState::kFailed,
+                                       "target_language_profile_required");
+        return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                       kSchemaExecuteResultTestV1,
+                       decoded->session_uuid,
+                       "PARSER_SERVER_IPC.LANGUAGE_PROFILE_REQUIRED",
+                       "SET LANGUAGE requires a server-admitted target language profile.",
+                       "target_language_profile_required");
+      }
+      ApplyRequestedLanguageProfile(session, target_language_profile);
+      BumpSessionLanguageResourceEpochs(session);
+      return LanguageSessionControlResult(
+          registry,
+          request_record.request_uuid,
+          decoded->session_uuid,
+          admission.operation_id,
+          LanguageSessionContextPacket(admission.operation_id,
+                                       *session,
+                                       "language_session_set",
+                                       true),
+          0,
+          "language_session_set");
+    }
+    if (admission.operation_id == "language.session.reset") {
+      ApplyRequestedLanguageProfile(session, session->default_language_tag.empty()
+                                                 ? "en"
+                                                 : session->default_language_tag);
+      BumpSessionLanguageResourceEpochs(session);
+      return LanguageSessionControlResult(
+          registry,
+          request_record.request_uuid,
+          decoded->session_uuid,
+          admission.operation_id,
+          LanguageSessionContextPacket(admission.operation_id,
+                                       *session,
+                                       "language_session_reset",
+                                       true),
+          0,
+          "language_session_reset");
+    }
+    return LanguageSessionControlResult(
+        registry,
+        request_record.request_uuid,
+        decoded->session_uuid,
+        admission.operation_id,
+        LanguageSessionContextPacket(admission.operation_id,
+                                     *session,
+                                     "language_session_show",
+                                     false),
+        1,
+        "language_session_show");
+  }
+  if (IsLanguageBundleOperation(admission.operation_id)) {
+    if (!LanguageBundleManifestAdmitted(encoded)) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     "language_bundle_admission_required");
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.LANGUAGE_BUNDLE_ADMISSION_REQUIRED",
+                     "Language bundle load unload and validate operations require admitted signed resource manifests.",
+                     "language_bundle_admission_required");
+    }
+
+    ServerLanguageBundleRecord record =
+        LanguageBundleRecordFromEnvelope(encoded, *session);
+    if (!LanguageBundleRecordIsComplete(record)) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     "language_bundle_manifest_incomplete");
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.LANGUAGE_BUNDLE_MANIFEST_INCOMPLETE",
+                     "Language bundle manifests require bundle profile language tag and resource hash identity.",
+                     "language_bundle_manifest_incomplete");
+    }
+
+    if (admission.operation_id == "language.bundle.validate") {
+      record.loaded = registry->language_bundles_by_uuid.count(record.bundle_uuid) != 0;
+      record.language_resource_epoch = session->language_resource_epoch;
+      return LanguageSessionControlResult(
+          registry,
+          request_record.request_uuid,
+          decoded->session_uuid,
+          admission.operation_id,
+          LanguageBundleRegistryPacket(admission.operation_id,
+                                       record,
+                                       "language_bundle_validated",
+                                       false),
+          1,
+          "language_bundle_validated");
+    }
+
+    if (admission.operation_id == "language.bundle.load") {
+      BumpSessionLanguageResourceEpochs(session);
+      record.loaded = true;
+      record.language_resource_epoch = session->language_resource_epoch;
+      registry->language_bundles_by_uuid[record.bundle_uuid] = record;
+      return LanguageSessionControlResult(
+          registry,
+          request_record.request_uuid,
+          decoded->session_uuid,
+          admission.operation_id,
+          LanguageBundleRegistryPacket(admission.operation_id,
+                                       record,
+                                       "language_bundle_loaded",
+                                       true),
+          0,
+          "language_bundle_loaded");
+    }
+
+    const auto bundle_it = registry->language_bundles_by_uuid.find(record.bundle_uuid);
+    if (bundle_it == registry->language_bundles_by_uuid.end()) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     "language_bundle_not_loaded");
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.LANGUAGE_BUNDLE_NOT_LOADED",
+                     "Language bundle unload requires a loaded server registry record.",
+                     "language_bundle_not_loaded");
+    }
+
+    ServerLanguageBundleRecord loaded_record = bundle_it->second;
+    const auto language = ServerLanguageContextForSession(*session);
+    if (loaded_record.language_profile_id == language.language_profile_id) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     "language_bundle_active_profile_in_use");
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.LANGUAGE_BUNDLE_ACTIVE_PROFILE_IN_USE",
+                     "The active language profile cannot be unloaded from the server resource registry.",
+                     "language_bundle_active_profile_in_use");
+    }
+    if (loaded_record.required_profile) {
+      CompleteServerRequestLifecycle(registry,
+                                     request_record.request_uuid,
+                                     ServerRequestLifecycleState::kFailed,
+                                     "language_bundle_required_profile");
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+                     kSchemaExecuteResultTestV1,
+                     decoded->session_uuid,
+                     "PARSER_SERVER_IPC.LANGUAGE_BUNDLE_REQUIRED_PROFILE",
+                     "Required language profiles cannot be unloaded from the server resource registry.",
+                     "language_bundle_required_profile");
+    }
+
+    BumpSessionLanguageResourceEpochs(session);
+    loaded_record.loaded = false;
+    loaded_record.language_resource_epoch = session->language_resource_epoch;
+    registry->language_bundles_by_uuid.erase(bundle_it);
+    return LanguageSessionControlResult(
+        registry,
+        request_record.request_uuid,
+        decoded->session_uuid,
+        admission.operation_id,
+        LanguageBundleRegistryPacket(admission.operation_id,
+                                     loaded_record,
+                                     "language_bundle_unloaded",
+                                     true),
+        0,
+        "language_bundle_unloaded");
   }
   if (admission.operation_id == "session.prepare_statement") {
     const std::string statement_name = JsonTextField(encoded, "prepared_statement_name").value_or("");

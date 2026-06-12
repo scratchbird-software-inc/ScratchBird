@@ -211,6 +211,19 @@ struct ServerLanguageContextIdentity {
   std::string resource_version_identity = "sbsql.resource-pack.v1";
 };
 
+struct ServerLanguageBundleRecord {
+  std::string bundle_uuid;
+  std::string language_profile_id;
+  std::string language_tag;
+  std::string dialect_profile_uuid;
+  std::string topology_profile_uuid;
+  std::string common_resource_hash;
+  std::string resource_hash;
+  bool loaded = false;
+  bool required_profile = false;
+  std::uint64_t language_resource_epoch = 0;
+};
+
 struct ServerCursorRecord {
   std::array<std::uint8_t, 16> cursor_uuid{};
   std::array<std::uint8_t, 16> request_uuid{};
@@ -272,6 +285,7 @@ struct ServerSessionRegistry {
   std::map<std::string, ServerRequestRecord> requests_by_uuid;
   std::map<std::string, ServerPreparedStatementRecord> prepared_by_uuid;
   std::map<std::string, ServerCursorRecord> cursors_by_uuid;
+  std::map<std::string, ServerLanguageBundleRecord> language_bundles_by_uuid;
   std::map<std::string, scratchbird::core::agents::DatabaseLocalBackgroundJobScheduler>
       job_schedulers_by_database_uuid;
   std::map<std::string, scratchbird::core::agents::WorkloadResourceQuotaController>

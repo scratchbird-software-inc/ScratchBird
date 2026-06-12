@@ -16,6 +16,9 @@
 
 namespace scratchbird::parser::sbsql {
 
+struct Diagnostic;
+struct MessageVectorSet;
+
 // SEARCH_KEY: SBSQL_LANGUAGE_RESOURCE_OPERATIONAL_EDGE_SAFETY
 
 enum class LanguageResourceChannel {
@@ -158,12 +161,55 @@ struct SblrRenderSelection {
   std::string diagnostic_message;
 };
 
+enum class LanguageResourceFailureKind {
+  kMissingResource,
+  kUnsignedResource,
+  kRevokedResource,
+  kExpiredResource,
+  kIncompatibleResource,
+  kUnsupportedChannel,
+  kAmbiguousFallback,
+  kUnsupportedRenderer,
+  kTopologyDialectUnicodeUnsupported,
+  kPredictiveResourceRefused,
+  kLocalDraftSblrRefused,
+};
+
+struct LanguageResourceFailureDiagnosticInput {
+  LanguageResourceFailureKind failure_kind{LanguageResourceFailureKind::kMissingResource};
+  bool telemetry_export{true};
+  bool support_bundle_export{true};
+  bool server_revalidation_required{true};
+  std::string resource_identity;
+  std::string language_profile_uuid;
+  std::string exact_tag;
+  std::string dialect_profile_uuid;
+  std::string topology_profile_uuid;
+  std::string query_text;
+  std::string hidden_identifier;
+  std::string local_path;
+  std::string local_sblr_payload;
+};
+
 struct LanguageResourceLimits {
   std::uint64_t max_predictive_table_bytes{1024 * 1024};
   std::uint64_t max_transition_fanout{128};
   std::uint64_t max_completion_results{256};
   std::uint64_t max_generation_millis{100};
+  std::uint64_t max_predictive_memory_bytes{4 * 1024 * 1024};
   std::uint64_t max_nested_expansion_depth{16};
+};
+
+struct PredictiveTextResourceFootprint {
+  std::string resource_identity;
+  std::uint64_t table_bytes{0};
+  std::uint64_t transition_fanout{0};
+  std::uint64_t completion_results{0};
+  std::uint64_t generation_millis{0};
+  std::uint64_t memory_bytes{0};
+  std::uint64_t nested_expansion_depth{0};
+  bool deterministic_limit_enforcement{true};
+  bool hidden_object_no_disclosure{true};
 };
 
 struct LocaleLiteralPolicy {
@@ -211,6 +257,11 @@ struct LanguageResourceManifest {
   std::string support_owner_id;
   std::string trace_oracle_id;
   std::string fallback_parent_uuid;
+  std::string release_channel_evidence_id;
+  std::string deprecation_notice_id;
+  std::string deprecation_replacement_profile_uuid;
+  std::string revocation_notice_id;
+  std::string removal_notice_id;
   LanguageResourceChannel channel{LanguageResourceChannel::kExperimental};
   LanguageResourceSupportState support_state{LanguageResourceSupportState::kMachineBootstrap};
   LanguageResourceLimits limits;
@@ -224,6 +275,18 @@ struct LanguageResourceManifest {
   bool expired{false};
   bool revoked{false};
   bool removed{false};
+};
+
+struct LanguageResourceLifecycleClassification {
+  bool validation_allowed{true};
+  bool load_allowed{true};
+  bool use_allowed{true};
+  bool support_claim_allowed{false};
+  bool emits_lifecycle_warning{false};
+  bool emits_deprecation_warning{false};
+  std::string support_class;
+  std::string diagnostic_code;
+  std::string diagnostic_message;
 };
 
 struct LanguageResourceBundleManifest {
@@ -248,6 +311,84 @@ struct LanguageResourceBundleManifest {
   bool parser_language_library{false};
   bool active_profile{false};
   bool required_profile{false};
+};
+
+struct LanguageElementKeyword {
+  std::string keyword_id;
+  std::string text;
+  std::string canonical_id;
+  std::string surface_id;
+  bool reserved{false};
+  bool contextual{true};
+};
+
+struct LanguageElementTopologySlot {
+  std::string slot_id;
+  std::string phrase_id;
+  std::string topology_role;
+  std::string canonical_id;
+  std::string surface_id;
+  std::uint32_t min_elements{1};
+  std::uint32_t max_elements{1};
+};
+
+struct LanguageElementSurface {
+  std::string surface_id;
+  std::string canonical_name;
+  std::string surface_kind;
+  std::string family;
+  std::string sblr_operation_family;
+  std::string topology_slot_id;
+  std::string predictive_state_id;
+  std::string renderer_id;
+  std::string compatibility_id;
+  std::string diagnostic_code;
+  std::string message_id;
+  LanguageResourceChannel release_channel{LanguageResourceChannel::kExperimental};
+};
+
+struct LanguageElementPredictiveState {
+  std::string state_id;
+  std::string surface_id;
+  std::string transition_table_hash;
+  bool completion_enabled{true};
+  bool server_revalidation_required{true};
+};
+
+struct LanguageElementRenderer {
+  std::string renderer_id;
+  std::string profile_uuid;
+  std::string canonical_english_fallback_profile_uuid{"sbsql.builtin.recovery.en"};
+  SblrRenderLossiness lossiness{SblrRenderLossiness::kCanonicalEquivalent};
+  bool server_revalidation_required{true};
+};
+
+struct LanguageElementDiagnosticMessage {
+  std::string diagnostic_code;
+  std::string message_id;
+  std::string severity;
+  std::string message_template_hash;
+};
+
+struct LanguageElementManifest {
+  std::string manifest_schema_version{"sbsql.language_element_manifest.v1"};
+  std::string manifest_uuid;
+  std::string profile_uuid;
+  std::string exact_tag;
+  std::string dialect_profile_uuid;
+  std::string topology_profile_uuid;
+  std::string common_resource_hash;
+  std::string compatibility_identity{"sbsql.resource.compat.v1"};
+  LanguageResourceManifest language_profile;
+  LanguageResourceBundleManifest bundle_manifest;
+  std::vector<LanguageElementKeyword> keywords;
+  std::vector<LanguageElementTopologySlot> topology_slots;
+  std::vector<LanguageElementSurface> surfaces;
+  std::vector<LanguageElementPredictiveState> predictive_states;
+  std::vector<LanguageElementRenderer> renderers;
+  std::vector<std::string> compatibility_ids;
+  std::vector<LanguageElementDiagnosticMessage> diagnostics;
+  std::vector<LanguageDataProvenance> provenance;
 };
 
 enum class LanguageBundleOperation {
@@ -321,6 +462,10 @@ struct EditorToolProtocol {
 
 const LanguageResourceManifest& BuiltInCanonicalEnglishRecoveryProfile();
 ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResourceManifest& manifest);
+ResourceValidationResult ValidateLanguageElementManifest(const LanguageElementManifest& manifest);
+ResourceValidationResult ValidatePredictiveTextResourceFootprint(
+    const PredictiveTextResourceFootprint& footprint,
+    const LanguageResourceLimits& limits);
 ResourceValidationResult ValidateLanguageResourceBundleManifest(
     const LanguageResourceBundleManifest& bundle);
 ResourceValidationResult AdmitLanguageResourceBundleOperation(
@@ -333,9 +478,15 @@ LocaleLiteralClassification ClassifyLocaleLiteral(std::string_view literal,
 bool HasMixedScriptOrConfusableRisk(std::string_view text, const ConfusablePolicy& policy);
 RestoreLanguageResourceState ClassifyRestoreLanguageResourceState(
     const LanguageResourceRestoreRequest& request);
+LanguageResourceLifecycleClassification ClassifyLanguageResourceLifecycle(
+    const LanguageResourceManifest& manifest);
 ParseProfileDecision SelectParseProfile(const ParseProfileDecisionInput& input);
 SblrRenderDecision ClassifySblrRenderRequest(const SblrRenderRequest& request);
 SblrRenderSelection ClassifySblrRenderSelection(const SblrRenderRequest& request);
+Diagnostic MakeLanguageResourceFailureDiagnostic(
+    const LanguageResourceFailureDiagnosticInput& input);
+MessageVectorSet MakeLanguageResourceFailureMessageVector(
+    const LanguageResourceFailureDiagnosticInput& input);
 std::vector<ParseProfileStep> DefaultParseProfileOrder();
 
 std::string_view LanguageResourceChannelName(LanguageResourceChannel channel);
@@ -345,5 +496,7 @@ std::string_view SblrRenderDecisionName(SblrRenderDecision decision);
 std::string_view SblrRenderLossinessName(SblrRenderLossiness lossiness);
 std::string_view LanguageBundleOperationName(LanguageBundleOperation operation);
 std::string_view RestoreLanguageResourceStateName(RestoreLanguageResourceState state);
+std::string_view LanguageResourceFailureKindName(LanguageResourceFailureKind kind);
+std::string_view LanguageResourceFailureDiagnosticCode(LanguageResourceFailureKind kind);
 
 } // namespace scratchbird::parser::sbsql

@@ -27,7 +27,7 @@ struct FamilyRule {
   bool cluster_private = false;
 };
 
-constexpr std::array<FamilyRule, 56> kServerSblrFamilies{{
+constexpr std::array<FamilyRule, 57> kServerSblrFamilies{{
     {"sblr.acceleration.gpu.v3", "acceleration.gpu.operation", false},
     {"sblr.acceleration.llvm.v3", "extensibility.compile_llvm_module", false},
     {"sblr.archive.operation.v3", "archive.operation", false},
@@ -55,6 +55,7 @@ constexpr std::array<FamilyRule, 56> kServerSblrFamilies{{
     {"sblr.fulltext.execution.v3", "nosql.search_query", false},
     {"sblr.graph.execution.v3", "nosql.graph_query", false},
     {"sblr.index.maintenance.v3", "index.maintenance", false},
+    {"sblr.language.resource_control.v3", "language.session.show", false},
     {"sblr.management.control.v3", "management.control_runtime", false},
     {"sblr.management.report.v3", "management.inspect_runtime", false},
     {"sblr.migration.operation.v3", "op.show.migrations", false},
@@ -941,6 +942,9 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
       return "sblr.management.control.v3";
     }
     return "sblr.management.report.v3";
+  }
+  if (operation_id.starts_with("language.")) {
+    return "sblr.language.resource_control.v3";
   }
   if (operation_id.starts_with("index.")) return "sblr.index.maintenance.v3";
   if (operation_id == "catalog.get_descriptor" ||
