@@ -306,6 +306,17 @@ def validate_canonical_resources(pack_root: Path, manifest: dict[str, Any]) -> l
             errors.append(f"{tag}: duplicate translation record_id")
         if set(ids) != set(corpus_ids):
             errors.append(f"{tag}: translation rows do not exactly cover source corpus")
+        status_counts = profile.get("translation_status_counts", {})
+        if not isinstance(status_counts, dict):
+            errors.append(f"{tag}: translation_status_counts missing")
+        if profile.get("fallback_translation_count") != 0:
+            errors.append(f"{tag}: fallback_translation_count must be zero")
+        if status_counts.get("english_fallback_machine_seed", 0):
+            errors.append(f"{tag}: english_fallback_machine_seed status is forbidden")
+        for translation in translations:
+            if translation.get("translation_status") == "english_fallback_machine_seed":
+                errors.append(f"{tag}: fallback translation status leaked: {translation.get('record_id')}")
+                break
         if tag in SOURCE_AUTHORITY_REVIEWED_PROFILES and profile.get("release_channel") != "release_supported":
             errors.append(f"{tag} language profile release channel drifted")
         if tag not in SOURCE_AUTHORITY_REVIEWED_PROFILES and profile.get("release_channel") != "beta":
