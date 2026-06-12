@@ -824,6 +824,24 @@ set_tests_properties(public_advanced_datatype_family_gate PROPERTIES
   LABELS "public_release_correctness;public_advanced_datatype_family_gate;PCR-GATE-043;PCR-043;datatypes;advanced_family;descriptor_schema;index_admission;optimizer;compare_hash;fail_closed"
 )
 
+add_executable(public_sbsql_language_release_channel_gate
+  public_sbsql_language_release_channel_gate.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/parsers/sbsql_worker/resources/language_resource_contract.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/wire/parser_server_ipc/parser_ipc_common.cpp
+)
+target_compile_features(public_sbsql_language_release_channel_gate PRIVATE cxx_std_23)
+target_include_directories(public_sbsql_language_release_channel_gate PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/parsers/sbsql_worker
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/wire/parser_server_ipc
+)
+add_test(
+  NAME public_sbsql_language_release_channel_gate
+  COMMAND public_sbsql_language_release_channel_gate
+)
+set_tests_properties(public_sbsql_language_release_channel_gate PROPERTIES
+  LABELS "public_release_correctness;public_sbsql_language_release_channel_gate;SML-092;sbsql_language_resource_contract;release_channel_lifecycle;fail_closed"
+)
+
 # PUBLIC_SBLR_UUID_INTEGRATION_GATE
 add_executable(public_sblr_uuid_mga_route_integration_gate
   public_sblr_uuid_mga_route_integration_gate.cpp
@@ -2341,6 +2359,7 @@ set(PUBLIC_RELEASE_CORRECTNESS_BUILD_TARGETS
   public_domain_psql_exact_numeric_gate
   public_datatype_binary_descriptor_integrity_gate
   public_advanced_datatype_family_gate
+  public_sbsql_language_release_channel_gate
   public_sblr_uuid_mga_route_integration_gate
   public_uuid_identity_resolution_gate
   public_agent_readiness_matrix_gate

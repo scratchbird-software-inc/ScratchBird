@@ -112,7 +112,8 @@ void ApplyRequestedLanguageProfile(ServerSessionRecord* session,
   session->default_language_tag = std::string(kDefaultLanguageTag);
   session->language_profile = BuiltinLanguageProfileIdForTag(tag);
   session->input_syntax_profile = std::string(kDefaultInputSyntaxProfile);
-  session->input_language_fallback_tag.clear();
+  session->input_language_fallback_tag =
+      tag == kDefaultLanguageTag ? std::string{} : std::string(kDefaultLanguageTag);
   if (session->common_resource_hash.empty()) {
     session->common_resource_hash = std::string(kDefaultCommonResourceHash);
   }

@@ -39,7 +39,20 @@ add_test(
   COMMAND sbsql_language_resource_contract_conformance
 )
 set_tests_properties(sbsql_language_resource_contract_conformance PROPERTIES
-  LABELS "sbsql_language_resource_contract;sbsql_parser_worker;SML-005;SML-082;SML-083;SML-084;SML-086;SML-089;SML-094;SML-095;SML-096;SML-097;SML-098;SML-099;SML-100;SML-101"
+  LABELS "sbsql_language_resource_contract;sbsql_parser_worker;SML-005;SML-010;SML-082;SML-083;SML-084;SML-086;SML-089;SML-091;SML-092;SML-093;SML-094;SML-095;SML-096;SML-097;SML-098;SML-099;SML-100;SML-101"
+)
+
+add_executable(sbsql_sml087_unicode_predictive_resource_conformance
+  sbsql_sml087_unicode_predictive_resource_conformance.cpp
+)
+target_compile_features(sbsql_sml087_unicode_predictive_resource_conformance PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sml087_unicode_predictive_resource_conformance PRIVATE sbl_sbsql_parser_pipeline)
+add_test(
+  NAME sbsql_sml087_unicode_predictive_resource_conformance
+  COMMAND sbsql_sml087_unicode_predictive_resource_conformance
+)
+set_tests_properties(sbsql_sml087_unicode_predictive_resource_conformance PROPERTIES
+  LABELS "sbsql_sml087_unicode_predictive_resource;sbsql_language_resource_contract;sbsql_parser_worker;SML-087"
 )
 
 add_executable(sbsql_language_control_surface_conformance
@@ -135,7 +148,7 @@ add_test(
           --repo-root "${PROJECT_SOURCE_DIR}/.."
 )
 set_tests_properties(sbsql_driver_language_surface_gate PROPERTIES
-  LABELS "sbsql_driver_language_surface;sbsql_parser_worker;SML-018;SML-020;SML-083;SML-086;SML-090;SML-101"
+  LABELS "sbsql_driver_language_surface;sbsql_parser_worker;SML-018;SML-020;SML-083;SML-086;SML-090;SML-091;SML-093;SML-101"
 )
 
 if(NOT TARGET sb_isql AND EXISTS "${PROJECT_SOURCE_DIR}/drivers/tool/cli/CMakeLists.txt")
@@ -391,6 +404,17 @@ add_test(
 )
 set_tests_properties(sbsql_deterministic_generation_no_network_gate PROPERTIES
   LABELS "sbsql_deterministic_generation_no_network_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
+)
+
+add_test(
+  NAME sbsql_language_element_manifest_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_language_element_manifest_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+          --artifact-root "${SBSQL_SURFACE_TO_SBLR_ARTIFACT_ROOT}"
+)
+set_tests_properties(sbsql_language_element_manifest_gate PROPERTIES
+  LABELS "sbsql_language_element_manifest_gate;sbsql_language_resource_contract;sbsql_parser_worker;SML-010;SML-092"
 )
 
 add_test(
@@ -4623,6 +4647,25 @@ if(TARGET sb_server_core)
   )
   set_tests_properties(sb_server_sbsql_admission_conformance PROPERTIES
     LABELS "sb_server_sbsql_admission_conformance;SBSFC-025;sbsql_parser_worker"
+  )
+
+  add_executable(
+    sbsql_server_language_session_control_conformance
+    sbsql_server_language_session_control_conformance.cpp
+  )
+  target_compile_features(sbsql_server_language_session_control_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_server_language_session_control_conformance
+    PRIVATE
+      sb_server_core
+      sbl_sbsql_parser_pipeline
+  )
+  add_test(
+    NAME sbsql_server_language_session_control_conformance
+    COMMAND sbsql_server_language_session_control_conformance
+  )
+  set_tests_properties(sbsql_server_language_session_control_conformance PROPERTIES
+    LABELS "sbsql_server_language_session_control;SML-008;SML-009;SML-018;SML-020;sbsql_parser_worker;server_session_language_context"
   )
   add_test(
     NAME sbsql_cluster_private_fail_closed_conformance

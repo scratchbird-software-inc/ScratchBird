@@ -33,6 +33,30 @@ bool Contains(const std::vector<std::string>& values, std::string_view expected)
   return std::find(values.begin(), values.end(), expected) != values.end();
 }
 
+bool ContainsText(std::string_view text, std::string_view expected) {
+  return text.find(expected) != std::string_view::npos;
+}
+
+void RequireNoSensitiveMaterial(std::string_view rendered, std::string_view label) {
+  static constexpr std::string_view kSensitiveTerms[] = {
+      "SELECT * FROM hidden_table",
+      "hidden_table",
+      "policy.secret",
+      "provider.local_password",
+      "/tmp/secret/fr-ca.json",
+      "019f1000-0000-7000-8000-00000000feed",
+      "sbsql.common_resource_pack.private",
+      "profile.private.fr-ca",
+      "dialect.private.firebird",
+      "topology.private.rtl",
+      "draft_sblr_local_secret",
+  };
+  for (const auto term : kSensitiveTerms) {
+    Require(!ContainsText(rendered, term),
+            std::string(label) + " disclosed sensitive term: " + std::string(term));
+  }
+}
+
 sbsql::LanguageResourceManifest ValidReleaseProfile() {
   sbsql::LanguageResourceManifest manifest;
   manifest.profile_uuid = "019f1000-0000-7000-8000-000000000101";
@@ -78,6 +102,58 @@ sbsql::LanguageResourceBundleManifest ValidLanguageBundle() {
   return bundle;
 }
 
+sbsql::LanguageElementManifest ValidLanguageElementManifest() {
+  auto profile = ValidReleaseProfile();
+  auto bundle = ValidLanguageBundle();
+  sbsql::LanguageElementManifest manifest;
+  manifest.manifest_uuid = "019f1000-0000-7000-8000-000000000301";
+  manifest.profile_uuid = profile.profile_uuid;
+  manifest.exact_tag = profile.exact_tag;
+  manifest.dialect_profile_uuid = bundle.dialect_profile_uuid;
+  manifest.topology_profile_uuid = bundle.topology_profile_uuid;
+  manifest.common_resource_hash = profile.common_resource_hash;
+  manifest.compatibility_identity = bundle.compatibility_identity;
+  manifest.language_profile = profile;
+  manifest.bundle_manifest = bundle;
+  manifest.compatibility_ids = {"compat.sbsql.select.v1", "compat.sbsql.from.v1"};
+  manifest.diagnostics = {
+      {"SBSQL.LANG_ELEMENT.SELECT", "msg.sbsql.select", "info", "message.hash.select"},
+      {"SBSQL.LANG_ELEMENT.FROM", "msg.sbsql.from", "info", "message.hash.from"},
+  };
+  manifest.renderers = {
+      {"renderer.fr-ca.select", profile.profile_uuid, "sbsql.builtin.recovery.en",
+       sbsql::SblrRenderLossiness::kCanonicalEquivalent, true},
+      {"renderer.fr-ca.from", profile.profile_uuid, "sbsql.builtin.recovery.en",
+       sbsql::SblrRenderLossiness::kCanonicalEquivalent, true},
+  };
+  manifest.topology_slots = {
+      {"slot.query.projection", "phrase.query.select", "projection", "SBSQL.SELECT",
+       "SBSQL.SELECT.SURFACE", 1, 1},
+      {"slot.query.source", "phrase.query.from", "source", "SBSQL.FROM",
+       "SBSQL.FROM.SURFACE", 1, 1},
+  };
+  manifest.predictive_states = {
+      {"predictive.select", "SBSQL.SELECT.SURFACE", "predictive.hash.select", true, true},
+      {"predictive.from", "SBSQL.FROM.SURFACE", "predictive.hash.from", true, true},
+  };
+  manifest.surfaces = {
+      {"SBSQL.SELECT.SURFACE", "SELECT", "keyword", "query",
+       "sblr.query.runtime.v3", "slot.query.projection", "predictive.select",
+       "renderer.fr-ca.select", "compat.sbsql.select.v1", "SBSQL.LANG_ELEMENT.SELECT",
+       "msg.sbsql.select", sbsql::LanguageResourceChannel::kReleaseSupported},
+      {"SBSQL.FROM.SURFACE", "FROM", "keyword", "query",
+       "sblr.query.runtime.v3", "slot.query.source", "predictive.from",
+       "renderer.fr-ca.from", "compat.sbsql.from.v1", "SBSQL.LANG_ELEMENT.FROM",
+       "msg.sbsql.from", sbsql::LanguageResourceChannel::kReleaseSupported},
+  };
+  manifest.keywords = {
+      {"kw.select", "SELECT", "SBSQL.SELECT", "SBSQL.SELECT.SURFACE", true, false},
+      {"kw.from", "FROM", "SBSQL.FROM", "SBSQL.FROM.SURFACE", true, false},
+  };
+  manifest.provenance = profile.provenance;
+  return manifest;
+}
+
 void VerifyBuiltInRecoveryProfile() {
   const auto& profile = sbsql::BuiltInCanonicalEnglishRecoveryProfile();
   Require(profile.built_in_recovery_profile, "SML-094 recovery profile flag missing");
@@ -119,6 +195,54 @@ void VerifyPreferredLanguageResourceDeclarations() {
   Require(result.accepted, "SML-084/SML-086 preferred language profile with English fallback was rejected");
 }
 
+void VerifyLanguageElementManifestCompleteness() {
+  auto manifest = ValidLanguageElementManifest();
+  auto result = sbsql::ValidateLanguageElementManifest(manifest);
+  Require(result.accepted, "SML-010 complete language element manifest was rejected");
+
+  manifest = ValidLanguageElementManifest();
+  manifest.keywords.clear();
+  result = sbsql::ValidateLanguageElementManifest(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_ELEMENT_MANIFEST.KEYWORDS_MISSING"),
+          "SML-010 manifest without keyword declarations was accepted");
+
+  manifest = ValidLanguageElementManifest();
+  manifest.surfaces.front().topology_slot_id = "missing.slot";
+  result = sbsql::ValidateLanguageElementManifest(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_ELEMENT_MANIFEST.SURFACE_TOPOLOGY_SLOT_MISSING"),
+          "SML-010 surface without topology slot coverage was accepted");
+
+  manifest = ValidLanguageElementManifest();
+  manifest.surfaces.front().predictive_state_id = "missing.predictive";
+  result = sbsql::ValidateLanguageElementManifest(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_ELEMENT_MANIFEST.SURFACE_PREDICTIVE_STATE_MISSING"),
+          "SML-010 surface without predictive-state coverage was accepted");
+
+  manifest = ValidLanguageElementManifest();
+  manifest.renderers.front().server_revalidation_required = false;
+  result = sbsql::ValidateLanguageElementManifest(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_ELEMENT_MANIFEST.RENDERER_REVALIDATION_REQUIRED"),
+          "SML-010 renderer without server revalidation was accepted");
+
+  manifest = ValidLanguageElementManifest();
+  manifest.compatibility_ids.push_back("compat.sbsql.select.v1");
+  result = sbsql::ValidateLanguageElementManifest(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_ELEMENT_MANIFEST.DUPLICATE_COMPATIBILITY_ID"),
+          "SML-010 duplicate compatibility ID was accepted");
+
+  manifest = ValidLanguageElementManifest();
+  manifest.surfaces.front().release_channel = sbsql::LanguageResourceChannel::kRemoved;
+  result = sbsql::ValidateLanguageElementManifest(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_ELEMENT_MANIFEST.SURFACE_CHANNEL_REFUSED"),
+          "SML-010 manifest published a removed surface");
+}
+
 void VerifyReleaseProfileValidation() {
   auto manifest = ValidReleaseProfile();
   auto result = sbsql::ValidateLanguageResourceManifest(manifest);
@@ -130,11 +254,124 @@ void VerifyReleaseProfileValidation() {
           "SML-093 unsigned profile did not fail closed");
 
   manifest = ValidReleaseProfile();
+  manifest.expired = true;
+  result = sbsql::ValidateLanguageResourceManifest(manifest);
+  Require(!result.accepted && result.HasIssue("SBSQL.LANG_RESOURCE.EXPIRED"),
+          "SML-093 expired profile did not fail closed");
+
+  manifest = ValidReleaseProfile();
   manifest.channel = sbsql::LanguageResourceChannel::kReleaseSupported;
   manifest.support_state = sbsql::LanguageResourceSupportState::kMachineBootstrap;
   result = sbsql::ValidateLanguageResourceManifest(manifest);
   Require(!result.accepted && result.HasIssue("SBSQL.LANG_RESOURCE.SUPPORT_STATE_MISMATCH"),
           "SML-088 machine-bootstrap profile was release-supported");
+}
+
+void VerifyReleaseChannelLifecycle() {
+  auto manifest = ValidReleaseProfile();
+  auto lifecycle = sbsql::ClassifyLanguageResourceLifecycle(manifest);
+  Require(lifecycle.load_allowed && lifecycle.use_allowed &&
+              lifecycle.support_claim_allowed &&
+              !lifecycle.emits_deprecation_warning,
+          "SML-092 release-supported lifecycle classification drifted");
+
+  manifest.channel = sbsql::LanguageResourceChannel::kExperimental;
+  manifest.support_state = sbsql::LanguageResourceSupportState::kMachineBootstrap;
+  auto result = sbsql::ValidateLanguageResourceManifest(manifest);
+  lifecycle = sbsql::ClassifyLanguageResourceLifecycle(manifest);
+  Require(result.accepted &&
+              result.HasIssue("SBSQL.LANG_RESOURCE.EXPERIMENTAL_UNSUPPORTED") &&
+              lifecycle.load_allowed && !lifecycle.support_claim_allowed,
+          "SML-092 experimental resource did not admit without support commitment");
+
+  manifest.support_state = sbsql::LanguageResourceSupportState::kNativeReviewed;
+  result = sbsql::ValidateLanguageResourceManifest(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_RESOURCE.EXPERIMENTAL_SUPPORT_STATE_MISMATCH"),
+          "SML-092 experimental resource claimed reviewed support state");
+
+  manifest = ValidReleaseProfile();
+  manifest.channel = sbsql::LanguageResourceChannel::kPreview;
+  manifest.support_state = sbsql::LanguageResourceSupportState::kNativeReviewed;
+  result = sbsql::ValidateLanguageResourceManifest(manifest);
+  lifecycle = sbsql::ClassifyLanguageResourceLifecycle(manifest);
+  Require(result.accepted &&
+              result.HasIssue("SBSQL.LANG_RESOURCE.PREVIEW_LIMITED_SUPPORT") &&
+              lifecycle.load_allowed && !lifecycle.support_claim_allowed,
+          "SML-092 preview resource did not admit as limited support");
+
+  manifest.support_state = sbsql::LanguageResourceSupportState::kMachineBootstrap;
+  result = sbsql::ValidateLanguageResourceManifest(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_RESOURCE.PREVIEW_REVIEW_REQUIRED"),
+          "SML-092 preview resource did not require native review");
+
+  manifest = ValidReleaseProfile();
+  manifest.channel = sbsql::LanguageResourceChannel::kBeta;
+  manifest.support_state = sbsql::LanguageResourceSupportState::kNativeReviewed;
+  result = sbsql::ValidateLanguageResourceManifest(manifest);
+  lifecycle = sbsql::ClassifyLanguageResourceLifecycle(manifest);
+  Require(result.accepted &&
+              result.HasIssue("SBSQL.LANG_RESOURCE.BETA_LIMITED_SUPPORT") &&
+              lifecycle.load_allowed && !lifecycle.support_claim_allowed,
+          "SML-092 beta resource did not admit as limited support");
+
+  manifest = ValidReleaseProfile();
+  manifest.channel = sbsql::LanguageResourceChannel::kDeprecated;
+  manifest.deprecation_notice_id = "deprecation.fr-ca.v1";
+  manifest.deprecation_replacement_profile_uuid = "019f1000-0000-7000-8000-000000000102";
+  result = sbsql::ValidateLanguageResourceManifest(manifest);
+  lifecycle = sbsql::ClassifyLanguageResourceLifecycle(manifest);
+  Require(result.accepted &&
+              result.HasIssue("SBSQL.LANG_RESOURCE.DEPRECATED") &&
+              lifecycle.load_allowed && lifecycle.support_claim_allowed &&
+              lifecycle.emits_deprecation_warning,
+          "SML-092 deprecated resource did not admit with deprecation warning");
+
+  manifest.deprecation_notice_id.clear();
+  result = sbsql::ValidateLanguageResourceManifest(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_RESOURCE.DEPRECATION_NOTICE_MISSING"),
+          "SML-092 deprecated resource did not require notice evidence");
+
+  manifest = ValidReleaseProfile();
+  manifest.channel = sbsql::LanguageResourceChannel::kRevoked;
+  manifest.revocation_notice_id = "revocation.fr-ca.v1";
+  result = sbsql::ValidateLanguageResourceManifest(manifest);
+  lifecycle = sbsql::ClassifyLanguageResourceLifecycle(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_RESOURCE.REVOKED") &&
+              !lifecycle.load_allowed && !lifecycle.use_allowed &&
+              !lifecycle.support_claim_allowed,
+          "SML-092 revoked resource was not refused");
+
+  manifest = ValidReleaseProfile();
+  manifest.channel = sbsql::LanguageResourceChannel::kRemoved;
+  manifest.removal_notice_id = "removal.fr-ca.v1";
+  result = sbsql::ValidateLanguageResourceManifest(manifest);
+  lifecycle = sbsql::ClassifyLanguageResourceLifecycle(manifest);
+  Require(!result.accepted &&
+              result.HasIssue("SBSQL.LANG_RESOURCE.REMOVED") &&
+              !lifecycle.load_allowed && !lifecycle.use_allowed,
+          "SML-092 removed resource was not refused");
+
+  auto bundle = ValidLanguageBundle();
+  bundle.language_profile.channel = sbsql::LanguageResourceChannel::kDeprecated;
+  bundle.language_profile.deprecation_notice_id = "deprecation.fr-ca.v1";
+  auto admission = sbsql::AdmitLanguageResourceBundleOperation(
+      sbsql::LanguageBundleAdmissionRequest{sbsql::LanguageBundleOperation::kLoad, bundle});
+  Require(admission.accepted &&
+              admission.HasIssue("SBSQL.LANG_RESOURCE.DEPRECATED"),
+          "SML-092 deprecated bundle load did not admit with warning");
+
+  bundle = ValidLanguageBundle();
+  bundle.language_profile.channel = sbsql::LanguageResourceChannel::kRevoked;
+  bundle.language_profile.revocation_notice_id = "revocation.fr-ca.v1";
+  admission = sbsql::AdmitLanguageResourceBundleOperation(
+      sbsql::LanguageBundleAdmissionRequest{sbsql::LanguageBundleOperation::kLoad, bundle});
+  Require(!admission.accepted &&
+              admission.HasIssue("SBSQL.LANG_RESOURCE.REVOKED"),
+          "SML-092 revoked bundle load was not refused");
 }
 
 void VerifyLanguageBundleSchemaAdmission() {
@@ -507,12 +744,154 @@ void VerifyEditorToolProtocol() {
           "SML-084 missing server revalidation metadata was not refused");
 }
 
+struct FailureDiagnosticCase {
+  sbsql::LanguageResourceFailureKind kind;
+  std::string_view code;
+  std::string_view name;
+};
+
+sbsql::LanguageResourceFailureDiagnosticInput SensitiveFailureInput(
+    sbsql::LanguageResourceFailureKind kind) {
+  sbsql::LanguageResourceFailureDiagnosticInput input;
+  input.failure_kind = kind;
+  input.telemetry_export = true;
+  input.support_bundle_export = true;
+  input.server_revalidation_required = true;
+  input.resource_identity = "sbsql.common_resource_pack.private";
+  input.language_profile_uuid = "019f1000-0000-7000-8000-00000000feed";
+  input.exact_tag = "fr-CA-x-private";
+  input.dialect_profile_uuid = "dialect.private.firebird";
+  input.topology_profile_uuid = "topology.private.rtl";
+  input.query_text = "SELECT * FROM hidden_table WHERE policy.secret = provider.local_password";
+  input.hidden_identifier = "hidden_table";
+  input.local_path = "/tmp/secret/fr-ca.json";
+  input.local_sblr_payload = "draft_sblr_local_secret operation";
+  return input;
+}
+
+void VerifyStableFailureDiagnosticsNoDisclosure() {
+  const std::vector<FailureDiagnosticCase> cases = {
+      {sbsql::LanguageResourceFailureKind::kMissingResource,
+       "SBSQL.LANG_RESOURCE.MISSING",
+       "missing_resource"},
+      {sbsql::LanguageResourceFailureKind::kUnsignedResource,
+       "SBSQL.LANG_RESOURCE.UNSIGNED",
+       "unsigned_resource"},
+      {sbsql::LanguageResourceFailureKind::kRevokedResource,
+       "SBSQL.LANG_RESOURCE.REVOKED",
+       "revoked_resource"},
+      {sbsql::LanguageResourceFailureKind::kExpiredResource,
+       "SBSQL.LANG_RESOURCE.EXPIRED",
+       "expired_resource"},
+      {sbsql::LanguageResourceFailureKind::kIncompatibleResource,
+       "SBSQL.LANG_RESOURCE.INCOMPATIBLE",
+       "incompatible_resource"},
+      {sbsql::LanguageResourceFailureKind::kUnsupportedChannel,
+       "SBSQL.LANG_RESOURCE.UNSUPPORTED_CHANNEL",
+       "unsupported_channel"},
+      {sbsql::LanguageResourceFailureKind::kAmbiguousFallback,
+       "SBSQL.LANG_RESOURCE.AMBIGUOUS_FALLBACK",
+       "ambiguous_fallback"},
+      {sbsql::LanguageResourceFailureKind::kUnsupportedRenderer,
+       "SBSQL.LANG_RESOURCE.RENDERER_NOT_RENDERABLE",
+       "unsupported_renderer"},
+      {sbsql::LanguageResourceFailureKind::kTopologyDialectUnicodeUnsupported,
+       "SBSQL.LANG_RESOURCE.TOPOLOGY_DIALECT_UNICODE_UNSUPPORTED",
+       "topology_dialect_unicode_unsupported"},
+      {sbsql::LanguageResourceFailureKind::kPredictiveResourceRefused,
+       "SBSQL.LANG_RESOURCE.PREDICTIVE_RESOURCE_REFUSED",
+       "predictive_resource_refused"},
+      {sbsql::LanguageResourceFailureKind::kLocalDraftSblrRefused,
+       "SBSQL.LANG_RESOURCE.LOCAL_DRAFT_SBLR_REFUSED",
+       "local_draft_sblr_refused"},
+  };
+  const std::vector<std::string_view> expected_field_order = {
+      "diagnostic_contract",
+      "failure_kind",
+      "disclosure_state",
+      "private_input_state",
+      "resource_identity_state",
+      "profile_identity_state",
+      "input_text_state",
+      "identifier_evidence_state",
+      "source_location_state",
+      "local_sblr_state",
+      "telemetry_redaction",
+      "support_bundle_redaction",
+      "server_revalidation_required",
+  };
+
+  for (const auto& diagnostic_case : cases) {
+    Require(sbsql::LanguageResourceFailureDiagnosticCode(diagnostic_case.kind) ==
+                diagnostic_case.code,
+            "SML-093 language resource diagnostic code mapping drifted");
+    Require(sbsql::LanguageResourceFailureKindName(diagnostic_case.kind) ==
+                diagnostic_case.name,
+            "SML-093 language resource failure name mapping drifted");
+
+    const auto input = SensitiveFailureInput(diagnostic_case.kind);
+    const auto diagnostic = sbsql::MakeLanguageResourceFailureDiagnostic(input);
+    Require(diagnostic.code == diagnostic_case.code,
+            "SML-093 failure diagnostic emitted unstable code");
+    Require(diagnostic.severity == "ERROR",
+            "SML-093 failure diagnostic did not fail closed as ERROR");
+    Require(diagnostic.component == "sbp_sbsql.language_resource",
+            "SML-093 failure diagnostic component drifted");
+    Require(diagnostic.fields.size() == expected_field_order.size(),
+            "SML-091 redacted diagnostic public field count drifted");
+    for (std::size_t i = 0; i < expected_field_order.size(); ++i) {
+      Require(diagnostic.fields[i].name == expected_field_order[i],
+              "SML-091 redacted diagnostic public field order drifted");
+      Require(sbsql::IsPublicDiagnosticFieldAllowed(diagnostic.fields[i].name,
+                                                    diagnostic.fields[i].value),
+              "SML-091 diagnostic builder emitted a non-public field");
+    }
+
+    const auto messages = sbsql::MakeLanguageResourceFailureMessageVector(input);
+    Require(messages.has_errors(), "SML-093 language resource message vector did not fail closed");
+    const auto rendered = sbsql::RenderMessageVectorSet(messages);
+    const auto json = sbsql::MessageVectorToJson(messages);
+    Require(ContainsText(rendered, diagnostic_case.code),
+            "SML-093 rendered diagnostic omitted stable failure code");
+    Require(ContainsText(rendered, "diagnostic_contract=sbsql.language_resource.failure.v1"),
+            "SML-093 rendered diagnostic omitted stable contract field");
+    Require(ContainsText(rendered, "private_input_state=redacted"),
+            "SML-091 rendered diagnostic did not mark private input redacted");
+    Require(ContainsText(rendered, "telemetry_redaction=applied"),
+            "SML-091 rendered diagnostic did not mark telemetry redaction");
+    Require(ContainsText(rendered, "support_bundle_redaction=applied"),
+            "SML-091 rendered diagnostic did not mark support bundle redaction");
+    Require(ContainsText(json, std::string("\"code\":\"") +
+                                   std::string(diagnostic_case.code) + "\""),
+            "SML-093 JSON diagnostic omitted stable failure code");
+    Require(ContainsText(json, "\"telemetry_redaction\":\"applied\""),
+            "SML-091 JSON diagnostic did not mark telemetry redaction");
+    Require(ContainsText(json, "\"support_bundle_redaction\":\"applied\""),
+            "SML-091 JSON diagnostic did not mark support bundle redaction");
+    RequireNoSensitiveMaterial(rendered, "SML-091 rendered language-resource diagnostic");
+    RequireNoSensitiveMaterial(json, "SML-091 JSON language-resource diagnostic");
+  }
+
+  auto no_export = SensitiveFailureInput(sbsql::LanguageResourceFailureKind::kLocalDraftSblrRefused);
+  no_export.telemetry_export = false;
+  no_export.support_bundle_export = false;
+  const auto rendered = sbsql::RenderMessageVectorSet(
+      sbsql::MakeLanguageResourceFailureMessageVector(no_export));
+  Require(ContainsText(rendered, "telemetry_redaction=not_requested"),
+          "SML-091 telemetry redaction state was not deterministic when export disabled");
+  Require(ContainsText(rendered, "support_bundle_redaction=not_requested"),
+          "SML-091 support-bundle redaction state was not deterministic when export disabled");
+  RequireNoSensitiveMaterial(rendered, "SML-091 non-export language-resource diagnostic");
+}
+
 } // namespace
 
 int main() {
   VerifyBuiltInRecoveryProfile();
   VerifyPreferredLanguageResourceDeclarations();
+  VerifyLanguageElementManifestCompleteness();
   VerifyReleaseProfileValidation();
+  VerifyReleaseChannelLifecycle();
   VerifyLanguageBundleSchemaAdmission();
   VerifyCanonicalElementStreamContract();
   VerifyParseFallbackAndRenderingContract();
@@ -521,6 +900,7 @@ int main() {
   VerifyConfusablePolicy();
   VerifyRestoreCompatibility();
   VerifyEditorToolProtocol();
+  VerifyStableFailureDiagnosticsNoDisclosure();
   std::cout << "sbsql_language_resource_contract_conformance=passed\n";
   return EXIT_SUCCESS;
 }

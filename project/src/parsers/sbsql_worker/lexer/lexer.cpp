@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdint>
 #include <string_view>
 #include <unordered_set>
 
@@ -28,6 +29,36 @@ bool IsAsciiHex(char c) {
 }
 
 bool IsUtf8Continuation(unsigned char c) { return (c & 0xC0) == 0x80; }
+
+bool IsUnicodeBidiControl(std::uint32_t cp) {
+  return (cp >= 0x202A && cp <= 0x202E) || (cp >= 0x2066 && cp <= 0x2069);
+}
+
+bool IsUnicodeCombiningMark(std::uint32_t cp) {
+  return (cp >= 0x0300 && cp <= 0x036F) ||
+         (cp >= 0x0591 && cp <= 0x05BD) || cp == 0x05BF ||
+         (cp >= 0x05C1 && cp <= 0x05C2) ||
+         (cp >= 0x05C4 && cp <= 0x05C5) || cp == 0x05C7 ||
+         (cp >= 0x0610 && cp <= 0x061A) ||
+         (cp >= 0x064B && cp <= 0x065F) || cp == 0x0670 ||
+         (cp >= 0x06D6 && cp <= 0x06DC) ||
+         (cp >= 0x06DF && cp <= 0x06E4) ||
+         (cp >= 0x06E7 && cp <= 0x06E8) ||
+         (cp >= 0x06EA && cp <= 0x06ED) ||
+         (cp >= 0x1AB0 && cp <= 0x1AFF) ||
+         (cp >= 0x1DC0 && cp <= 0x1DFF) ||
+         (cp >= 0x20D0 && cp <= 0x20FF) ||
+         (cp >= 0xFE20 && cp <= 0xFE2F);
+}
+
+bool CanAnchorCombiningMark(std::uint32_t cp) {
+  if (IsUnicodeBidiControl(cp) || IsUnicodeCombiningMark(cp)) return false;
+  if (cp < 0x80) {
+    const char c = static_cast<char>(cp);
+    return IsAsciiAlpha(c) || IsAsciiDigit(c) || c == '_' || c == '$';
+  }
+  return true;
+}
 
 bool IsIdentifierStart(char c) {
   const auto uc = static_cast<unsigned char>(c);
@@ -259,19 +290,36 @@ class Lexer {
          {"column", std::to_string(column)}}));
   }
 
+  void AddUnicodeDiagnostic(std::string code,
+                            std::string message,
+                            std::uint32_t codepoint,
+                            std::size_t offset,
+                            std::size_t line,
+                            std::size_t column) {
+    result_.messages.diagnostics.push_back(MakeDiagnostic(
+        std::move(code), "ERROR", std::move(message), "sbp_sbsql.lexer",
+        {{"byte_offset", std::to_string(offset)},
+         {"codepoint", std::to_string(codepoint)},
+         {"line", std::to_string(line)},
+         {"column", std::to_string(column)}}));
+  }
+
   void ValidateUtf8Input() {
     bool emitted = false;
     std::size_t cursor = 0;
     std::size_t line = 1;
     std::size_t column = 1;
+    bool previous_can_anchor_combining = false;
     while (cursor < source_.size()) {
       const auto c = static_cast<unsigned char>(source_[cursor]);
       if (c < 0x80) {
         if (source_[cursor] == '\n') {
           ++line;
           column = 1;
+          previous_can_anchor_combining = false;
         } else {
           ++column;
+          previous_can_anchor_combining = CanAnchorCombiningMark(c);
         }
         ++cursor;
         continue;
@@ -279,12 +327,16 @@ class Lexer {
 
       std::size_t length = 0;
       bool invalid = false;
+      std::uint32_t codepoint = 0;
       if (c >= 0xC2 && c <= 0xDF) {
         length = 2;
+        codepoint = c & 0x1Fu;
       } else if (c >= 0xE0 && c <= 0xEF) {
         length = 3;
+        codepoint = c & 0x0Fu;
       } else if (c >= 0xF0 && c <= 0xF4) {
         length = 4;
+        codepoint = c & 0x07u;
       } else {
         invalid = true;
       }
@@ -294,10 +346,12 @@ class Lexer {
       }
       if (!invalid) {
         for (std::size_t i = 1; i < length; ++i) {
-          if (!IsUtf8Continuation(static_cast<unsigned char>(source_[cursor + i]))) {
+          const auto next = static_cast<unsigned char>(source_[cursor + i]);
+          if (!IsUtf8Continuation(next)) {
             invalid = true;
             break;
           }
+          codepoint = (codepoint << 6u) | (next & 0x3Fu);
         }
       }
       if (!invalid && length == 3) {
@@ -318,7 +372,23 @@ class Lexer {
         emitted = true;
         ++cursor;
         ++column;
+        previous_can_anchor_combining = false;
         continue;
+      }
+      if (IsUnicodeBidiControl(codepoint)) {
+        AddUnicodeDiagnostic("SBSQL.UNICODE.BIDI_CONTROL_FORBIDDEN",
+                             "Unicode bidi controls are not admitted in SBsql source",
+                             codepoint, cursor, line, column);
+        previous_can_anchor_combining = false;
+      } else if (IsUnicodeCombiningMark(codepoint)) {
+        if (!previous_can_anchor_combining) {
+          AddUnicodeDiagnostic(
+              "SBSQL.UNICODE.COMBINING_MARK_WITHOUT_BASE",
+              "Unicode combining marks require a visible base code point in SBsql source",
+              codepoint, cursor, line, column);
+        }
+      } else {
+        previous_can_anchor_combining = CanAnchorCombiningMark(codepoint);
       }
       cursor += length;
       column += length;

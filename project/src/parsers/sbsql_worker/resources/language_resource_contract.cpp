@@ -8,6 +8,8 @@
 
 #include "resources/language_resource_contract.hpp"
 
+#include "parser_ipc_common.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <limits>
@@ -177,6 +179,73 @@ void SetRenderDiagnostic(SblrRenderSelection* selection,
   selection->diagnostic_message = std::move(message);
 }
 
+std::string_view LanguageResourceFailureDiagnosticMessage(
+    LanguageResourceFailureKind kind) {
+  switch (kind) {
+    case LanguageResourceFailureKind::kMissingResource:
+      return "Language resource is unavailable; operation failed closed";
+    case LanguageResourceFailureKind::kUnsignedResource:
+      return "Language resource is unsigned; operation failed closed";
+    case LanguageResourceFailureKind::kRevokedResource:
+      return "Language resource is revoked; operation failed closed";
+    case LanguageResourceFailureKind::kExpiredResource:
+      return "Language resource is expired; operation failed closed";
+    case LanguageResourceFailureKind::kIncompatibleResource:
+      return "Language resource is incompatible; operation failed closed";
+    case LanguageResourceFailureKind::kUnsupportedChannel:
+      return "Language resource channel is unsupported; operation failed closed";
+    case LanguageResourceFailureKind::kAmbiguousFallback:
+      return "Language resource fallback is ambiguous; operation failed closed";
+    case LanguageResourceFailureKind::kUnsupportedRenderer:
+      return "Language resource renderer is unavailable; operation failed closed";
+    case LanguageResourceFailureKind::kTopologyDialectUnicodeUnsupported:
+      return "Language resource topology or dialect Unicode profile is unsupported; operation failed closed";
+    case LanguageResourceFailureKind::kPredictiveResourceRefused:
+      return "Predictive language resource was refused; operation failed closed";
+    case LanguageResourceFailureKind::kLocalDraftSblrRefused:
+      return "Local draft SBLR is untrusted; operation failed closed";
+  }
+  return "Language resource operation failed closed";
+}
+
+bool HasPrivateDiagnosticMaterial(
+    const LanguageResourceFailureDiagnosticInput& input) {
+  return !input.resource_identity.empty() ||
+         !input.language_profile_uuid.empty() ||
+         !input.exact_tag.empty() ||
+         !input.dialect_profile_uuid.empty() ||
+         !input.topology_profile_uuid.empty() ||
+         !input.query_text.empty() ||
+         !input.hidden_identifier.empty() ||
+         !input.local_path.empty() ||
+         !input.local_sblr_payload.empty();
+}
+
+std::string RedactionState(bool export_requested) {
+  return export_requested ? "applied" : "not_requested";
+}
+
+bool HasReleaseGovernance(const LanguageResourceManifest& manifest) {
+  return !Empty(manifest.governance_evidence_id) &&
+         !Empty(manifest.native_review_evidence_id) &&
+         !Empty(manifest.support_owner_id) &&
+         !Empty(manifest.trace_oracle_id);
+}
+
+void AddWarningIfMissing(ResourceValidationResult* result,
+                         std::string code,
+                         std::string detail) {
+  if (result == nullptr || result->HasIssue(code)) return;
+  result->AddWarning(std::move(code), std::move(detail));
+}
+
+void AddErrorIfMissing(ResourceValidationResult* result,
+                       std::string code,
+                       std::string detail) {
+  if (result == nullptr || result->HasIssue(code)) return;
+  result->AddError(std::move(code), std::move(detail));
+}
+
 } // namespace
 
 bool ResourceValidationResult::HasIssue(std::string_view code) const {
@@ -236,6 +305,97 @@ const LanguageResourceManifest& BuiltInCanonicalEnglishRecoveryProfile() {
   return profile;
 }
 
+LanguageResourceLifecycleClassification ClassifyLanguageResourceLifecycle(
+    const LanguageResourceManifest& manifest) {
+  LanguageResourceLifecycleClassification lifecycle;
+  lifecycle.support_class = "unsupported";
+
+  switch (manifest.channel) {
+    case LanguageResourceChannel::kExperimental:
+      lifecycle.support_class = "experimental";
+      lifecycle.support_claim_allowed = false;
+      lifecycle.emits_lifecycle_warning = true;
+      lifecycle.diagnostic_code = "SBSQL.LANG_RESOURCE.EXPERIMENTAL_UNSUPPORTED";
+      lifecycle.diagnostic_message =
+          "experimental language resources are admitted without support commitment";
+      break;
+    case LanguageResourceChannel::kPreview:
+      lifecycle.support_class = "preview";
+      lifecycle.support_claim_allowed = false;
+      lifecycle.emits_lifecycle_warning = true;
+      lifecycle.diagnostic_code = "SBSQL.LANG_RESOURCE.PREVIEW_LIMITED_SUPPORT";
+      lifecycle.diagnostic_message =
+          "preview language resources require native review but are not release supported";
+      break;
+    case LanguageResourceChannel::kBeta:
+      lifecycle.support_class = "beta";
+      lifecycle.support_claim_allowed = false;
+      lifecycle.emits_lifecycle_warning = true;
+      lifecycle.diagnostic_code = "SBSQL.LANG_RESOURCE.BETA_LIMITED_SUPPORT";
+      lifecycle.diagnostic_message =
+          "beta language resources are admitted as limited-support resources";
+      break;
+    case LanguageResourceChannel::kReleaseSupported:
+      lifecycle.support_class = "release_supported";
+      lifecycle.support_claim_allowed = true;
+      lifecycle.diagnostic_code = "SBSQL.LANG_RESOURCE.RELEASE_SUPPORTED";
+      lifecycle.diagnostic_message =
+          "release-supported language resource admitted";
+      break;
+    case LanguageResourceChannel::kDeprecated:
+      lifecycle.support_class = "deprecated";
+      lifecycle.support_claim_allowed = true;
+      lifecycle.emits_lifecycle_warning = true;
+      lifecycle.emits_deprecation_warning = true;
+      lifecycle.diagnostic_code = "SBSQL.LANG_RESOURCE.DEPRECATED";
+      lifecycle.diagnostic_message =
+          "deprecated language resource remains loadable but must emit deprecation diagnostics";
+      break;
+    case LanguageResourceChannel::kRevoked:
+      lifecycle.validation_allowed = false;
+      lifecycle.load_allowed = false;
+      lifecycle.use_allowed = false;
+      lifecycle.support_claim_allowed = false;
+      lifecycle.support_class = "revoked";
+      lifecycle.diagnostic_code = "SBSQL.LANG_RESOURCE.REVOKED";
+      lifecycle.diagnostic_message =
+          "revoked language resources are refused";
+      break;
+    case LanguageResourceChannel::kRemoved:
+      lifecycle.validation_allowed = false;
+      lifecycle.load_allowed = false;
+      lifecycle.use_allowed = false;
+      lifecycle.support_claim_allowed = false;
+      lifecycle.support_class = "removed";
+      lifecycle.diagnostic_code = "SBSQL.LANG_RESOURCE.REMOVED";
+      lifecycle.diagnostic_message =
+          "removed language resources are refused";
+      break;
+  }
+
+  if (manifest.revoked) {
+    lifecycle.validation_allowed = false;
+    lifecycle.load_allowed = false;
+    lifecycle.use_allowed = false;
+    lifecycle.support_claim_allowed = false;
+    lifecycle.support_class = "revoked";
+    lifecycle.diagnostic_code = "SBSQL.LANG_RESOURCE.REVOKED";
+    lifecycle.diagnostic_message =
+        "revoked language resources are refused";
+  }
+  if (manifest.removed) {
+    lifecycle.validation_allowed = false;
+    lifecycle.load_allowed = false;
+    lifecycle.use_allowed = false;
+    lifecycle.support_claim_allowed = false;
+    lifecycle.support_class = "removed";
+    lifecycle.diagnostic_code = "SBSQL.LANG_RESOURCE.REMOVED";
+    lifecycle.diagnostic_message =
+        "removed language resources are refused";
+  }
+  return lifecycle;
+}
+
 ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResourceManifest& manifest) {
   ResourceValidationResult result;
   if (Empty(manifest.profile_uuid)) result.AddError("SBSQL.LANG_RESOURCE.PROFILE_UUID_MISSING", "profile uuid is required");
@@ -247,11 +407,38 @@ ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResource
   if (Empty(manifest.sblr_registry_hash)) result.AddError("SBSQL.LANG_RESOURCE.SBLR_REGISTRY_HASH_MISSING", "SBLR registry hash is required");
   if (Empty(manifest.signature_id)) result.AddError("SBSQL.LANG_RESOURCE.UNSIGNED", "signature identity is required");
   if (Empty(manifest.signing_key_id)) result.AddError("SBSQL.LANG_RESOURCE.SIGNING_KEY_MISSING", "signing key identity is required");
+  const auto lifecycle = ClassifyLanguageResourceLifecycle(manifest);
+  if (lifecycle.emits_lifecycle_warning && !lifecycle.diagnostic_code.empty()) {
+    AddWarningIfMissing(&result, lifecycle.diagnostic_code, lifecycle.diagnostic_message);
+  }
+  if (manifest.channel == LanguageResourceChannel::kExperimental &&
+      manifest.support_state != LanguageResourceSupportState::kMachineBootstrap) {
+    result.AddError("SBSQL.LANG_RESOURCE.EXPERIMENTAL_SUPPORT_STATE_MISMATCH",
+                    "experimental resources must not claim reviewed or release support state");
+  }
+  if (manifest.channel == LanguageResourceChannel::kPreview &&
+      manifest.support_state == LanguageResourceSupportState::kMachineBootstrap) {
+    result.AddError("SBSQL.LANG_RESOURCE.PREVIEW_REVIEW_REQUIRED",
+                    "preview resources require native review before admission");
+  }
+  if (manifest.channel == LanguageResourceChannel::kBeta &&
+      manifest.support_state == LanguageResourceSupportState::kMachineBootstrap) {
+    result.AddError("SBSQL.LANG_RESOURCE.BETA_REVIEW_REQUIRED",
+                    "beta resources require native review before admission");
+  }
   if (manifest.revoked || manifest.channel == LanguageResourceChannel::kRevoked) {
     result.AddError("SBSQL.LANG_RESOURCE.REVOKED", "revoked language resources fail closed");
+    if (Empty(manifest.revocation_notice_id)) {
+      result.AddError("SBSQL.LANG_RESOURCE.REVOCATION_NOTICE_MISSING",
+                      "revoked language resources require revocation notice evidence");
+    }
   }
   if (manifest.removed || manifest.channel == LanguageResourceChannel::kRemoved) {
     result.AddError("SBSQL.LANG_RESOURCE.REMOVED", "removed language resources fail closed");
+    if (Empty(manifest.removal_notice_id)) {
+      result.AddError("SBSQL.LANG_RESOURCE.REMOVAL_NOTICE_MISSING",
+                      "removed language resources require removal notice evidence");
+    }
   }
   if (manifest.expired) result.AddError("SBSQL.LANG_RESOURCE.EXPIRED", "expired language resources fail closed");
   if (manifest.fallback_parent_uuid == manifest.profile_uuid && !manifest.profile_uuid.empty()) {
@@ -266,6 +453,8 @@ ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResource
   if (manifest.limits.max_predictive_table_bytes > 8ull * 1024ull * 1024ull ||
       manifest.limits.max_transition_fanout > 1024 ||
       manifest.limits.max_completion_results > 4096 ||
+      manifest.limits.max_generation_millis > 1000 ||
+      manifest.limits.max_predictive_memory_bytes > 16ull * 1024ull * 1024ull ||
       manifest.limits.max_nested_expansion_depth > 64) {
     result.AddError("SBSQL.LANG_RESOURCE.PREDICTIVE_LIMIT_EXCEEDED",
                     "predictive resources exceed release safety limits");
@@ -275,10 +464,23 @@ ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResource
       result.AddError("SBSQL.LANG_RESOURCE.SUPPORT_STATE_MISMATCH",
                       "release-supported resources require release-supported support state");
     }
-    if (Empty(manifest.governance_evidence_id) || Empty(manifest.native_review_evidence_id) ||
-        Empty(manifest.support_owner_id) || Empty(manifest.trace_oracle_id)) {
+    if (!HasReleaseGovernance(manifest)) {
       result.AddError("SBSQL.LANG_RESOURCE.GOVERNANCE_EVIDENCE_MISSING",
                       "release-supported resources require governance native review support owner and trace evidence");
+    }
+  }
+  if (manifest.channel == LanguageResourceChannel::kDeprecated) {
+    if (manifest.support_state != LanguageResourceSupportState::kReleaseSupported) {
+      result.AddError("SBSQL.LANG_RESOURCE.DEPRECATED_SUPPORT_STATE_MISMATCH",
+                      "deprecated resources must retain release-supported support state");
+    }
+    if (!HasReleaseGovernance(manifest)) {
+      result.AddError("SBSQL.LANG_RESOURCE.DEPRECATED_GOVERNANCE_EVIDENCE_MISSING",
+                      "deprecated resources require release governance evidence");
+    }
+    if (Empty(manifest.deprecation_notice_id)) {
+      result.AddError("SBSQL.LANG_RESOURCE.DEPRECATION_NOTICE_MISSING",
+                      "deprecated resources require deprecation notice evidence");
     }
   }
   if (manifest.built_in_recovery_profile && manifest.externally_replaceable) {
@@ -297,10 +499,308 @@ ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResource
                       "release resource data must be redistributable");
     }
   }
-  if (manifest.channel == LanguageResourceChannel::kReleaseSupported &&
+  if ((manifest.channel == LanguageResourceChannel::kReleaseSupported ||
+       manifest.channel == LanguageResourceChannel::kDeprecated) &&
       manifest.provenance.empty()) {
     result.AddError("SBSQL.LANG_RESOURCE.PROVENANCE_MISSING",
-                    "release-supported resources require provenance rows");
+                    "release-supported and deprecated resources require provenance rows");
+  }
+  return result;
+}
+
+ResourceValidationResult ValidateLanguageElementManifest(const LanguageElementManifest& manifest) {
+  ResourceValidationResult result;
+  auto merge = [&](const ResourceValidationResult& other) {
+    for (const auto& issue : other.issues) {
+      if (issue.severity == ResourceValidationSeverity::kError) {
+        result.AddError(issue.code, issue.detail);
+      } else {
+        result.AddWarning(issue.code, issue.detail);
+      }
+    }
+  };
+
+  if (manifest.manifest_schema_version != "sbsql.language_element_manifest.v1") {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.SCHEMA_VERSION_UNSUPPORTED",
+                    "language element manifest schema version is unsupported");
+  }
+  if (Empty(manifest.manifest_uuid)) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.UUID_MISSING",
+                    "language element manifest UUID is required");
+  }
+  if (Empty(manifest.profile_uuid) || Empty(manifest.exact_tag) ||
+      Empty(manifest.dialect_profile_uuid) || Empty(manifest.topology_profile_uuid) ||
+      Empty(manifest.common_resource_hash)) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.RESOURCE_METADATA_MISSING",
+                    "language element manifest requires profile, dialect, topology, exact tag, and resource hash metadata");
+  }
+  if (Empty(manifest.compatibility_identity)) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.COMPATIBILITY_IDENTITY_MISSING",
+                    "language element manifest compatibility identity is required");
+  }
+
+  merge(ValidateLanguageResourceManifest(manifest.language_profile));
+  merge(ValidateLanguageResourceBundleManifest(manifest.bundle_manifest));
+
+  if (!Empty(manifest.language_profile.profile_uuid) &&
+      manifest.profile_uuid != manifest.language_profile.profile_uuid) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.PROFILE_UUID_MISMATCH",
+                    "manifest profile UUID must match the language profile");
+  }
+  if (!Empty(manifest.language_profile.exact_tag) &&
+      manifest.exact_tag != manifest.language_profile.exact_tag) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.EXACT_TAG_MISMATCH",
+                    "manifest exact language tag must match the language profile");
+  }
+  if (!Empty(manifest.language_profile.common_resource_hash) &&
+      manifest.common_resource_hash != manifest.language_profile.common_resource_hash) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.COMMON_HASH_MISMATCH",
+                    "manifest common resource hash must match the language profile");
+  }
+  if (!Empty(manifest.bundle_manifest.dialect_profile_uuid) &&
+      manifest.dialect_profile_uuid != manifest.bundle_manifest.dialect_profile_uuid) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.DIALECT_PROFILE_MISMATCH",
+                    "manifest dialect profile UUID must match the bundle");
+  }
+  if (!Empty(manifest.bundle_manifest.topology_profile_uuid) &&
+      manifest.topology_profile_uuid != manifest.bundle_manifest.topology_profile_uuid) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.TOPOLOGY_PROFILE_MISMATCH",
+                    "manifest topology profile UUID must match the bundle");
+  }
+
+  if (manifest.keywords.empty()) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.KEYWORDS_MISSING",
+                    "language element manifest requires keyword declarations");
+  }
+  if (manifest.topology_slots.empty()) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.TOPOLOGY_SLOTS_MISSING",
+                    "language element manifest requires phrase and topology slots");
+  }
+  if (manifest.surfaces.empty()) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.SURFACES_MISSING",
+                    "language element manifest requires surface declarations");
+  }
+  if (manifest.predictive_states.empty()) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.PREDICTIVE_STATES_MISSING",
+                    "language element manifest requires predictive state declarations");
+  }
+  if (manifest.renderers.empty()) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.RENDERERS_MISSING",
+                    "language element manifest requires renderer declarations");
+  }
+  if (manifest.compatibility_ids.empty()) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.COMPATIBILITY_IDS_MISSING",
+                    "language element manifest requires compatibility IDs");
+  }
+  if (manifest.diagnostics.empty()) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.DIAGNOSTICS_MISSING",
+                    "language element manifest requires diagnostics and messages");
+  }
+  if (manifest.provenance.empty() &&
+      manifest.language_profile.provenance.empty() &&
+      manifest.bundle_manifest.provenance.empty()) {
+    result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.PROVENANCE_MISSING",
+                    "language element manifest requires provenance rows");
+  }
+
+  std::set<std::string> surface_ids;
+  std::set<std::string> slot_ids;
+  std::set<std::string> predictive_state_ids;
+  std::set<std::string> renderer_ids;
+  std::set<std::string> compatibility_ids;
+  std::set<std::string> diagnostic_codes;
+  std::set<std::string> message_ids;
+
+  for (const auto& compatibility_id : manifest.compatibility_ids) {
+    if (Empty(compatibility_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.EMPTY_COMPATIBILITY_ID",
+                      "compatibility IDs must not be empty");
+      continue;
+    }
+    if (!compatibility_ids.insert(compatibility_id).second) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.DUPLICATE_COMPATIBILITY_ID",
+                      "compatibility IDs must be unique");
+    }
+  }
+
+  for (const auto& slot : manifest.topology_slots) {
+    if (Empty(slot.slot_id) || Empty(slot.phrase_id) ||
+        Empty(slot.topology_role) || Empty(slot.canonical_id) ||
+        Empty(slot.surface_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.TOPOLOGY_SLOT_INCOMPLETE",
+                      "topology slots require slot, phrase, role, canonical, and surface IDs");
+    }
+    if (!Empty(slot.slot_id) && !slot_ids.insert(slot.slot_id).second) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.DUPLICATE_TOPOLOGY_SLOT",
+                      "topology slot IDs must be unique");
+    }
+    if (slot.min_elements == 0 || slot.max_elements < slot.min_elements) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.TOPOLOGY_SLOT_CARDINALITY_INVALID",
+                      "topology slot cardinality is invalid");
+    }
+  }
+
+  for (const auto& predictive : manifest.predictive_states) {
+    if (Empty(predictive.state_id) || Empty(predictive.surface_id) ||
+        Empty(predictive.transition_table_hash)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.PREDICTIVE_STATE_INCOMPLETE",
+                      "predictive states require state ID, surface ID, and transition hash");
+    }
+    if (!predictive.server_revalidation_required) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.PREDICTIVE_REVALIDATION_REQUIRED",
+                      "predictive states require server revalidation");
+    }
+    if (!Empty(predictive.state_id) &&
+        !predictive_state_ids.insert(predictive.state_id).second) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.DUPLICATE_PREDICTIVE_STATE",
+                      "predictive state IDs must be unique");
+    }
+  }
+
+  for (const auto& renderer : manifest.renderers) {
+    if (Empty(renderer.renderer_id) || Empty(renderer.profile_uuid) ||
+        Empty(renderer.canonical_english_fallback_profile_uuid)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.RENDERER_INCOMPLETE",
+                      "renderers require renderer ID, profile UUID, and canonical fallback profile");
+    }
+    if (!renderer.server_revalidation_required) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.RENDERER_REVALIDATION_REQUIRED",
+                      "renderers require server revalidation");
+    }
+    if (!Empty(renderer.renderer_id) &&
+        !renderer_ids.insert(renderer.renderer_id).second) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.DUPLICATE_RENDERER",
+                      "renderer IDs must be unique");
+    }
+  }
+
+  for (const auto& diagnostic : manifest.diagnostics) {
+    if (Empty(diagnostic.diagnostic_code) || Empty(diagnostic.message_id) ||
+        Empty(diagnostic.severity) || Empty(diagnostic.message_template_hash)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.DIAGNOSTIC_INCOMPLETE",
+                      "diagnostics require code, message ID, severity, and template hash");
+    }
+    if (diagnostic.severity != "info" && diagnostic.severity != "warning" &&
+        diagnostic.severity != "error") {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.DIAGNOSTIC_SEVERITY_INVALID",
+                      "diagnostic severity must be info, warning, or error");
+    }
+    if (!Empty(diagnostic.diagnostic_code) &&
+        !diagnostic_codes.insert(diagnostic.diagnostic_code).second) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.DUPLICATE_DIAGNOSTIC",
+                      "diagnostic codes must be unique");
+    }
+    if (!Empty(diagnostic.message_id)) {
+      message_ids.insert(diagnostic.message_id);
+    }
+  }
+
+  for (const auto& surface : manifest.surfaces) {
+    if (Empty(surface.surface_id) || Empty(surface.canonical_name) ||
+        Empty(surface.surface_kind) || Empty(surface.family) ||
+        Empty(surface.sblr_operation_family)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.SURFACE_INCOMPLETE",
+                      "surface declarations require ID, name, kind, family, and SBLR operation family");
+    }
+    if (!Empty(surface.surface_id) && !surface_ids.insert(surface.surface_id).second) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.DUPLICATE_SURFACE",
+                      "surface IDs must be unique");
+    }
+    if (!slot_ids.count(surface.topology_slot_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.SURFACE_TOPOLOGY_SLOT_MISSING",
+                      "each surface must reference a declared topology slot");
+    }
+    if (!predictive_state_ids.count(surface.predictive_state_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.SURFACE_PREDICTIVE_STATE_MISSING",
+                      "each surface must reference a declared predictive state");
+    }
+    if (!renderer_ids.count(surface.renderer_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.SURFACE_RENDERER_MISSING",
+                      "each surface must reference a declared renderer");
+    }
+    if (!compatibility_ids.count(surface.compatibility_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.SURFACE_COMPATIBILITY_ID_MISSING",
+                      "each surface must reference a declared compatibility ID");
+    }
+    if (!diagnostic_codes.count(surface.diagnostic_code) ||
+        !message_ids.count(surface.message_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.SURFACE_DIAGNOSTIC_MISSING",
+                      "each surface must reference a declared diagnostic and message");
+    }
+    if (surface.release_channel == LanguageResourceChannel::kRevoked ||
+        surface.release_channel == LanguageResourceChannel::kRemoved) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.SURFACE_CHANNEL_REFUSED",
+                      "complete language element manifests cannot publish revoked or removed surfaces");
+    }
+  }
+
+  for (const auto& keyword : manifest.keywords) {
+    if (Empty(keyword.keyword_id) || Empty(keyword.text) ||
+        Empty(keyword.canonical_id) || Empty(keyword.surface_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.KEYWORD_INCOMPLETE",
+                      "keywords require keyword, text, canonical, and surface IDs");
+    }
+    if (!surface_ids.count(keyword.surface_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.KEYWORD_SURFACE_MISSING",
+                      "keywords must reference declared surfaces");
+    }
+  }
+
+  for (const auto& slot : manifest.topology_slots) {
+    if (!surface_ids.count(slot.surface_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.TOPOLOGY_SURFACE_MISSING",
+                      "topology slots must reference declared surfaces");
+    }
+  }
+  for (const auto& predictive : manifest.predictive_states) {
+    if (!surface_ids.count(predictive.surface_id)) {
+      result.AddError("SBSQL.LANG_ELEMENT_MANIFEST.PREDICTIVE_SURFACE_MISSING",
+                      "predictive states must reference declared surfaces");
+    }
+  }
+
+  return result;
+}
+
+ResourceValidationResult ValidatePredictiveTextResourceFootprint(
+    const PredictiveTextResourceFootprint& footprint,
+    const LanguageResourceLimits& limits) {
+  ResourceValidationResult result;
+  if (Empty(footprint.resource_identity)) {
+    result.AddError("SBSQL.LANG_RESOURCE.PREDICTIVE_RESOURCE_IDENTITY_MISSING",
+                    "predictive resource identity is required");
+  }
+  if (footprint.table_bytes > limits.max_predictive_table_bytes) {
+    result.AddError("SBSQL.LANG_RESOURCE.PREDICTIVE_TABLE_SIZE_LIMIT",
+                    "predictive table size exceeds the admitted language resource limit");
+  }
+  if (footprint.transition_fanout > limits.max_transition_fanout) {
+    result.AddError("SBSQL.LANG_RESOURCE.PREDICTIVE_FANOUT_LIMIT",
+                    "predictive transition fanout exceeds the admitted language resource limit");
+  }
+  if (footprint.completion_results > limits.max_completion_results) {
+    result.AddError("SBSQL.LANG_RESOURCE.PREDICTIVE_COMPLETION_LIMIT",
+                    "predictive completion result count exceeds the admitted language resource limit");
+  }
+  if (footprint.generation_millis > limits.max_generation_millis) {
+    result.AddError("SBSQL.LANG_RESOURCE.PREDICTIVE_TIME_LIMIT",
+                    "predictive generation time exceeds the admitted language resource limit");
+  }
+  if (footprint.memory_bytes > limits.max_predictive_memory_bytes) {
+    result.AddError("SBSQL.LANG_RESOURCE.PREDICTIVE_MEMORY_LIMIT",
+                    "predictive memory use exceeds the admitted language resource limit");
+  }
+  if (footprint.nested_expansion_depth > limits.max_nested_expansion_depth) {
+    result.AddError("SBSQL.LANG_RESOURCE.PREDICTIVE_DEPTH_LIMIT",
+                    "predictive nested expansion depth exceeds the admitted language resource limit");
+  }
+  if (!footprint.deterministic_limit_enforcement) {
+    result.AddError("SBSQL.LANG_RESOURCE.PREDICTIVE_DETERMINISM_REQUIRED",
+                    "predictive resources must enforce limits deterministically");
+  }
+  if (!footprint.hidden_object_no_disclosure) {
+    result.AddError("SBSQL.LANG_RESOURCE.PREDICTIVE_NO_DISCLOSURE_REQUIRED",
+                    "predictive completions must not disclose hidden or inaccessible objects");
   }
   return result;
 }
@@ -422,8 +922,17 @@ ResourceValidationResult AdmitLanguageResourceBundleOperation(
     const LanguageBundleAdmissionRequest& request) {
   ResourceValidationResult result =
       ValidateLanguageResourceBundleManifest(request.bundle);
+  const auto lifecycle =
+      ClassifyLanguageResourceLifecycle(request.bundle.language_profile);
   if (request.operation == LanguageBundleOperation::kLoad ||
       request.operation == LanguageBundleOperation::kValidate) {
+    if (!lifecycle.load_allowed) {
+      AddErrorIfMissing(&result, lifecycle.diagnostic_code,
+                        lifecycle.diagnostic_message);
+    } else if (lifecycle.emits_lifecycle_warning) {
+      AddWarningIfMissing(&result, lifecycle.diagnostic_code,
+                          lifecycle.diagnostic_message);
+    }
     if (!request.bundle.compatible_with_parser) {
       result.AddError("SBSQL.LANG_BUNDLE.INCOMPATIBLE",
                       "language resource bundle is not compatible with this parser");
@@ -672,6 +1181,39 @@ SblrRenderSelection ClassifySblrRenderSelection(const SblrRenderRequest& request
   return selection;
 }
 
+Diagnostic MakeLanguageResourceFailureDiagnostic(
+    const LanguageResourceFailureDiagnosticInput& input) {
+  const bool private_material_supplied = HasPrivateDiagnosticMaterial(input);
+  return MakeDiagnostic(
+      std::string(LanguageResourceFailureDiagnosticCode(input.failure_kind)),
+      "ERROR",
+      std::string(LanguageResourceFailureDiagnosticMessage(input.failure_kind)),
+      "sbp_sbsql.language_resource",
+      {
+          {"diagnostic_contract", "sbsql.language_resource.failure.v1"},
+          {"failure_kind", std::string(LanguageResourceFailureKindName(input.failure_kind))},
+          {"disclosure_state", "no_disclosure"},
+          {"private_input_state", private_material_supplied ? "redacted" : "absent"},
+          {"resource_identity_state", "redacted"},
+          {"profile_identity_state", "redacted"},
+          {"input_text_state", "redacted"},
+          {"identifier_evidence_state", "redacted"},
+          {"source_location_state", "redacted"},
+          {"local_sblr_state", "redacted"},
+          {"telemetry_redaction", RedactionState(input.telemetry_export)},
+          {"support_bundle_redaction", RedactionState(input.support_bundle_export)},
+          {"server_revalidation_required",
+           input.server_revalidation_required ? "true" : "false"},
+      });
+}
+
+MessageVectorSet MakeLanguageResourceFailureMessageVector(
+    const LanguageResourceFailureDiagnosticInput& input) {
+  MessageVectorSet messages;
+  messages.diagnostics.push_back(MakeLanguageResourceFailureDiagnostic(input));
+  return messages;
+}
+
 LocaleLiteralClassification ClassifyLocaleLiteral(std::string_view literal,
                                                   const LocaleLiteralPolicy& policy) {
   std::vector<std::uint32_t> cps;
@@ -831,6 +1373,62 @@ std::string_view RestoreLanguageResourceStateName(RestoreLanguageResourceState s
       return "refuse_incompatible_resource";
   }
   return "unknown";
+}
+
+std::string_view LanguageResourceFailureKindName(LanguageResourceFailureKind kind) {
+  switch (kind) {
+    case LanguageResourceFailureKind::kMissingResource:
+      return "missing_resource";
+    case LanguageResourceFailureKind::kUnsignedResource:
+      return "unsigned_resource";
+    case LanguageResourceFailureKind::kRevokedResource:
+      return "revoked_resource";
+    case LanguageResourceFailureKind::kExpiredResource:
+      return "expired_resource";
+    case LanguageResourceFailureKind::kIncompatibleResource:
+      return "incompatible_resource";
+    case LanguageResourceFailureKind::kUnsupportedChannel:
+      return "unsupported_channel";
+    case LanguageResourceFailureKind::kAmbiguousFallback:
+      return "ambiguous_fallback";
+    case LanguageResourceFailureKind::kUnsupportedRenderer:
+      return "unsupported_renderer";
+    case LanguageResourceFailureKind::kTopologyDialectUnicodeUnsupported:
+      return "topology_dialect_unicode_unsupported";
+    case LanguageResourceFailureKind::kPredictiveResourceRefused:
+      return "predictive_resource_refused";
+    case LanguageResourceFailureKind::kLocalDraftSblrRefused:
+      return "local_draft_sblr_refused";
+  }
+  return "unknown";
+}
+
+std::string_view LanguageResourceFailureDiagnosticCode(LanguageResourceFailureKind kind) {
+  switch (kind) {
+    case LanguageResourceFailureKind::kMissingResource:
+      return "SBSQL.LANG_RESOURCE.MISSING";
+    case LanguageResourceFailureKind::kUnsignedResource:
+      return "SBSQL.LANG_RESOURCE.UNSIGNED";
+    case LanguageResourceFailureKind::kRevokedResource:
+      return "SBSQL.LANG_RESOURCE.REVOKED";
+    case LanguageResourceFailureKind::kExpiredResource:
+      return "SBSQL.LANG_RESOURCE.EXPIRED";
+    case LanguageResourceFailureKind::kIncompatibleResource:
+      return "SBSQL.LANG_RESOURCE.INCOMPATIBLE";
+    case LanguageResourceFailureKind::kUnsupportedChannel:
+      return "SBSQL.LANG_RESOURCE.UNSUPPORTED_CHANNEL";
+    case LanguageResourceFailureKind::kAmbiguousFallback:
+      return "SBSQL.LANG_RESOURCE.AMBIGUOUS_FALLBACK";
+    case LanguageResourceFailureKind::kUnsupportedRenderer:
+      return "SBSQL.LANG_RESOURCE.RENDERER_NOT_RENDERABLE";
+    case LanguageResourceFailureKind::kTopologyDialectUnicodeUnsupported:
+      return "SBSQL.LANG_RESOURCE.TOPOLOGY_DIALECT_UNICODE_UNSUPPORTED";
+    case LanguageResourceFailureKind::kPredictiveResourceRefused:
+      return "SBSQL.LANG_RESOURCE.PREDICTIVE_RESOURCE_REFUSED";
+    case LanguageResourceFailureKind::kLocalDraftSblrRefused:
+      return "SBSQL.LANG_RESOURCE.LOCAL_DRAFT_SBLR_REFUSED";
+  }
+  return "SBSQL.LANG_RESOURCE.UNKNOWN_FAILURE";
 }
 
 } // namespace scratchbird::parser::sbsql
