@@ -224,6 +224,22 @@ struct ServerLanguageBundleRecord {
   std::uint64_t language_resource_epoch = 0;
 };
 
+struct ServerLanguageResourceDirectoryRecord {
+  std::string directory_id;
+  std::string directory_path;
+  std::string manifest_hash;
+  std::string signing_key_id;
+  std::string scan_evidence_id;
+  std::string audit_reason;
+  bool signed_manifest_verified = false;
+  bool admitted_by_security_policy = false;
+  bool compatible_with_server = true;
+  bool active = false;
+  std::uint64_t language_resource_epoch = 0;
+  std::uint64_t localized_name_epoch = 0;
+  std::uint64_t message_resource_epoch = 0;
+};
+
 struct ServerCursorRecord {
   std::array<std::uint8_t, 16> cursor_uuid{};
   std::array<std::uint8_t, 16> request_uuid{};
@@ -286,6 +302,8 @@ struct ServerSessionRegistry {
   std::map<std::string, ServerPreparedStatementRecord> prepared_by_uuid;
   std::map<std::string, ServerCursorRecord> cursors_by_uuid;
   std::map<std::string, ServerLanguageBundleRecord> language_bundles_by_uuid;
+  std::map<std::string, ServerLanguageResourceDirectoryRecord>
+      language_resource_directories_by_id;
   std::map<std::string, scratchbird::core::agents::DatabaseLocalBackgroundJobScheduler>
       job_schedulers_by_database_uuid;
   std::map<std::string, scratchbird::core::agents::WorkloadResourceQuotaController>

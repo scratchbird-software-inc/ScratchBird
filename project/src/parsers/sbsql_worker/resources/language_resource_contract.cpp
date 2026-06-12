@@ -227,9 +227,135 @@ std::string RedactionState(bool export_requested) {
 
 bool HasReleaseGovernance(const LanguageResourceManifest& manifest) {
   return !Empty(manifest.governance_evidence_id) &&
+         !Empty(manifest.author_id) &&
+         !Empty(manifest.reviewer_id) &&
          !Empty(manifest.native_review_evidence_id) &&
+         !Empty(manifest.native_technical_reviewer_id) &&
+         !Empty(manifest.security_reviewer_id) &&
          !Empty(manifest.support_owner_id) &&
-         !Empty(manifest.trace_oracle_id);
+         !Empty(manifest.trace_oracle_id) &&
+         !Empty(manifest.release_approval_id) &&
+         !Empty(manifest.revocation_policy_id) &&
+         !Empty(manifest.contribution_provenance_id);
+}
+
+bool IsReleaseGovernedChannel(LanguageResourceChannel channel) {
+  return channel == LanguageResourceChannel::kReleaseSupported ||
+         channel == LanguageResourceChannel::kDeprecated;
+}
+
+bool IsKnownLanguagePackLifecycleState(std::string_view state) {
+  return state == "staged" ||
+         state == "generated" ||
+         state == "signed" ||
+         state == "published" ||
+         state == "admitted" ||
+         state == "downloaded" ||
+         state == "cached" ||
+         state == "delta_updated" ||
+         state == "rolled_back" ||
+         state == "revoked" ||
+         state == "expired" ||
+         state == "removed";
+}
+
+void ValidateReleaseGovernanceFields(const LanguageResourceManifest& manifest,
+                                     ResourceValidationResult* result) {
+  if (result == nullptr || !IsReleaseGovernedChannel(manifest.channel)) return;
+
+  if (Empty(manifest.author_id)) {
+    result->AddError("SBSQL.LANG_RESOURCE.AUTHOR_MISSING",
+                     "release resources require author identity");
+  }
+  if (Empty(manifest.reviewer_id)) {
+    result->AddError("SBSQL.LANG_RESOURCE.REVIEWER_MISSING",
+                     "release resources require reviewer identity");
+  }
+  if (Empty(manifest.native_technical_reviewer_id)) {
+    result->AddError("SBSQL.LANG_RESOURCE.NATIVE_TECHNICAL_REVIEWER_MISSING",
+                     "release resources require native technical reviewer identity");
+  }
+  if (Empty(manifest.security_reviewer_id)) {
+    result->AddError("SBSQL.LANG_RESOURCE.SECURITY_REVIEWER_MISSING",
+                     "release resources require security reviewer identity");
+  }
+  if (Empty(manifest.support_owner_id)) {
+    result->AddError("SBSQL.LANG_RESOURCE.SUPPORT_OWNER_MISSING",
+                     "release resources require support owner identity");
+  }
+  if (Empty(manifest.release_approval_id)) {
+    result->AddError("SBSQL.LANG_RESOURCE.RELEASE_APPROVAL_MISSING",
+                     "release resources require release approval evidence");
+  }
+  if (Empty(manifest.revocation_policy_id)) {
+    result->AddError("SBSQL.LANG_RESOURCE.REVOCATION_POLICY_MISSING",
+                     "release resources require revocation policy evidence");
+  }
+  if (Empty(manifest.contribution_provenance_id)) {
+    result->AddError("SBSQL.LANG_RESOURCE.CONTRIBUTION_PROVENANCE_MISSING",
+                     "release resources require contribution provenance evidence");
+  }
+}
+
+void ValidateReleasePackLifecycleEvidence(const LanguageResourceBundleManifest& bundle,
+                                          ResourceValidationResult* result) {
+  if (result == nullptr ||
+      !IsReleaseGovernedChannel(bundle.language_profile.channel)) {
+    return;
+  }
+
+  if (Empty(bundle.generation_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.GENERATION_EVIDENCE_MISSING",
+                     "release resource packs require generation evidence");
+  }
+  if (Empty(bundle.signing_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.SIGNING_EVIDENCE_MISSING",
+                     "release resource packs require signing evidence");
+  }
+  if (Empty(bundle.publication_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.PUBLICATION_EVIDENCE_MISSING",
+                     "release resource packs require publication evidence");
+  }
+  if (Empty(bundle.admission_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.ADMISSION_EVIDENCE_MISSING",
+                     "release resource packs require admission evidence");
+  }
+  if (Empty(bundle.download_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.DOWNLOAD_EVIDENCE_MISSING",
+                     "release resource packs require download evidence");
+  }
+  if (Empty(bundle.cache_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.CACHE_EVIDENCE_MISSING",
+                     "release resource packs require cache evidence");
+  }
+  if (Empty(bundle.delta_update_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.DELTA_UPDATE_EVIDENCE_MISSING",
+                     "release resource packs require delta update evidence");
+  }
+  if (Empty(bundle.rollback_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.ROLLBACK_EVIDENCE_MISSING",
+                     "release resource packs require rollback evidence");
+  }
+  if (Empty(bundle.revocation_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.REVOCATION_EVIDENCE_MISSING",
+                     "release resource packs require revocation evidence");
+  }
+  if (Empty(bundle.expiry_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.EXPIRY_EVIDENCE_MISSING",
+                     "release resource packs require expiry evidence");
+  }
+  if (Empty(bundle.key_rotation_evidence_id)) {
+    result->AddError("SBSQL.LANG_BUNDLE.KEY_ROTATION_EVIDENCE_MISSING",
+                     "release resource packs require key rotation evidence");
+  }
+  if (Empty(bundle.support_bundle_identity)) {
+    result->AddError("SBSQL.LANG_BUNDLE.SUPPORT_BUNDLE_IDENTITY_MISSING",
+                     "release resource packs require support-bundle identity");
+  }
+  if (Empty(bundle.support_bundle_version)) {
+    result->AddError("SBSQL.LANG_BUNDLE.SUPPORT_BUNDLE_VERSION_MISSING",
+                     "release resource packs require support-bundle version");
+  }
 }
 
 void AddWarningIfMissing(ResourceValidationResult* result,
@@ -288,9 +414,16 @@ const LanguageResourceManifest& BuiltInCanonicalEnglishRecoveryProfile() {
     manifest.signature_id = "builtin";
     manifest.signing_key_id = "binary";
     manifest.governance_evidence_id = "builtin.recovery.profile";
+    manifest.author_id = "scratchbird.release.language";
+    manifest.reviewer_id = "scratchbird.release.review";
     manifest.native_review_evidence_id = "builtin.recovery.native-reviewed";
+    manifest.native_technical_reviewer_id = "scratchbird.release.native";
+    manifest.security_reviewer_id = "scratchbird.security.language";
     manifest.support_owner_id = "scratchbird.release";
     manifest.trace_oracle_id = "builtin.recovery.trace";
+    manifest.release_approval_id = "builtin.recovery.release-approval";
+    manifest.revocation_policy_id = "builtin.recovery.revocation-policy";
+    manifest.contribution_provenance_id = "builtin.recovery.contribution-provenance";
     manifest.channel = LanguageResourceChannel::kReleaseSupported;
     manifest.support_state = LanguageResourceSupportState::kReleaseSupported;
     manifest.canonical_ids = {"SBSQL.CANONICAL.EN", "SBLR.REGISTRY.V1"};
@@ -464,9 +597,10 @@ ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResource
       result.AddError("SBSQL.LANG_RESOURCE.SUPPORT_STATE_MISMATCH",
                       "release-supported resources require release-supported support state");
     }
+    ValidateReleaseGovernanceFields(manifest, &result);
     if (!HasReleaseGovernance(manifest)) {
       result.AddError("SBSQL.LANG_RESOURCE.GOVERNANCE_EVIDENCE_MISSING",
-                      "release-supported resources require governance native review support owner and trace evidence");
+                      "release-supported resources require governance reviewer support signing revocation approval and provenance evidence");
     }
   }
   if (manifest.channel == LanguageResourceChannel::kDeprecated) {
@@ -474,6 +608,7 @@ ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResource
       result.AddError("SBSQL.LANG_RESOURCE.DEPRECATED_SUPPORT_STATE_MISMATCH",
                       "deprecated resources must retain release-supported support state");
     }
+    ValidateReleaseGovernanceFields(manifest, &result);
     if (!HasReleaseGovernance(manifest)) {
       result.AddError("SBSQL.LANG_RESOURCE.DEPRECATED_GOVERNANCE_EVIDENCE_MISSING",
                       "deprecated resources require release governance evidence");
@@ -855,15 +990,53 @@ ResourceValidationResult ValidateLanguageResourceBundleManifest(
   if (Empty(bundle.compatibility_identity)) {
     result.AddError("SBSQL.LANG_BUNDLE.COMPATIBILITY_IDENTITY_MISSING",
                     "language resource bundle compatibility identity is required");
+  } else if (bundle.compatibility_identity != "sbsql.resource.compat.v1") {
+    result.AddError("SBSQL.LANG_BUNDLE.COMPATIBILITY_IDENTITY_UNSUPPORTED",
+                    "language resource bundle compatibility identity is unsupported");
+  }
+  if (bundle.compatibility_version == 0 ||
+      bundle.min_parser_compatibility_version == 0 ||
+      bundle.max_parser_compatibility_version == 0 ||
+      bundle.parser_compatibility_version == 0) {
+    result.AddError("SBSQL.LANG_BUNDLE.COMPATIBILITY_VERSION_MISSING",
+                    "language resource bundle compatibility versions are required");
+  }
+  if (bundle.min_parser_compatibility_version >
+      bundle.max_parser_compatibility_version) {
+    result.AddError("SBSQL.LANG_BUNDLE.COMPATIBILITY_VERSION_RANGE_INVALID",
+                    "language resource bundle parser compatibility range is invalid");
+  } else if (bundle.parser_compatibility_version <
+                 bundle.min_parser_compatibility_version ||
+             bundle.parser_compatibility_version >
+                 bundle.max_parser_compatibility_version) {
+    result.AddError("SBSQL.LANG_BUNDLE.PARSER_VERSION_INCOMPATIBLE",
+                    "language resource bundle parser compatibility version is outside the admitted range");
   }
   if (Empty(bundle.lifecycle_state)) {
     result.AddError("SBSQL.LANG_BUNDLE.LIFECYCLE_STATE_MISSING",
                     "language resource bundle lifecycle state is required");
+  } else if (!IsKnownLanguagePackLifecycleState(bundle.lifecycle_state)) {
+    result.AddError("SBSQL.LANG_BUNDLE.LIFECYCLE_STATE_UNSUPPORTED",
+                    "language resource bundle lifecycle state is unsupported");
+  } else if (bundle.lifecycle_state == "revoked") {
+    result.AddError("SBSQL.LANG_BUNDLE.REVOKED",
+                    "revoked language resource bundles fail closed");
+  } else if (bundle.lifecycle_state == "expired") {
+    result.AddError("SBSQL.LANG_BUNDLE.EXPIRED",
+                    "expired language resource bundles fail closed");
+  } else if (bundle.lifecycle_state == "removed") {
+    result.AddError("SBSQL.LANG_BUNDLE.REMOVED",
+                    "removed language resource bundles fail closed");
+  } else if (bundle.lifecycle_state == "rolled_back") {
+    result.AddWarning("SBSQL.LANG_BUNDLE.ROLLED_BACK",
+                      "rolled-back language resource bundle admitted with rollback diagnostic");
   }
   if (!bundle.signed_bundle && !bundle.parser_language_library) {
     result.AddError("SBSQL.LANG_BUNDLE.UNSIGNED",
                     "language resource bundle must be signed unless it is a parser language library");
   }
+
+  ValidateReleasePackLifecycleEvidence(bundle, &result);
 
   const auto profile_result = ValidateLanguageResourceManifest(bundle.language_profile);
   for (const auto& issue : profile_result.issues) {
