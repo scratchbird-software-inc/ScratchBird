@@ -1,0 +1,55 @@
+{
+  "authority_assertions": {
+    "large_parser_source_renamed": false,
+    "network_required": false,
+    "parser_executes_reference_engine_sql": false,
+    "reference_engine_finality_used": false,
+    "reference_engine_source_used": false,
+    "reference_engine_storage_used": false
+  },
+  "external_ctest_resources": [
+    {
+      "path": "project/tests/reference_regression/reference_release_acquisition/firebird/5.0.4/regression",
+      "raw_upstream_payload_tracked": false,
+      "resource_class": "external_ctest_resource",
+      "source_authority": "not_scratchbird_implementation_source"
+    },
+    {
+      "path": "project/tests/reference_regression/reference_catalog_seeds/firebird",
+      "raw_upstream_payload_tracked": false,
+      "resource_class": "external_ctest_resource",
+      "source_authority": "not_scratchbird_implementation_source"
+    }
+  ],
+  "gate_id": "SML-GATE-024",
+  "generated_artifacts": [
+    "SML_024_FIREBIRD_EMULATION_CLOSURE_MANIFEST.csv",
+    "SML_024_FIREBIRD_EMULATION_SOURCE_BOUNDARY.json"
+  ],
+  "implementation_source_roots": [
+    {
+      "authority": "scratchbird_owned_code",
+      "path": "project/src/parsers/compatibility/firebird",
+      "reference_engine_source_used": false,
+      "required_license": "MPL-2.0"
+    },
+    {
+      "authority": "scratchbird_owned_code",
+      "path": "project/src/udr/sbu_firebird_parser_support",
+      "reference_engine_source_used": false,
+      "required_license": "MPL-2.0"
+    }
+  ],
+  "manifest_sha256": "e61211880cc73e5cc68a14e8c146bfff881327d1961b9b42b8b7bc739237cf43",
+  "required_ctest_gates": [
+    "firebird_clean_room_provenance_gate",
+    "firebird_parser_pipeline_probe",
+    "firebird_qa_replay_manifest_gate",
+    "firebird_reference_tool_sandbox_gate",
+    "firebird_runtime_absence_gate",
+    "firebird_worker_session_probe",
+    "sbu_firebird_parser_support_probe"
+  ],
+  "schema_version": "firebird.emulation_closure.sml_024.v1",
+  "sml_id": "SML-024"
+}
