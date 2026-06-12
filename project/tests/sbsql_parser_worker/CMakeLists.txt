@@ -187,6 +187,35 @@ set_tests_properties(sbsql_language_golden_trace_oracle_gate PROPERTIES
   LABELS "sbsql_language_golden_trace_oracle;sbsql_parser_worker;SML-089;SML-GATE-089"
 )
 
+add_test(
+  NAME sbsql_sml_026_027_028_route_script_replay_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/route_script_replay/sbsql_sml_026_027_028_route_script_replay_gate.py"
+)
+set_tests_properties(sbsql_sml_026_027_028_route_script_replay_gate PROPERTIES
+  LABELS "sbsql_route_script_replay;sbsql_parser_worker;SML-026;SML-027;SML-028;SML-GATE-026;SML-GATE-027;SML-GATE-028;mga_transaction_regression"
+)
+
+add_test(
+  NAME sbsql_sml_029_032_feature_closure_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_sml_029_032_feature_closure_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_sml_029_032_feature_closure_gate PROPERTIES
+  LABELS "sbsql_sql_feature_closure;sbsql_parser_worker;SML-029;SML-030;SML-031;SML-032;SML-GATE-029;SML-GATE-030;SML-GATE-031;SML-GATE-032;mga_transaction_regression"
+)
+
+add_test(
+  NAME sbsql_security_regression_matrix_gate
+  COMMAND "${SBSQL_PYTHON3}"
+          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/security/sbsql_security_regression_matrix_gate.py"
+          --repo-root "${PROJECT_SOURCE_DIR}/.."
+)
+set_tests_properties(sbsql_security_regression_matrix_gate PROPERTIES
+  LABELS "sbsql_security_regression_matrix;sbsql_parser_worker;SML-033;SML-034;SML-035;SML-036;SML-037;SML-038;SML-039;SML-040;SML-GATE-033;SML-GATE-034;SML-GATE-035;SML-GATE-036;SML-GATE-037;SML-GATE-038;SML-GATE-039;SML-GATE-040;mga_transaction_regression"
+)
+
 if(NOT TARGET sb_isql AND EXISTS "${PROJECT_SOURCE_DIR}/drivers/tool/cli/CMakeLists.txt")
   add_subdirectory("${PROJECT_SOURCE_DIR}/drivers/tool/cli" "${CMAKE_BINARY_DIR}/drivers/tool/cli")
 endif()
@@ -4721,6 +4750,26 @@ if(TARGET sb_server_core)
   set_tests_properties(sbsql_server_language_resource_directory_conformance PROPERTIES
     LABELS "sbsql_server_language_resource_directory;SML-015;SML-083;SML-085;SML-093;sbsql_parser_worker;server_session_language_context"
   )
+
+  add_executable(
+    sbsql_sml022_shared_parser_runtime_authority_conformance
+    sbsql_sml022_shared_parser_runtime_authority_conformance.cpp
+  )
+  target_compile_features(sbsql_sml022_shared_parser_runtime_authority_conformance PRIVATE cxx_std_23)
+  target_link_libraries(
+    sbsql_sml022_shared_parser_runtime_authority_conformance
+    PRIVATE
+      sb_server_core
+      sbl_sbsql_parser_pipeline
+  )
+  add_test(
+    NAME sbsql_sml022_shared_parser_runtime_authority_conformance
+    COMMAND sbsql_sml022_shared_parser_runtime_authority_conformance
+  )
+  set_tests_properties(sbsql_sml022_shared_parser_runtime_authority_conformance PROPERTIES
+    LABELS "sbsql_shared_parser_runtime_authority;sbsql_parser_worker;SML-022;SML-GATE-022;mga_transaction_regression"
+  )
+
   add_test(
     NAME sbsql_cluster_private_fail_closed_conformance
     COMMAND sb_server_sbsql_admission_conformance
