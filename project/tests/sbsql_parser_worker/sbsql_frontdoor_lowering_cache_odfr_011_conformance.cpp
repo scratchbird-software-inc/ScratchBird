@@ -66,7 +66,11 @@ void SeedEngineAuthenticatedContext(sbsql::SbsqlTestWireSession* session) {
   context.dialect_profile_uuid = "sbsql/default";
   context.language_profile = "sbsql.builtin.recovery.en";
   context.language_tag = "en";
+  context.input_syntax_profile = "sbsql.syntax.standard";
+  context.input_language_fallback_tag.clear();
   context.common_resource_hash = "builtin.common.sbsql.v1";
+  context.resource_compatibility_identity = "sbsql.resource.compat.v1";
+  context.resource_version_identity = "sbsql.resource-pack.v1";
   context.policy_profile_uuid = "policy/default";
   context.transaction_context = "read_only_prepare";
   context.catalog_epoch = 7;
@@ -215,6 +219,12 @@ void RunDimensionMisses() {
   VerifySessionLanguageDimensionMiss("language tag", [](sbsql::SessionContext& context) {
     context.language_tag = "fr-CA";
   });
+  VerifySessionLanguageDimensionMiss("input syntax profile", [](sbsql::SessionContext& context) {
+    context.input_syntax_profile = "sbsql.syntax.en-fallback";
+  });
+  VerifySessionLanguageDimensionMiss("input fallback tag", [](sbsql::SessionContext& context) {
+    context.input_language_fallback_tag = "en";
+  });
   VerifySessionLanguageDimensionMiss("common resource hash", [](sbsql::SessionContext& context) {
     context.common_resource_hash = "common.hash.fr-CA";
   });
@@ -226,6 +236,12 @@ void RunDimensionMisses() {
   });
   VerifySessionLanguageDimensionMiss("message resource epoch", [](sbsql::SessionContext& context) {
     context.message_resource_epoch = 43;
+  });
+  VerifySessionLanguageDimensionMiss("resource compatibility identity", [](sbsql::SessionContext& context) {
+    context.resource_compatibility_identity = "sbsql.resource.compat.v2";
+  });
+  VerifySessionLanguageDimensionMiss("resource version identity", [](sbsql::SessionContext& context) {
+    context.resource_version_identity = "sbsql.resource-pack.v2";
   });
 }
 

@@ -9,10 +9,10 @@
 
 """Validate the SBsql driver/tool language-resource surface declaration.
 
-This gate is intentionally read-only. It does not claim runtime support; it
-prevents drivers, tools, and adaptors from silently diverging on resource
-identity, parse fallback order, renderer lossiness, local draft SBLR handling,
-or server revalidation authority while runtime integration is still in flight.
+This gate is intentionally read-only. It requires runtime-integrated driver,
+tool, and adaptor declarations and prevents them from silently diverging on
+resource identity, parse fallback order, renderer lossiness, local draft SBLR
+handling, cache scoping, or server revalidation authority.
 """
 
 from __future__ import annotations
@@ -53,6 +53,7 @@ REQUIRED_COMMON_METADATA_FIELDS = {
     "support_state",
     "fallback_diagnostics",
     "rendering_diagnostics",
+    "renderer_lossiness_classes",
     "deterministic_validation",
 }
 
@@ -66,6 +67,15 @@ EXPECTED_FALLBACK_DIAGNOSTICS = [
 EXPECTED_RENDERING_DIAGNOSTICS = [
     "SBSQL.LANG_RESOURCE.RENDERER_LOSSINESS_CLASSIFIED",
     "SBSQL.LANG_RESOURCE.RENDERER_SOURCE_RECONSTRUCTION_FORBIDDEN",
+    "SBSQL.LANG_RESOURCE.RENDERER_NOT_RENDERABLE",
+]
+
+EXPECTED_RENDERER_LOSSINESS_CLASSES = [
+    "lossless_canonical",
+    "canonical_equivalent",
+    "preferred_language_partial",
+    "canonical_english_fallback",
+    "not_renderable",
 ]
 
 EXPECTED_DETERMINISTIC_VALIDATION = {
@@ -73,6 +83,8 @@ EXPECTED_DETERMINISTIC_VALIDATION = {
     "sort_keys_for_hash": True,
     "no_wall_clock_fields": True,
 }
+
+EXPECTED_IMPLEMENTATION_STATE = "runtime_integrated_with_tests"
 
 REQUIRED_COMPONENT_FIELDS = {
     "component_id",
@@ -183,6 +195,8 @@ def validate_common_resource_pack_metadata(
         errors.append("common_resource_pack_metadata.fallback_diagnostics must be deterministic and complete")
     if metadata.get("rendering_diagnostics") != EXPECTED_RENDERING_DIAGNOSTICS:
         errors.append("common_resource_pack_metadata.rendering_diagnostics must be deterministic and complete")
+    if metadata.get("renderer_lossiness_classes") != EXPECTED_RENDERER_LOSSINESS_CLASSES:
+        errors.append("common_resource_pack_metadata.renderer_lossiness_classes must be deterministic and complete")
     if metadata.get("deterministic_validation") != EXPECTED_DETERMINISTIC_VALIDATION:
         errors.append("common_resource_pack_metadata.deterministic_validation must require stable hash inputs")
 
@@ -226,6 +240,11 @@ def validate_component(
         errors.append(f"{component_id}: server_revalidation_authority must be required")
     if component.get("authority_boundary") != "client_resources_are_untrusted_until_server_revalidation":
         errors.append(f"{component_id}: authority_boundary must preserve server authority")
+    if component.get("implementation_state") != EXPECTED_IMPLEMENTATION_STATE:
+        errors.append(
+            f"{component_id}: implementation_state must be "
+            f"{EXPECTED_IMPLEMENTATION_STATE!r}"
+        )
     if component.get("implementation_state") not in allowed_values(schema, "implementation_state"):
         errors.append(f"{component_id}: invalid implementation_state")
 
@@ -274,6 +293,19 @@ def main() -> int:
         errors.append("protocol schema version mismatch")
     if schema.get("protocol_version") != "sbsql.editor_tool.v1":
         errors.append("protocol version mismatch")
+    if schema.get("syntax_profile_order") != EXPECTED_SYNTAX_PROFILE_ORDER:
+        errors.append("protocol schema syntax_profile_order mismatch")
+    if schema.get("renderer_lossiness_classes") != EXPECTED_RENDERER_LOSSINESS_CLASSES:
+        errors.append("protocol schema renderer_lossiness_classes mismatch")
+    if schema.get("fallback_diagnostics") != EXPECTED_FALLBACK_DIAGNOSTICS:
+        errors.append("protocol schema fallback_diagnostics mismatch")
+    if schema.get("rendering_diagnostics") != EXPECTED_RENDERING_DIAGNOSTICS:
+        errors.append("protocol schema rendering_diagnostics mismatch")
+    if allowed_values(schema, "implementation_state") != {EXPECTED_IMPLEMENTATION_STATE}:
+        errors.append(
+            "protocol schema implementation_state values must require "
+            f"{EXPECTED_IMPLEMENTATION_STATE!r}"
+        )
     if surface.get("schema_version") != "sbsql.driver_language_surface_manifest.v1":
         errors.append("surface manifest schema version mismatch")
     if surface.get("protocol_schema") != PROTOCOL_SCHEMA:

@@ -84,7 +84,7 @@ std::optional<CacheStoreResult> ValidateEntryForStore(
 
 std::string CacheKey::StableKey() const {
   std::ostringstream out;
-  out << "sbsql-cache-v7:" << shape_hash << ':' << registry_version << ':'
+  out << "sbsql-cache-v8:" << shape_hash << ':' << registry_version << ':'
       << catalog_epoch << ':'
       << security_policy_epoch << ':' << grant_epoch << ':' << descriptor_epoch
       << ':' << udr_epoch << ':' << name_resolution_epoch << ':' << resource_epoch
@@ -98,15 +98,19 @@ std::string CacheKey::StableKey() const {
       << ':' << dialect
       << ':' << role_set_hash << ':' << group_set_hash
       << ':' << search_path_hash << ':' << language_profile << ':'
-      << language_tag << ':' << common_resource_hash << ':' << policy_profile
-      << ':' << parser_profile << ':' << message_resource_epoch << ':'
+      << language_tag << ':' << input_syntax_profile << ':'
+      << input_language_fallback_tag << ':' << common_resource_hash
+      << ':' << language_resource_epoch << ':' << localized_name_epoch
+      << ':' << policy_profile << ':' << parser_profile << ':'
+      << message_resource_epoch << ':' << resource_compatibility_identity
+      << ':' << resource_version_identity << ':'
       << result_contract_hash;
   return out.str();
 }
 
 std::string CacheKey::CompactKey() const {
   std::uint64_t hash = kFnvOffset;
-  hash = MixString(hash, "sbsql-cache-v7");
+  hash = MixString(hash, "sbsql-cache-v8");
   hash = MixUint64(hash, shape_hash);
   hash = MixUint64(hash, registry_version);
   hash = MixUint64(hash, catalog_epoch);
@@ -135,10 +139,16 @@ std::string CacheKey::CompactKey() const {
   hash = MixString(hash, search_path_hash);
   hash = MixString(hash, language_profile);
   hash = MixString(hash, language_tag);
+  hash = MixString(hash, input_syntax_profile);
+  hash = MixString(hash, input_language_fallback_tag);
   hash = MixString(hash, common_resource_hash);
+  hash = MixUint64(hash, language_resource_epoch);
+  hash = MixUint64(hash, localized_name_epoch);
   hash = MixString(hash, policy_profile);
   hash = MixString(hash, parser_profile);
   hash = MixUint64(hash, message_resource_epoch);
+  hash = MixString(hash, resource_compatibility_identity);
+  hash = MixString(hash, resource_version_identity);
   hash = MixString(hash, result_contract_hash);
   return CompactKeyFromHash(hash);
 }
@@ -431,11 +441,47 @@ void SblrTemplateCache::InvalidateLanguageTag(std::string_view new_language_tag)
   ++invalidation_count_;
 }
 
+void SblrTemplateCache::InvalidateInputSyntaxProfile(
+    std::string_view new_input_syntax_profile) {
+  const std::string stable(new_input_syntax_profile);
+  std::lock_guard lock(mutex_);
+  EraseMatchingLocked([&stable](const CacheKey& key) {
+    return key.input_syntax_profile != stable;
+  });
+  ++invalidation_count_;
+}
+
+void SblrTemplateCache::InvalidateInputLanguageFallbackTag(
+    std::string_view new_fallback_tag) {
+  const std::string stable(new_fallback_tag);
+  std::lock_guard lock(mutex_);
+  EraseMatchingLocked([&stable](const CacheKey& key) {
+    return key.input_language_fallback_tag != stable;
+  });
+  ++invalidation_count_;
+}
+
 void SblrTemplateCache::InvalidateCommonResourceHash(std::string_view new_common_resource_hash) {
   const std::string stable(new_common_resource_hash);
   std::lock_guard lock(mutex_);
   EraseMatchingLocked([&stable](const CacheKey& key) {
     return key.common_resource_hash != stable;
+  });
+  ++invalidation_count_;
+}
+
+void SblrTemplateCache::InvalidateLanguageResourceEpoch(std::uint64_t new_epoch) {
+  std::lock_guard lock(mutex_);
+  EraseMatchingLocked([new_epoch](const CacheKey& key) {
+    return key.language_resource_epoch != new_epoch;
+  });
+  ++invalidation_count_;
+}
+
+void SblrTemplateCache::InvalidateLocalizedNameEpoch(std::uint64_t new_epoch) {
+  std::lock_guard lock(mutex_);
+  EraseMatchingLocked([new_epoch](const CacheKey& key) {
+    return key.localized_name_epoch != new_epoch;
   });
   ++invalidation_count_;
 }
@@ -462,6 +508,26 @@ void SblrTemplateCache::InvalidateMessageResourceEpoch(std::uint64_t new_epoch) 
   std::lock_guard lock(mutex_);
   EraseMatchingLocked([new_epoch](const CacheKey& key) {
     return key.message_resource_epoch != new_epoch;
+  });
+  ++invalidation_count_;
+}
+
+void SblrTemplateCache::InvalidateResourceCompatibilityIdentity(
+    std::string_view new_identity) {
+  const std::string stable(new_identity);
+  std::lock_guard lock(mutex_);
+  EraseMatchingLocked([&stable](const CacheKey& key) {
+    return key.resource_compatibility_identity != stable;
+  });
+  ++invalidation_count_;
+}
+
+void SblrTemplateCache::InvalidateResourceVersionIdentity(
+    std::string_view new_identity) {
+  const std::string stable(new_identity);
+  std::lock_guard lock(mutex_);
+  EraseMatchingLocked([&stable](const CacheKey& key) {
+    return key.resource_version_identity != stable;
   });
   ++invalidation_count_;
 }
@@ -507,8 +573,11 @@ std::string SblrTemplateCache::SnapshotJson() const {
          "\"normalized_statement_hash\",\"parameter_type_shape_hash\","
          "\"connection_uuid\",\"transaction_context_hash\",\"dialect\","
          "\"role_set_hash\",\"group_set_hash\",\"search_path_hash\","
-         "\"language_profile\",\"language_tag\",\"common_resource_hash\","
+         "\"language_profile\",\"language_tag\",\"input_syntax_profile\","
+         "\"input_language_fallback_tag\",\"common_resource_hash\","
+         "\"language_resource_epoch\",\"localized_name_epoch\","
          "\"policy_profile\",\"parser_profile\",\"message_resource_epoch\","
+         "\"resource_compatibility_identity\",\"resource_version_identity\","
          "\"result_contract_hash\"],\"authority_cached\":{"
          "\"storage\":false,\"visibility\":false,\"authorization\":false,"
          "\"finality\":false},\"stable_keys\":[";

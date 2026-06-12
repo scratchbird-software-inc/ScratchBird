@@ -62,8 +62,17 @@ struct EngineIdentifierResolutionProfile {
 };
 
 struct EngineLanguageContext {
+  std::string language_profile_id = "sbsql.builtin.recovery.en";
   std::string language_tag = "en";
   std::string default_language_tag = "en";
+  std::string input_syntax_profile = "sbsql.syntax.standard";
+  std::string input_language_fallback_tag;
+  std::string common_resource_hash = "builtin.common.sbsql.v1";
+  EngineApiU64 language_resource_epoch = 0;
+  EngineApiU64 localized_name_epoch = 0;
+  EngineApiU64 message_resource_epoch = 0;
+  std::string resource_compatibility_identity = "sbsql.resource.compat.v1";
+  std::string resource_version_identity = "sbsql.resource-pack.v1";
 };
 
 struct EngineIdentifierAtom {

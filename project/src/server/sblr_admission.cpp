@@ -27,7 +27,7 @@ struct FamilyRule {
   bool cluster_private = false;
 };
 
-constexpr std::array<FamilyRule, 55> kServerSblrFamilies{{
+constexpr std::array<FamilyRule, 56> kServerSblrFamilies{{
     {"sblr.acceleration.gpu.v3", "acceleration.gpu.operation", false},
     {"sblr.acceleration.llvm.v3", "extensibility.compile_llvm_module", false},
     {"sblr.archive.operation.v3", "archive.operation", false},
@@ -70,6 +70,7 @@ constexpr std::array<FamilyRule, 55> kServerSblrFamilies{{
     {"sblr.query.relational.v3", "dml.select", false},
     {"sblr.query.search.v3", "nosql.search_query", false},
     {"sblr.query.timeseries.v3", "nosql.time_series_append", false},
+    {"sblr.query.values.v3", "query.plan_operation", false},
     {"sblr.query.vector.v3", "nosql.vector_search", false},
     {"sblr.replication.consumer.v3", "cluster.inspect_replication", true},
     {"sblr.replication.operation.v3", "replication.operation", false},
@@ -1136,7 +1137,8 @@ ServerSblrAdmissionResult RejectFamilyReconciliationRequired(std::string_view de
 
 std::string ReconciledExplicitServerFamily(std::string family,
                                            std::string_view operation_id,
-                                           bool prefer_primary_family) {
+                                           bool prefer_primary_family,
+                                           bool preserve_query_plan_route_family) {
   if (family == "sblr.dml.operation.v3") {
     const auto resolved_family = FamilyForOperationId(operation_id);
     if (resolved_family.has_value()) return *resolved_family;
@@ -1166,6 +1168,7 @@ std::string ReconciledExplicitServerFamily(std::string family,
       (family == "sblr.query.values.v3" ||
        family == "sblr.query.relational.v3" ||
        family == "sblr.query.multimodel_or_ddl.v3")) {
+    if (preserve_query_plan_route_family) return family;
     const auto resolved_family = FamilyForOperationId(operation_id);
     if (resolved_family.has_value()) return *resolved_family;
   }
@@ -1292,9 +1295,14 @@ ServerSblrAdmissionResult AdmitTextOperationEnvelope(std::string_view encoded,
       Contains(encoded, "public_sbsql_exact_command=true") ||
       Contains(encoded, "engine_api_command_route=true") ||
       Contains(encoded, "cluster_provider_dispatch=true");
+  const bool preserve_query_plan_route_family =
+      Contains(encoded, "sbsfc081_descriptor_expression_residual=true") ||
+      Contains(encoded, "sbsfc083_grammar_surface=true") ||
+      Contains(encoded, "sbsfc085_grammar_surface=true");
   family = ReconciledExplicitServerFamily(std::move(family),
                                           operation_id,
-                                          prefer_primary_family);
+                                          prefer_primary_family,
+                                          preserve_query_plan_route_family);
   if (family.empty()) {
     const auto resolved_family = FamilyForOperationId(operation_id);
     if (!resolved_family.has_value()) {
@@ -1351,9 +1359,17 @@ ServerSblrAdmissionResult AdmitParserJsonEnvelope(std::string_view encoded,
       Contains(encoded, "\"cluster_provider_dispatch\": true") ||
       Contains(encoded, "\"sbsfc077_non_general_residual\":true") ||
       Contains(encoded, "\"sbsfc077_non_general_residual\": true");
+  const bool preserve_query_plan_route_family =
+      Contains(encoded, "\"sbsfc081_descriptor_expression_residual\":true") ||
+      Contains(encoded, "\"sbsfc081_descriptor_expression_residual\": true") ||
+      Contains(encoded, "\"sbsfc083_grammar_surface\":true") ||
+      Contains(encoded, "\"sbsfc083_grammar_surface\": true") ||
+      Contains(encoded, "\"sbsfc085_grammar_surface\":true") ||
+      Contains(encoded, "\"sbsfc085_grammar_surface\": true");
   family = ReconciledExplicitServerFamily(std::move(family),
                                           operation_id,
-                                          prefer_primary_family);
+                                          prefer_primary_family,
+                                          preserve_query_plan_route_family);
   const bool public_abi_dispatch = RequiresEnginePublicAbiDispatch(operation_id);
   return AdmitFamily(std::move(family), std::move(operation_id), public_abi_dispatch, cluster_authority_active);
 }

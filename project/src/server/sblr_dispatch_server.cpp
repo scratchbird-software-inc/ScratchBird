@@ -964,6 +964,7 @@ engine_api::EngineRequestContext ArchiveReplicationEngineContext(
   context.security_epoch = session.security_epoch;
   context.resource_epoch = session.resource_epoch;
   context.name_resolution_epoch = session.name_resolution_epoch;
+  PopulateEngineLanguageContextFromSession(session, &context.language_context);
   context.trace_tags = session.engine_authorization_trace_tags;
   context.trace_tags.push_back("security.bootstrap");
   return context;
@@ -1062,6 +1063,7 @@ std::string PreparedInnerEnvelopeFromControl(std::string encoded) {
 
 bool PreparedStatementEpochMatches(const ServerPreparedStatementRecord& prepared,
                                    const ServerSessionRecord& session) {
+  const auto language = ServerLanguageContextForSession(session);
   return prepared.catalog_generation == session.catalog_generation &&
          prepared.security_epoch == session.security_epoch &&
          prepared.descriptor_epoch == session.descriptor_epoch &&
@@ -1070,7 +1072,37 @@ bool PreparedStatementEpochMatches(const ServerPreparedStatementRecord& prepared
          prepared.role_set_hash == session.role_set_hash &&
          prepared.group_set_hash == session.group_set_hash &&
          prepared.search_path_hash == session.search_path_hash &&
-         prepared.language_profile == session.language_profile;
+         prepared.language_profile == language.language_profile_id &&
+         prepared.language_tag == language.language_tag &&
+         prepared.default_language_tag == language.default_language_tag &&
+         prepared.input_syntax_profile == language.input_syntax_profile &&
+         prepared.input_language_fallback_tag ==
+             language.input_language_fallback_tag &&
+         prepared.common_resource_hash == language.common_resource_hash &&
+         prepared.language_resource_epoch == language.language_resource_epoch &&
+         prepared.localized_name_epoch == language.localized_name_epoch &&
+         prepared.message_resource_epoch == language.message_resource_epoch &&
+         prepared.resource_compatibility_identity ==
+             language.resource_compatibility_identity &&
+         prepared.resource_version_identity == language.resource_version_identity;
+}
+
+void CapturePreparedLanguageContext(ServerPreparedStatementRecord* prepared,
+                                    const ServerSessionRecord& session) {
+  if (prepared == nullptr) return;
+  const auto language = ServerLanguageContextForSession(session);
+  prepared->language_profile = language.language_profile_id;
+  prepared->language_tag = language.language_tag;
+  prepared->default_language_tag = language.default_language_tag;
+  prepared->input_syntax_profile = language.input_syntax_profile;
+  prepared->input_language_fallback_tag = language.input_language_fallback_tag;
+  prepared->common_resource_hash = language.common_resource_hash;
+  prepared->language_resource_epoch = language.language_resource_epoch;
+  prepared->localized_name_epoch = language.localized_name_epoch;
+  prepared->message_resource_epoch = language.message_resource_epoch;
+  prepared->resource_compatibility_identity =
+      language.resource_compatibility_identity;
+  prepared->resource_version_identity = language.resource_version_identity;
 }
 
 SessionOperationResult Failure(std::uint16_t response_type,
@@ -1867,9 +1899,7 @@ engine_api::EngineRequestContext ReplacementTransactionContext(
   context.security_epoch = session.security_epoch;
   context.resource_epoch = session.resource_epoch;
   context.name_resolution_epoch = session.name_resolution_epoch;
-  context.language_context.language_tag =
-      session.language_profile.empty() ? "en" : session.language_profile;
-  context.language_context.default_language_tag = "en";
+  PopulateEngineLanguageContextFromSession(session, &context.language_context);
   context.trace_tags = session.engine_authorization_trace_tags;
   context.trace_tags.push_back("sb_server.sblr_dispatch.always_active_replacement");
   return context;
@@ -3817,7 +3847,7 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
   prepared.role_set_hash = session->role_set_hash;
   prepared.group_set_hash = session->group_set_hash;
   prepared.search_path_hash = session->search_path_hash;
-  prepared.language_profile = session->language_profile;
+  CapturePreparedLanguageContext(&prepared, *session);
   registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
   LinkServerRequestPreparedStatement(registry,
                                      request_record.request_uuid,
@@ -3959,7 +3989,7 @@ SessionOperationResult HandleExecuteSblr(ServerSessionRegistry* registry,
     prepared.role_set_hash = session->role_set_hash;
     prepared.group_set_hash = session->group_set_hash;
     prepared.search_path_hash = session->search_path_hash;
-    prepared.language_profile = session->language_profile;
+    CapturePreparedLanguageContext(&prepared, *session);
     registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
     UpdateServerRequestLifecycleOperation(registry,
                                           request_record.request_uuid,

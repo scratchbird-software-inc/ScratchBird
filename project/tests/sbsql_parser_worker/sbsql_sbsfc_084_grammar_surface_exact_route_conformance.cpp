@@ -178,7 +178,10 @@ void RequireRegistryEvidence(const CaseRow& row) {
 
 void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts) {
   if (artifacts.cst.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.cst.messages);
-  if (artifacts.ast.messages.has_errors()) std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
+  if (artifacts.ast.messages.has_errors()) {
+    std::cerr << "SBSFC-084 failing row SQL: " << row.sql << '\n';
+    std::cerr << RenderMessageVectorSet(artifacts.ast.messages);
+  }
   if (!artifacts.bound.bound) std::cerr << RenderMessageVectorSet(artifacts.bound.messages);
   if (!artifacts.verifier.admitted) std::cerr << RenderMessageVectorSet(artifacts.verifier.messages);
   Require(!artifacts.cst.messages.has_errors(), "SBSFC-084 CST failed");

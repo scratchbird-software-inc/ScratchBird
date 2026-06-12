@@ -46,6 +46,9 @@ enum class TokenKind {
 struct Token {
   TokenKind kind{TokenKind::kEnd};
   std::string text;
+  std::string canonical_text;
+  std::string canonical_token_id;
+  std::string canonical_alias_id;
   std::size_t offset{0};
   std::size_t length{0};
   bool quoted{false};

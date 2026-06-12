@@ -25,6 +25,23 @@ const Token* FirstMeaningfulToken(const CstDocument& cst) {
   return nullptr;
 }
 
+std::string CanonicalWordForToken(const Token& token) {
+  if (!token.canonical_text.empty()) {
+    return token.kind == TokenKind::kIdentifier ? token.canonical_text
+                                                : ToUpperAscii(token.canonical_text);
+  }
+  return token.kind == TokenKind::kIdentifier ? token.text : ToUpperAscii(token.text);
+}
+
+std::string CanonicalWordForElement(const CanonicalElement& element) {
+  if (!element.canonical_text.empty()) return ToUpperAscii(element.canonical_text);
+  constexpr std::string_view prefix = "SBSQL.TOKEN.";
+  if (element.canonical_id.rfind(prefix, 0) == 0) {
+    return element.canonical_id.substr(prefix.size());
+  }
+  return ToUpperAscii(element.canonical_id);
+}
+
 std::size_t FirstMeaningfulTokenIndex(const CstDocument& cst) {
   for (std::size_t index = 0; index < cst.tokens.size(); ++index) {
     const auto& token = cst.tokens[index];
@@ -61,19 +78,19 @@ bool ContainsTopLevelKeyword(const CstDocument& cst, std::string_view wanted) {
       if (depth > 0) --depth;
       continue;
     }
-    if (depth == 0 && token.kind == TokenKind::kKeyword &&
-        ToUpperAscii(token.text) == upper) {
+    if (depth == 0 && (token.kind == TokenKind::kKeyword || token.kind == TokenKind::kIdentifier) &&
+        CanonicalWordForToken(token) == upper) {
       if (upper == "FROM" && previous_word == "DISTINCT" &&
           previous_previous_word == "IS") {
         previous_previous_word = previous_word;
-        previous_word = ToUpperAscii(token.text);
+        previous_word = CanonicalWordForToken(token);
         continue;
       }
       return true;
     }
     if (token.kind == TokenKind::kKeyword || token.kind == TokenKind::kIdentifier) {
       previous_previous_word = previous_word;
-      previous_word = ToUpperAscii(token.text);
+      previous_word = CanonicalWordForToken(token);
     }
   }
   return false;
@@ -93,8 +110,8 @@ bool ContainsNestedKeyword(const CstDocument& cst, std::string_view wanted) {
       if (depth > 0) --depth;
       continue;
     }
-    if (depth > 0 && token.kind == TokenKind::kKeyword &&
-        ToUpperAscii(token.text) == upper) {
+    if (depth > 0 && (token.kind == TokenKind::kKeyword || token.kind == TokenKind::kIdentifier) &&
+        CanonicalWordForToken(token) == upper) {
       return true;
     }
   }
@@ -106,7 +123,7 @@ bool IsArraySelectPolicyRefusalProjection(const CstDocument& cst) {
   for (const auto& token : cst.tokens) {
     if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) break;
     if (IsTriviaToken(token)) continue;
-    words.push_back(ToUpperAscii(token.text));
+    words.push_back(CanonicalWordForToken(token));
     if (words.size() >= 4) break;
   }
   return words.size() >= 4 &&
@@ -117,22 +134,38 @@ bool IsArraySelectPolicyRefusalProjection(const CstDocument& cst) {
 }
 
 std::vector<std::string> AllMeaningfulTokenWords(const CstDocument& cst) {
+  if (!cst.canonical_element_stream.elements.empty()) {
+    std::vector<std::string> words;
+    for (const auto& element : cst.canonical_element_stream.elements) {
+      words.push_back(CanonicalWordForElement(element));
+      if (words.back() == "STATEMENT_TERMINATOR") break;
+    }
+    return words;
+  }
   std::vector<std::string> words;
   for (const auto& token : cst.tokens) {
     if (token.kind == TokenKind::kEnd) break;
     if (IsTriviaToken(token)) continue;
-    words.push_back(ToUpperAscii(token.text));
+    words.push_back(CanonicalWordForToken(token));
     if (token.kind == TokenKind::kStatementTerminator) break;
   }
   return words;
 }
 
 std::vector<std::string> MeaningfulTokenWords(const CstDocument& cst) {
+  if (!cst.canonical_element_stream.elements.empty()) {
+    std::vector<std::string> words;
+    for (const auto& element : cst.canonical_element_stream.elements) {
+      words.push_back(CanonicalWordForElement(element));
+      if (words.size() >= 4) break;
+    }
+    return words;
+  }
   std::vector<std::string> words;
   for (const auto& token : cst.tokens) {
     if (token.kind == TokenKind::kEnd) break;
     if (IsTriviaToken(token)) continue;
-    words.push_back(ToUpperAscii(token.text));
+    words.push_back(CanonicalWordForToken(token));
     if (words.size() >= 4) break;
   }
   return words;
@@ -1261,11 +1294,17 @@ AstDocument BuildAst(const CstDocument& cst) {
     }
     return ast;
   }
-  const auto keyword = ToUpperAscii(first->text);
   const auto words = MeaningfulTokenWords(cst);
+  const auto keyword = words.empty() ? CanonicalWordForToken(*first) : words[0];
   const auto second = words.size() > 1 ? std::string_view(words[1]) : std::string_view();
   const auto third = words.size() > 2 ? std::string_view(words[2]) : std::string_view();
   const auto fourth = words.size() > 3 ? std::string_view(words[3]) : std::string_view();
+  const bool language_control_surface =
+      (keyword == "SET" && second == "LANGUAGE") ||
+      (keyword == "RESET" && second == "LANGUAGE") ||
+      (keyword == "SHOW" && second == "LANGUAGE") ||
+      ((keyword == "LOAD" || keyword == "UNLOAD" || keyword == "VALIDATE") &&
+       second == "LANGUAGE" && third == "BUNDLE");
   const bool transaction_lock_surface =
       keyword == "LOCK" ||
       (keyword == "UNLOCK" && (second == "TABLE" || second == "NAMED"));
@@ -1602,6 +1641,24 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.statement_binding_contract_key = "binder.statement.bridge_context";
     ast.statement_admission_contract_key = "admission.sblr.bridge_operation";
     ast.statement_behavior_descriptor_key = "behavior.bridge.udr_dispatch";
+    ast.diagnostic_key = "diagnostic.canonical_message_vector";
+    ast.requires_name_resolution = false;
+    ast.produces_sblr = true;
+  } else if (language_control_surface) {
+    if (keyword == "SHOW") {
+      ast.family = StatementFamily::kObservability;
+    } else if (keyword == "SET" || keyword == "RESET") {
+      ast.family = StatementFamily::kSession;
+    } else {
+      ast.family = StatementFamily::kRuntimeManagement;
+    }
+    ast.registry_family = "sbsql.language.resource_control.v3";
+    ast.operation_family = "sblr.language.resource_control.v3";
+    ast.statement_parser_category = "language_resource";
+    ast.statement_binding_contract_key = "binder.statement.language_resource_control";
+    ast.statement_admission_contract_key = "admission.sblr.language_resource_control";
+    ast.statement_behavior_descriptor_key =
+        "behavior.language_resource.parser_surface_server_revalidation";
     ast.diagnostic_key = "diagnostic.canonical_message_vector";
     ast.requires_name_resolution = false;
     ast.produces_sblr = true;
@@ -2109,6 +2166,43 @@ AstDocument BuildAst(const CstDocument& cst) {
     } else if (keyword == "UNLOCK" && second == "NAMED") {
       ast.statement_surface_name = "unlock_named";
       ast.statement_surface_id.clear();
+    }
+  }
+  if (language_control_surface) {
+    ast.registry_family = "sbsql.language.resource_control.v3";
+    ast.operation_family = "sblr.language.resource_control.v3";
+    ast.statement_parser_category = "language_resource";
+    ast.statement_binding_contract_key = "binder.statement.language_resource_control";
+    ast.statement_admission_contract_key = "admission.sblr.language_resource_control";
+    ast.statement_behavior_descriptor_key =
+        "behavior.language_resource.parser_surface_server_revalidation";
+    ast.diagnostic_key = "diagnostic.canonical_message_vector";
+    ast.requires_name_resolution = false;
+    ast.produces_sblr = true;
+    if (keyword == "SET") {
+      ast.family = StatementFamily::kSession;
+      ast.statement_surface_name = "set_language";
+      ast.statement_surface_id = "SBSQL-SML008-SET-LANGUAGE";
+    } else if (keyword == "RESET") {
+      ast.family = StatementFamily::kSession;
+      ast.statement_surface_name = "reset_language";
+      ast.statement_surface_id = "SBSQL-SML008-RESET-LANGUAGE";
+    } else if (keyword == "SHOW") {
+      ast.family = StatementFamily::kObservability;
+      ast.statement_surface_name = "show_language";
+      ast.statement_surface_id = "SBSQL-SML008-SHOW-LANGUAGE";
+    } else if (keyword == "LOAD") {
+      ast.family = StatementFamily::kRuntimeManagement;
+      ast.statement_surface_name = "load_language_bundle";
+      ast.statement_surface_id = "SBSQL-SML009-LOAD-LANGUAGE-BUNDLE";
+    } else if (keyword == "UNLOAD") {
+      ast.family = StatementFamily::kRuntimeManagement;
+      ast.statement_surface_name = "unload_language_bundle";
+      ast.statement_surface_id = "SBSQL-SML009-UNLOAD-LANGUAGE-BUNDLE";
+    } else if (keyword == "VALIDATE") {
+      ast.family = StatementFamily::kRuntimeManagement;
+      ast.statement_surface_name = "validate_language_bundle";
+      ast.statement_surface_id = "SBSQL-SML009-VALIDATE-LANGUAGE-BUNDLE";
     }
   }
   ast.statement_kind = StatementFamilyName(ast.family);
