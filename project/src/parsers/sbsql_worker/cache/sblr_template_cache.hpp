@@ -48,8 +48,11 @@ struct CacheKey {
   std::string group_set_hash;
   std::string search_path_hash;
   std::string language_profile;
+  std::string language_tag;
+  std::string common_resource_hash;
   std::string policy_profile;
   std::string parser_profile;
+  std::uint64_t message_resource_epoch{0};
   std::string result_contract_hash;
 
   [[nodiscard]] std::string StableKey() const;
@@ -111,8 +114,11 @@ class SblrTemplateCache {
   void InvalidateGroupSetHash(std::string_view new_hash);
   void InvalidateSearchPathHash(std::string_view new_hash);
   void InvalidateLanguageProfile(std::string_view new_language_profile);
+  void InvalidateLanguageTag(std::string_view new_language_tag);
+  void InvalidateCommonResourceHash(std::string_view new_common_resource_hash);
   void InvalidatePolicyProfile(std::string_view new_policy_profile);
   void InvalidateParserProfile(std::string_view new_parser_profile);
+  void InvalidateMessageResourceEpoch(std::uint64_t new_epoch);
   void InvalidateRegistryVersion(std::uint32_t new_registry_version);
   void InvalidateResultContractHash(std::string_view new_result_contract_hash);
   [[nodiscard]] std::size_t Size() const;

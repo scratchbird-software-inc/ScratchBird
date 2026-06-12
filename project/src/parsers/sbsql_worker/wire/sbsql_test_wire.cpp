@@ -273,9 +273,13 @@ CacheKey BuildFrontdoorLoweringCacheKey(const ParserConfig& config,
   key.grant_epoch = session.grant_epoch;
   key.descriptor_epoch = session.descriptor_epoch;
   key.udr_epoch = session.udr_epoch;
-  key.name_resolution_epoch = session.catalog_epoch;
-  key.resource_epoch = config.resource_budget.max_statement_bytes ^
-                       config.resource_budget.max_sblr_envelope_bytes;
+  key.name_resolution_epoch = session.localized_name_epoch != 0
+                                  ? session.localized_name_epoch
+                                  : session.catalog_epoch;
+  key.resource_epoch = session.language_resource_epoch != 0
+                           ? session.language_resource_epoch
+                           : (config.resource_budget.max_statement_bytes ^
+                              config.resource_budget.max_sblr_envelope_bytes);
   key.parser_package_generation = Fnv1a64(config.bundle_contract_id);
   key.protocol_version = config.protocol_version;
   key.parser_package_version_hash = Fnv1a64(config.build_id);
@@ -292,11 +296,19 @@ CacheKey BuildFrontdoorLoweringCacheKey(const ParserConfig& config,
   key.role_set_hash = std::to_string(Fnv1a64(JoinStable(session.effective_role_uuids)));
   key.group_set_hash = std::to_string(Fnv1a64(JoinStable(session.effective_group_uuids)));
   key.search_path_hash = std::to_string(Fnv1a64(JoinStable(session.search_path)));
-  key.language_profile = session.default_language;
+  key.language_profile = session.language_profile.empty()
+                             ? session.default_language
+                             : session.language_profile;
+  key.language_tag = session.language_tag.empty()
+                         ? session.default_language
+                         : session.language_tag;
+  key.common_resource_hash = session.common_resource_hash;
   key.policy_profile = session.policy_profile_uuid;
   key.parser_profile = config.profile_id;
+  key.message_resource_epoch = session.message_resource_epoch;
   key.result_contract_hash =
-      std::to_string(Fnv1a64(session.result_rendering_policy + "|" + config.dialect));
+      std::to_string(Fnv1a64(session.result_rendering_policy + "|" +
+                             config.dialect + "|" + session.common_resource_hash));
   return key;
 }
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -44,6 +45,33 @@ REQUIRED_COMMON_CONTRACT = {
     "renderer_output_is_canonical_not_source_reconstruction",
     "draft_sblr_is_untrusted_until_server_admission",
     "predictive_text_must_not_infer_hidden_objects",
+}
+
+REQUIRED_COMMON_METADATA_FIELDS = {
+    "resource_identity",
+    "resource_hash",
+    "support_state",
+    "fallback_diagnostics",
+    "rendering_diagnostics",
+    "deterministic_validation",
+}
+
+EXPECTED_COMMON_METADATA_SUPPORT_STATE = "release_supported"
+
+EXPECTED_FALLBACK_DIAGNOSTICS = [
+    "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
+    "SBSQL.LANG_RESOURCE.FAIL_CLOSED_ON_PROFILE_MISMATCH",
+]
+
+EXPECTED_RENDERING_DIAGNOSTICS = [
+    "SBSQL.LANG_RESOURCE.RENDERER_LOSSINESS_CLASSIFIED",
+    "SBSQL.LANG_RESOURCE.RENDERER_SOURCE_RECONSTRUCTION_FORBIDDEN",
+]
+
+EXPECTED_DETERMINISTIC_VALIDATION = {
+    "stable_utf8_json": True,
+    "sort_keys_for_hash": True,
+    "no_wall_clock_fields": True,
 }
 
 REQUIRED_COMPONENT_FIELDS = {
@@ -113,6 +141,62 @@ def read_driver_rows(path: Path) -> list[dict[str, str]]:
 def allowed_values(schema: dict[str, Any], field: str) -> set[str]:
     values = schema.get("allowed_component_values", {}).get(field, [])
     return {value for value in values if isinstance(value, str)}
+
+
+def common_metadata_hash(metadata: dict[str, Any]) -> str:
+    hashed_metadata = dict(metadata)
+    hashed_metadata.pop("resource_hash", None)
+    payload = json.dumps(
+        hashed_metadata,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def validate_common_resource_pack_metadata(
+    metadata: Any,
+    resource_identity: str,
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(metadata, dict):
+        return ["common_resource_pack_metadata must be an object"]
+
+    missing = sorted(REQUIRED_COMMON_METADATA_FIELDS - set(metadata))
+    unknown = sorted(set(metadata) - REQUIRED_COMMON_METADATA_FIELDS)
+    if missing:
+        errors.append(f"common_resource_pack_metadata missing fields: {missing}")
+    if unknown:
+        errors.append(f"common_resource_pack_metadata unknown fields: {unknown}")
+    if missing:
+        return errors
+
+    if metadata.get("resource_identity") != resource_identity:
+        errors.append("common_resource_pack_metadata.resource_identity must match manifest resource_identity")
+    if metadata.get("support_state") != EXPECTED_COMMON_METADATA_SUPPORT_STATE:
+        errors.append(
+            "common_resource_pack_metadata.support_state must be "
+            f"{EXPECTED_COMMON_METADATA_SUPPORT_STATE!r}"
+        )
+    if metadata.get("fallback_diagnostics") != EXPECTED_FALLBACK_DIAGNOSTICS:
+        errors.append("common_resource_pack_metadata.fallback_diagnostics must be deterministic and complete")
+    if metadata.get("rendering_diagnostics") != EXPECTED_RENDERING_DIAGNOSTICS:
+        errors.append("common_resource_pack_metadata.rendering_diagnostics must be deterministic and complete")
+    if metadata.get("deterministic_validation") != EXPECTED_DETERMINISTIC_VALIDATION:
+        errors.append("common_resource_pack_metadata.deterministic_validation must require stable hash inputs")
+
+    resource_hash = metadata.get("resource_hash")
+    if not isinstance(resource_hash, str) or not resource_hash.startswith("sha256:"):
+        errors.append("common_resource_pack_metadata.resource_hash must use sha256")
+    else:
+        expected_hash = common_metadata_hash(metadata)
+        if resource_hash != expected_hash:
+            errors.append(
+                "common_resource_pack_metadata.resource_hash mismatch: "
+                f"expected {expected_hash}"
+            )
+    return errors
 
 
 def validate_component(
@@ -205,6 +289,12 @@ def main() -> int:
     resource_identity = surface.get("resource_identity")
     if resource_identity != "sbsql.common_resource_pack.v1":
         errors.append("resource_identity must be sbsql.common_resource_pack.v1")
+    errors.extend(
+        validate_common_resource_pack_metadata(
+            surface.get("common_resource_pack_metadata"),
+            str(resource_identity),
+        )
+    )
 
     driver_ids = {row.get("component_id", "") for row in driver_rows}
     components = surface.get("components")

@@ -26,7 +26,7 @@ add_test(
   COMMAND sbsql_language_resource_contract_conformance
 )
 set_tests_properties(sbsql_language_resource_contract_conformance PROPERTIES
-  LABELS "sbsql_language_resource_contract;sbsql_parser_worker;SML-094;SML-095;SML-096;SML-097;SML-098;SML-099;SML-100;SML-101"
+  LABELS "sbsql_language_resource_contract;sbsql_parser_worker;SML-005;SML-082;SML-083;SML-084;SML-086;SML-089;SML-094;SML-095;SML-096;SML-097;SML-098;SML-099;SML-100;SML-101"
 )
 
 add_executable(sbp_sbsql_registry_generation_probe sbsql_registry_generation_probe.cpp)
@@ -3877,7 +3877,7 @@ add_test(
   COMMAND sbsql_cache_epoch_correctness_conformance
 )
 set_tests_properties(sbsql_cache_epoch_correctness_conformance PROPERTIES
-  LABELS "sbsql_cache_epoch_correctness_conformance;parser_cache_invalidation_gate;parser_v3_closure_gate;sbsql_parser_worker"
+  LABELS "sbsql_cache_epoch_correctness_conformance;parser_cache_invalidation_gate;parser_v3_closure_gate;sbsql_parser_worker;SML-007"
 )
 
 add_executable(
@@ -3909,7 +3909,7 @@ add_test(
   COMMAND sbsql_frontdoor_lowering_cache_odfr_011_conformance
 )
 set_tests_properties(sbsql_frontdoor_lowering_cache_odfr_011_conformance PROPERTIES
-  LABELS "sbsql_frontdoor_lowering_cache_odfr_011_conformance;ODFR-011;sbsql_parser_worker;frontdoor_lowering_cache;benchmark_clean;mga_transaction_regression;no_execution_plan_runtime"
+  LABELS "sbsql_frontdoor_lowering_cache_odfr_011_conformance;ODFR-011;sbsql_parser_worker;frontdoor_lowering_cache;benchmark_clean;mga_transaction_regression;no_execution_plan_runtime;SML-007"
 )
 
 add_executable(sbsql_parser_v3_profile_meta_conformance sbsql_parser_v3_profile_meta_conformance.cpp)

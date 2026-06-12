@@ -154,6 +154,15 @@ void ResourceValidationResult::AddWarning(std::string code, std::string detail) 
                                            std::move(code), std::move(detail)});
 }
 
+std::vector<ParseProfileStep> DefaultParseProfileOrder() {
+  return {
+      ParseProfileStep::kExplicitSyntaxProfile,
+      ParseProfileStep::kPreferredLanguageAndDialect,
+      ParseProfileStep::kCanonicalEnglishFallback,
+      ParseProfileStep::kFailClosed,
+  };
+}
+
 const LanguageResourceManifest& BuiltInCanonicalEnglishRecoveryProfile() {
   static const LanguageResourceManifest profile = [] {
     LanguageResourceManifest manifest;
@@ -254,6 +263,80 @@ ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResource
   return result;
 }
 
+ResourceValidationResult ValidateCanonicalElementStream(const CanonicalElementStream& stream) {
+  ResourceValidationResult result;
+  if (Empty(stream.resource_identity)) {
+    result.AddError("SBSQL.CANONICAL_STREAM.RESOURCE_IDENTITY_MISSING",
+                    "canonical element stream requires a common resource identity");
+  }
+  if (Empty(stream.language_profile_uuid)) {
+    result.AddError("SBSQL.CANONICAL_STREAM.LANGUAGE_PROFILE_MISSING",
+                    "canonical element stream requires a language profile UUID");
+  }
+  if (Empty(stream.exact_tag)) {
+    result.AddError("SBSQL.CANONICAL_STREAM.EXACT_TAG_MISSING",
+                    "canonical element stream requires an exact language tag");
+  }
+  if (Empty(stream.dialect_profile_uuid)) {
+    result.AddError("SBSQL.CANONICAL_STREAM.DIALECT_PROFILE_MISSING",
+                    "canonical element stream requires a dialect profile UUID");
+  }
+  if (Empty(stream.topology_profile_uuid)) {
+    result.AddError("SBSQL.CANONICAL_STREAM.TOPOLOGY_PROFILE_MISSING",
+                    "canonical element stream requires a topology profile UUID");
+  }
+  if (Empty(stream.common_resource_hash)) {
+    result.AddError("SBSQL.CANONICAL_STREAM.COMMON_HASH_MISSING",
+                    "canonical element stream requires the common resource pack hash");
+  }
+  if (Empty(stream.source_hash)) {
+    result.AddError("SBSQL.CANONICAL_STREAM.SOURCE_HASH_MISSING",
+                    "canonical element stream requires the localized source hash");
+  }
+  if (Empty(stream.canonical_order_id)) {
+    result.AddError("SBSQL.CANONICAL_STREAM.CANONICAL_ORDER_MISSING",
+                    "canonical element stream requires a canonical order identifier");
+  }
+  if (!stream.normalized_before_uuid_resolution) {
+    result.AddError("SBSQL.CANONICAL_STREAM.POST_UUID_NORMALIZATION",
+                    "language topology normalization must happen before UUID resolution");
+  }
+  if (!stream.server_revalidation_required) {
+    result.AddError("SBSQL.CANONICAL_STREAM.SERVER_REVALIDATION_REQUIRED",
+                    "client or parser canonical streams remain untrusted until server revalidation");
+  }
+  if (stream.elements.empty()) {
+    result.AddError("SBSQL.CANONICAL_STREAM.EMPTY",
+                    "canonical element stream must contain at least one normalized element");
+  }
+
+  for (const auto& element : stream.elements) {
+    if (Empty(element.canonical_id)) {
+      result.AddError("SBSQL.CANONICAL_STREAM.ELEMENT_CANONICAL_ID_MISSING",
+                      "each normalized element requires a canonical token or surface ID");
+    }
+    if (Empty(element.localized_text_hash)) {
+      result.AddError("SBSQL.CANONICAL_STREAM.ELEMENT_SOURCE_HASH_MISSING",
+                      "each normalized element must retain a localized source text hash");
+    }
+    if (element.source_span.length == 0) {
+      result.AddError("SBSQL.CANONICAL_STREAM.ELEMENT_SOURCE_SPAN_MISSING",
+                      "each normalized element must retain its localized source span");
+    }
+  }
+  return result;
+}
+
+ResourceValidationResult ValidateParseProfileOrder(const std::vector<ParseProfileStep>& order) {
+  ResourceValidationResult result;
+  const auto expected = DefaultParseProfileOrder();
+  if (order != expected) {
+    result.AddError("SBSQL.PARSE_PROFILE.ORDER_UNSUPPORTED",
+                    "parse profile order must be explicit profile, preferred language, canonical English fallback, fail closed");
+  }
+  return result;
+}
+
 ResourceValidationResult ValidateEditorToolProtocol(const EditorToolProtocol& protocol) {
   ResourceValidationResult result;
   if (protocol.protocol_version != "sbsql.editor_tool.v1") {
@@ -276,6 +359,35 @@ ResourceValidationResult ValidateEditorToolProtocol(const EditorToolProtocol& pr
                     "common editor tool protocol must expose all required surfaces");
   }
   return result;
+}
+
+ParseProfileDecision SelectParseProfile(const ParseProfileDecisionInput& input) {
+  if (input.explicit_syntax_profile_available) {
+    return ParseProfileDecision::kUseExplicitSyntaxProfile;
+  }
+  if (input.preferred_language_parse_succeeded) {
+    return ParseProfileDecision::kUsePreferredLanguageAndDialect;
+  }
+  if (input.canonical_english_parse_succeeded) {
+    return ParseProfileDecision::kUseCanonicalEnglishFallback;
+  }
+  return ParseProfileDecision::kFailClosed;
+}
+
+SblrRenderDecision ClassifySblrRenderRequest(const SblrRenderRequest& request) {
+  if (!request.sblr_uuid_authority_valid) {
+    return SblrRenderDecision::kRefuseMissingCanonicalAuthority;
+  }
+  if (request.source_reconstruction_requested) {
+    return SblrRenderDecision::kRefuseSourceReconstruction;
+  }
+  if (request.resource_revoked) return SblrRenderDecision::kRefuseRevokedResource;
+  if (request.resource_incompatible) return SblrRenderDecision::kRefuseIncompatibleResource;
+  if (request.preferred_renderer_available) return SblrRenderDecision::kPreferredLanguage;
+  if (request.canonical_english_renderer_available) {
+    return SblrRenderDecision::kCanonicalEnglishFallback;
+  }
+  return SblrRenderDecision::kRefuseRendererUnavailable;
 }
 
 LocaleLiteralClassification ClassifyLocaleLiteral(std::string_view literal,
@@ -343,6 +455,54 @@ std::string_view LanguageResourceChannelName(LanguageResourceChannel channel) {
     case LanguageResourceChannel::kDeprecated: return "deprecated";
     case LanguageResourceChannel::kRevoked: return "revoked";
     case LanguageResourceChannel::kRemoved: return "removed";
+  }
+  return "unknown";
+}
+
+std::string_view ParseProfileStepName(ParseProfileStep step) {
+  switch (step) {
+    case ParseProfileStep::kExplicitSyntaxProfile:
+      return "explicit_syntax_profile";
+    case ParseProfileStep::kPreferredLanguageAndDialect:
+      return "preferred_language_and_dialect";
+    case ParseProfileStep::kCanonicalEnglishFallback:
+      return "canonical_english_fallback_when_preferred_fails";
+    case ParseProfileStep::kFailClosed:
+      return "fail_closed";
+  }
+  return "unknown";
+}
+
+std::string_view ParseProfileDecisionName(ParseProfileDecision decision) {
+  switch (decision) {
+    case ParseProfileDecision::kUseExplicitSyntaxProfile:
+      return "use_explicit_syntax_profile";
+    case ParseProfileDecision::kUsePreferredLanguageAndDialect:
+      return "use_preferred_language_and_dialect";
+    case ParseProfileDecision::kUseCanonicalEnglishFallback:
+      return "use_canonical_english_fallback";
+    case ParseProfileDecision::kFailClosed:
+      return "fail_closed";
+  }
+  return "unknown";
+}
+
+std::string_view SblrRenderDecisionName(SblrRenderDecision decision) {
+  switch (decision) {
+    case SblrRenderDecision::kPreferredLanguage:
+      return "preferred_language";
+    case SblrRenderDecision::kCanonicalEnglishFallback:
+      return "canonical_english_fallback";
+    case SblrRenderDecision::kRefuseMissingCanonicalAuthority:
+      return "refuse_missing_canonical_authority";
+    case SblrRenderDecision::kRefuseRevokedResource:
+      return "refuse_revoked_resource";
+    case SblrRenderDecision::kRefuseIncompatibleResource:
+      return "refuse_incompatible_resource";
+    case SblrRenderDecision::kRefuseSourceReconstruction:
+      return "refuse_source_reconstruction";
+    case SblrRenderDecision::kRefuseRendererUnavailable:
+      return "refuse_renderer_unavailable";
   }
   return "unknown";
 }

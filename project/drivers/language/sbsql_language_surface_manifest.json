@@ -3,6 +3,24 @@
   "protocol_schema": "project/drivers/language/sbsql_editor_tool_protocol.schema.json",
   "driver_package_manifest": "project/drivers/DriverPackageManifest.csv",
   "resource_identity": "sbsql.common_resource_pack.v1",
+  "common_resource_pack_metadata": {
+    "resource_identity": "sbsql.common_resource_pack.v1",
+    "resource_hash": "sha256:571e97d6a9a5432cf1ca98a74a3583719875c1b325584a0ea5038d991b2dfb0b",
+    "support_state": "release_supported",
+    "fallback_diagnostics": [
+      "SBSQL.LANG_RESOURCE.FALLBACK_TO_CANONICAL_ENGLISH",
+      "SBSQL.LANG_RESOURCE.FAIL_CLOSED_ON_PROFILE_MISMATCH"
+    ],
+    "rendering_diagnostics": [
+      "SBSQL.LANG_RESOURCE.RENDERER_LOSSINESS_CLASSIFIED",
+      "SBSQL.LANG_RESOURCE.RENDERER_SOURCE_RECONSTRUCTION_FORBIDDEN"
+    ],
+    "deterministic_validation": {
+      "stable_utf8_json": true,
+      "sort_keys_for_hash": true,
+      "no_wall_clock_fields": true
+    }
+  },
   "common_resource_contract": {
     "server_revalidates_client_sblr": true,
     "server_owns_uuid_descriptor_security_authority": true,
