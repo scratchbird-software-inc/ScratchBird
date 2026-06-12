@@ -56,8 +56,11 @@ sbsql::CacheKey BaseKey() {
   key.group_set_hash = "groups/reporting";
   key.search_path_hash = "public_hash";
   key.language_profile = "en-US";
+  key.language_tag = "en-US";
+  key.common_resource_hash = "common.hash.en-US";
   key.policy_profile = "policy/default";
   key.parser_profile = "sbsql/default";
+  key.message_resource_epoch = 166;
   key.result_contract_hash = "result/default";
   return key;
 }
@@ -65,12 +68,12 @@ sbsql::CacheKey BaseKey() {
 void VerifyKeyDimensions() {
   const auto key = BaseKey();
   const auto stable = key.StableKey();
-  for (const auto token : {"sbsql-cache-v6", "1001", "3", "11", "22", "23", "33", "44",
+  for (const auto token : {"sbsql-cache-v7", "1001", "3", "11", "22", "23", "33", "44",
                            "55", "66", "77", "1", "78", "88", "89", "99", "111",
-                           "122", "133", "144", "155",
+                           "122", "133", "144", "155", "166",
                            "connection/abc", "txn/read_committed", "sbsql",
                            "roles/app_reader", "groups/reporting",
-                           "public_hash", "en-US", "policy/default",
+                           "public_hash", "en-US", "common.hash.en-US", "policy/default",
                            "sbsql/default", "result/default"}) {
     Require(Contains(stable, token), std::string("stable key missing ") + token);
   }
@@ -130,8 +133,11 @@ void VerifyLookupMisses() {
   VerifyDimensionMiss("group set", [](sbsql::CacheKey& key) { key.group_set_hash = "groups/admin"; });
   VerifyDimensionMiss("search path", [](sbsql::CacheKey& key) { key.search_path_hash = "private_hash"; });
   VerifyDimensionMiss("language", [](sbsql::CacheKey& key) { key.language_profile = "fr-CA"; });
+  VerifyDimensionMiss("language tag", [](sbsql::CacheKey& key) { key.language_tag = "fr-CA"; });
+  VerifyDimensionMiss("common resource hash", [](sbsql::CacheKey& key) { key.common_resource_hash = "common.hash.fr-CA"; });
   VerifyDimensionMiss("policy profile", [](sbsql::CacheKey& key) { key.policy_profile = "policy/restricted"; });
   VerifyDimensionMiss("parser profile", [](sbsql::CacheKey& key) { key.parser_profile = "postgres/profile"; });
+  VerifyDimensionMiss("message resource epoch", [](sbsql::CacheKey& key) { key.message_resource_epoch = 167; });
   VerifyDimensionMiss("result contract", [](sbsql::CacheKey& key) { key.result_contract_hash = "result/json"; });
 }
 
@@ -266,6 +272,16 @@ void VerifyInvalidations() {
                      [](sbsql::SblrTemplateCache& cache, const sbsql::CacheKey& key) {
                        cache.InvalidateLanguageProfile(key.language_profile);
                      });
+  VerifyInvalidation("language tag",
+                     [](sbsql::CacheKey& key) { key.language_tag = "fr-CA"; },
+                     [](sbsql::SblrTemplateCache& cache, const sbsql::CacheKey& key) {
+                       cache.InvalidateLanguageTag(key.language_tag);
+                     });
+  VerifyInvalidation("common resource hash",
+                     [](sbsql::CacheKey& key) { key.common_resource_hash = "common.hash.fr-CA"; },
+                     [](sbsql::SblrTemplateCache& cache, const sbsql::CacheKey& key) {
+                       cache.InvalidateCommonResourceHash(key.common_resource_hash);
+                     });
   VerifyInvalidation("policy profile",
                      [](sbsql::CacheKey& key) { key.policy_profile = "policy/restricted"; },
                      [](sbsql::SblrTemplateCache& cache, const sbsql::CacheKey& key) {
@@ -275,6 +291,11 @@ void VerifyInvalidations() {
                      [](sbsql::CacheKey& key) { key.parser_profile = "postgres/profile"; },
                      [](sbsql::SblrTemplateCache& cache, const sbsql::CacheKey& key) {
                        cache.InvalidateParserProfile(key.parser_profile);
+                     });
+  VerifyInvalidation("message resource epoch",
+                     [](sbsql::CacheKey& key) { key.message_resource_epoch = 167; },
+                     [](sbsql::SblrTemplateCache& cache, const sbsql::CacheKey& key) {
+                       cache.InvalidateMessageResourceEpoch(key.message_resource_epoch);
                      });
   VerifyInvalidation("result contract",
                      [](sbsql::CacheKey& key) { key.result_contract_hash = "result/json"; },
@@ -302,8 +323,9 @@ void VerifyFlushAndMetrics() {
                            "normalized_statement_hash", "parameter_type_shape_hash",
                            "connection_uuid", "transaction_context_hash", "dialect",
                            "role_set_hash", "group_set_hash",
-                           "search_path_hash", "language_profile",
-                           "policy_profile", "parser_profile",
+                           "search_path_hash", "language_profile", "language_tag",
+                           "common_resource_hash", "policy_profile", "parser_profile",
+                           "message_resource_epoch",
                            "result_contract_hash"}) {
     Require(Contains(snapshot, token), std::string("cache snapshot missing ") + token);
   }

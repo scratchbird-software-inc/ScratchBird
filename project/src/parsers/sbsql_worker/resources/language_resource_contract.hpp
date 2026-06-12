@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -52,6 +53,85 @@ struct ResourceValidationResult {
   bool HasIssue(std::string_view code) const;
   void AddError(std::string code, std::string detail);
   void AddWarning(std::string code, std::string detail);
+};
+
+enum class CanonicalElementKind {
+  kCommand,
+  kClause,
+  kIdentifier,
+  kLiteral,
+  kOperator,
+  kPunctuation,
+  kDiagnosticMarker,
+};
+
+struct CanonicalElementSourceSpan {
+  std::size_t offset{0};
+  std::size_t length{0};
+};
+
+struct CanonicalElement {
+  CanonicalElementKind kind{CanonicalElementKind::kIdentifier};
+  std::string canonical_id;
+  std::string surface_id;
+  std::string slot_id;
+  std::string alias_id;
+  std::string topology_role;
+  std::string localized_text_hash;
+  CanonicalElementSourceSpan source_span;
+};
+
+struct CanonicalElementStream {
+  std::string resource_identity;
+  std::string language_profile_uuid;
+  std::string exact_tag;
+  std::string dialect_profile_uuid;
+  std::string topology_profile_uuid;
+  std::string common_resource_hash;
+  std::string source_hash;
+  std::string canonical_order_id{"sbsql.canonical_order.v1"};
+  bool normalized_before_uuid_resolution{true};
+  bool server_revalidation_required{true};
+  std::vector<CanonicalElement> elements;
+};
+
+enum class ParseProfileStep {
+  kExplicitSyntaxProfile,
+  kPreferredLanguageAndDialect,
+  kCanonicalEnglishFallback,
+  kFailClosed,
+};
+
+struct ParseProfileDecisionInput {
+  bool explicit_syntax_profile_available{false};
+  bool preferred_language_parse_succeeded{false};
+  bool canonical_english_parse_succeeded{false};
+};
+
+enum class ParseProfileDecision {
+  kUseExplicitSyntaxProfile,
+  kUsePreferredLanguageAndDialect,
+  kUseCanonicalEnglishFallback,
+  kFailClosed,
+};
+
+struct SblrRenderRequest {
+  bool sblr_uuid_authority_valid{false};
+  bool preferred_renderer_available{false};
+  bool canonical_english_renderer_available{false};
+  bool resource_revoked{false};
+  bool resource_incompatible{false};
+  bool source_reconstruction_requested{false};
+};
+
+enum class SblrRenderDecision {
+  kPreferredLanguage,
+  kCanonicalEnglishFallback,
+  kRefuseMissingCanonicalAuthority,
+  kRefuseRevokedResource,
+  kRefuseIncompatibleResource,
+  kRefuseSourceReconstruction,
+  kRefuseRendererUnavailable,
 };
 
 struct LanguageResourceLimits {
@@ -162,13 +242,21 @@ struct EditorToolProtocol {
 const LanguageResourceManifest& BuiltInCanonicalEnglishRecoveryProfile();
 ResourceValidationResult ValidateLanguageResourceManifest(const LanguageResourceManifest& manifest);
 ResourceValidationResult ValidateEditorToolProtocol(const EditorToolProtocol& protocol);
+ResourceValidationResult ValidateCanonicalElementStream(const CanonicalElementStream& stream);
+ResourceValidationResult ValidateParseProfileOrder(const std::vector<ParseProfileStep>& order);
 LocaleLiteralClassification ClassifyLocaleLiteral(std::string_view literal,
                                                   const LocaleLiteralPolicy& policy);
 bool HasMixedScriptOrConfusableRisk(std::string_view text, const ConfusablePolicy& policy);
 RestoreLanguageResourceState ClassifyRestoreLanguageResourceState(
     const LanguageResourceRestoreRequest& request);
+ParseProfileDecision SelectParseProfile(const ParseProfileDecisionInput& input);
+SblrRenderDecision ClassifySblrRenderRequest(const SblrRenderRequest& request);
+std::vector<ParseProfileStep> DefaultParseProfileOrder();
 
 std::string_view LanguageResourceChannelName(LanguageResourceChannel channel);
+std::string_view ParseProfileStepName(ParseProfileStep step);
+std::string_view ParseProfileDecisionName(ParseProfileDecision decision);
+std::string_view SblrRenderDecisionName(SblrRenderDecision decision);
 std::string_view RestoreLanguageResourceStateName(RestoreLanguageResourceState state);
 
 } // namespace scratchbird::parser::sbsql
