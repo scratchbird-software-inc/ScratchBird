@@ -1,0 +1,134 @@
+{
+  "manifest_name": "SML_010_012_023_025_PARSER_CLOSURE_MANIFEST.csv",
+  "row_count": 15,
+  "rows": [
+    {
+      "coverage_class": "localized_renderer_server_revalidation",
+      "oracle_hash": "d50174e0506b164be04ddffd5cc4ef5f05dd4f7288a19f82a76e21e5d3ee977d",
+      "oracle_id": "SML-ORACLE-010-RENDERER-REVALIDATION-FILTER",
+      "proof_domain": "localized_rendering_resolver_filtering",
+      "row_id": "SML-010-RENDERER-REVALIDATION-FILTER",
+      "sml_id": "SML-010"
+    },
+    {
+      "coverage_class": "sensitive_resolver_filtering",
+      "oracle_hash": "26e2f26b72a68f71ca5c852f9cb47d2b5a88176cd79fb4991e86da5bff7ee87b",
+      "oracle_id": "SML-ORACLE-010-PRIVATE-INPUT-FILTER",
+      "proof_domain": "localized_rendering_resolver_filtering",
+      "row_id": "SML-010-PRIVATE-INPUT-FILTER",
+      "sml_id": "SML-010"
+    },
+    {
+      "coverage_class": "release_manifest_completeness",
+      "oracle_hash": "f13870a68c717a1515f747f095c29205e2f46f92b0459cb3842fe4f5c4e33943",
+      "oracle_id": "SML-ORACLE-010-MANIFEST-RELEASE-COMPLETE",
+      "proof_domain": "localized_rendering_resolver_filtering",
+      "row_id": "SML-010-MANIFEST-RELEASE-COMPLETE",
+      "sml_id": "SML-010"
+    },
+    {
+      "coverage_class": "language_control_non_authority",
+      "oracle_hash": "e1a140619b5d8c585e942070ced09c238858b5e6377790395bbdd7906be380c6",
+      "oracle_id": "SML-ORACLE-011-LANGUAGE-CONTROL-NON-AUTHORITY",
+      "proof_domain": "parser_language_library_non_authority",
+      "row_id": "SML-011-LANGUAGE-CONTROL-NON-AUTHORITY",
+      "sml_id": "SML-011"
+    },
+    {
+      "coverage_class": "bundle_manifest_fail_closed",
+      "oracle_hash": "8bc2a58fd15cee07c438595ef5cfda5db6af63443408e094501ccbdca8065a05",
+      "oracle_id": "SML-ORACLE-011-BUNDLE-MANIFEST-FAIL-CLOSED",
+      "proof_domain": "parser_language_library_non_authority",
+      "row_id": "SML-011-BUNDLE-MANIFEST-FAIL-CLOSED",
+      "sml_id": "SML-011"
+    },
+    {
+      "coverage_class": "cache_authority_refusal",
+      "oracle_hash": "611d70573379e1c935d942af8f4822d34ff509333da3c86b1d8742391f4a5235",
+      "oracle_id": "SML-ORACLE-011-CACHE-AUTHORITY-REFUSAL",
+      "proof_domain": "parser_language_library_non_authority",
+      "row_id": "SML-011-CACHE-AUTHORITY-REFUSAL",
+      "sml_id": "SML-011"
+    },
+    {
+      "coverage_class": "exact_locale_matrix",
+      "oracle_hash": "75691f1db2dfdc5e2a0a1b64a872eada7274e4ad2ca71d309e6f3b54db92f3ee",
+      "oracle_id": "SML-ORACLE-012-EXACT-LOCALE-MATRIX",
+      "proof_domain": "multilingual_edge_cases",
+      "row_id": "SML-012-EXACT-LOCALE-MATRIX",
+      "sml_id": "SML-012"
+    },
+    {
+      "coverage_class": "fallback_cache_isolation",
+      "oracle_hash": "9fa29e5f33f99eb81ba703f58f59f7a617b021054329739eb6ee01b6a1c4d5f3",
+      "oracle_id": "SML-ORACLE-012-FALLBACK-CACHE-ISOLATION",
+      "proof_domain": "multilingual_edge_cases",
+      "row_id": "SML-012-FALLBACK-CACHE-ISOLATION",
+      "sml_id": "SML-012"
+    },
+    {
+      "coverage_class": "edge_safety_scan",
+      "oracle_hash": "619114a401680ada79d5a804e8b1abf2ebafbd01300dd5f2e23a6d12d12725f6",
+      "oracle_id": "SML-ORACLE-012-RESOURCE-EDGE-SAFETY",
+      "proof_domain": "multilingual_edge_cases",
+      "row_id": "SML-012-RESOURCE-EDGE-SAFETY",
+      "sml_id": "SML-012"
+    },
+    {
+      "coverage_class": "route_fixture_closure",
+      "oracle_hash": "16a03f80d811fbbd05b53ee45dcbfe7efe3b21310f1f8044626e8f89ada9a466",
+      "oracle_id": "SML-ORACLE-023-AUTHENTICATED-ROUTE-FIXTURE-CLOSURE",
+      "proof_domain": "sbsql_full_parser_closure",
+      "row_id": "SML-023-AUTHENTICATED-ROUTE-FIXTURE-CLOSURE",
+      "sml_id": "SML-023"
+    },
+    {
+      "coverage_class": "strict_row_final_state",
+      "oracle_hash": "0395db988bd630674f8d198d568fedf3265bec419268f2c3f1f682ed743f27f9",
+      "oracle_id": "SML-ORACLE-023-STRICT-ROW-FINAL-STATE",
+      "proof_domain": "sbsql_full_parser_closure",
+      "row_id": "SML-023-STRICT-ROW-FINAL-STATE",
+      "sml_id": "SML-023"
+    },
+    {
+      "coverage_class": "scalar_projection_dispatch",
+      "oracle_hash": "c1251a6a14cf3a98d9a79c857cf9b967a85e56f9c2356f8fb2aff8ce5a4bc4b8",
+      "oracle_id": "SML-ORACLE-023-SCALAR-PROJECTION-DISPATCH",
+      "proof_domain": "sbsql_full_parser_closure",
+      "row_id": "SML-023-SCALAR-PROJECTION-DISPATCH",
+      "sml_id": "SML-023"
+    },
+    {
+      "coverage_class": "security_authorization_server_reclassify",
+      "oracle_hash": "be65f7d2b78a7d82eb11bd64a3de6acc8ef44731ccc1e4449629a538750d66f1",
+      "oracle_id": "SML-ORACLE-025-SECURITY-AUTHORIZATION-SERVER-RECLASSIFY",
+      "proof_domain": "legacy_security_projection_server_evaluated",
+      "row_id": "SML-025-SECURITY-AUTHORIZATION-SERVER-RECLASSIFY",
+      "sml_id": "SML-025"
+    },
+    {
+      "coverage_class": "protected_material_redacted_projection",
+      "oracle_hash": "b19ce9ee452682a453ae8d50c43cc7bddff887d226d2f22eea751603434c4d03",
+      "oracle_id": "SML-ORACLE-025-PROTECTED-MATERIAL-REDACTED-PROJECTION",
+      "proof_domain": "legacy_security_projection_server_evaluated",
+      "row_id": "SML-025-PROTECTED-MATERIAL-REDACTED-PROJECTION",
+      "sml_id": "SML-025"
+    },
+    {
+      "coverage_class": "security_epoch_prepared_refusal",
+      "oracle_hash": "89e235668588184e4127e78522a16b7d9c43365206170e91de8f23cbe0bafedf",
+      "oracle_id": "SML-ORACLE-025-PREPARED-SECURITY-EPOCH-REFUSAL",
+      "proof_domain": "legacy_security_projection_server_evaluated",
+      "row_id": "SML-025-PREPARED-SECURITY-EPOCH-REFUSAL",
+      "sml_id": "SML-025"
+    }
+  ],
+  "schema_version": "sbsql.parser_closure.sml_010_012_023_025.v1",
+  "sml_counts": {
+    "SML-010": 3,
+    "SML-011": 3,
+    "SML-012": 3,
+    "SML-023": 3,
+    "SML-025": 3
+  }
+}
