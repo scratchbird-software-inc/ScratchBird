@@ -24,8 +24,13 @@
 /artifacts/
 /dist/
 /release/
+/public_release_evidence/
+/public_audit_summary/
 /tmp/
 /tools/
+
+/docs/references/
+/docs/findings/
 
 CMakeCache.txt
 CMakeFiles/

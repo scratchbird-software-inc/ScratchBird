@@ -77,14 +77,14 @@ constexpr std::array<B002Row, 35> kRows{{
     {"AUDIT-0384", "SHOW MANAGEMENT READINESS", "op.show.management.readiness", "SBLR_OP_SHOW_MANAGEMENT_READINESS", "sblr.management.runtime_operation.v3", "rs.management.readiness.v1", "", ""},
     {"AUDIT-0385", "SHOW MANAGEMENT SUPPORT BUNDLE SAFETY", "op.show.management.support_bundle_safety", "SBLR_OP_SHOW_MANAGEMENT_SUPPORT_BUNDLE_SAFETY", "sblr.management.runtime_operation.v3", "rs.management.readiness.v1", "", ""},
     {"AUDIT-0386", "SHOW MANAGEMENT SUPPORT BUNDLES", "op.show.management.support_bundles", "SBLR_OP_SHOW_MANAGEMENT_SUPPORT_BUNDLES", "sblr.management.runtime_operation.v3", "rs.management.instruction.v1", "", ""},
-    {"AUDIT-0387", "SHOW USERS", "op.show.users", "SBLR_OP_SHOW_USERS", "sblr.security.mutation_or_inspect.v3", "rs.security.principal.v1", "", ""},
-    {"AUDIT-0388", "SHOW ROLES", "op.show.roles", "SBLR_OP_SHOW_ROLES", "sblr.security.mutation_or_inspect.v3", "rs.security.principal.v1", "", ""},
-    {"AUDIT-0389", "SHOW OBJECT VISIBILITY FOR customer_table", "op.show.object_visibility", "SBLR_OP_SHOW_OBJECT_VISIBILITY", "sblr.security.mutation_or_inspect.v3", "rs.security.grant.v1", "customer_table", "object"},
-    {"AUDIT-0390", "SHOW POLICIES", "op.show.policies", "SBLR_OP_SHOW_POLICIES", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "", ""},
-    {"AUDIT-0391", "SHOW MASKS", "op.show.masks", "SBLR_OP_SHOW_MASKS", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "", ""},
-    {"AUDIT-0392", "SHOW RLS", "op.show.rls", "SBLR_OP_SHOW_RLS", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "", ""},
-    {"AUDIT-0393", "SHOW SECURITY PROFILES", "op.show.security_profiles", "SBLR_OP_SHOW_SECURITY_PROFILES", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "", ""},
-    {"AUDIT-0394", "SHOW SECURITY EVENTS", "op.show.security_events", "SBLR_OP_SHOW_SECURITY_EVENTS", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "", ""},
+    {"AUDIT-0387", "SHOW USERS", "op.show.users", "SBLR_OP_SHOW_USERS", "sblr.catalog.introspect.v3", "rs.security.principal.v1", "", ""},
+    {"AUDIT-0388", "SHOW ROLES", "op.show.roles", "SBLR_OP_SHOW_ROLES", "sblr.catalog.introspect.v3", "rs.security.principal.v1", "", ""},
+    {"AUDIT-0389", "SHOW OBJECT VISIBILITY FOR customer_table", "op.show.object_visibility", "SBLR_OP_SHOW_OBJECT_VISIBILITY", "sblr.catalog.introspect.v3", "rs.security.grant.v1", "customer_table", "object"},
+    {"AUDIT-0390", "SHOW POLICIES", "op.show.policies", "SBLR_OP_SHOW_POLICIES", "sblr.policy.operation.v3", "rs.security.policy.v1", "", ""},
+    {"AUDIT-0391", "SHOW MASKS", "op.show.masks", "SBLR_OP_SHOW_MASKS", "sblr.policy.operation.v3", "rs.security.policy.v1", "", ""},
+    {"AUDIT-0392", "SHOW RLS", "op.show.rls", "SBLR_OP_SHOW_RLS", "sblr.policy.operation.v3", "rs.security.policy.v1", "", ""},
+    {"AUDIT-0393", "SHOW SECURITY PROFILES", "op.show.security_profiles", "SBLR_OP_SHOW_SECURITY_PROFILES", "sblr.catalog.introspect.v3", "rs.security.policy.v1", "", ""},
+    {"AUDIT-0394", "SHOW SECURITY EVENTS", "op.show.security_events", "SBLR_OP_SHOW_SECURITY_EVENTS", "sblr.catalog.introspect.v3", "rs.security.policy.v1", "", ""},
 }};
 
 void Require(bool condition, std::string_view message) {
@@ -143,7 +143,14 @@ std::string_view ExpectedEngineApiFunction(const B002Row& row) {
       row.operation_id == "op.show.native_compile_cache") {
     return "EngineInspectNativeCompile";
   }
-  if (row.family == "sblr.security.mutation_or_inspect.v3") {
+  if (row.operation_id == "op.show.users" ||
+      row.operation_id == "op.show.roles" ||
+      row.operation_id == "op.show.object_visibility" ||
+      row.operation_id == "op.show.policies" ||
+      row.operation_id == "op.show.masks" ||
+      row.operation_id == "op.show.rls" ||
+      row.operation_id == "op.show.security_profiles" ||
+      row.operation_id == "op.show.security_events") {
     return "EngineSecurityInspectOperation";
   }
   return "EngineInspectShowOperation";

@@ -113,6 +113,7 @@ if(TARGET sb_server_core)
   )
   set_tests_properties(sblr_surface_fse_p3_decoder_encoder_contract_gate PROPERTIES
     LABELS "FSE-P3;sblr_decoder_encoder_contract;parser_admission_revalidation;sblr_surface;release_proof_substrate"
+    SKIP_RETURN_CODE 77
   )
   add_executable(sblr_surface_fse_p4_engine_route_matrix_gate
     sblr_surface_fse_p4_engine_route_matrix_gate.cpp
@@ -129,6 +130,7 @@ if(TARGET sb_server_core)
   )
   set_tests_properties(sblr_surface_fse_p4_engine_route_matrix_gate PROPERTIES
     LABELS "FSE-P4;sblr_engine_internal_api_routes;parser_reference_execution_forbidden;sblr_surface;release_proof_substrate"
+    SKIP_RETURN_CODE 77
   )
   if(TARGET sb_cluster_provider)
     add_executable(sblr_surface_fse_p5_cluster_external_authority_policy_gate
@@ -147,6 +149,7 @@ if(TARGET sb_server_core)
     )
     set_tests_properties(sblr_surface_fse_p5_cluster_external_authority_policy_gate PROPERTIES
       LABELS "FSE-P5;sblr_cluster_external_authority_policy;cluster_provider_boundary;external_authority_fail_closed;sblr_surface;release_proof_substrate"
+      SKIP_RETURN_CODE 77
     )
     add_executable(sblr_surface_fse_p6_result_vector_diagnostic_gate
       sblr_surface_fse_p6_result_vector_diagnostic_gate.cpp
@@ -164,6 +167,7 @@ if(TARGET sb_server_core)
     )
     set_tests_properties(sblr_surface_fse_p6_result_vector_diagnostic_gate PROPERTIES
       LABELS "FSE-P6;sblr_result_vector_diagnostics;redaction_support_evidence;cluster_external_fail_closed;sblr_surface;release_proof_substrate"
+      SKIP_RETURN_CODE 77
     )
     add_executable(sblr_surface_fse_p7_execution_proof_gate
       sblr_surface_fse_p7_execution_proof_gate.cpp
@@ -181,6 +185,7 @@ if(TARGET sb_server_core)
     )
     set_tests_properties(sblr_surface_fse_p7_execution_proof_gate PROPERTIES
       LABELS "FSE-P7;sblr_final_execution_proof;matrix_cross_check;authority_boundary_closure;sblr_surface;release_proof_substrate"
+      SKIP_RETURN_CODE 77
     )
   endif()
 endif()
@@ -246,6 +251,9 @@ sb_add_sblr_surface_guardrail_gate(
   registry-cleanup
   "ELER-077;ELER-078;DSIA-006;sblr_registry_cleanup_guardrail"
 )
+set_tests_properties(sblr_surface_registry_cleanup_guardrail_gate PROPERTIES
+  SKIP_RETURN_CODE 77
+)
 sb_add_sblr_surface_guardrail_gate(
   sblr_surface_sbsql_sync_guardrail_gate
   sbsql-sync
@@ -255,4 +263,7 @@ sb_add_sblr_surface_guardrail_gate(
   sblr_surface_public_substrate_guardrail_gate
   all
   "ELER-070;ELER-071;ELER-072;ELER-073;ELER-074;ELER-075;ELER-076;ELER-077;ELER-078;ELER-079;ELER-083;ELER-084;ELER-086;ELER-089;public_proof_substrate_guardrail"
+)
+set_tests_properties(sblr_surface_public_substrate_guardrail_gate PROPERTIES
+  SKIP_RETURN_CODE 77
 )

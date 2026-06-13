@@ -196,7 +196,7 @@ void RequireExactLowering(const ProtectedMaterialRouteRow& row) {
           Message(row, "lowering", "operation id mismatch"));
   Require(artifacts.envelope.sblr_opcode == row.opcode,
           Message(row, "lowering", "opcode mismatch"));
-  Require(artifacts.envelope.operation_family == "sblr.security.mutation_or_inspect.v3",
+  Require(artifacts.envelope.operation_family == "sblr.security.mutation.v3",
           Message(row, "lowering", "operation family mismatch"));
   Require(artifacts.envelope.result_shape_key == "rs.security.protected_material.v1",
           Message(row, "lowering", "result shape mismatch"));
@@ -257,7 +257,7 @@ void RequireExactLowering(const ProtectedMaterialRouteRow& row) {
           Message(row, "server_admission", "public ABI dispatch not required"));
   Require(admission.operation_id == row.operation_id,
           Message(row, "server_admission", "operation id mismatch"));
-  Require(admission.operation_family == "sblr.security.mutation_or_inspect.v3",
+  Require(admission.operation_family == "sblr.security.mutation.v3",
           Message(row, "server_admission", "public family mismatch"));
 }
 

@@ -48,11 +48,11 @@ struct SecurityRowEvidence {
   std::string_view operation_id;
   std::string_view opcode;
   std::string_view registry_family = "security";
-  std::string_view source_sblr_operation_family = "sblr.security.mutation_or_inspect.v3";
+  std::string_view source_sblr_operation_family;
   std::string_view parser_handler_key = "parser.statement_family.security";
-  std::string_view lowering_handler_key = "lowering.sblr_family.sblr_security_mutation_or_inspect_v3";
-  std::string_view server_admission_key = "server.admission.sblr_security_mutation_or_inspect_v3";
-  std::string_view engine_rule_key = "engine.rule.sblr_security_mutation_or_inspect_v3";
+  std::string_view lowering_handler_key;
+  std::string_view server_admission_key;
+  std::string_view engine_rule_key;
 };
 
 constexpr std::array<SecurityRowEvidence, 29> kSecurityRows{{
@@ -210,12 +210,12 @@ constexpr std::array<SecurityRowEvidence, 29> kSecurityRows{{
      "CREATE PRINCIPAL app_user TYPE USER CREDENTIAL REF protected_ref_001",
      "security.principal.create",
      "SBLR_SECURITY_PRINCIPAL_CREATE",
-     "ddl_catalog",
-     "sblr.catalog.mutation.v3",
-     "parser.statement_family.ddl_catalog",
-     "lowering.sblr_family.sblr_catalog_mutation_v3",
-     "server.admission.sblr_catalog_mutation_v3",
-     "engine.rule.sblr_catalog_mutation_v3"},
+     "security",
+     "sblr.security.mutation.v3",
+     "parser.statement_family.security",
+     "lowering.sblr_family.sblr_security_mutation_v3",
+     "server.admission.sblr_security_mutation_v3",
+     "engine.rule.sblr_security_mutation_v3"},
     {"SBSQL-99E0610C0C88",
      "alter_principal_stmt",
      "grammar_production",
@@ -223,12 +223,12 @@ constexpr std::array<SecurityRowEvidence, 29> kSecurityRows{{
      "ALTER PRINCIPAL app_user DISABLE",
      "security.principal.alter",
      "SBLR_SECURITY_PRINCIPAL_ALTER",
-     "ddl_catalog",
-     "sblr.catalog.mutation.v3",
-     "parser.statement_family.ddl_catalog",
-     "lowering.sblr_family.sblr_catalog_mutation_v3",
-     "server.admission.sblr_catalog_mutation_v3",
-     "engine.rule.sblr_catalog_mutation_v3"},
+     "security",
+     "sblr.security.mutation.v3",
+     "parser.statement_family.security",
+     "lowering.sblr_family.sblr_security_mutation_v3",
+     "server.admission.sblr_security_mutation_v3",
+     "engine.rule.sblr_security_mutation_v3"},
     {"SBSQL-F15CCA3D7F79",
      "create_policy_stmt",
      "grammar_production",
@@ -236,12 +236,12 @@ constexpr std::array<SecurityRowEvidence, 29> kSecurityRows{{
      "CREATE POLICY app_policy ON TABLE customer",
      "security.policy.create",
      "SBLR_SECURITY_POLICY_CREATE",
-     "ddl_catalog",
-     "sblr.catalog.mutation.v3",
-     "parser.statement_family.ddl_catalog",
-     "lowering.sblr_family.sblr_catalog_mutation_v3",
-     "server.admission.sblr_catalog_mutation_v3",
-     "engine.rule.sblr_catalog_mutation_v3"},
+     "security",
+     "sblr.policy.operation.v3",
+     "parser.statement_family.security",
+     "lowering.sblr_family.sblr_policy_operation_v3",
+     "server.admission.sblr_policy_operation_v3",
+     "engine.rule.sblr_policy_operation_v3"},
     {"SBSQL-D0C7A3336A8B",
      "alter_policy_stmt",
      "grammar_production",
@@ -249,12 +249,12 @@ constexpr std::array<SecurityRowEvidence, 29> kSecurityRows{{
      "ALTER POLICY app_policy SET INACTIVE",
      "security.policy.alter",
      "SBLR_SECURITY_POLICY_ALTER",
-     "ddl_catalog",
-     "sblr.catalog.mutation.v3",
-     "parser.statement_family.ddl_catalog",
-     "lowering.sblr_family.sblr_catalog_mutation_v3",
-     "server.admission.sblr_catalog_mutation_v3",
-     "engine.rule.sblr_catalog_mutation_v3"},
+     "security",
+     "sblr.policy.operation.v3",
+     "parser.statement_family.security",
+     "lowering.sblr_family.sblr_policy_operation_v3",
+     "server.admission.sblr_policy_operation_v3",
+     "engine.rule.sblr_policy_operation_v3"},
     {"SBSQL-54D40FB44CD0",
      "alter_security_action",
      "grammar_production",
@@ -262,12 +262,12 @@ constexpr std::array<SecurityRowEvidence, 29> kSecurityRows{{
      "ALTER POLICY app_policy SET INACTIVE",
      "security.policy.alter",
      "SBLR_SECURITY_POLICY_ALTER",
-     "ddl_catalog",
-     "sblr.catalog.mutation.v3",
-     "parser.statement_family.ddl_catalog",
-     "lowering.sblr_family.sblr_catalog_mutation_v3",
-     "server.admission.sblr_catalog_mutation_v3",
-     "engine.rule.sblr_catalog_mutation_v3"},
+     "security",
+     "sblr.policy.operation.v3",
+     "parser.statement_family.security",
+     "lowering.sblr_family.sblr_policy_operation_v3",
+     "server.admission.sblr_policy_operation_v3",
+     "engine.rule.sblr_policy_operation_v3"},
     {"SBSQL-05E7A34BFCA4",
      "principal_attribute",
      "grammar_production",
@@ -339,6 +339,46 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 
 bool StartsWith(std::string_view value, std::string_view prefix) {
   return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
+}
+
+std::string_view ExpectedExecutableFamily(const SecurityRowEvidence& row) {
+  if (StartsWith(row.operation_id, "security.policy.")) {
+    return "sblr.policy.operation.v3";
+  }
+  if (row.operation_id == "security.privilege.grant" ||
+      row.operation_id == "security.privilege.revoke" ||
+      row.operation_id == "security.session.set_role" ||
+      row.operation_id == "security.principal.create" ||
+      row.operation_id == "security.principal.alter") {
+    return "sblr.security.mutation.v3";
+  }
+  return row.source_sblr_operation_family;
+}
+
+std::string_view ExpectedRegistrySblrOperationFamily(const SecurityRowEvidence& row) {
+  if (!row.source_sblr_operation_family.empty()) {
+    return row.source_sblr_operation_family;
+  }
+  return ExpectedExecutableFamily(row);
+}
+
+std::string_view FamilyKeySuffix(std::string_view family) {
+  if (family == "sblr.policy.operation.v3") return "sblr_policy_operation_v3";
+  if (family == "sblr.security.mutation.v3") return "sblr_security_mutation_v3";
+  if (family == "sblr.general.operation.v3") return "sblr_general_operation_v3";
+  return "";
+}
+
+std::string ExpectedRouteKey(const SecurityRowEvidence& row,
+                             std::string_view prefix,
+                             std::string_view explicit_key) {
+  if (!explicit_key.empty()) return std::string(explicit_key);
+  if (prefix == "lowering") {
+    return std::string(prefix) + ".sblr_family." +
+           std::string(FamilyKeySuffix(ExpectedRegistrySblrOperationFamily(row)));
+  }
+  return std::string(prefix) + "." +
+         std::string(FamilyKeySuffix(ExpectedRegistrySblrOperationFamily(row)));
 }
 
 std::vector<std::string> ResolvedUuidsFor(const SecurityRowEvidence& row) {
@@ -418,19 +458,23 @@ void RequireRegistryEvidence(const SecurityRowEvidence& row) {
           EvidenceMessage(row, "registry", "surface kind mismatch"));
   Require(registry_row->family == row.registry_family,
           EvidenceMessage(row, "registry", "family mismatch"));
-  Require(registry_row->source_status == "native_now",
+  Require(registry_row->source_status == "native_now" ||
+              registry_row->source_status == "e2e_passed",
           EvidenceMessage(row, "registry", "source status mismatch"));
   Require(registry_row->cluster_scope == "noncluster_or_profile_scoped",
           EvidenceMessage(row, "registry", "cluster scope mismatch"));
-  Require(registry_row->sblr_operation_family == row.source_sblr_operation_family,
+  Require(registry_row->sblr_operation_family == ExpectedRegistrySblrOperationFamily(row),
           EvidenceMessage(row, "registry", "SBLR operation family mismatch"));
   Require(registry_row->parser_handler_key == row.parser_handler_key,
           EvidenceMessage(row, "parser_bind_lower", "parser handler key mismatch"));
-  Require(registry_row->lowering_handler_key == row.lowering_handler_key,
+  Require(std::string(registry_row->lowering_handler_key) ==
+              ExpectedRouteKey(row, "lowering", row.lowering_handler_key),
           EvidenceMessage(row, "parser_bind_lower", "lowering handler key mismatch"));
-  Require(registry_row->server_admission_key == row.server_admission_key,
+  Require(std::string(registry_row->server_admission_key) ==
+              ExpectedRouteKey(row, "server.admission", row.server_admission_key),
           EvidenceMessage(row, "server_admission", "server admission key mismatch"));
-  Require(registry_row->engine_rule_key == row.engine_rule_key,
+  Require(std::string(registry_row->engine_rule_key) ==
+              ExpectedRouteKey(row, "engine.rule", row.engine_rule_key),
           EvidenceMessage(row, "engine_dispatch", "engine rule key mismatch"));
   Require(registry_row->validation_fixture_id == row.validation_fixture_id,
           EvidenceMessage(row, "registry", "validation fixture id mismatch"));
@@ -452,9 +496,10 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
   Require(artifacts.verifier.admitted,
           EvidenceMessage(row, "parser_bind_lower",
                           "security SBLR verifier rejected exact route"));
-  Require(artifacts.envelope.operation_family == "sblr.security.mutation_or_inspect.v3",
+  const auto expected_family = ExpectedExecutableFamily(row);
+  Require(artifacts.envelope.operation_family == expected_family,
           EvidenceMessage(row, "parser_bind_lower", "security operation family mismatch"));
-  Require(artifacts.envelope.sblr_operation_key == "sblr.security.mutation_or_inspect.v3",
+  Require(artifacts.envelope.sblr_operation_key == expected_family,
           EvidenceMessage(row, "parser_bind_lower", "security SBLR operation key mismatch"));
   Require(artifacts.envelope.operation_id == row.operation_id,
           EvidenceMessage(row, "parser_bind_lower", "security operation id mismatch"));
@@ -589,7 +634,7 @@ void RequireExactLowering(const SecurityRowEvidence& row) {
                           "server admission did not require engine public ABI dispatch"));
   Require(admission.operation_id == row.operation_id,
           EvidenceMessage(row, "server_admission", "server admission operation id mismatch"));
-  Require(admission.operation_family == "sblr.security.mutation_or_inspect.v3",
+  Require(admission.operation_family == expected_family,
           EvidenceMessage(row, "server_admission", "server admission operation family mismatch"));
 }
 

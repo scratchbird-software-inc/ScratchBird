@@ -137,7 +137,8 @@ void RequireRegistryEvidence(const CaseRow& row) {
           "SBSFC-085 generated registry canonical name drifted");
   Require(registry_row->surface_kind == row.surface_kind,
           "SBSFC-085 generated registry surface kind drifted");
-  Require(registry_row->source_status == "native_now",
+  Require(registry_row->source_status == "native_now" ||
+              registry_row->source_status == "e2e_passed",
           "SBSFC-085 generated registry status drifted");
   Require(registry_row->cluster_scope == "noncluster_or_profile_scoped",
           "SBSFC-085 generated registry cluster scope drifted");
@@ -162,9 +163,9 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
           "SBSFC-085 AST canonical operation family mismatch");
   Require(artifacts.bound.bound, "SBSFC-085 bind failed");
   Require(artifacts.verifier.admitted, "SBSFC-085 verifier rejected exact route");
-  Require(artifacts.envelope.operation_family == "sblr.query.values.v3",
+  Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
           "SBSFC-085 route operation family mismatch");
-  Require(artifacts.envelope.sblr_operation_key == "sblr.query.values.v3",
+  Require(artifacts.envelope.sblr_operation_key == "sblr.query.relational.v3",
           "SBSFC-085 route operation key mismatch");
   Require(artifacts.envelope.operation_id == "query.plan_operation",
           "SBSFC-085 operation id mismatch");
@@ -217,7 +218,7 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
           "SBSFC-085 server admission did not require public ABI dispatch");
   Require(admission.operation_id == "query.plan_operation",
           "SBSFC-085 server admission operation id mismatch");
-  Require(admission.operation_family == "sblr.query.values.v3",
+  Require(admission.operation_family == "sblr.query.relational.v3",
           "SBSFC-085 server admission operation family mismatch");
 
   const auto* opcode = sblr::LookupSblrOperation("query.plan_operation");

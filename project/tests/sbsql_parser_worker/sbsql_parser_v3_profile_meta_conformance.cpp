@@ -99,7 +99,7 @@ void VerifyManagementAndClusterClassification() {
   const auto checkpoint_ast = sbsql::BuildAst(sbsql::BuildCst("CHECKPOINT;"));
   Require(checkpoint_ast.family == sbsql::StatementFamily::kStorageManagement,
           "CHECKPOINT did not classify as storage management");
-  Require(checkpoint_ast.operation_family == "sblr.storage.management_operation.v3",
+  Require(checkpoint_ast.operation_family == "sblr.filespace.management.v3",
           "CHECKPOINT did not map to storage management SBLR family");
 
   const auto cluster_ast = sbsql::BuildAst(sbsql::BuildCst("CLUSTER TOPOLOGY SHOW;"));

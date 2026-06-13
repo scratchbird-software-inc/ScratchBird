@@ -120,7 +120,19 @@ def validate_sbom(components: list[dict[str, Any]]) -> None:
     require("boundary" in str(cluster.get("support", "")), "cluster_boundary_support_missing")
 
 
-def validate_licenses(licenses: list[dict[str, Any]]) -> None:
+def package_license(repo_root: pathlib.Path, relative_path: str) -> str:
+    package_path = repo_root / relative_path
+    require(package_path.exists(), f"license_package_missing:{relative_path}")
+    try:
+        data = json.loads(package_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        fail(f"license_package_json_invalid:{relative_path}:{exc.msg}")
+    license_text = str(data.get("license", "")).strip()
+    require(license_text not in {"", "unknown_not_declared"}, f"license_package_not_declared:{relative_path}")
+    return license_text
+
+
+def validate_licenses(repo_root: pathlib.Path, licenses: list[dict[str, Any]]) -> None:
     ids = {str(entry.get("component_id")) for entry in licenses}
     for required in (
         "scratchbird_private_core",
@@ -131,7 +143,11 @@ def validate_licenses(licenses: list[dict[str, Any]]) -> None:
     ):
         require(required in ids, f"missing_license_entry:{required}")
     node = next(entry for entry in licenses if entry.get("component_id") == "driver:node")
-    require(node.get("license") == "Apache-2.0", "node_driver_license_not_recorded")
+    expected_node_license = package_license(repo_root, "project/drivers/driver/node/package.json")
+    require(
+        node.get("license") == expected_node_license,
+        f"node_driver_license_mismatch:{node.get('license')}:{expected_node_license}",
+    )
     require(
         any(entry.get("classification") == "unknown_not_packaged" for entry in licenses),
         "missing_unknown_not_packaged_classification",
@@ -193,7 +209,7 @@ def main() -> int:
 
     validate_checksums(repo_root, build_root, evidence.get("checksums", []))
     validate_sbom(evidence.get("sbom_components", []))
-    validate_licenses(evidence.get("license_inventory", []))
+    validate_licenses(repo_root, evidence.get("license_inventory", []))
     validate_generated_inventory(evidence.get("generated_artifact_inventory", []))
     print(f"release_provenance_output={output}")
     print(f"release_provenance_dirty={source.get('dirty')} dirty_entry_count={source.get('dirty_entry_count')}")

@@ -187,7 +187,7 @@ def canonicalized_artifact_row(
             "canonical_name": canonical["canonical_name"],
             "surface_kind": canonical["surface_kind"],
             "family": canonical["family"],
-            "source_status": canonical["status"],
+            "source_status": canonical["source_status"],
             "cluster_scope": canonical["cluster_scope"],
             "canonical_spec": canonical["canonical_spec"],
             "sblr_operation_family": canonical["sblr_operation_family"],
@@ -225,7 +225,7 @@ def make_rows(artifact_root: Path) -> list[GeneratedRow]:
         surface_id = require(row["surface_id"], "surface_id", "<unknown>")
         if surface_id in status_by_surface:
             raise ValueError(f"{surface_id}: duplicate surface_id in SBSQL_SURFACE_STATUS_MATRIX.csv")
-        status_by_surface[surface_id] = row["status"]
+        status_by_surface[surface_id] = row["source_status"]
 
     batch_by_surface = {row["surface_id"]: row for row in batch_rows}
     oracle_by_surface = {row["surface_id"]: row for row in oracle_rows}

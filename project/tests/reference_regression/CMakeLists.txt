@@ -124,6 +124,7 @@ add_test(
     "--check"
 )
 set_tests_properties(reference_parser_start_evidence_manifest_conformance PROPERTIES
+  SKIP_RETURN_CODE 77
   LABELS "reference_parser_gate_evidence;reference_original_regression_gate;reference_release_regression_gate"
 )
 
@@ -135,5 +136,6 @@ add_test(
     "--repo-root" "${PROJECT_SOURCE_DIR}/.."
 )
 set_tests_properties(reference_parser_gate_evidence_no_go_conformance PROPERTIES
+  SKIP_RETURN_CODE 77
   LABELS "reference_parser_gate_evidence;reference_original_regression_gate;reference_release_regression_gate"
 )

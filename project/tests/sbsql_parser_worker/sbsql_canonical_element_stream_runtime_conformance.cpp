@@ -168,7 +168,7 @@ void VerifyCanonicalStreamFeedsLowering() {
           "SML-006 localized grammar AST did not resolve canonical surface id");
   Require(bound.bound, "SML-006 localized grammar bind failed");
   Require(verifier.admitted, "SML-006 localized grammar SBLR verification failed");
-  Require(envelope.operation_family == "sblr.query.values.v3",
+  Require(envelope.operation_family == "sblr.query.relational.v3",
           "SML-006 localized grammar lowering operation family mismatch");
   Require(envelope.operation_id == "query.plan_operation",
           "SML-006 localized grammar lowering operation id mismatch");

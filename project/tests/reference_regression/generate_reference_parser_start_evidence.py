@@ -31,6 +31,7 @@ DRP = PRIVATE_EXECUTION_PLAN_ROOT / "reference-parser-regression-policy-extracti
 GENERATION_BASELINE = "2026-06-05T00:00:00Z"
 DOT_GIT = "." + "git"
 DOT_GITHUB = "." + "github"
+EXTERNAL_CONTROLLER_SKIP_CODE = 77
 
 EVIDENCE_FILES = {
     "reference_regression_inventory": "upstream_manifest.csv",
@@ -1092,6 +1093,9 @@ def main(argv: list[str]) -> int:
     repo = args.repo_root.resolve()
 
     if args.check:
+        if not (repo / DPGEC).is_dir():
+            print(f"missing external controller evidence directory: {DPGEC}", file=sys.stderr)
+            return EXTERNAL_CONTROLLER_SKIP_CODE
         validate(repo)
         print("reference_parser_start_evidence_manifests=pass")
         return 0

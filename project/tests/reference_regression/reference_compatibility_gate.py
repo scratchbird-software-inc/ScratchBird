@@ -63,6 +63,7 @@ RELEASE_PROFILE_VARIANT_OWNERS = {
 RELEASE_PROFILE_VARIANTS = tuple(RELEASE_PROFILE_VARIANT_OWNERS)
 
 CAPABILITY_REFERENCE_FAMILIES = ("sqlserver", "oracle", "db2")
+TRUE_REFERENCE_PROFILE_CLASSES = {"reference_emulation", "compatibility_emulation"}
 
 EXPECTED_COMPATIBILITY_PROFILE_ROWS = (
     "firebird",
@@ -199,12 +200,12 @@ REQUIRED_SEED_SETS = (
     "conformance_gate_set",
 )
 
-FORBIDDEN_AUTHORITY_TOKENS = (
-    "reference_storage_authority",
-    "reference_recovery_authority",
-    "reference_transaction_authority",
-    "parser_transaction_authority",
-    "wal_recovery_authority",
+FORBIDDEN_AUTHORITY_TOKEN_GROUPS = (
+    ("reference_storage_authority", "compatibility_storage_authority"),
+    ("reference_recovery_authority", "compatibility_recovery_authority"),
+    ("reference_transaction_authority", "compatibility_transaction_authority"),
+    ("parser_transaction_authority",),
+    ("wal_recovery_authority",),
 )
 
 
@@ -364,8 +365,10 @@ def validate_seed_manifest(repo_root: pathlib.Path, row: dict[str, str]) -> None
 
 def validate_true_reference(repo_root: pathlib.Path, row: dict[str, str]) -> None:
     family = row["family_id"]
-    if row["profile_class"] != "reference_emulation":
-        raise AssertionError(f"{family}: true reference must use reference_emulation profile_class")
+    if row["profile_class"] not in TRUE_REFERENCE_PROFILE_CLASSES:
+        raise AssertionError(
+            f"{family}: true reference must use compatibility/reference emulation profile_class"
+        )
     if not row["parser_module"].startswith("project/src/parsers/compatibility/"):
         raise AssertionError(f"{family}: parser module must be under reference parser tree")
     if row["authority_policy"] != "engine_sblr_mga_only":
@@ -401,7 +404,7 @@ def validate_true_reference(repo_root: pathlib.Path, row: dict[str, str]) -> Non
             "reference_diagnostic_rendering_gate",
             "reference_metadata_overlay_gate",
             "reference_migration_cdc_gate",
-            "reference_sandbox_bridge_gate",
+            "compatibility_sandbox_bridge_gate",
             "reference_release_regression_gate",
             "reference_original_regression_gate",
         ),
@@ -461,7 +464,7 @@ def validate_profile_variant(repo_root: pathlib.Path, row: dict[str, str]) -> No
             "reference_diagnostic_rendering_gate",
             "reference_metadata_overlay_gate",
             "reference_migration_cdc_gate",
-            "reference_sandbox_bridge_gate",
+            "compatibility_sandbox_bridge_gate",
             "reference_release_regression_gate",
             "reference_original_regression_gate",
         ),
@@ -484,7 +487,7 @@ def validate_capability_reference(repo_root: pathlib.Path, row: dict[str, str]) 
         raise AssertionError(f"{family}: capref policy mismatch")
     for key in ("capability_map_path",):
         require_public_contract_or_file(repo_root, row[key], f"{family} {key}")
-    require_labels(row, ("reference_capability_reference_gate",))
+    require_labels(row, ("compatibility_capability_reference_gate",))
 
 
 def validate_udr_policy(rows: list[dict[str, str]], policies: dict[str, dict[str, str]]) -> None:
@@ -514,7 +517,11 @@ def validate_udr_policy(rows: list[dict[str, str]], policies: dict[str, dict[str
         if policy["security_authority"] != "engine_security":
             raise AssertionError(f"{family}: UDR policy must keep engine security authority")
         forbidden = set(filter(None, policy["forbidden_authorities"].split(";")))
-        missing = [token for token in FORBIDDEN_AUTHORITY_TOKENS if token not in forbidden]
+        missing = [
+            "/".join(tokens)
+            for tokens in FORBIDDEN_AUTHORITY_TOKEN_GROUPS
+            if not any(token in forbidden for token in tokens)
+        ]
         if missing:
             raise AssertionError(f"{family}: UDR policy missing forbidden authorities {missing}")
 
@@ -528,7 +535,11 @@ def validate_seed_index(repo_root: pathlib.Path, rows: list[dict[str, str]]) -> 
     if not isinstance(index, dict):
         raise AssertionError("seed manifest index is malformed")
     manifests = {entry["family"]: entry for entry in index.get("manifests", [])}
-    expected = {row["seed_manifest_family"] for row in rows if row["profile_class"] == "reference_emulation"}
+    expected = {
+        row["seed_manifest_family"]
+        for row in rows
+        if row["profile_class"] in TRUE_REFERENCE_PROFILE_CLASSES
+    }
     missing = sorted(expected - set(manifests))
     if missing:
         raise AssertionError(f"seed manifest index missing families {', '.join(missing)}")
@@ -606,7 +617,7 @@ def validate_profiles(repo_root: pathlib.Path) -> list[dict[str, str]]:
     if gaps != expected_family_gaps:
         raise AssertionError("reference family/capref profile gaps do not match 0101-0128")
     for row in rows:
-        if row["profile_class"] == "reference_emulation":
+        if row["profile_class"] in TRUE_REFERENCE_PROFILE_CLASSES:
             validate_true_reference(repo_root, row)
         elif row["profile_class"] == "release_profile_variant":
             validate_profile_variant(repo_root, row)
@@ -634,7 +645,7 @@ def run_seed(repo_root: pathlib.Path) -> None:
 def run_surface(repo_root: pathlib.Path) -> None:
     rows = validate_profiles(repo_root)
     for row in rows:
-        if row["profile_class"] != "reference_emulation":
+        if row["profile_class"] not in TRUE_REFERENCE_PROFILE_CLASSES:
             continue
         for key in (
             "datatype_profile",
@@ -649,7 +660,7 @@ def run_surface(repo_root: pathlib.Path) -> None:
 def run_runtime(repo_root: pathlib.Path) -> None:
     rows = validate_profiles(repo_root)
     for row in rows:
-        if row["profile_class"] != "reference_emulation":
+        if row["profile_class"] not in TRUE_REFERENCE_PROFILE_CLASSES:
             continue
         for key in (
             "migration_cdc_profile",
@@ -689,7 +700,7 @@ def run_capref(repo_root: pathlib.Path) -> None:
 def run_original_regression(repo_root: pathlib.Path) -> None:
     rows = validate_profiles(repo_root)
     for row in rows:
-        if row["profile_class"] == "reference_emulation":
+        if row["profile_class"] in TRUE_REFERENCE_PROFILE_CLASSES:
             validate_release_packet(repo_root, row)
 
 

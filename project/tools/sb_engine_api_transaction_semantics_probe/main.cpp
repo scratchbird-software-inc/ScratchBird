@@ -456,7 +456,12 @@ int main(int argc, char** argv) {
                                     RollbackResult(TxContext(base, Begin(base))).ok;
 
   auto inspect_base = base;
+  inspect_base.trace_tags.push_back("security.fixture_trace_authority");
   inspect_base.trace_tags.push_back("group:DBA");
+  inspect_base.trace_tags.push_back("right:MGA_LINEAGE_INSPECT");
+  inspect_base.trace_tags.push_back("right:MGA_RECOVERY_INSPECT");
+  inspect_base.trace_tags.push_back("right:MGA_METRICS_READ");
+  inspect_base.trace_tags.push_back("right:OBS_METRICS_READ_FAMILY");
   inspect_base.catalog_generation_id = 42;
 
   EngineInspectTransactionLineageRequest lineage_request;

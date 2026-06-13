@@ -164,7 +164,7 @@ bool ValidateMalformedEnvelopeRejected() {
   SblrEnvelope envelope;
   envelope.envelope_version = 3;
   envelope.operation_family = "sblr.query.relational.v3";
-  envelope.sblr_operation_key = "sblr.query.values.v3";
+  envelope.sblr_operation_key = "sblr.query.relational.v3";
   envelope.statement_hash = 1;
   envelope.surface_key = "SBSQL-INVALID";
   envelope.command_family = "query";

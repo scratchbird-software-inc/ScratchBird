@@ -37,7 +37,7 @@
       "change_kind": "reference_gap_summary_route",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/IMPLEMENTATION_HANDOFF_INDEX.csv#DPR-HANDOFF-004"
     },
@@ -49,7 +49,7 @@
       "change_kind": "sblr_opcode_visibility_cleanup",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-008"
     },
@@ -61,7 +61,7 @@
       "change_kind": "engine_unsupported_refusal_route",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SERVER_REVALIDATION_CONTRACT_MATRIX.csv#DPR-REVAL-001"
     },
@@ -73,7 +73,7 @@
       "change_kind": "reference_sblr_seed_row",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
     },
@@ -85,7 +85,7 @@
       "change_kind": "engine_function_surface_route",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DATABASE_FUNCTIONALITY_TO_SBLR_COVERAGE.csv#coverage_id"
     },
@@ -97,7 +97,7 @@
       "change_kind": "sblr_alias_registry_cleanup",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-008"
     },
@@ -109,7 +109,7 @@
       "change_kind": "sblr_family_reconciliation",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-009"
     },
@@ -121,7 +121,7 @@
       "change_kind": "engine_server_authority_rollup",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SERVER_REVALIDATION_CONTRACT_MATRIX.csv#DPR-REVAL-001"
     },
@@ -133,7 +133,7 @@
       "change_kind": "engine_server_authority_route",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SERVER_REVALIDATION_CONTRACT_MATRIX.csv#DPR-REVAL-001"
     }
@@ -146,7 +146,7 @@
       "change_kind": "sblr_opcode_registry_change",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-008"
     },
@@ -157,7 +157,7 @@
       "change_kind": "engine_sblr_opcode_registry_change",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-008"
     },
@@ -168,7 +168,7 @@
       "change_kind": "server_sblr_admission_change",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SERVER_REVALIDATION_CONTRACT_MATRIX.csv#DPR-REVAL-001"
     },
@@ -179,7 +179,7 @@
       "change_kind": "server_sblr_dispatch_change",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/IMPLEMENTATION_HANDOFF_INDEX.csv#DPR-HANDOFF-004"
     },
@@ -190,7 +190,7 @@
       "change_kind": "sbsql_sblr_row_coverage_change",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-009"
     },
@@ -201,7 +201,7 @@
       "change_kind": "sbsql_sync_manifest_change",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
     },
@@ -212,7 +212,7 @@
       "change_kind": "sblr_family_snapshot_change",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-009"
     },
@@ -223,7 +223,7 @@
       "change_kind": "reference_sblr_traceability_manifest_change",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
     },
@@ -234,7 +234,7 @@
       "change_kind": "reference_sblr_fixture_hash_manifest_change",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
     },
@@ -245,7 +245,7 @@
       "change_kind": "parser_facing_contract_freeze_change",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/IMPLEMENTATION_HANDOFF_INDEX.csv#DPR-HANDOFF-004"
     }
@@ -261,7 +261,7 @@
       "change_kind": "engine_server_authority_route",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv"
     },
@@ -275,7 +275,7 @@
       "change_kind": "engine_function_surface_route",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DATABASE_FUNCTIONALITY_TO_SBLR_COVERAGE.csv#coverage_id"
     },
@@ -289,7 +289,7 @@
       "change_kind": "engine_unsupported_refusal_route",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SERVER_REVALIDATION_CONTRACT_MATRIX.csv"
     },
@@ -303,7 +303,7 @@
       "change_kind": "sblr_family_reconciliation",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv#DPR-DRIFT-009"
     },
@@ -318,7 +318,7 @@
       "normalized_registry_target": "SBLR_REFERENCE_TIKV_RAW_GET",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv"
     },
@@ -333,7 +333,7 @@
       "normalized_registry_target": "authored opcodes remain canonical; non-opcode placeholders retire to descriptor mappings",
       "sbsql_style": "sbsql_native_normalized",
       "sbsql_cst_reference": "public_contract_snapshot",
-      "ast_sblr_reference": "public_contract_snapshot",
+      "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
       "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/DRIFT_REGISTER.csv"
     }
