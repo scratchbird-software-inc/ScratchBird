@@ -1,0 +1,13 @@
+schema_version: "scratchbird_driver_checklist_status.v1"
+required_document_fields:
+  - schema_version
+  - lane
+  - lane_kind
+  - component_id
+  - generated_from
+  - status
+required_item_fields:
+  - status
+  - validation_ref
+  - implementation_ref
+  - test_ref

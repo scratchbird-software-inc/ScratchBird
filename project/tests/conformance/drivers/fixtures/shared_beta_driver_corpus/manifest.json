@@ -1,0 +1,109 @@
+{
+  "artifact_role": "shared_beta_driver_conformance_fixture_manifest",
+  "authority_boundary": "Static fixture evidence is conformance input only. Driver-local SBLR, UUID, resolver, language, and cache material is an untrusted hint until the server revalidates it.",
+  "case_id_prefix": "BDRV",
+  "consumer_interfaces": [
+    "release_tooling_static_fixture_gate",
+    "driver_lane_conformance_gate",
+    "security_driver_replay_gate",
+    "performance_driver_soak_gate"
+  ],
+  "corpora": [
+    {
+      "corpus_id": "shared_sbsql_commands",
+      "path": "project/tests/conformance/drivers/corpora/shared_beta_driver_corpus/sbsql_commands.json",
+      "required_categories": [
+        "sbsql_command_surface",
+        "sblr_uuid_server_revalidation"
+      ]
+    },
+    {
+      "corpus_id": "auth_injection",
+      "path": "project/tests/conformance/drivers/corpora/shared_beta_driver_corpus/auth_injection.json",
+      "required_categories": [
+        "auth_context_injection",
+        "cross_user_role_group_replay_refusal"
+      ]
+    },
+    {
+      "corpus_id": "schema_resolution",
+      "path": "project/tests/conformance/drivers/corpora/shared_beta_driver_corpus/schema_resolution.json",
+      "required_categories": [
+        "authorization_filtered_uuid_path_resolution"
+      ]
+    },
+    {
+      "corpus_id": "language_surfaces",
+      "path": "project/tests/conformance/drivers/corpora/shared_beta_driver_corpus/language_surfaces.json",
+      "required_categories": [
+        "language_fallback",
+        "language_rendering"
+      ]
+    },
+    {
+      "corpus_id": "cache_lifecycle",
+      "path": "project/tests/conformance/drivers/corpora/shared_beta_driver_corpus/cache_lifecycle.json",
+      "required_categories": [
+        "cache_lifecycle",
+        "sblr_uuid_server_revalidation"
+      ]
+    },
+    {
+      "corpus_id": "wire_transcript_oracles",
+      "path": "project/tests/conformance/drivers/corpora/shared_beta_driver_corpus/wire_transcript_oracles.json",
+      "required_categories": [
+        "wire_transcript_oracle",
+        "replay_refusal"
+      ]
+    }
+  ],
+  "covered_requirements": [
+    "driver_sbsql_command_surface",
+    "auth_context_injection",
+    "sblr_uuid_server_revalidation",
+    "cross_user_replay_refusal",
+    "role_group_replay_refusal",
+    "authorization_filtered_uuid_path_resolution",
+    "language_surface_en-US",
+    "language_surface_en-CA",
+    "language_surface_fr-CA",
+    "language_surface_fr-FR",
+    "language_surface_de-DE",
+    "language_surface_it-IT",
+    "language_surface_es-ES",
+    "language_fallback_standard_en",
+    "cache_lifecycle",
+    "wire_transcript_oracle",
+    "resource_soak_requirement",
+    "dbeaver_exclusion"
+  ],
+  "excluded_adapters": [
+    {
+      "adapter": "scratchbird-dbeaver-driver",
+      "path": "project/drivers/adaptor/scratchbird-dbeaver-driver",
+      "reason": "DBeaver adapter is excluded from this beta shared driver corpus and remains out of this task write scope."
+    }
+  ],
+  "fixture_family": "shared_beta_driver_conformance_corpus",
+  "fixture_id": "BDRV-FIX-SHARED-001",
+  "golden_path": "project/tests/conformance/drivers/goldens/shared_beta_driver_corpus/expected.json",
+  "language_profiles": [
+    "en-US",
+    "en-CA",
+    "fr-CA",
+    "fr-FR",
+    "de-DE",
+    "it-IT",
+    "es-ES"
+  ],
+  "related_static_inputs": [
+    "project/tests/conformance/resources/driver_resource_soak_requirements.json",
+    "project/tests/security/driver_auth_replay_refusal_corpus.json",
+    "project/tests/performance/driver_resource_soak_requirements.json"
+  ],
+  "requires_live_driver": false,
+  "requires_live_server": false,
+  "schema_version": 1,
+  "transaction_authority": "engine_mga_only",
+  "validation_entrypoint": "project/tests/conformance/drivers/validate_shared_beta_driver_corpus.py"
+}

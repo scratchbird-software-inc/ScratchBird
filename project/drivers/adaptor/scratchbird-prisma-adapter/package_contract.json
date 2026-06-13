@@ -1,0 +1,93 @@
+{
+  "component_id": "adaptor:scratchbird-prisma-adapter",
+  "category": "adaptor",
+  "name": "scratchbird-prisma-adapter",
+  "driver_family": "prisma",
+  "status": "beta_2",
+  "release_scope": "in_scope_required",
+  "release_bucket": "release_candidate",
+  "wire_protocol": "sbwp_v1_1",
+  "auth_authority": "engine",
+  "transaction_authority": "mga_engine",
+  "server_revalidation_required": true,
+  "driver_local_authority": "advisory_only",
+  "api_surface": [
+    "connection_url",
+    "schema_validation",
+    "type_mapping",
+    "metadata_reflection",
+    "migration_reflection_workflow"
+  ],
+  "route_requirements": [
+    "sbwp_v1_1",
+    "scratchbird_tls_1_3_floor",
+    "engine_authentication_authority",
+    "engine_authorization_authority",
+    "mga_transaction_finality",
+    "sys_information_metadata",
+    "uuid_identity",
+    "no_hidden_replay"
+  ],
+  "conformance": [
+    "connect_auth",
+    "prepare_execute_fetch",
+    "transactions",
+    "metadata",
+    "type_mapping",
+    "error_mapping",
+    "reconnect",
+    "protocol_negotiation",
+    "cancellation"
+  ],
+  "delegation_posture": {
+    "mode": "delegates_to_node",
+    "target_component": "driver:node",
+    "host_runtime": "Prisma Node adapter",
+    "authority_boundaries": [
+      "adapter may validate Prisma schema text and render metadata-derived Prisma models",
+      "Node driver handles transport and protocol binding",
+      "server revalidates authentication, authorization, SBLR, UUID, cache, schema, and transaction claims",
+      "MGA transaction finality remains engine-owned"
+    ],
+    "lane_specific_proof": [
+      "node --test",
+      "adapter-contract.test.js",
+      "migration-reflection-contract.test.js",
+      "package-contract.test.js"
+    ]
+  },
+  "artifact_verification": {
+    "package_type": "npm_package",
+    "build_command": "npm pack --dry-run",
+    "install_smoke": "node --test",
+    "expected_outputs": [
+      "scratchbird-prisma-adapter-0.1.0.tgz"
+    ],
+    "sbom": "release_gate_required",
+    "signing": "release_gate_required",
+    "license": "MPL-2.0"
+  },
+  "best_in_class_deltas": [
+    {
+      "comparator": "Prisma PostgreSQL connector",
+      "delta": "connection URL policy, datasource validation, type mapping, and deterministic metadata reflection",
+      "proof": "adapter-contract.test.js"
+    },
+    {
+      "comparator": "Prisma PostgreSQL connector",
+      "delta": "migration/reflection workflow records host-lane proof without bypassing server validation",
+      "proof": "migration-reflection-contract.test.js"
+    }
+  ],
+  "dbeaver_exclusion": {
+    "excluded_component_id": "adaptor:scratchbird-dbeaver-driver",
+    "excluded_source_path": "project/drivers/adaptor/scratchbird-dbeaver-driver",
+    "release_controller_status": "separate_controller_out_of_scope",
+    "this_artifact_includes_dbeaver": false
+  },
+  "package_files": [
+    "package_contract.json",
+    "package.json",
+    "README.md"
+  ]
+}

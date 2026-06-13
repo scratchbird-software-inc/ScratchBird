@@ -8,6 +8,23 @@ ScratchBird DB-API 2.0 driver using the ScratchBird native wire protocol.
 - API reference
 - [Baseline requirement mapping](BASELINE_REQUIREMENT_MAPPING.md)
 
+## Beta Readiness Surface
+
+- manifest identity/status is exported by `beta_driver_readiness_status()`
+  (`driver:python`, package UUID `019e12a0-0012-7000-8000-000000000012`,
+  `beta_2`, `driver_python_gate`)
+- runtime mapping follows DB-API 2.0 over direct listener or `manager_proxy`
+  with `sbwp_v1_1`, `native_sqlstate`, and recursive `sys_information`
+  metadata
+- `validate_advisory_cache_context(...)` and
+  `validate_prepared_bundle_reuse(...)` refuse stale policy, schema,
+  language, capability, authorization, database, or transaction contexts
+- driver-local SBLR, UUID, and result caches are advisory only; server
+  revalidation remains required before execution, and transaction finality
+  remains owned by the engine MGA transaction inventory
+- `resolve_language_profile(...)` and `validate_language_resource_state(...)`
+  select supported language resources or fall back to standard English
+
 ## MGA Recovery Contract
 
 This lane follows ScratchBird's MGA/state-based engine recovery model.

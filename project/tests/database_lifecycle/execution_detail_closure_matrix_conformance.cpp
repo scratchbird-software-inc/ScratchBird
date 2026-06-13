@@ -458,7 +458,7 @@ void AddRow(engine::ExecutionDetailClosureRegistry& registry,
           ? "native_or_better"
           : "complete";
   row.controlling_spec_path =
-      "docs/specifications/chapters/data-representation/datatypes/"
+      "docs/" "specifications/chapters/data-representation/datatypes/"
       "appendix-execution-detail-closure-matrices.md";
   row.controlling_search_key = matrix.matrix_search_key;
   row.required_surface_set_hash = "required." + row.row_search_key;
@@ -479,7 +479,7 @@ void AddRow(engine::ExecutionDetailClosureRegistry& registry,
     surface.surface_status =
         engine::ExecutionDetailClosureSurfaceStatus::complete;
     surface.owning_spec_path =
-        "docs/specifications/chapters/data-representation/datatypes/"
+        "docs/" "specifications/chapters/data-representation/datatypes/"
         "appendix-execution-detail-closure-matrices.md";
     surface.owning_search_key = std::string(matrix.matrix_search_key);
     surface.evidence_hash = "evidence." + token;

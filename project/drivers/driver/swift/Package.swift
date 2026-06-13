@@ -1,3 +1,4 @@
+// swift-tools-version: 5.10.1
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -6,7 +7,6 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-// swift-tools-version: 5.10.1
 import PackageDescription
 
 let package = Package(

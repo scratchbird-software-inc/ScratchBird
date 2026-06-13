@@ -1,0 +1,93 @@
+{
+  "component_id": "adaptor:scratchbird-superset-driver",
+  "category": "adaptor",
+  "name": "scratchbird-superset-driver",
+  "driver_family": "superset",
+  "status": "beta_2",
+  "release_scope": "in_scope_required",
+  "release_bucket": "release_candidate",
+  "wire_protocol": "sbwp_v1_1",
+  "auth_authority": "engine",
+  "transaction_authority": "mga_engine",
+  "server_revalidation_required": true,
+  "driver_local_authority": "advisory_only",
+  "api_surface": [
+    "sqlalchemy_dialect",
+    "superset_engine_spec",
+    "connect_args",
+    "time_grains",
+    "schema_metadata",
+    "limit_method"
+  ],
+  "route_requirements": [
+    "sbwp_v1_1",
+    "scratchbird_tls_1_3_floor",
+    "engine_authentication_authority",
+    "engine_authorization_authority",
+    "mga_transaction_finality",
+    "sys_information_metadata",
+    "uuid_identity",
+    "no_hidden_replay"
+  ],
+  "conformance": [
+    "connect_auth",
+    "prepare_execute_fetch",
+    "transactions",
+    "metadata",
+    "type_mapping",
+    "error_mapping",
+    "reconnect",
+    "protocol_negotiation",
+    "cancellation"
+  ],
+  "delegation_posture": {
+    "mode": "delegates_to_python",
+    "target_component": "driver:python",
+    "host_runtime": "Apache Superset SQLAlchemy integration",
+    "authority_boundaries": [
+      "adapter may shape Superset EngineSpec and SQLAlchemy requests",
+      "Python driver handles transport and protocol binding",
+      "server revalidates authentication, authorization, SBLR, UUID, cache, schema, and transaction claims",
+      "MGA transaction finality remains engine-owned"
+    ],
+    "lane_specific_proof": [
+      "python3 -m pytest -q tests",
+      "test_superset_contract.py",
+      "test_package_contract.py"
+    ]
+  },
+  "artifact_verification": {
+    "package_type": "python_wheel",
+    "build_command": "python3 -m build",
+    "install_smoke": "python3 -m pytest -q tests",
+    "expected_outputs": [
+      "dist/scratchbird_superset-0.1.0-py3-none-any.whl"
+    ],
+    "sbom": "release_gate_required",
+    "signing": "release_gate_required",
+    "license": "MPL-2.0"
+  },
+  "best_in_class_deltas": [
+    {
+      "comparator": "Apache Superset PostgreSQL engine spec",
+      "delta": "engine spec, time grains, schema metadata, and SQLAlchemy dialect bridge",
+      "proof": "test_superset_contract.py"
+    },
+    {
+      "comparator": "Apache Superset PostgreSQL engine spec",
+      "delta": "invalid auth/bootstrap values fail closed before delegated execution",
+      "proof": "test_create_connect_args_rejects_invalid_bootstrap_policy_inputs"
+    }
+  ],
+  "dbeaver_exclusion": {
+    "excluded_component_id": "adaptor:scratchbird-dbeaver-driver",
+    "excluded_source_path": "project/drivers/adaptor/scratchbird-dbeaver-driver",
+    "release_controller_status": "separate_controller_out_of_scope",
+    "this_artifact_includes_dbeaver": false
+  },
+  "package_files": [
+    "package_contract.json",
+    "pyproject.toml",
+    "README.md"
+  ]
+}

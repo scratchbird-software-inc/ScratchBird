@@ -1,0 +1,83 @@
+{
+  "artifact_role": "shared_beta_driver_resource_soak_requirements",
+  "authority_boundary": "Resource and soak requirements are static conformance inputs. They do not prove live driver readiness without a later live gate.",
+  "cases": [
+    {
+      "case_id": "BDRV-RES-001",
+      "category": "resource_soak_requirement",
+      "coverage": [
+        "resource_soak_requirement",
+        "language_surface_en-US",
+        "language_surface_en-CA",
+        "language_surface_fr-CA",
+        "language_surface_fr-FR",
+        "language_surface_de-DE",
+        "language_surface_it-IT",
+        "language_surface_es-ES"
+      ],
+      "requirement": "shared_driver_language_pack_matrix",
+      "required_language_profiles": [
+        "en-US",
+        "en-CA",
+        "fr-CA",
+        "fr-FR",
+        "de-DE",
+        "it-IT",
+        "es-ES"
+      ],
+      "requires_live_driver": false
+    },
+    {
+      "case_id": "BDRV-RES-002",
+      "category": "resource_soak_requirement",
+      "coverage": [
+        "resource_soak_requirement",
+        "language_fallback_standard_en"
+      ],
+      "requirement": "standard_english_fallback_pack",
+      "fallback_profile": "en-US",
+      "missing_locale_behavior": "fallback_to_standard_english_or_emit_exact_missing_resource_diagnostic",
+      "requires_live_driver": false
+    },
+    {
+      "case_id": "BDRV-SOAK-001",
+      "category": "resource_soak_requirement",
+      "coverage": [
+        "resource_soak_requirement",
+        "cache_lifecycle"
+      ],
+      "requirement": "static_soak_shape_for_attach_prepare_execute_cycles",
+      "cycle_shape": [
+        "attach_with_auth_context",
+        "prepare_sblr_with_uuid_bindings",
+        "execute_with_server_revalidation",
+        "invalidate_driver_cache_on_generation_change",
+        "detach_without_driver_finality"
+      ],
+      "minimum_declared_cycles": 1000,
+      "requires_live_driver": false
+    },
+    {
+      "case_id": "BDRV-SOAK-002",
+      "category": "resource_soak_requirement",
+      "coverage": [
+        "resource_soak_requirement",
+        "wire_transcript_oracle"
+      ],
+      "requirement": "transcript_oracle_sampling",
+      "minimum_transcript_oracles": 3,
+      "must_include_replay_refusal": true,
+      "must_include_filtered_uuid_path_resolution": true,
+      "requires_live_driver": false
+    }
+  ],
+  "required_resource_generations": [
+    "language_pack_generation",
+    "diagnostic_surface_generation",
+    "uuid_resolution_generation",
+    "catalog_visibility_generation",
+    "security_policy_generation"
+  ],
+  "requires_live_driver": false,
+  "resource_soak_requirements_id": "BDRV-RESOURCE-SOAK-001"
+}

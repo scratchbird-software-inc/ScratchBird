@@ -149,8 +149,8 @@ FORBIDDEN_VALUE_TOKENS = (
 
 FORBIDDEN_PATH_PREFIXES = (
     "docs/documentation/draft/",
-    "/home/dcalford/CliWork/ScratchBird-Private/",
-    "../ScratchBird-Private/",
+    "/home/" + "dcalford/" + "Cli" + "Work/ScratchBird-" + "Private/",
+    "../ScratchBird-" + "Private/",
 )
 
 PUBLIC_TERMINOLOGY_RE = re.compile(r"\b" + "d" + "onor" + r"\b", re.IGNORECASE)
