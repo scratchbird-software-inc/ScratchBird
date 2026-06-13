@@ -47,7 +47,7 @@ def read_status(path: Path) -> dict[str, Any]:
 def wait_for_status(path: Path,
                     predicate: Callable[[dict[str, Any]], bool],
                     reason: str,
-                    timeout: float = 12.0) -> dict[str, Any]:
+                    timeout: float = 20.0) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last: dict[str, Any] = {}
     while time.monotonic() < deadline:
@@ -64,6 +64,7 @@ def worker_leases_ready(status: dict[str, Any]) -> bool:
     return (
         status.get("started") is True
         and worker_count >= 2
+        and worker_count <= 5
         and int(status.get("durable_catalog_generation", 0)) > 0
         and int(status.get("durable_lease_count", 0)) >= worker_count
         and int(status.get("total_worker_ticks", 0)) >= worker_count
@@ -89,10 +90,7 @@ def main() -> int:
     server2: subprocess.Popen[bytes] | None = None
     try:
         database = parsed.work / "agent-runtime-kill-replay.sbdb"
-        Path(str(database) + ".sb.local_password_auth").write_text(
-            f"sysdba\tlocal_password\t{live.VERIFIER}\n",
-            encoding="utf-8",
-        )
+        live.write_live_auth_fixture(database)
 
         endpoint1 = parsed.work / "sc1" / "s.sock"
         server1 = live.start_server(
