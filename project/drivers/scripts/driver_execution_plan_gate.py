@@ -69,6 +69,8 @@ ADAPTORS = [
 
 TOOLS = ["cli"]
 
+ALLOWED_DRIVER_STATUSES = {"beta_2", "planned_not_implemented"}
+
 DRIVER_FAMILIES = {
     "native_cli",
     "c_cpp",
@@ -395,8 +397,16 @@ def check_package_manifest(ctx: Context) -> int:
         seen_uuids.add(uuid)
         if row["driver_family"] not in DRIVER_FAMILIES:
             return fail(f"DriverPackageManifest {component} unknown driver_family: {row['driver_family']}")
-        if row["driver_status"] != "beta_2":
-            return fail(f"DriverPackageManifest {component} status is not beta_2")
+        if row["driver_status"] not in ALLOWED_DRIVER_STATUSES:
+            return fail(
+                f"DriverPackageManifest {component} status is not one of "
+                f"{', '.join(sorted(ALLOWED_DRIVER_STATUSES))}"
+            )
+        if row["driver_status"] == "planned_not_implemented" and row.get("release_bucket") != "tracked_not_released":
+            return fail(
+                f"DriverPackageManifest {component} planned_not_implemented "
+                "status must use tracked_not_released release_bucket"
+            )
         ingress_modes = {value for value in row["ingress_mode_set"].split(";") if value}
         unknown_ingress = sorted(ingress_modes - INGRESS_MODES)
         if unknown_ingress:
