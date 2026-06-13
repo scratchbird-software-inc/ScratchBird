@@ -23,8 +23,16 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import live_auth_fixture
+
 
 VERIFIER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ALICE_PRINCIPAL_UUID = live_auth_fixture.DEFAULT_PRINCIPAL_UUID
+SYSDBA_PRINCIPAL_UUID = "019f0a11-ce00-7000-8000-000000000002"
+PRINCIPAL_UUIDS = {
+    "alice": ALICE_PRINCIPAL_UUID,
+    "sysdba": SYSDBA_PRINCIPAL_UUID,
+}
 
 
 class GateError(RuntimeError):
@@ -140,6 +148,16 @@ def run_ipc(args: argparse.Namespace,
             *extra: str) -> dict[str, Any]:
     out_path = args.work / f"{log_prefix}_{scenario}.out"
     err_path = args.work / f"{log_prefix}_{scenario}.err"
+    extra_args = list(extra)
+    if scenario.startswith("management_") and "--principal-uuid" not in extra_args:
+        principal = "alice"
+        if "--principal" in extra_args:
+            principal_index = extra_args.index("--principal")
+            if principal_index + 1 < len(extra_args):
+                principal = extra_args[principal_index + 1]
+        principal_uuid = PRINCIPAL_UUIDS.get(principal)
+        if principal_uuid:
+            extra_args.extend(["--principal-uuid", principal_uuid])
     command = [
         args.ipc_tester,
         "--endpoint",
@@ -148,7 +166,7 @@ def run_ipc(args: argparse.Namespace,
         scenario,
         "--expect",
         "accept",
-        *extra,
+        *extra_args,
     ]
     completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     out_path.write_bytes(completed.stdout)
@@ -238,6 +256,23 @@ def stop_server_via_ipc(args: argparse.Namespace, endpoint: Path, proc: subproce
     wait_for_exit(proc)
 
 
+def write_live_auth_fixture(database: Path) -> None:
+    live_auth_fixture.write_local_password_auth_fixture(
+        database,
+        "alice",
+        VERIFIER,
+        ALICE_PRINCIPAL_UUID,
+        append=False,
+    )
+    live_auth_fixture.write_local_password_auth_fixture(
+        database,
+        "sysdba",
+        VERIFIER,
+        SYSDBA_PRINCIPAL_UUID,
+        append=True,
+    )
+
+
 def run_listener_route(args: argparse.Namespace, database: Path, endpoint: Path) -> None:
     listener_control = args.work / "lc"
     listener_runtime = args.work / "lr"
@@ -309,11 +344,7 @@ def main() -> int:
     server2: subprocess.Popen[bytes] | None = None
     try:
         database = parsed.work / "live.sbdb"
-        Path(str(database) + ".sb.local_password_auth").write_text(
-            f"alice\tlocal_password\t{VERIFIER}\n"
-            f"sysdba\tlocal_password\t{VERIFIER}\n",
-            encoding="utf-8",
-        )
+        write_live_auth_fixture(database)
 
         endpoint1 = parsed.work / "sc1" / "s.sock"
         server1 = start_server(

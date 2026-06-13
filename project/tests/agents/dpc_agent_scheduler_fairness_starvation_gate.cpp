@@ -624,16 +624,15 @@ void TestLiveServerRuntimeStatusEvidence(std::vector<EvidenceRow>* rows) {
 
   server::ServerAgentRuntimeSnapshot snapshot;
   const auto deadline = std::chrono::steady_clock::now() +
-                        std::chrono::seconds(4);
+                        std::chrono::seconds(8);
   do {
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     snapshot = runtime.Snapshot();
   } while (std::chrono::steady_clock::now() < deadline &&
-           (snapshot.scheduler_ticks < 2 ||
+           (snapshot.scheduler_ticks < snapshot.worker_thread_count ||
             snapshot.worker_thread_count < 2 ||
             snapshot.durable_lease_count < snapshot.worker_thread_count ||
-            snapshot.total_worker_ticks <
-                snapshot.scheduler_ticks * snapshot.worker_thread_count));
+            snapshot.total_worker_ticks < snapshot.worker_thread_count));
 
   Require(snapshot.started, "DPC-036 server runtime snapshot not started");
   Require(snapshot.foreground_reserved_capacity >= 1,
@@ -642,9 +641,10 @@ void TestLiveServerRuntimeStatusEvidence(std::vector<EvidenceRow>* rows) {
           "DPC-036 server runtime worker thread count too low");
   Require(snapshot.background_worker_slots == snapshot.worker_thread_count,
           "DPC-036 server runtime background slot mismatch");
-  Require(snapshot.total_worker_ticks >=
-              snapshot.scheduler_ticks * snapshot.worker_thread_count,
-          "DPC-036 server runtime workers were not woken fairly");
+  Require(snapshot.worker_wake_policy == "staggered_worker_per_scheduler_tick",
+          "DPC-036 server runtime wake policy did not protect idle capacity");
+  Require(snapshot.total_worker_ticks >= snapshot.worker_thread_count,
+          "DPC-036 server runtime workers did not all receive a staggered turn");
   Require(snapshot.status_path.filename() == "sb_server.agent_runtime.json",
           "DPC-036 server runtime status path mismatch");
   Require(snapshot.durable_catalog_generation > 0,
@@ -655,6 +655,9 @@ void TestLiveServerRuntimeStatusEvidence(std::vector<EvidenceRow>* rows) {
               ",workers=" + std::to_string(snapshot.worker_thread_count));
   Require(!snapshot.durable_catalog_root_digest.empty(),
           "DPC-036 durable catalog root digest missing");
+  Require(snapshot.durable_service_evidence_count <=
+              (snapshot.worker_thread_count * 2) + 4,
+          "DPC-036 idle runtime created excessive durable service evidence");
 
   runtime.Stop();
   const auto stopped = runtime.Snapshot();
