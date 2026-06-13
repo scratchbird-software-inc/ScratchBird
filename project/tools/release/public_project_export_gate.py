@@ -23,9 +23,18 @@ PUBLIC_TOP_LEVEL = {
     "docs",
     "LICENSE",
     "NOTICE",
+    "SECURITY.md",
+    "KNOWN_LIMITATIONS.md",
+    "RELEASE_TERMS.md",
+    "THIRD_PARTY_NOTICES.md",
+    "SBOM.json",
+    "REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md",
     "LICENSES",
     "data",
     "release",
+    "public_contract_snapshot",
+    "public_execution_plan",
+    "public_input_snapshot",
 }
 
 REQUIRED_TOP_LEVEL = {
@@ -33,9 +42,18 @@ REQUIRED_TOP_LEVEL = {
     "docs",
     "LICENSE",
     "NOTICE",
+    "SECURITY.md",
+    "KNOWN_LIMITATIONS.md",
+    "RELEASE_TERMS.md",
+    "THIRD_PARTY_NOTICES.md",
+    "SBOM.json",
+    "REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md",
     "LICENSES",
     "data",
     "release",
+    "public_contract_snapshot",
+    "public_execution_plan",
+    "public_input_snapshot",
 }
 
 DOCS_CHILDREN = {"build_requirements", "legal", "contracts"}
@@ -185,6 +203,17 @@ def copy_public_tree(repo_root: Path, stage_root: Path) -> None:
         src = repo_root / entry
         dst = stage_root / entry
         if not src.exists():
+            if entry in REQUIRED_TOP_LEVEL - {
+                "LICENSE",
+                "NOTICE",
+                "SECURITY.md",
+                "KNOWN_LIMITATIONS.md",
+                "RELEASE_TERMS.md",
+                "THIRD_PARTY_NOTICES.md",
+                "SBOM.json",
+                "REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md",
+            }:
+                mkdir_public(dst)
             continue
         if entry == "docs":
             mkdir_public(dst)
@@ -261,7 +290,20 @@ def private_reference_scan_includes(relative_path: Path) -> bool:
     parts = relative_path.parts
     if not parts:
         return False
-    if parts[0] in {"LICENSE", "NOTICE", "LICENSES", "docs", "data", "release"}:
+    if parts[0] in {
+        "LICENSE",
+        "NOTICE",
+        "SECURITY.md",
+        "KNOWN_LIMITATIONS.md",
+        "RELEASE_TERMS.md",
+        "THIRD_PARTY_NOTICES.md",
+        "SBOM.json",
+        "REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md",
+        "LICENSES",
+        "docs",
+        "data",
+        "release",
+    }:
         return True
     if parts[0] != "project":
         return False

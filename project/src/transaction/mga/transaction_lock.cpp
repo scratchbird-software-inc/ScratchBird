@@ -231,8 +231,12 @@ TransactionLockResult LocalTransactionLockTable::AcquireInternal(TransactionLock
     const LocalTransactionId blocker = prior_waiter->request.requester;
     if (DeadlineExpired(request.wait_policy)) {
       TransactionLockResult result = LockError(TransactionLockDecision::timeout,
-                                               "SB-SNTXN-LOCK-FAIRNESS-TIMEOUT",
-                                               "transaction.lock.fairness_timeout",
+                                               request.wait_policy.no_wait
+                                                   ? "SB-SNTXN-LOCK-TIMEOUT"
+                                                   : "SB-SNTXN-LOCK-FAIRNESS-TIMEOUT",
+                                               request.wait_policy.no_wait
+                                                   ? "transaction.lock.timeout"
+                                                   : "transaction.lock.fairness_timeout",
                                                request.resource_key);
       result.blocking_transaction = blocker;
       result.wait_elapsed_millis = WaitElapsedMillis(request.wait_policy);

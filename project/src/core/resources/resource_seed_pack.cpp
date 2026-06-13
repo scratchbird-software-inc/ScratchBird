@@ -209,6 +209,9 @@ ResourceSeedFamily ParseFamily(const std::string& value) {
   if (value == "timezone_tables") { return ResourceSeedFamily::timezone_tables; }
   if (value == "timezone_leaps") { return ResourceSeedFamily::timezone_leaps; }
   if (value == "timezone_archives") { return ResourceSeedFamily::timezone_archives; }
+  if (value == "sbsql_language_resource_pack") { return ResourceSeedFamily::sbsql_language_resource_pack; }
+  if (value == "sbsql_language_resource_pack_artifacts") { return ResourceSeedFamily::sbsql_language_resource_pack_artifacts; }
+  if (value == "sbsql_language_resource_pack_provenance") { return ResourceSeedFamily::sbsql_language_resource_pack_provenance; }
   return ResourceSeedFamily::unknown;
 }
 
@@ -230,6 +233,10 @@ ResourceSeedFamily CanonicalVersionFamily(ResourceSeedFamily family) {
     case ResourceSeedFamily::timezone_leaps:
     case ResourceSeedFamily::timezone_archives:
       return ResourceSeedFamily::timezone_version;
+    case ResourceSeedFamily::sbsql_language_resource_pack:
+    case ResourceSeedFamily::sbsql_language_resource_pack_artifacts:
+    case ResourceSeedFamily::sbsql_language_resource_pack_provenance:
+      return ResourceSeedFamily::i18n_version;
     case ResourceSeedFamily::i18n_version:
     case ResourceSeedFamily::unknown:
       return family;
@@ -323,6 +330,27 @@ bool WildcardMatch(const std::string& name, const std::string& pattern) {
 std::vector<std::filesystem::path> ResolvePattern(const std::filesystem::path& root,
                                                   const std::string& relative_pattern) {
   std::vector<std::filesystem::path> result;
+  const std::string recursive_marker = "**/";
+  const std::size_t recursive_pos = relative_pattern.find(recursive_marker);
+  if (recursive_pos != std::string::npos) {
+    const std::filesystem::path recursive_root =
+        root / std::filesystem::path(relative_pattern.substr(0, recursive_pos));
+    const std::string file_pattern = relative_pattern.substr(recursive_pos + recursive_marker.size());
+    if (!std::filesystem::is_directory(recursive_root)) {
+      return result;
+    }
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(recursive_root)) {
+      if (!entry.is_regular_file()) {
+        continue;
+      }
+      if (WildcardMatch(entry.path().filename().string(), file_pattern)) {
+        result.push_back(entry.path());
+      }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+  }
+
   const std::filesystem::path relative_path(relative_pattern);
   if (!HasWildcard(relative_pattern)) {
     const std::filesystem::path candidate = root / relative_path;
@@ -809,6 +837,15 @@ bool AccumulateArtifact(ResourceSeedCatalogImage* image,
     case ResourceSeedFamily::timezone_leaps:
       image->timezone_leap_second_records += CountLeapSecondRows(text);
       break;
+    case ResourceSeedFamily::sbsql_language_resource_pack:
+      ++image->resource_bundle_records;
+      break;
+    case ResourceSeedFamily::sbsql_language_resource_pack_artifacts:
+      ++image->runtime_cache_invalidation_records;
+      break;
+    case ResourceSeedFamily::sbsql_language_resource_pack_provenance:
+      ++image->resource_activation_records;
+      break;
     case ResourceSeedFamily::charset_mapping_schema:
     case ResourceSeedFamily::timezone_archives:
     case ResourceSeedFamily::unknown:
@@ -834,6 +871,9 @@ const char* ResourceSeedFamilyName(ResourceSeedFamily family) {
     case ResourceSeedFamily::timezone_tables: return "timezone_tables";
     case ResourceSeedFamily::timezone_leaps: return "timezone_leaps";
     case ResourceSeedFamily::timezone_archives: return "timezone_archives";
+    case ResourceSeedFamily::sbsql_language_resource_pack: return "sbsql_language_resource_pack";
+    case ResourceSeedFamily::sbsql_language_resource_pack_artifacts: return "sbsql_language_resource_pack_artifacts";
+    case ResourceSeedFamily::sbsql_language_resource_pack_provenance: return "sbsql_language_resource_pack_provenance";
     case ResourceSeedFamily::unknown: return "unknown";
   }
   return "unknown";

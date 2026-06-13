@@ -26,6 +26,7 @@ import sys
 EXECUTION_PLAN_ROOT = pathlib.Path("docs") / "execution-plans"
 EXECUTION_PLAN = EXECUTION_PLAN_ROOT / "reference-parser-implementation-gate-evidence-closure"
 REGRESSION_PLAN = EXECUTION_PLAN_ROOT / "reference-parser-regression-policy-extraction-closure"
+EXTERNAL_CONTROLLER_SKIP_CODE = 77
 
 EVIDENCE_FILES = {
     "reference_regression_inventory": "upstream_manifest.csv",
@@ -205,6 +206,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--repo-root", required=True, type=pathlib.Path)
     args = parser.parse_args(argv)
     repo = args.repo_root.resolve()
+    if not (repo / EXECUTION_PLAN).is_dir():
+        print(f"missing external controller evidence directory: {EXECUTION_PLAN}", file=sys.stderr)
+        return EXTERNAL_CONTROLLER_SKIP_CODE
     validate_no_go_controller(repo)
     print("reference_parser_gate_evidence_no_go=pass")
     return 0

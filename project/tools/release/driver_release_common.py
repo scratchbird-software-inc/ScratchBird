@@ -7,7 +7,12 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Shared helpers for beta driver release gates."""
+"""Shared helpers for beta driver release gates.
+
+Public release helpers do not infer private coordination directories. When a
+controller needs external planning matrices, the caller must pass
+``--workplan-root`` or set ``SB_DRIVER_BETA_WORKPLAN_ROOT`` explicitly.
+"""
 
 from __future__ import annotations
 
@@ -104,8 +109,7 @@ def default_workplan_root(repo_root: Path) -> Path:
     env_value = os.environ.get(WORKPLAN_ROOT_ENV)
     if env_value:
         return Path(env_value).expanduser()
-    private_repo_name = "ScratchBird" + "-Private"
-    return repo_root.parent / private_repo_name / "docs" / "workplans" / WORKPLAN_DIR_NAME
+    return repo_root / "docs" / "contracts" / "driver-release-control" / WORKPLAN_DIR_NAME
 
 
 def add_common_args(parser: argparse.ArgumentParser, script_path: Path) -> None:

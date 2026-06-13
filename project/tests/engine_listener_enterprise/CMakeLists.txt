@@ -30,6 +30,11 @@ set(SB_ENGINE_LISTENER_ENTERPRISE_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/engine_listener_enterprise_gate.py"
 )
 
+if(NOT SB_BUILD_DATABASE_LIFECYCLE_TESTS)
+  include("${PROJECT_SOURCE_DIR}/tests/database_lifecycle/ReleaseProvenanceSbomLicenseGate.cmake")
+  sb_add_database_lifecycle_release_provenance_sbom_license_gate()
+endif()
+
 function(sb_add_engine_listener_enterprise_gate test_name gate_mode gate_labels)
   add_test(
     NAME "${test_name}"

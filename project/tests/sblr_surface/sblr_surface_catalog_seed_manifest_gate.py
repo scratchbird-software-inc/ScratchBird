@@ -25,6 +25,11 @@ FIXTURE_DIR = Path(
     "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03"
 )
 NON_DIRECT_MATRIX = "NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv"
+SEED_MANIFEST_INDEX = Path(
+    "project/tests/reference_regression/reference_catalog_seeds/"
+    "actual_per_family_seed_manifest_index.yaml"
+)
+PUBLIC_INPUT_SNAPSHOT_SENTINEL = "public_input_snapshot"
 NO_EXTERNAL_REFERENCE_RE = re.compile(
     r"https?://|/home/|/Users/|[A-Za-z]:\\\\", re.IGNORECASE
 )
@@ -196,7 +201,7 @@ def validate_manifest(path: Path,
     if isinstance(invalid_state, dict):
         for key in ("missing_manifest", "raw_secret", "visibility_undefined"):
             require(bool(str(invalid_state.get(key, "")).strip()),
-                    f"{context} missing invalid-state diagnostic {key}", errors)
+            f"{context} missing invalid-state diagnostic {key}", errors)
     require(
         text_contains_any(
             manifest.get("default_security_row_set"),
@@ -205,6 +210,26 @@ def validate_manifest(path: Path,
         f"{context} default security seed rows must use redacted/secret-ref material",
         errors,
     )
+
+
+def load_seed_manifest_index(repo_root: Path, errors: list[str]) -> dict[str, Path]:
+    index = load_json(repo_root / SEED_MANIFEST_INDEX, errors)
+    manifests = index.get("manifests", [])
+    if not isinstance(manifests, list):
+        errors.append("seed manifest index must contain a manifests list")
+        return {}
+    result: dict[str, Path] = {}
+    for entry in manifests:
+        if not isinstance(entry, dict):
+            errors.append("seed manifest index entry must be an object")
+            continue
+        family = str(entry.get("family", "")).strip()
+        manifest_path = str(entry.get("manifest_path", "")).strip()
+        if not family or not manifest_path:
+            errors.append(f"seed manifest index entry missing family or manifest_path: {entry}")
+            continue
+        result[family] = repo_root / manifest_path
+    return result
 
 
 def main() -> int:
@@ -216,6 +241,7 @@ def main() -> int:
     errors: list[str] = []
 
     rows = load_csv(fixture_root / NON_DIRECT_MATRIX, errors)
+    seed_manifest_index = load_seed_manifest_index(repo_root, errors)
     catalog_rows = [
         row for row in rows
         if row.get("implementation_decision") == "catalog_projection_only"
@@ -248,7 +274,19 @@ def main() -> int:
             require(bool(row.get(field_name, "").strip()),
                     f"{context} missing {field_name}", errors)
 
-        source_packet = Path(row.get("source_packet", ""))
+        source_packet_text = row.get("source_packet", "")
+        if source_packet_text == PUBLIC_INPUT_SNAPSHOT_SENTINEL:
+            manifest_path = seed_manifest_index.get(row["engine_id"])
+            require(
+                manifest_path is not None,
+                f"{context} source_packet public_input_snapshot lacks indexed seed manifest",
+                errors,
+            )
+            if manifest_path is not None:
+                manifest_paths[row["engine_id"]] = manifest_path
+            continue
+
+        source_packet = Path(source_packet_text)
         require(
             source_packet.parts[:4]
             == ("docs", "contracts", "implementation_inputs", "reference-emulation"),
@@ -265,8 +303,7 @@ def main() -> int:
             f"{context} source_packet reference does not match engine_id",
             errors,
         )
-        manifest_path = repo_root / source_packet.parent / "catalog_seed_manifest_full.json"
-        manifest_paths[row["engine_id"]] = manifest_path
+        manifest_paths[row["engine_id"]] = repo_root / source_packet.parent / "catalog_seed_manifest_full.json"
 
     require(len(manifest_paths) == 19,
             "catalog projection reference engine count must be 19", errors)

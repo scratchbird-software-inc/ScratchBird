@@ -77,6 +77,33 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def canonicalization_file(canonicalization_root: Path, filename: str) -> Path | None:
+    if canonicalization_root.is_file():
+        if filename == "SBSQL_SURFACE_REGISTRY.csv":
+            return canonicalization_root
+        return None
+    path = canonicalization_root / filename
+    if path.exists():
+        return path
+    return None
+
+
+def surface_source_status(surface: dict[str, str]) -> str:
+    return surface.get("source_status") or surface.get("status", "")
+
+
+def read_surfaces(canonicalization_root: Path) -> list[dict[str, str]]:
+    path = canonicalization_file(canonicalization_root, "SBSQL_SURFACE_REGISTRY.csv")
+    if path is None:
+        raise FileNotFoundError(
+            f"{canonicalization_root}/SBSQL_SURFACE_REGISTRY.csv"
+        )
+    rows = read_csv(path)
+    for row in rows:
+        row["source_status"] = surface_source_status(row)
+    return rows
+
+
 def index_unique(rows: list[dict[str, str]], key: str, label: str) -> dict[str, dict[str, str]]:
     out: dict[str, dict[str, str]] = {}
     for row in rows:
@@ -90,7 +117,12 @@ def index_unique(rows: list[dict[str, str]], key: str, label: str) -> dict[str, 
 
 
 def read_reference_native_names(canonicalization_root: Path) -> set[str]:
-    rows = read_csv(canonicalization_root / "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv")
+    path = canonicalization_file(
+        canonicalization_root, "REFERENCE_ALIAS_TO_SBSQL_SURFACE_MATRIX.csv"
+    )
+    if path is None:
+        return set()
+    rows = read_csv(path)
     names: set[str] = set()
     for row in rows:
         native_name = row.get("native_sbsql_surface", "")
@@ -109,9 +141,115 @@ def fixture_id(surface_id: str) -> str:
 
 def active_native(surface: dict[str, str]) -> bool:
     return (
-        surface["status"] == "native_now"
+        surface_source_status(surface) == "native_now"
         and surface["cluster_scope"] != "cluster_private"
     )
+
+
+def result_shape(surface: dict[str, str]) -> str:
+    if surface["cluster_scope"] == "cluster_private":
+        return "rs.sbsql.cluster_private_refusal.v1"
+
+    family = surface["family"]
+    name = surface["canonical_name"]
+    if family in {"acceleration", "archive_replication", "jobs_scheduler",
+                  "runtime_management", "storage_management"}:
+        return "rs.sbsql.admin_command_or_report.v1"
+    if family == "bridge":
+        return "rs.sbsql.bridge_operation.v1"
+    if family == "ddl_catalog" or family == "dml":
+        return "rs.sbsql.command_completion.v1"
+    if family == "expression_runtime":
+        return "rs.sbsql.scalar_value.v1"
+    if family == "general":
+        return "rs.sbsql.structural_lowering.v1"
+    if family == "migration":
+        return "rs.migration.operation.v1"
+    if family in {"multi_model", "query"}:
+        return "rs.sbsql.rowset.v1"
+    if family == "observability":
+        return "rs.sbsql.observability_report.v1"
+    if family == "security":
+        return "rs.sbsql.security_command_or_report.v1"
+    if family == "transaction":
+        if name in {"lock_table", "lock_table_stmt"}:
+            return "rs.sbsql.command_completion.v1"
+        return "rs.sbsql.transaction_finality.v1"
+    return "rs.sbsql.structural_lowering.v1"
+
+
+def diagnostics(surface: dict[str, str]) -> str:
+    family = surface["family"]
+    base = [
+        "diag.parser.syntax.v1",
+        "diag.binding.failure.v1",
+    ]
+    if family == "bridge":
+        base.extend(
+            [
+                "diag.sbsql.sblr_envelope.v1",
+                "diag.sbsql.opcode_admission.v1",
+                "diag.bridge.policy.v1",
+                "diag.server.runtime.v1",
+            ]
+        )
+    elif family == "migration":
+        base.extend(
+            [
+                "diag.rights.failure.v1",
+                "diag.migration.policy_gate_denied.v1",
+                "diag.sbsql.sblr_envelope.v1",
+                "diag.sbsql.opcode_admission.v1",
+            ]
+        )
+    elif family == "transaction" and surface["canonical_name"] in {"lock_table", "lock_table_stmt"}:
+        base.extend(
+            [
+                "diag.sbsql.transaction_lock.v1",
+                "diag.rights.failure.v1",
+                "diag.sbsql.sblr_envelope.v1",
+                "diag.sbsql.opcode_admission.v1",
+            ]
+        )
+    else:
+        base.extend(
+            [
+                "diag.sbsql.catalog_resolution.v1",
+                "diag.rights.failure.v1",
+                "diag.sbsql.sblr_envelope.v1",
+                "diag.sbsql.opcode_admission.v1",
+            ]
+        )
+        if family == "observability":
+            base.append("diag.message_vector.v1")
+        elif family == "runtime_management":
+            base.append("diag.server.runtime.v1")
+        elif family == "transaction":
+            base.append("diag.sbsql.transaction_finality.v1")
+    if surface["cluster_scope"] == "cluster_private":
+        base.append("diag.private.refusal.v1")
+    return "; ".join(base)
+
+
+def read_operations(
+    canonicalization_root: Path, surfaces: list[dict[str, str]]
+) -> dict[str, dict[str, str]]:
+    path = canonicalization_file(canonicalization_root, "SBSQL_TO_SBLR_OPERATION_MATRIX.csv")
+    if path is not None:
+        return index_unique(read_csv(path), "surface_id", "SBSQL_TO_SBLR_OPERATION_MATRIX")
+    return {
+        surface["surface_id"]: {
+            "surface_id": surface["surface_id"],
+            "sblr_operation_family": surface["sblr_operation_family"],
+            "required_context": (
+                "session_uuid; database_uuid; transaction_context; "
+                "security_context; language_profile; result_contract"
+            ),
+            "result_shape": result_shape(surface),
+            "diagnostics": diagnostics(surface),
+        }
+        for surface in surfaces
+    }
 
 
 def input_text(surface: dict[str, str]) -> str:
@@ -220,13 +358,9 @@ def main() -> int:
     artifact_root = root / args.artifact_root
     replay_root = root / args.replay_root
 
-    surfaces = read_csv(canonicalization_root / "SBSQL_SURFACE_REGISTRY.csv")
+    surfaces = read_surfaces(canonicalization_root)
     reference_native_names = read_reference_native_names(canonicalization_root)
-    operations = index_unique(
-        read_csv(canonicalization_root / "SBSQL_TO_SBLR_OPERATION_MATRIX.csv"),
-        "surface_id",
-        "SBSQL_TO_SBLR_OPERATION_MATRIX",
-    )
+    operations = read_operations(canonicalization_root, surfaces)
     backlog = index_unique(
         read_csv(artifact_root / "SURFACE_IMPLEMENTATION_BACKLOG.csv"),
         "surface_id",
@@ -260,7 +394,7 @@ def main() -> int:
             "canonical_name": surface["canonical_name"],
             "family": surface["family"],
             "surface_kind": surface["surface_kind"],
-            "source_status": surface["status"],
+            "source_status": surface_source_status(surface),
             "cluster_scope": surface["cluster_scope"],
             "operation_family": operation["sblr_operation_family"],
             "primary_route": "parser_parse_only",

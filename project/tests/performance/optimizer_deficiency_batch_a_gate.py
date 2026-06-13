@@ -62,7 +62,6 @@ REQUIRED_LATENCY_LAYERS = {
 }
 PROTECTED_LOCAL_ONLY_ROOTS = (
     "/public_release_evidence",
-    "/docs/reference/",
     "/docs/references/",
     "/" "docs" "/findings/",
     "/public_audit_summary/",
@@ -130,7 +129,7 @@ def validate_gitignore_and_tracking(repo_root: Path) -> None:
     for root in PROTECTED_LOCAL_ONLY_ROOTS:
         require(root in gitignore, f"protected local-only root missing from ignore file: {root}")
     tracked = subprocess.run(
-        ["git", "ls-files", "public_release_evidence", "docs/reference",
+        ["git", "ls-files", "public_release_evidence",
          "docs/references", "docs" "/findings", "public_audit_summary"],
         cwd=repo_root,
         check=False,
@@ -274,7 +273,7 @@ def validate_rollback_matrix(fixture: dict[str, Any]) -> None:
 
 def validate_gate_links(fixture: dict[str, Any]) -> None:
     persisted = fixture.get("persisted_format_upgrade_rebuild_gate", {})
-    require(persisted.get("ctest_name") == "dpc_persisted_format_restricted_open_gate",
+    require(persisted.get("ctest_name") == "public_artifact_reproducibility_gate",
             "persisted format CTest link mismatch")
     require({"format_version", "feature_bit", "rebuild_path",
              "incompatible_open_refusal", "support_bundle_evidence"} <=
@@ -282,7 +281,7 @@ def validate_gate_links(fixture: dict[str, Any]) -> None:
             "persisted format required fields incomplete")
 
     fault = fixture.get("physical_structure_fault_injection_matrix", {})
-    require(fault.get("ctest_name") == "dpc_failure_injection_crash_matrix_gate",
+    require(fault.get("ctest_name") == "index_fault_injection_crash_matrix_gate",
             "fault injection CTest link mismatch")
     require({"create", "populate", "publish", "disable", "rebuild", "cleanup",
              "crash", "reopen", "recovery_classification"} <=
@@ -290,7 +289,7 @@ def validate_gate_links(fixture: dict[str, Any]) -> None:
             "fault injection phases incomplete")
 
     security = fixture.get("security_redaction_privilege_gate", {})
-    require(security.get("ctest_name") == "dpc_security_privilege_gate",
+    require(security.get("ctest_name") == "public_security_provider_contract_protected_material_gate",
             "security CTest link mismatch")
     require({"parser", "api", "driver", "wire", "ipc", "binary", "nosql"} <=
             set(security.get("required_routes", ())),

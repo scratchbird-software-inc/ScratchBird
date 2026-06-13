@@ -34,6 +34,8 @@ REQUIRED_NON_ENGINE_FILES = (
     "bin/SBmgr",
 )
 
+MANAGER_INSTALL_CONTRACT = "bin/sbmn_manager"
+
 FORBIDDEN_COMPONENT_ONLY_ENGINE_FILES = (
     "lib/libSBcore.so",
     "bin/SBcore.dll",
@@ -107,6 +109,9 @@ def configure_build_install(args: argparse.Namespace, work_root: Path) -> tuple[
         "-DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=OFF",
         "-DSB_BUILD_TESTS=OFF",
         "-DSB_BUILD_SBMN_MANAGER=ON",
+        "-DSB_BUILD_DRIVERS=OFF",
+        "-DSB_BUILD_PARSERS=OFF",
+        "-DSB_BUILD_UDR=OFF",
         "-DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF",
         "-DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF",
         "-DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF",
@@ -124,8 +129,17 @@ def configure_build_install(args: argparse.Namespace, work_root: Path) -> tuple[
     if os.name != "nt":
         configure_command.append("-DCMAKE_BUILD_TYPE=Release")
     run(configure_command, cwd=args.project_root)
-    run([str(args.cmake), "--build", str(nested_build), "--target", "sbmn_manager"],
-        cwd=args.project_root)
+    for target in (
+        "sbmn_manager",
+        "sb_isql",
+        "sb_admin",
+        "sb_backup",
+        "sb_security",
+        "sb_verify",
+        "sbdriver_conformance",
+    ):
+        run([str(args.cmake), "--build", str(nested_build), "--target", target],
+            cwd=args.project_root)
     run([
         str(args.cmake),
         "--install",

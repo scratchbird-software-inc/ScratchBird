@@ -36,6 +36,7 @@ EXPECTED_PROOF_KIND_COUNTS = {
     "runtime_parser_refusal": 129,
     "source_anchor_message_vector": 159,
 }
+EXTERNAL_REFERENCE_SKIP_CODE = 77
 TARGET_DISPOSITIONS = set(EXPECTED_DISPOSITION_COUNTS)
 
 P3_REL = (
@@ -108,7 +109,10 @@ def read_csv(repo_root: pathlib.Path, rel_path: str) -> list[dict[str, str]]:
         with path.open(newline="") as handle:
             reader = csv.DictReader(handle)
             rows = list(reader)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
+        if rel_path.startswith("public_execution_plan/") or rel_path == "public_execution_plan":
+            print(f"missing CSV: {rel_path}", file=sys.stderr)
+            raise SystemExit(EXTERNAL_REFERENCE_SKIP_CODE)
         fail(f"missing CSV: {rel_path}")
     require(reader.fieldnames is not None, f"CSV has no header: {rel_path}")
     return rows

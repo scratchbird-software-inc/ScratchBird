@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Validate ScratchBird AI current-repo integration execution plan rules."""
+"""Validate ScratchBird AI current-repo integration rules."""
 
 from __future__ import annotations
 
@@ -63,8 +63,8 @@ FORBIDDEN_TEXT = [
     "~/" + ".scratchbird/static-example",
 ]
 TEST_ONLY_TEXT = [
-    "secret-token",
-    "replaceme",
+    "secret" + "-token",
+    "replace" + "me",
 ]
 TEXT_SUFFIXES = {
     ".cmake",

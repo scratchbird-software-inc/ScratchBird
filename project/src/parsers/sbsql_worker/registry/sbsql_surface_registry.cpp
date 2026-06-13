@@ -17,7 +17,7 @@ namespace {
 
 constexpr std::array<SurfaceRegistryRow, 12> kRows{{
     {"sbsql.query.relational.v3", "query", "sblr.query.relational.v3", 3},
-    {"sbsql.query.values.v3", "values", "sblr.query.values.v3", 3},
+    {"sbsql.query.values.v3", "values", "sblr.query.relational.v3", 3},
     {"sbsql.dml.insert.v3", "insert", "sblr.dml.insert.v3", 3},
     {"sbsql.dml.update.v3", "update", "sblr.dml.update.v3", 3},
     {"sbsql.dml.delete.v3", "delete", "sblr.dml.delete.v3", 3},

@@ -4580,7 +4580,7 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   descriptor.manifest_relative_path =
       "resources/policy-packs/default-local-password/POLICY_PACK_MANIFEST.json";
   descriptor.content_sha256 =
-      "2046eabdff50fdfe662511734b3d8036e2f4890da89f4d5266cddef5bc840462";
+      "4aeda2923bbe2c2ff853c0bdc9cebafc17e5c757ed1eecbcbe80e5745a382220";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

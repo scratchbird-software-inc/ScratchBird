@@ -178,31 +178,8 @@ set_tests_properties(database_lifecycle_examples_smoke_scripts_gate PROPERTIES
   LABELS "database_lifecycle_examples_smoke_scripts_gate;CBQ-034;CBQ_GATE_EXAMPLES_SMOKE_SCRIPTS;example;smoke;documentation;sample;cli;embedded;driver;database_lifecycle"
 )
 
-set(SB_RELEASE_PROVENANCE_GENERATOR
-  "${SB_PRIVATE_REPO_ROOT}/project/tools/release_provenance/generate_release_evidence.py"
-)
-set(SB_RELEASE_PROVENANCE_GATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/release_provenance_sbom_license_gate.py"
-)
-
-add_custom_target(database_lifecycle_release_provenance_sbom_license_gate_check
-  COMMAND "${Python3_EXECUTABLE}" "${SB_RELEASE_PROVENANCE_GATE}"
-          --repo-root "${SB_PRIVATE_REPO_ROOT}"
-          --build-root "${CMAKE_BINARY_DIR}"
-          --generator "${SB_RELEASE_PROVENANCE_GENERATOR}"
-  COMMENT "Validating release provenance SBOM license and generated artifact evidence"
-)
-
-add_test(
-  NAME database_lifecycle_release_provenance_sbom_license_gate
-  COMMAND "${Python3_EXECUTABLE}" "${SB_RELEASE_PROVENANCE_GATE}"
-          --repo-root "${SB_PRIVATE_REPO_ROOT}"
-          --build-root "${CMAKE_BINARY_DIR}"
-          --generator "${SB_RELEASE_PROVENANCE_GENERATOR}"
-)
-set_tests_properties(database_lifecycle_release_provenance_sbom_license_gate PROPERTIES
-  LABELS "database_lifecycle_release_provenance_sbom_license_gate;CBQ-035;CBQ_GATE_RELEASE_PROVENANCE_SBOM_LICENSE;ELER-108;ELER-GATE-108;release;provenance;sbom;license;checksum;artifact;package;manifest;release_artifact_trust;linux_proof;database_lifecycle"
-)
+include("${CMAKE_CURRENT_SOURCE_DIR}/ReleaseProvenanceSbomLicenseGate.cmake")
+sb_add_database_lifecycle_release_provenance_sbom_license_gate()
 
 set(SB_DATABASE_LIFECYCLE_BETA_PACKAGE_SMOKE_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/beta_package_smoke_gate.py"
