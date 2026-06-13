@@ -2,7 +2,7 @@
   "name": "scratchbird",
   "version": "0.1.0",
   "description": "ScratchBird Node.js/TypeScript driver (native protocol)",
-  "license": "Apache-2.0",
+  "license": "MPL-2.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

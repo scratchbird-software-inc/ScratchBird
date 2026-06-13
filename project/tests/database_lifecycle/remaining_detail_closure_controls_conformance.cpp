@@ -111,21 +111,21 @@ std::vector<ControlDefinition> ControlDefinitions() {
   return {
       {Kind::system_catalog_schema,
        "RDC-001",
-       "docs/specifications/chapters/catalog-schema/"
+       "docs/" "specifications/chapters/catalog-schema/"
        "appendix-system-catalog-schema.md",
        "catalog",
        {"SCS-GATE-001", "SCS-GATE-002", "SCS-GATE-003",
         "SCS-GATE-004", "SCS-GATE-005"}},
       {Kind::type_security_privilege,
        "RDC-002",
-       "docs/specifications/chapters/data-representation/datatypes/"
+       "docs/" "specifications/chapters/data-representation/datatypes/"
        "appendix-type-security-privilege-matrix.md",
        "security",
        {"TSP-GATE-001", "TSP-GATE-002", "TSP-GATE-003",
         "TSP-GATE-004"}},
       {Kind::diagnostic_registry,
        "RDC-003",
-       "docs/specifications/chapters/implementation-guidance/"
+       "docs/" "specifications/chapters/implementation-guidance/"
        "appendix-diagnostic-error-code-registry.md",
        "diagnostics",
        {"DER-GATE-001", "DER-GATE-002", "DER-GATE-003",
@@ -135,7 +135,7 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "DER-GATE-013"}},
       {Kind::resource_registry_versioning,
        "RDC-004",
-       "docs/specifications/chapters/core/"
+       "docs/" "specifications/chapters/core/"
        "appendix-resource-registry-versioning.md",
        "resource_registry",
        {"RRV-GATE-001", "RRV-GATE-002", "RRV-GATE-003",
@@ -146,13 +146,13 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "RRV-CONF-012"}},
       {Kind::parser_sblr_grammar_expansion,
        "RDC-005",
-       "docs/specifications/chapters/parser-v3/sblr-lowering/"
+       "docs/" "specifications/chapters/parser-v3/sblr-lowering/"
        "appendix-parser-sblr-grammar-expansion-tracker.md",
        "parser_sblr",
        {"PSG-GATE-001", "PSG-GATE-002", "PSG-GATE-003"}},
       {Kind::reference_specific_type_matrices,
        "RDC-006",
-       "docs/specifications/chapters/references/common/"
+       "docs/" "specifications/chapters/references/common/"
        "appendix-reference-specific-type-matrices.md",
        "reference_compatibility",
        {"DSM-GATE-001", "DSM-GATE-002", "DSM-GATE-003",
@@ -162,7 +162,7 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "DSM-GATE-013"}},
       {Kind::canonical_encoding_examples,
        "RDC-007",
-       "docs/specifications/chapters/storage/physical-encoding/"
+       "docs/" "specifications/chapters/storage/physical-encoding/"
        "appendix-canonical-encoding-examples.md",
        "storage_encoding",
        {"CEE-GATE-001", "CEE-CONF-001", "CEE-CONF-002",
@@ -170,7 +170,7 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "CEE-CONF-006", "CEE-CONF-007"}},
       {Kind::compatibility_mode_matrix,
        "RDC-008",
-       "docs/specifications/chapters/core/"
+       "docs/" "specifications/chapters/core/"
        "appendix-compatibility-mode-matrix.md",
        "compatibility",
        {"CMM-GATE-001", "CMM-GATE-002", "CMM-GATE-003",
@@ -180,7 +180,7 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "CMM-GATE-013"}},
       {Kind::conformance_test_manifest_format,
        "RDC-009",
-       "docs/specifications/chapters/implementation-guidance/"
+       "docs/" "specifications/chapters/implementation-guidance/"
        "appendix-conformance-test-manifest-format.md",
        "conformance",
        {"CTM-GATE-001", "CTM-GATE-002", "CTM-GATE-003",
@@ -190,7 +190,7 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "CTM-GATE-013"}},
       {Kind::documentation_examples_policy,
        "RDC-010",
-       "docs/specifications/chapters/implementation-guidance/"
+       "docs/" "specifications/chapters/implementation-guidance/"
        "appendix-documentation-examples-policy.md",
        "documentation",
        {"DEP-GATE-001", "DEP-GATE-002", "DEP-GATE-003",
@@ -198,14 +198,14 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "DEP-GATE-007", "DEP-GATE-008"}},
       {Kind::system_catalog_table_definitions,
        "RDC-011",
-       "docs/specifications/chapters/catalog-schema/"
+       "docs/" "specifications/chapters/catalog-schema/"
        "appendix-system-catalog-table-definitions.md",
        "catalog",
        {"SCT-GATE-001", "SCT-GATE-002", "SCT-GATE-003",
         "SCT-GATE-004"}},
       {Kind::parser_sblr_formal_grammar,
        "RDC-012",
-       "docs/specifications/chapters/parser-v3/sblr-lowering/"
+       "docs/" "specifications/chapters/parser-v3/sblr-lowering/"
        "appendix-parser-sblr-formal-grammar.md",
        "parser_sblr",
        {"PSF-GATE-001", "PSF-GATE-002", "PSF-GATE-003",
@@ -216,14 +216,14 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "PSF-CONF-012"}},
       {Kind::normative_encoding_examples,
        "RDC-013",
-       "docs/specifications/chapters/storage/physical-encoding/"
+       "docs/" "specifications/chapters/storage/physical-encoding/"
        "appendix-normative-encoding-examples.md",
        "storage_encoding",
        {"NEE-GATE-001", "NEE-GATE-002", "NEE-GATE-003",
         "NEE-GATE-004", "NEE-GATE-005"}},
       {Kind::conformance_manifest_inventory,
        "RDC-014",
-       "docs/specifications/chapters/implementation-guidance/"
+       "docs/" "specifications/chapters/implementation-guidance/"
        "appendix-conformance-manifest-inventory.md",
        "conformance",
        {"CMI-GATE-001", "CMI-GATE-002", "CMI-GATE-003",
@@ -232,7 +232,7 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "CMI-GATE-010", "CMI-GATE-011", "CMI-GATE-012"}},
       {Kind::reference_version_profile_closure,
        "RDC-015",
-       "docs/specifications/chapters/references/common/"
+       "docs/" "specifications/chapters/references/common/"
        "appendix-reference-version-profile-closure.md",
        "reference_compatibility",
        {"DVP-GATE-001", "DVP-GATE-002", "DVP-GATE-003",
@@ -241,7 +241,7 @@ std::vector<ControlDefinition> ControlDefinitions() {
         "DVP-GATE-010"}},
       {Kind::commercial_grade_completion_gates,
        "RDC-016",
-       "docs/specifications/chapters/implementation-guidance/"
+       "docs/" "specifications/chapters/implementation-guidance/"
        "appendix-commercial-grade-completion-gates.md",
        "commercial_readiness",
        {"CGC-GATE-001", "CGC-GATE-002", "CGC-GATE-003",

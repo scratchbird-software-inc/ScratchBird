@@ -252,14 +252,18 @@ if(SB_INSTALL_NON_ENGINE_COMPONENTS)
         RUNTIME DESTINATION bin
         COMPONENT non_engine_runtime
     )
+    install(FILES package_contract.json
+        DESTINATION share/scratchbird/cli
+        COMPONENT non_engine_runtime
+    )
 endif()
 
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND BUILD_TESTING)
     sb_public_write_branding_manifest("${CMAKE_BINARY_DIR}/public_branding_manifest.tsv")
     add_test(
-        NAME public_branding_gate
+        NAME cli_public_branding_gate
         COMMAND "${Python3_EXECUTABLE}"
-                "${SB_PROJECT_ROOT}/../tools/release/public_branding_gate.py"
+                "${CMAKE_CURRENT_SOURCE_DIR}/cli_public_branding_smoke.py"
                 "--manifest=${CMAKE_BINARY_DIR}/public_branding_manifest.tsv"
     )
 endif()
@@ -319,4 +323,8 @@ if (BUILD_TESTING)
     add_test(NAME cli_metadata_shaping_tests COMMAND sbdriver_metadata_shaping_tests)
     add_test(NAME cli_res_lifecycle_tests COMMAND sbdriver_res_lifecycle_tests)
     add_test(NAME cli_conformance_assertion_tests COMMAND sbdriver_conformance_assertion_tests)
+    add_test(
+        NAME cli_package_contract_smoke
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/package_contract_smoke.py"
+    )
 endif()

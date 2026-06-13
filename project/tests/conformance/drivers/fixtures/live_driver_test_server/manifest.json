@@ -1,0 +1,109 @@
+{
+  "schema_version": "scratchbird_live_driver_test_server_fixture_v1",
+  "fixture_id": "BDRV-FIX-LIVE-001",
+  "artifact_role": "live_driver_test_server_seed_contract",
+  "authority_boundary": "This fixture defines driver-agent test data and route expectations. Drivers remain untrusted; the server revalidates authorization, UUID visibility, SBLR admission, cache epochs, and MGA transaction authority for every request.",
+  "startup": {
+    "server_binary": "SBsrv",
+    "listener_binary": "SBgate",
+    "parser_binary": "SBParser",
+    "database_mode": "single_node_driver_test_database",
+    "restart_policy": "stop_then_start_from_recorded_command_bundle"
+  },
+  "shutdown": {
+    "drain_clients": true,
+    "remove_pid_files": true,
+    "remove_socket_files": true,
+    "force_stop_command_recorded": true
+  },
+  "reset": {
+    "recreate_seed_database": true,
+    "reset_security_epoch": true,
+    "reset_catalog_epoch": true,
+    "reset_language_epoch": true,
+    "reset_capability_epoch": true
+  },
+  "users": [
+    {
+      "name": "alice",
+      "principal_uuid": "019f0a11-ce00-7000-8000-000000000001",
+      "roles": ["report_reader"],
+      "groups": ["finance_ro"],
+      "rights": ["CONNECT", "SELECT_VISIBLE"]
+    },
+    {
+      "name": "bob",
+      "principal_uuid": "019f0a11-ce00-7000-8000-000000000002",
+      "roles": ["application_user"],
+      "groups": ["public"],
+      "rights": ["CONNECT"]
+    },
+    {
+      "name": "carol",
+      "principal_uuid": "019f0a11-ce00-7000-8000-000000000003",
+      "roles": ["payroll_admin"],
+      "groups": ["finance_admin"],
+      "rights": ["CONNECT", "SELECT_VISIBLE", "SELECT_PRIVATE"]
+    },
+    {
+      "name": "admin",
+      "principal_uuid": "019f0a11-ce00-7000-8000-000000000004",
+      "roles": ["security_admin", "database_admin"],
+      "groups": ["administrators"],
+      "rights": ["CONNECT", "ADMINISTER", "RESOLVE_HIDDEN"]
+    }
+  ],
+  "roles_groups": {
+    "roles": ["report_reader", "application_user", "payroll_admin", "security_admin", "database_admin", "denied_role"],
+    "groups": ["finance_ro", "finance_admin", "public", "administrators", "denied_group"],
+    "negative_replay_pairs": [
+      {"original": "alice", "replay": "bob", "expected_diagnostic": "SB_DRIVER_REPLAY_CONTEXT_MISMATCH"},
+      {"original": "alice", "replay": "carol", "expected_diagnostic": "SB_DRIVER_REPLAY_CONTEXT_MISMATCH"}
+    ]
+  },
+  "schema_objects": [
+    {"path": "app.customers", "uuid": "018f0a2b-0000-7000-9000-000000000101", "visible_to_roles": ["report_reader", "payroll_admin", "database_admin"]},
+    {"path": "app.customer_profiles", "uuid": "018f0a2b-0000-7000-9000-000000000302", "visible_to_roles": ["report_reader", "payroll_admin", "database_admin"]},
+    {"path": "app.payroll_private", "uuid": "018f0a2b-0000-7000-9000-000000000301", "visible_to_roles": ["payroll_admin", "database_admin"]},
+    {"path": "sys.security.users", "uuid": "018f0a2b-0000-7000-9000-000000000401", "visible_to_roles": ["security_admin"]}
+  ],
+  "transactions": {
+    "isolation_profiles": ["read_committed", "repeatable_read"],
+    "required_paths": ["autocommit_success", "autocommit_failure_rollback", "explicit_commit", "explicit_rollback", "savepoint_rollback", "cursor_close_on_transaction_end"],
+    "authority": "server_mga_transaction_inventory"
+  },
+  "language_resources": {
+    "profiles": ["en-US", "en-CA", "fr-CA", "fr-FR", "de-DE", "it-IT", "es-ES"],
+    "negative_profiles": ["corrupt-pack", "stale-epoch", "mismatched-schema"],
+    "fallback_profile": "standard-sbsql-en"
+  },
+  "routes": {
+    "local_ipc": true,
+    "tcp_listener": true,
+    "manager_proxy": true,
+    "tls_profiles": ["disable-for-local-fixture", "required-for-policy-negative"]
+  },
+  "policy_epochs": {
+    "security_epoch": 1,
+    "catalog_epoch": 1,
+    "language_epoch": 1,
+    "capability_epoch": 1,
+    "mutation_hooks": ["security_epoch_advance", "catalog_epoch_advance", "language_epoch_advance", "capability_epoch_advance"]
+  },
+  "large_data": {
+    "result_rows": 10000,
+    "blob_bytes": 1048576,
+    "text_bytes": 1048576,
+    "batch_rows": 1000
+  },
+  "diagnostics": {
+    "expected_codes": [
+      "SB_DRIVER_REPLAY_CONTEXT_MISMATCH",
+      "SB_AUTH_OBJECT_NOT_VISIBLE",
+      "SB_DRIVER_CACHE_STALE",
+      "SB_LANGUAGE_RESOURCE_CORRUPT",
+      "SB_DIAGNOSTIC_REDACTED"
+    ],
+    "redaction_required": true
+  }
+}

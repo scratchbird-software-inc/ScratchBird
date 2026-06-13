@@ -1,0 +1,132 @@
+{
+  "corpus_id": "wire_transcript_oracles",
+  "description": "Static wire transcript oracles for shared beta driver conformance. Frames are declarative fixtures, not live protocol captures.",
+  "oracles": [
+    {
+      "case_id": "BDRV-WIRE-001",
+      "category": "wire_transcript_oracle",
+      "coverage": [
+        "wire_transcript_oracle",
+        "sblr_uuid_server_revalidation",
+        "auth_context_injection"
+      ],
+      "oracle_name": "attach_prepare_execute_revalidates_sblr_uuid",
+      "steps": [
+        {
+          "direction": "client_to_server",
+          "frame": "Attach",
+          "assertions": {
+            "effective_authorization_context_present": true,
+            "language_profile": "en-US"
+          }
+        },
+        {
+          "direction": "client_to_server",
+          "frame": "PrepareSblr",
+          "assertions": {
+            "client_sblr_digest_present": true,
+            "uuid_bindings_present": true,
+            "driver_cache_authority": "untrusted_hint"
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "frame": "PrepareSblrResult",
+          "assertions": {
+            "server_revalidation": "required",
+            "server_sblr_digest_present": true,
+            "resolved_uuid_generation_present": true
+          }
+        },
+        {
+          "direction": "client_to_server",
+          "frame": "ExecutePreparedSblr",
+          "assertions": {
+            "prepared_statement_id_present": true,
+            "authorization_generation_present": true
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "frame": "ExecuteResult",
+          "assertions": {
+            "server_authorized_result": true,
+            "driver_finality_authority": false
+          }
+        }
+      ],
+      "forbidden_frames": [
+        "DriverCommitFinality",
+        "DriverRollbackFinality",
+        "ParserSqlExecutionAuthority"
+      ],
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-WIRE-002",
+      "category": "replay_refusal",
+      "coverage": [
+        "wire_transcript_oracle",
+        "cross_user_replay_refusal",
+        "role_group_replay_refusal"
+      ],
+      "oracle_name": "prepared_statement_replay_refused_after_context_change",
+      "steps": [
+        {
+          "direction": "client_to_server",
+          "frame": "ExecutePreparedSblr",
+          "assertions": {
+            "prepared_statement_id": "stmt-fixture-user-a",
+            "effective_user": "bob",
+            "original_effective_user": "alice"
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "frame": "Error",
+          "assertions": {
+            "diagnostic": "SB_DRIVER_REPLAY_CONTEXT_MISMATCH",
+            "server_revalidation": "required",
+            "no_object_name_disclosure": true
+          }
+        }
+      ],
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-WIRE-003",
+      "category": "wire_transcript_oracle",
+      "coverage": [
+        "wire_transcript_oracle",
+        "authorization_filtered_uuid_path_resolution"
+      ],
+      "oracle_name": "filtered_uuid_path_resolution_refuses_hidden_name",
+      "steps": [
+        {
+          "direction": "client_to_server",
+          "frame": "ResolveObjectUuid",
+          "assertions": {
+            "uuid": "018f0a2b-0000-7000-9000-000000000301",
+            "requesting_role": "report_reader"
+          }
+        },
+        {
+          "direction": "server_to_client",
+          "frame": "Error",
+          "assertions": {
+            "diagnostic": "SB_AUTH_OBJECT_NOT_VISIBLE",
+            "path_redacted": true,
+            "server_revalidation": "required"
+          }
+        }
+      ],
+      "forbidden_frames": [
+        "DriverCommitFinality",
+        "DriverRollbackFinality",
+        "ParserSqlExecutionAuthority"
+      ],
+      "server_revalidation": "required"
+    }
+  ],
+  "default_expected_boundary": "Wire transcripts must show server-owned admission/revalidation and must not include driver- or parser-owned transaction finality frames."
+}

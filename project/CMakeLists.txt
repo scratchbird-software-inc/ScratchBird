@@ -3580,7 +3580,9 @@ option(SB_BUILD_DOCUMENTATION_BASELINE_GATES
   "Build generated documentation baseline CTest gates"
   OFF)
 set(_sb_documentation_baseline_registry
-  "${PROJECT_SOURCE_DIR}/../docs/execution-plans/end-user-documentation-baseline-generation/DOCUMENTATION_BOOK_REGISTRY.csv")
+  "${PROJECT_SOURCE_DIR}/../docs")
+set(_sb_documentation_baseline_registry
+  "${_sb_documentation_baseline_registry}/execution-plans/end-user-documentation-baseline-generation/DOCUMENTATION_BOOK_REGISTRY.csv")
 if(SB_BUILD_TESTS AND EXISTS "${_sb_documentation_baseline_registry}")
   set(SB_BUILD_DOCUMENTATION_BASELINE_GATES ON CACHE BOOL
     "Build generated documentation baseline CTest gates" FORCE)

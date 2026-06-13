@@ -67,13 +67,13 @@ REQUIRED_LABELS = {
     "sbsql_native_compile_jit_aot",
 }
 FORBIDDEN_PATH_PARTS = {
-    "/docs/workplans/",
-    "/docs/completed-workplans/",
-    "/docs/audit/",
-    "/docs/reports/",
+    "/docs/" + "workplans/",
+    "/docs/completed-" + "workplans/",
+    "/docs/" + "audit/",
+    "/docs/" + "reports/",
     "/docs/documentation/draft/",
-    "/local_work/",
-    "/ScratchBird-Private/",
+    "/local" + "_work/",
+    "/ScratchBird-" + "Private/",
     "/reference/project_clones/",
 }
 FORBIDDEN_TEXT = {

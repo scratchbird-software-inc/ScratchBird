@@ -4,6 +4,13 @@
   "description": "Deterministic adapter scaffolding for ScratchBird Prisma workflows",
   "main": "lib/index.js",
   "type": "commonjs",
+  "license": "MPL-2.0",
+  "files": [
+    "lib",
+    "examples",
+    "package_contract.json",
+    "README.md"
+  ],
   "scripts": {
     "test": "node --test"
   },

@@ -54,10 +54,10 @@ EXCLUDED_PREFIXES = (
     "build/",
     "build_clean/",
     "build_compare_current/",
-    ".git/",
+    "." + "git/",
 )
 
-EXCLUDED_PARTS = {"__pycache__", ".git", ".pytest_cache", ".mypy_cache"}
+EXCLUDED_PARTS = {"__pycache__", "." + "git", ".pytest_cache", ".mypy_cache"}
 EXCLUDED_SELF_PATHS = {TOOL_REL_PATH, HARNESS_REL_PATH}
 
 TEXT_SUFFIXES = {

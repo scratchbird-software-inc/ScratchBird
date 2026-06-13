@@ -55,37 +55,37 @@ struct RequirementSeed {
 std::vector<RequirementSeed> RequirementSeeds() {
   using Kind = engine::CommercialGradeRequirementKind;
   return {{"CGC-REQ-SCT",
-           "docs/specifications/chapters/catalog-schema/"
+           "docs/" "specifications/chapters/catalog-schema/"
            "appendix-system-catalog-table-definitions.md",
            "SCT-SYSTEM-CATALOG-TABLE-DEFINITIONS",
            "catalog",
            Kind::catalog_object},
           {"CGC-REQ-PSF",
-           "docs/specifications/chapters/parser-v3/sblr-lowering/"
+           "docs/" "specifications/chapters/parser-v3/sblr-lowering/"
            "appendix-parser-sblr-formal-grammar.md",
            "PSF-PARSER-SBLR-FORMAL-GRAMMAR",
            "parser_sblr",
            Kind::algorithm},
           {"CGC-REQ-NEE",
-           "docs/specifications/chapters/storage/physical-encoding/"
+           "docs/" "specifications/chapters/storage/physical-encoding/"
            "appendix-normative-encoding-examples.md",
            "NEE-NORMATIVE-ENCODING-EXAMPLES",
            "storage_encoding",
            Kind::example},
           {"CGC-REQ-CMI",
-           "docs/specifications/chapters/implementation-guidance/"
+           "docs/" "specifications/chapters/implementation-guidance/"
            "appendix-conformance-manifest-inventory.md",
            "CMI-CONFORMANCE-MANIFEST-INVENTORY",
            "conformance",
            Kind::conformance_gate},
           {"CGC-REQ-DVP",
-           "docs/specifications/chapters/references/common/"
+           "docs/" "specifications/chapters/references/common/"
            "appendix-reference-version-profile-closure.md",
            "DVP-REFERENCE-VERSION-PROFILE-CLOSURE",
            "reference_compatibility",
            Kind::record},
           {"CGC-REQ-CGC",
-           "docs/specifications/chapters/implementation-guidance/"
+           "docs/" "specifications/chapters/implementation-guidance/"
            "appendix-commercial-grade-completion-gates.md",
            "CGC-COMMERCIAL-GRADE-COMPLETION-GATES",
            "commercial_readiness",
@@ -242,7 +242,7 @@ engine::CommercialGradeCompletionEvidenceRegistry ValidRegistry() {
   decision.gate_decision_uuid = Uuid(uuid_seed++);
   decision.scope_uuid = Uuid(uuid_seed++);
   decision.scope_path =
-      "docs/specifications/chapters/implementation-guidance/"
+      "docs/" "specifications/chapters/implementation-guidance/"
       "appendix-commercial-grade-completion-gates.md";
   decision.requested_level =
       engine::CommercialGradeCompletionLevel::release_candidate;

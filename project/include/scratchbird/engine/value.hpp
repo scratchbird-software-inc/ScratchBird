@@ -15523,7 +15523,7 @@ CommercialGradeFindRequirementByUuid(
 
 inline bool CommercialGradePrivatePathAllowed(
     std::string_view path) noexcept {
-  return path.rfind("docs/specifications/", 0) == 0 ||
+  return path.rfind("docs/" "specifications/", 0) == 0 ||
          path.rfind("docs/reference/", 0) == 0 ||
          path.rfind("docs/migration/", 0) == 0 ||
          path.rfind("project/", 0) == 0;

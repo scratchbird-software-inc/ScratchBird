@@ -22,9 +22,7 @@
       "scratchbird_route_command": "scratchbird-route --reference-tool isql --profile firebird_5_0_4 --dsn scratchbird://127.0.0.1:3092/dsr045_firebird?wire=sbwp_v1_1&tls=required --auth engine:driver_compat_route --via listener/parser/server/engine",
       "auth_identity": "engine:driver_compat_route",
       "expected_behavior_source": [
-        "public_contract_snapshot",
-        "public_contract_snapshot",
-        "public_contract_snapshot"
+        "docs/contracts/reference-driver-compatibility-route-snapshot.md"
       ],
       "comparison_rule": "Normalize reference tool and ScratchBird route output, compare row values, row counts, SQLSTATE, diagnostics, metadata names, and transaction finality.",
       "refusal_rule": "Unsupported Firebird profile features fail closed with profile refusal evidence; parser-only success is not accepted as compatibility evidence.",
@@ -41,9 +39,7 @@
       "scratchbird_route_command": "scratchbird-route --reference-tool psql --profile postgresql_16 --dsn scratchbird://127.0.0.1:3092/dsr045_postgresql?wire=sbwp_v1_1&tls=required --auth engine:driver_compat_route --via listener/parser/server/engine",
       "auth_identity": "engine:driver_compat_route",
       "expected_behavior_source": [
-        "public_contract_snapshot",
-        "public_contract_snapshot",
-        "public_contract_snapshot"
+        "docs/contracts/reference-driver-compatibility-route-snapshot.md"
       ],
       "comparison_rule": "Normalize reference tool and ScratchBird route output, compare row values, row counts, SQLSTATE, diagnostics, metadata names, and transaction finality.",
       "refusal_rule": "Unsupported PostgreSQL profile features fail closed with profile refusal evidence; parser-only success is not accepted as compatibility evidence.",
@@ -60,9 +56,7 @@
       "scratchbird_route_command": "scratchbird-route --reference-tool mysql --profile mysql_8_lts --dsn scratchbird://127.0.0.1:3092/dsr045_mysql?wire=sbwp_v1_1&tls=required --auth engine:driver_compat_route --via listener/parser/server/engine",
       "auth_identity": "engine:driver_compat_route",
       "expected_behavior_source": [
-        "public_contract_snapshot",
-        "public_contract_snapshot",
-        "public_contract_snapshot"
+        "docs/contracts/reference-driver-compatibility-route-snapshot.md"
       ],
       "comparison_rule": "Normalize reference tool and ScratchBird route output, compare row values, row counts, SQLSTATE, diagnostics, metadata names, and transaction finality.",
       "refusal_rule": "Unsupported MySQL profile features fail closed with profile refusal evidence; parser-only success is not accepted as compatibility evidence.",

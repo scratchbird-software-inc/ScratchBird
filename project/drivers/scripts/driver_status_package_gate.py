@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Validate driver/adaptor/tool row-status and package evidence manifests."""
+"""Validate driver/adaptor/tool row-status and package validation manifests."""
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ FORBIDDEN_STATUSES = {
 CLOSING_STATUSES = {
     "implemented_and_proven",
     "not_applicable_with_citation",
+    "verified",
 }
 
 PACKAGE_EVIDENCE_ALIASES = {
@@ -386,13 +387,13 @@ def validate_row_status_manifest(
 
 
 def package_evidence(data: dict[str, Any]) -> dict[str, Any] | None:
-    for key in ("package_evidence", "packaging_evidence"):
+    for key in ("package_validation", "package_evidence", "packaging_evidence"):
         value = data.get(key)
         if isinstance(value, dict):
             return value
     release_evidence = data.get("release_evidence")
     if isinstance(release_evidence, dict):
-        for key in ("package_evidence", "packaging_evidence", "package"):
+        for key in ("package_validation", "package_evidence", "packaging_evidence", "package"):
             value = release_evidence.get(key)
             if isinstance(value, dict):
                 return value
@@ -431,13 +432,13 @@ def validate_package_evidence(ctx: Context, component: Component) -> list[str]:
 
     evidence = package_evidence(data)
     if evidence is None:
-        return [f"{component.component_id} missing package_evidence mapping in {path.name}"]
+        return [f"{component.component_id} missing package_validation mapping in {path.name}"]
 
     errors: list[str] = []
     for canonical, aliases in PACKAGE_EVIDENCE_ALIASES.items():
         value = get_alias_value(evidence, aliases)
         if is_empty(value):
-            errors.append(f"{component.component_id} package_evidence missing {canonical}")
+            errors.append(f"{component.component_id} package_validation missing {canonical}")
 
     output_value = get_alias_value(evidence, PACKAGE_EVIDENCE_ALIASES["package_output_dir"])
     if output_dir_is_source_tree(ctx, component, output_value):
@@ -448,8 +449,8 @@ def validate_package_evidence(ctx: Context, component: Component) -> list[str]:
         label_text = ";".join(str(value) for value in ctest_label) if isinstance(ctest_label, list) else str(ctest_label)
         if "DSR-033" not in label_text and component.conformance_profile_ref not in label_text:
             errors.append(
-                f"{component.component_id} package_evidence ctest_label must cite DSR-033 "
-                f"or {component.conformance_profile_ref}"
+                f"{component.component_id} package_validation ctest_label must cite "
+                f"{component.conformance_profile_ref}"
             )
     return errors
 

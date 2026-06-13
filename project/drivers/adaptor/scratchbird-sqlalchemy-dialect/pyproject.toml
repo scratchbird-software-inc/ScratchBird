@@ -39,3 +39,6 @@ scratchbird = "scratchbird_sqlalchemy.dialect:ScratchBirdDialect"
 
 [tool.setuptools]
 packages = ["scratchbird_sqlalchemy"]
+
+[tool.setuptools.data-files]
+"share/scratchbird-sqlalchemy" = ["package_contract.json"]
