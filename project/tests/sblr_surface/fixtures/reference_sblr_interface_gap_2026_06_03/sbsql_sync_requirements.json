@@ -75,7 +75,7 @@
       "sbsql_cst_reference": "public_contract_snapshot",
       "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
-      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SBLR_EXPANSION_TRACEABILITY_MATRIX.csv#DPR-AUD-014"
     },
     {
       "coverage_id": "SBLR-SURFACE-FULL-SYNC-NON-DIRECT-FUNCTION",
@@ -203,7 +203,7 @@
       "sbsql_cst_reference": "public_contract_snapshot",
       "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
-      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SBLR_EXPANSION_TRACEABILITY_MATRIX.csv#DPR-AUD-014"
     },
     {
       "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-PRIMARY-FAMILY-SNAPSHOT",
@@ -225,7 +225,7 @@
       "sbsql_cst_reference": "public_contract_snapshot",
       "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
-      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SBLR_EXPANSION_TRACEABILITY_MATRIX.csv#DPR-AUD-014"
     },
     {
       "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-FIXTURE-HASH-MANIFEST",
@@ -236,7 +236,7 @@
       "sbsql_cst_reference": "public_contract_snapshot",
       "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
-      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv#DPR-AUD-014"
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SBLR_EXPANSION_TRACEABILITY_MATRIX.csv#DPR-AUD-014"
     },
     {
       "resource_sync_id": "SBLR-SURFACE-RESOURCE-SYNC-PARSER-CONTRACT-FREEZE",
@@ -263,7 +263,7 @@
       "sbsql_cst_reference": "public_contract_snapshot",
       "ast_sblr_reference": "public_contract_snapshot/ast-sblr-authority",
       "reference_normalization_reference": "public_contract_snapshot",
-      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv"
+      "parser_execution_plan_sync_reference": "fixture://execution-plans/driver-parser-sblr-sbsql-readiness-closure/SBLR_EXPANSION_TRACEABILITY_MATRIX.csv"
     },
     {
       "sync_id": "SBLR-SURFACE-SYNC-FUNCTION-LANE",

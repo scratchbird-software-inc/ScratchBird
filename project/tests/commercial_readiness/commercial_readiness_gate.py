@@ -7,7 +7,7 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""CRP static/evidence gate for commercial-readiness proof artifacts."""
+"""CRP static/evidence gate for commercial-readiness proof fixtures."""
 
 from __future__ import annotations
 
@@ -17,8 +17,10 @@ import pathlib
 import sys
 
 
-EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans/commercial-readiness-proof-hardening-closure")
-ARTIFACTS = EXECUTION_PLAN / "artifacts"
+EVIDENCE_FIXTURE_ROOT = pathlib.Path(
+    "project/tests/release_evidence/commercial_readiness_public_evidence"
+)
+ARTIFACTS = EVIDENCE_FIXTURE_ROOT / "artifacts"
 
 REQUIRED_ARTIFACTS = [
     "COMMERCIAL_CLAIM_BOUNDARY_MATRIX.csv",
@@ -33,7 +35,7 @@ REQUIRED_ARTIFACTS = [
     "SUPPORT_BUNDLE_SECURITY_MATRIX.csv",
     "SOAK_FAULT_SECURITY_SUITE_MATRIX.csv",
     "OVERSIZED_SOURCE_REFACTOR_MATRIX.csv",
-    "FINAL_COMMERCIAL_READINESS_AUDIT.md",
+    "COMMERCIAL_READINESS_SUMMARY.md",
 ]
 
 
@@ -84,11 +86,11 @@ def require_artifacts(repo: pathlib.Path) -> None:
 
 def gate_manifest(repo: pathlib.Path) -> None:
     require_artifacts(repo)
-    require_rows_complete(read_csv(repo, str(EXECUTION_PLAN / "TRACKER.csv")), "TRACKER.csv")
-    require_rows_complete(read_csv(repo, str(EXECUTION_PLAN / "ACCEPTANCE_GATES.csv")), "ACCEPTANCE_GATES.csv")
+    require_rows_complete(read_csv(repo, str(EVIDENCE_FIXTURE_ROOT / "COMMERCIAL_READINESS_STATUS_MATRIX.csv")), "COMMERCIAL_READINESS_STATUS_MATRIX.csv")
+    require_rows_complete(read_csv(repo, str(EVIDENCE_FIXTURE_ROOT / "COMMERCIAL_READINESS_ACCEPTANCE_MATRIX.csv")), "COMMERCIAL_READINESS_ACCEPTANCE_MATRIX.csv")
     require_rows_complete(
-        read_csv(repo, str(EXECUTION_PLAN / "SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv")),
-        "SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv",
+        read_csv(repo, str(EVIDENCE_FIXTURE_ROOT / "COMMERCIAL_READINESS_TRACEABILITY_MATRIX.csv")),
+        "COMMERCIAL_READINESS_TRACEABILITY_MATRIX.csv",
     )
     claim_rows = read_csv(repo, str(ARTIFACTS / "COMMERCIAL_CLAIM_BOUNDARY_MATRIX.csv"))
     required_states = {
@@ -284,9 +286,9 @@ def gate_stress_refactor(repo: pathlib.Path) -> None:
 
 def gate_final(repo: pathlib.Path) -> None:
     gate_manifest(repo)
-    final = read_text(repo, str(ARTIFACTS / "FINAL_COMMERCIAL_READINESS_AUDIT.md"))
+    final = read_text(repo, str(ARTIFACTS / "COMMERCIAL_READINESS_SUMMARY.md"))
     for needle in [
-        "CRP-FINAL-COMMERCIAL-READINESS-AUDIT",
+        "CRP-COMMERCIAL-READINESS-SUMMARY",
         "Status: completed",
         "commercial readiness proof controls are implemented",
         "cluster production claims remain blocked",

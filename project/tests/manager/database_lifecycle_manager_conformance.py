@@ -48,6 +48,22 @@ def run_gate(path: pathlib.Path, timeout: int, extra_args: list[str] | None = No
         )
 
 
+def run_capture(path: pathlib.Path, timeout: int, extra_args: list[str] | None = None) -> subprocess.CompletedProcess[str]:
+    require(path.exists(), f"required executable missing: {path}")
+    command = [str(path)]
+    if extra_args:
+        command.extend(extra_args)
+    return subprocess.run(
+        command,
+        cwd=str(path.parent),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", required=True)
@@ -61,12 +77,17 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     repo = pathlib.Path(args.repo_root)
-    private_root = repo.parent
     build = pathlib.Path(args.build_root)
     manager_exe = pathlib.Path(args.manager_exe)
 
     require(manager_exe.exists(), f"sbmn_manager executable missing: {manager_exe}")
-    require(manager_exe.stem == "sbmn_manager", "manager lifecycle build must produce sbmn_manager")
+    require(manager_exe.stem in {"sbmn_manager", "SBmgr"},
+            "manager lifecycle build must produce sbmn_manager or public SBmgr artifact")
+    version = run_capture(manager_exe, timeout=10, extra_args=["--version"])
+    require(version.returncode == 0,
+            f"manager --version failed with exit code {version.returncode}: {version.stderr}")
+    require("product=sbmn_manager" in version.stdout,
+            "public manager artifact must retain sbmn_manager product identity")
     require(not any((manager_exe.parent / name).exists() for name in ("sbmc_manager", "sbmc_manager.exe")),
             "standalone lifecycle build must not produce sbmc_manager")
     require(build.exists(), "build root must exist")
@@ -76,11 +97,16 @@ def main(argv: list[str]) -> int:
     require("add_executable(sbmc_manager" not in top_cmake, "top-level build must not define sbmc_manager")
     require("add_executable(sbmc_manager" not in node_cmake, "node manager build must not define sbmc_manager")
 
-    sbmn_spec = read_text(private_root / "docs" / "contracts" / "implementation_inputs" / "sbmn_manager.md")
-    require("No `sbmc_manager` target is produced by the standalone build." in sbmn_spec,
-            "sbmn_manager packet must keep sbmc_manager private")
-    require("MANAGER.CLUSTER_ONLY_FORBIDDEN" in sbmn_spec,
-            "sbmn_manager packet must define cluster-only refusal diagnostic")
+    authority_generator = read_text(repo / "tools" / "generate_spec_authority_from_artifacts.py")
+    lifecycle_closure = read_text(
+        repo / "tests" / "database_lifecycle" / "fixtures" / "full_database_lifecycle_closure" / "ACCEPTANCE_GATES.csv"
+    )
+    require("No `sbmc_manager` target is produced by the standalone build." in authority_generator,
+            "public authority generator must keep sbmc_manager private in the sbmn_manager packet")
+    require("MANAGER.CLUSTER_ONLY_FORBIDDEN" in authority_generator,
+            "public authority generator must define cluster-only refusal diagnostic")
+    require("DBLC_P13A_MANAGER_LIFECYCLE_COMPLETE" in lifecycle_closure,
+            "public lifecycle fixture must carry manager-family closure proof")
 
     runtime = read_text(repo / "src" / "manager" / "node" / "manager_runtime.cpp")
     runtime_test = read_text(repo / "tests" / "manager" / "runtime_integration_tests.cpp")

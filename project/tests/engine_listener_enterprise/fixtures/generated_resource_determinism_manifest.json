@@ -4,57 +4,57 @@
     {
       "path": "public_contract_snapshot",
       "resource_kind": "parser_facing_sblr_opcode_registry",
-      "sha256": "5f442b7a693c12a4b64ebf90728ca8626f3611980ff3cde5380cbb16effd4009"
+      "sha256": "69dc653370dbaa44d2d99fbcb32fc5a7de59470b554d9b4251dd5aa63a102091"
     },
     {
       "path": "project/src/engine/sblr/sblr_opcode_registry.cpp",
       "resource_kind": "engine_sblr_opcode_registry",
-      "sha256": "82733aea85ee7034d8fbe194ab6e4ab6bc0da1e6925334f7d2d218563b7173cd"
+      "sha256": "b298ed523284bc293939fe3539afb98f247937c33b4333968fd4b606f0b0c438"
     },
     {
       "path": "project/src/server/sblr_admission.cpp",
       "resource_kind": "server_sblr_admission_surface",
-      "sha256": "f3213c751752904664d05ab6d8c2cd77fcfa94efc3948213444c447fafa15426"
+      "sha256": "aba38972859ca4626b4760f48099e0cac8a1402c3716ee193983ff54db55c23e"
     },
     {
       "path": "project/src/server/sblr_dispatch_server.cpp",
       "resource_kind": "server_sblr_dispatch_surface",
-      "sha256": "a53774c60a544ffa5bc5a48d9a6d5da9a7d8f3ecff559b4d2012f1e609156209"
+      "sha256": "7653e41ff84600ac221eccc8298e7d4662ee9ce028a6a52f6c2ba4aca07169fb"
     },
     {
       "path": "project/tests/sbsql_parser_worker/fixtures/surface_to_sblr/artifacts/STRICT_ROW_COVERAGE_LEDGER.csv",
       "resource_kind": "parser_facing_strict_row_coverage_ledger",
-      "sha256": "f19e3cbd5ef99551caf9077a9eebcd7e2ebc288adc031c89405a51a5226dfca7"
+      "sha256": "ba7de161d83856ea8c19950c4418a75a99061fef4e8faf268244546a5fefccfe"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sbsql_sync_requirements.json",
       "resource_kind": "parser_facing_sbsql_sync_requirements",
-      "sha256": "f123ec8ab90d86144a5077a8701ab09df45928cb0be43ff44801087940f8e4b7"
+      "sha256": "f6d6a36c7144316c23197ed9278642d8efda1ea6703f3aa112e36e5945e081eb"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_primary_family_snapshot.json",
       "resource_kind": "parser_facing_sblr_family_snapshot",
-      "sha256": "8cb2d700649912b90830689df57e196b68c35616920bf601bf2a18c9a03aed4b"
+      "sha256": "81bcd40e1426c626b46ccae7594ef6ad419dc7854e20b5b6ca3d1bf58881836a"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_surface_traceability_manifest.json",
       "resource_kind": "reference_sblr_traceability_seed",
-      "sha256": "49dd7fd7d218873ff4d665e888c6bca3d9ac6f95192cf2d529db7ba46046bbee"
+      "sha256": "18b87e2e9f167faca1ca1cc7975d765faef719b0109d81b24ca3080375ac6a4c"
     },
     {
       "path": "project/tests/sblr_surface/fixtures/reference_sblr_interface_gap_2026_06_03/sblr_surface_fixture_hashes.json",
       "resource_kind": "reference_sblr_fixture_hash_manifest",
-      "sha256": "9720be72c2be556e34757002d9edd0afb22679aa58dd60e56829723d255e6b94"
+      "sha256": "f82971c404f74b73f4699ea262425d237d11c22e9becfd7938f92d142f774a59"
     },
     {
       "path": "project/tests/engine_listener_enterprise/fixtures/parser_facing_contract_freeze_manifest.json",
       "resource_kind": "parser_facing_contract_freeze_manifest",
-      "sha256": "64101f4b828a734c9bab41ab4536367bac2a13823415c33c71e729dba2cc266c"
+      "sha256": "cd43e298c8875c881bcfad1cf8ed35a0dc89a64bb5427303f10a209a0e20b5db"
     },
     {
       "path": "project/tests/engine_listener_enterprise/fixtures/external_review_closure_manifest.json",
       "resource_kind": "external_review_closure_manifest",
-      "sha256": "868aa3391bd731bd437908850570b469b460bcd0b21250c0dbafe914dfb51418"
+      "sha256": "35d644fb0b2bae8abdf2803f3c64e81715da8d0b8a6e7eb6f1a6d28495baf759"
     }
   ]
 }

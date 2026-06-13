@@ -117,11 +117,13 @@ class LlvmMemoryAccountingReservation {
     std::atomic<bool> released{false};
   };
 
+ public:
   LlvmMemoryAccountingReservation(
       LlvmMemoryAccountingRequest request,
       std::vector<PhaseReservation> reservations,
       std::shared_ptr<HandleState> state);
 
+ private:
   LlvmMemoryAccountingRequest request_;
   std::vector<PhaseReservation> reservations_;
   std::shared_ptr<HandleState> state_;

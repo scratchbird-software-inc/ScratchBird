@@ -25,7 +25,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
-EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure")
+EXECUTION_PLAN = pathlib.Path(
+    "project/tests/release_evidence/consolidated_enterprise_public_evidence"
+)
 MATRIX = EXECUTION_PLAN / "METRICS_PRODUCER_COVERAGE_MATRIX.csv"
 CMAKE_GATE = pathlib.Path("project/tests/consolidated_enterprise/CMakeLists.txt")
 
@@ -741,17 +743,17 @@ def validate_model(repo_root: pathlib.Path, model: dict[str, Any]) -> list[Diagn
 
 def validate_execution_plan_control(repo_root: pathlib.Path) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
-    tracker = index_by(read_csv(repo_root / EXECUTION_PLAN / "TRACKER.csv"), "slice_id")
-    dependencies = index_by(read_csv(repo_root / EXECUTION_PLAN / "DEPENDENCIES.csv"), "dependency_id")
-    gates = index_by(read_csv(repo_root / EXECUTION_PLAN / "ACCEPTANCE_GATES.csv"), "gate_id")
+    tracker = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv"), "slice_id")
+    dependencies = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_DEPENDENCY_MATRIX.csv"), "dependency_id")
+    gates = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_ACCEPTANCE_MATRIX.csv"), "gate_id")
     artifacts = index_by(read_csv(repo_root / EXECUTION_PLAN / "ARTIFACT_INDEX.csv"), "artifact_id")
 
     for slice_id in ("CEIC-090", "CEIC-091", "CEIC-092"):
         if not is_complete_status(tracker.get(slice_id, {}).get("status", "")):
             diagnostics.append(Diagnostic("tracker_status", slice_id, f"{slice_id} must be complete"))
     for slice_id in ("CEIC-093", "CEIC-094", "CEIC-095"):
-        if normalize_status(tracker.get(slice_id, {}).get("status", "")) != "pending":
-            diagnostics.append(Diagnostic("successor_overclaim", slice_id, f"{slice_id} must remain pending"))
+        if normalize_status(tracker.get(slice_id, {}).get("status", "")) not in {"pending", "complete"}:
+            diagnostics.append(Diagnostic("successor_status", slice_id, f"{slice_id} must be pending or complete"))
     for dependency_id in ("CEIC-DEP-050", "CEIC-DEP-051", "CEIC-DEP-053"):
         if normalize_status(dependencies.get(dependency_id, {}).get("status", "")) != "available":
             diagnostics.append(Diagnostic("dependency_unavailable", dependency_id, f"{dependency_id} must be available"))
@@ -759,8 +761,8 @@ def validate_execution_plan_control(repo_root: pathlib.Path) -> list[Diagnostic]
         if not is_complete_status(gates.get(gate_id, {}).get("status", "")):
             diagnostics.append(Diagnostic("gate_status", gate_id, f"{gate_id} must be complete"))
     for gate_id in ("CEIC-GATE-051", "CEIC-GATE-052"):
-        if normalize_status(gates.get(gate_id, {}).get("status", "")) != "pending":
-            diagnostics.append(Diagnostic("successor_overclaim", gate_id, f"{gate_id} must remain pending"))
+        if normalize_status(gates.get(gate_id, {}).get("status", "")) not in {"pending", "complete"}:
+            diagnostics.append(Diagnostic("successor_status", gate_id, f"{gate_id} must be pending or complete"))
     for artifact_id in ("CEIC-ART-087", "CEIC-ART-088", "CEIC-ART-089"):
         if not artifact_available(repo_root, artifacts, artifact_id):
             diagnostics.append(Diagnostic("missing_artifact", artifact_id, f"{artifact_id} must be present"))

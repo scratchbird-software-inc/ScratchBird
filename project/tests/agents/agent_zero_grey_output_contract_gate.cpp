@@ -63,9 +63,11 @@ api::EngineRequestContext Context(std::initializer_list<std::string_view> rights
   context.principal_uuid.canonical = Id(platform::UuidKind::principal, 5);
   context.transaction_uuid.canonical = Id(platform::UuidKind::transaction, 6);
   context.security_context_present = true;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.cluster_authority_available = cluster_provider::ClusterProviderSupportsExecution();
   context.local_transaction_id = 16017;
   context.catalog_generation_id = 17;
+  context.trace_tags.push_back("security.fixture_trace_authority");
   for (const auto right : rights) {
     context.trace_tags.push_back("right:" + std::string(right));
   }

@@ -162,12 +162,27 @@ void ExactFamiliesRemainCandidateOnlyForRows() {
           "hash row admission requires CEIC-037 recheck handoff");
   RequireNonAuthority(hash);
 
+  const auto hash_insert = index::ClassifyIndexFamilyRoute(
+      Request(index::IndexFamily::hash,
+              index::IndexRouteKind::dml_insert));
+  Require(hash_insert.ok(), "hash DML insert route should classify for complete index support");
+  Require(hash_insert.semantic ==
+              index::IndexFamilyRouteSemantic::hash_equality_candidate,
+          "hash DML insert semantic was not hash_equality_candidate");
+  Require(!hash_insert.requirements.ceic_037_exact_recheck_handoff_required,
+          "hash DML insert is maintenance, not row-candidate admission");
+  Require(!hash_insert.requirements.exact_source_required,
+          "hash DML insert must not claim row-candidate exact source");
+  Require(EvidenceHas(hash_insert, "route=dml_insert"),
+          "hash DML insert missing maintenance route evidence");
+  RequireNonAuthority(hash_insert);
+
   RequireStatus(
       index::ClassifyIndexFamilyRoute(
-          Request(index::IndexFamily::hash,
-                  index::IndexRouteKind::dml_insert)),
+          Request(index::IndexFamily::btree,
+                  index::IndexRouteKind::nosql_vector)),
       index::IndexRouteClassificationStatus::route_not_supported,
-      "hash DML insert route was not refused");
+      "unsupported B-tree/vector route-family pair did not fail closed");
 }
 
 void BloomAndSummaryFamiliesArePruneOnly() {

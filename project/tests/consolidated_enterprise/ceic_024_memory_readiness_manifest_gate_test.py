@@ -59,7 +59,7 @@ def main() -> int:
     tool = repo_root / "project/tools/ceic_memory_readiness_manifest.py"
     committed_manifest = (
         repo_root
-        / "docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure/artifacts/"
+        / "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/"
         / "CEIC-024_MEMORY_READINESS_MANIFEST.yaml"
     )
 
@@ -126,9 +126,9 @@ def main() -> int:
         )
 
         integrated_overclaim = load(generated)
-        for row in integrated_overclaim["readiness_state"]["pending_integrated_proof"]:
+        for row in integrated_overclaim["readiness_state"]["integrated_release_proof"]:
             if row["slice_id"] == "CEIC-093":
-                row["status"] = "complete"
+                row["status"] = "pending"
         integrated_path = temp_dir / "integrated_overclaim.yaml"
         write(integrated_path, integrated_overclaim)
         expect_failure_contains(
@@ -140,7 +140,7 @@ def main() -> int:
                 "--manifest",
                 str(integrated_path),
             ],
-            "CEIC-093 must remain pending integrated proof",
+            "CEIC-093 integrated proof must be complete",
         )
 
     print("ceic_024_memory_readiness_manifest_gate_test=pass")

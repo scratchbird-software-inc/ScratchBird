@@ -191,10 +191,55 @@ agents::AgentOptimizerRecommendationEvidence AgentEvidence() {
   return evidence;
 }
 
+agents::AgentIndexReadinessEvidence IndexReadiness() {
+  agents::AgentIndexReadinessEvidence evidence;
+  evidence.evidence_digest = "sha256:opch:index-readiness";
+  evidence.family_id = "btree";
+  evidence.manifest_generation = 42;
+  evidence.observed_manifest_generation = 42;
+  evidence.present = true;
+  evidence.ceic_042_complete = true;
+  evidence.freshness_gate_complete = true;
+  evidence.route_capability_complete = true;
+  evidence.provider_closure_complete = true;
+  evidence.metric_producer_complete = true;
+  evidence.crash_cleanup_corruption_complete = true;
+  evidence.artifact_registration_complete = true;
+  return evidence;
+}
+
+agents::AgentOptimizerReadinessEvidence OptimizerReadiness() {
+  agents::AgentOptimizerReadinessEvidence evidence;
+  evidence.evidence_digest = "sha256:opch:optimizer-readiness";
+  evidence.manifest_generation = 62;
+  evidence.observed_manifest_generation = 62;
+  evidence.present = true;
+  evidence.ceic_062_complete = true;
+  evidence.live_routes_complete = true;
+  evidence.benchmark_evidence_complete = true;
+  evidence.correctness_oracles_complete = true;
+  evidence.crash_reopen_complete = true;
+  evidence.metrics_feedback_complete = true;
+  evidence.transformation_memo_complete = true;
+  evidence.workload_regression_complete = true;
+  evidence.driver_explain_complete = true;
+  evidence.reference_comparison_complete = true;
+  evidence.memory_feedback_complete = true;
+  evidence.index_readiness_coupling_complete = true;
+  evidence.llvm_memory_accounting_complete = true;
+  return evidence;
+}
+
 bool AgentRecommendationsRequireDurableScopedMetrics() {
   // SEARCH_KEY: OPCH_AGENT_RECOMMENDATION_METRIC_INTEGRATION
   opt::OptimizerAgentRecommendationRequest request;
   request.agent_evidence = AgentEvidence();
+  request.index_readiness = IndexReadiness();
+  request.optimizer_readiness = OptimizerReadiness();
+  request.requested_action =
+      agents::AgentIndexOptimizerBoundaryActionKind::
+          optimizer_learning_advisory_note;
+  request.workflow_uuid = "019f0930-0000-7000-8000-000000000062";
   request.feedback = RuntimeFeedback();
   const auto accepted = opt::EvaluateOptimizerAgentRecommendation(request);
 

@@ -22,6 +22,7 @@
 namespace {
 
 namespace metrics = scratchbird::core::metrics;
+namespace memory = scratchbird::core::memory;
 namespace page = scratchbird::storage::page;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::TypedUuid;
@@ -74,6 +75,26 @@ page::PageCachePolicy Policy(u64 max_pages = 64) {
   policy.strict_bulk_load_ring_pages = 2;
   return policy;
 }
+
+memory::MemoryManager Manager(u64 pages) {
+  auto policy = memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf055_page_cache_scan_resistant_fixture";
+  policy.hard_limit_bytes = pages * 16384ull;
+  policy.soft_limit_bytes = pages * 16384ull;
+  policy.per_context_limit_bytes = pages * 16384ull;
+  policy.page_buffer_pool_limit_bytes = pages * 16384ull;
+  policy.reject_over_soft_limit = false;
+  return memory::MemoryManager(policy);
+}
+
+struct CacheFixture {
+  memory::MemoryManager manager;
+  page::PageCacheLedger ledger;
+
+  explicit CacheFixture(u64 pages) : manager(Manager(pages)) {
+    page::BindPageCacheMemoryManager(&ledger, &manager);
+  }
+};
 
 page::PageCacheEntry Entry(const Ids& ids,
                            u64 page_number,
@@ -168,15 +189,20 @@ void RequireNoForbiddenDiagnosticToken(const page::PageCacheResult& result,
 
 void TestBulkReadChurnUsesOwnRingAndKeepsNormalHot() {
   const Ids ids;
-  page::PageCacheLedger ledger;
+  CacheFixture cache(64);
+  auto& ledger = cache.ledger;
   const auto policy = Policy(4);
   const auto normal_a = Entry(ids, 10, true);
   const auto normal_b = Entry(ids, 11, true);
 
-  Require(page::AdmitPageCacheEntry(&ledger, policy, normal_a).ok(),
-          "ODF-055 normal hot admission A failed");
-  Require(page::AdmitPageCacheEntry(&ledger, policy, normal_b).ok(),
-          "ODF-055 normal hot admission B failed");
+  const auto admitted_a = page::AdmitPageCacheEntry(&ledger, policy, normal_a);
+  Require(admitted_a.ok(),
+          "ODF-055 normal hot admission A failed: " +
+              admitted_a.diagnostic.diagnostic_code);
+  const auto admitted_b = page::AdmitPageCacheEntry(&ledger, policy, normal_b);
+  Require(admitted_b.ok(),
+          "ODF-055 normal hot admission B failed: " +
+              admitted_b.diagnostic.diagnostic_code);
   for (u64 index = 0; index < 10; ++index) {
     const auto admitted = page::AdmitPageCacheEntryForContext(
         &ledger, policy, Entry(ids, 100 + index), page::PageCacheIoContext::bulk_read);
@@ -194,7 +220,8 @@ void TestBulkReadChurnUsesOwnRingAndKeepsNormalHot() {
 
 void TestProtectedNormalHotBudgetRefusal() {
   const Ids ids;
-  page::PageCacheLedger ledger;
+  CacheFixture cache(64);
+  auto& ledger = cache.ledger;
   const auto policy = Policy(2);
   const auto normal_a = Entry(ids, 20, true);
   const auto normal_b = Entry(ids, 21, true);
@@ -227,7 +254,8 @@ void TestScanLaneRings() {
       {page::PageCacheIoContext::strict_bulk_load, "strict_bulk_load"}};
 
   for (const auto& [context, name] : contexts) {
-    page::PageCacheLedger ledger;
+    CacheFixture cache(64);
+    auto& ledger = cache.ledger;
     const auto policy = Policy(64);
     for (u64 index = 0; index < 5; ++index) {
       const auto admitted = page::AdmitPageCacheEntryForContext(
@@ -246,7 +274,8 @@ void TestScanLaneRings() {
 
 void TestNormalContextStillUsesOrdinaryAdmission() {
   const Ids ids;
-  page::PageCacheLedger ledger;
+  CacheFixture cache(64);
+  auto& ledger = cache.ledger;
   const auto policy = Policy(3);
   const auto normal_a = Entry(ids, 2000);
   const auto normal_b = Entry(ids, 2001);
@@ -280,7 +309,8 @@ void TestNormalContextStillUsesOrdinaryAdmission() {
 void TestPinnedAndDirtyRefusalsRemainClosed() {
   const Ids ids;
   {
-    page::PageCacheLedger ledger;
+    CacheFixture cache(64);
+    auto& ledger = cache.ledger;
     auto policy = Policy(64);
     policy.strict_bulk_load_ring_pages = 1;
     const auto pinned = Entry(ids, 3000);
@@ -303,7 +333,8 @@ void TestPinnedAndDirtyRefusalsRemainClosed() {
   }
 
   {
-    page::PageCacheLedger ledger;
+    CacheFixture cache(64);
+    auto& ledger = cache.ledger;
     auto policy = Policy(64);
     policy.bulk_write_ring_pages = 1;
     const auto dirty = Entry(ids, 3100, false, true);

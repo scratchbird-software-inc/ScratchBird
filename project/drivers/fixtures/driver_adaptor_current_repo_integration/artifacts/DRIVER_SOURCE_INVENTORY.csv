@@ -1,22 +1,22 @@
 category,name,relative_path,language,build_system,ctest_label,required_status,artifact_root
-driver,adbc,drivers/driver/adbc,C/Arrow ADBC,contract package,driver_adbc_gate,required,build/drivers/driver/adbc
+driver,adbc,drivers/driver/adbc,C/Arrow ADBC,contract package,driver_adbc_gate,planned_not_implemented,build/drivers/driver/adbc
 driver,cpp,drivers/driver/cpp,C++,CMake,driver_cpp_gate,required,build/drivers/driver/cpp
 driver,dart,drivers/driver/dart,Dart,pub,driver_dart_gate,required,build/drivers/driver/dart
 driver,dotnet,drivers/driver/dotnet,C#,dotnet,driver_dotnet_gate,required,build/drivers/driver/dotnet
 driver,elixir,drivers/driver/elixir,Elixir,mix,driver_elixir_gate,required,build/drivers/driver/elixir
-driver,flightsql,drivers/driver/flightsql,Arrow Flight SQL,contract package,driver_flightsql_gate,required,build/drivers/driver/flightsql
+driver,flightsql,drivers/driver/flightsql,Arrow Flight SQL,contract package,driver_flightsql_gate,planned_not_implemented,build/drivers/driver/flightsql
 driver,go,drivers/driver/go,Go,go,driver_go_gate,required,build/drivers/driver/go
 driver,jdbc,drivers/driver/jdbc,Java,Gradle,driver_jdbc_gate,required,build/drivers/driver/jdbc
-driver,julia,drivers/driver/julia,Julia,contract package,driver_julia_gate,required,build/drivers/driver/julia
+driver,julia,drivers/driver/julia,Julia,contract package,driver_julia_gate,planned_not_implemented,build/drivers/driver/julia
 driver,mojo,drivers/driver/mojo,Mojo,mojo,driver_mojo_gate,required,build/drivers/driver/mojo
 driver,node,drivers/driver/node,TypeScript,npm,driver_node_gate,required,build/drivers/driver/node
 driver,odbc,drivers/driver/odbc,C/C++,CMake,driver_odbc_gate,required,build/drivers/driver/odbc
 driver,pascal,drivers/driver/pascal,Pascal,fpc,driver_pascal_gate,required,build/drivers/driver/pascal
-driver,perl,drivers/driver/perl,Perl DBI,contract package,driver_perl_gate,required,build/drivers/driver/perl
+driver,perl,drivers/driver/perl,Perl DBI,contract package,driver_perl_gate,planned_not_implemented,build/drivers/driver/perl
 driver,php,drivers/driver/php,PHP,composer,driver_php_gate,required,build/drivers/driver/php
 driver,python,drivers/driver/python,Python,pyproject/pytest,driver_python_gate,required,build/drivers/driver/python
 driver,r,drivers/driver/r,R,R CMD,driver_r_gate,required,build/drivers/driver/r
-driver,r2dbc,drivers/driver/r2dbc,Java R2DBC,contract package,driver_r2dbc_gate,required,build/drivers/driver/r2dbc
+driver,r2dbc,drivers/driver/r2dbc,Java R2DBC,contract package,driver_r2dbc_gate,planned_not_implemented,build/drivers/driver/r2dbc
 driver,ruby,drivers/driver/ruby,Ruby,bundler/gem,driver_ruby_gate,required,build/drivers/driver/ruby
 driver,rust,drivers/driver/rust,Rust,cargo,driver_rust_gate,required,build/drivers/driver/rust
 driver,swift,drivers/driver/swift,Swift,swift package,driver_swift_gate,required,build/drivers/driver/swift

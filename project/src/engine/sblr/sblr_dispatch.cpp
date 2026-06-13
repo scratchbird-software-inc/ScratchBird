@@ -445,6 +445,9 @@ const char* ExpectedOpcodeForOperation(std::string_view operation_id) {
   if (operation_id.starts_with("catalog.mutation.")) return nullptr;
   if (operation_id == "artifact.export_catalog") return "SBLR_ARTIFACT_EXPORT_CATALOG";
   if (operation_id == "artifact.import_catalog") return "SBLR_ARTIFACT_IMPORT_CATALOG";
+  if (operation_id == "artifact.external_git.export_snapshot") return "SBLR_ARTIFACT_EXTERNAL_GIT_EXPORT_SNAPSHOT";
+  if (operation_id == "artifact.external_git.diff_snapshot") return "SBLR_ARTIFACT_EXTERNAL_GIT_DIFF_SNAPSHOT";
+  if (operation_id == "artifact.external_git.rollback_plan") return "SBLR_ARTIFACT_EXTERNAL_GIT_ROLLBACK_PLAN";
   if (operation_id == "security.create_identity") return "SBLR_SECURITY_CREATE_IDENTITY";
   if (operation_id == "security.alter_identity") return "SBLR_SECURITY_ALTER_IDENTITY";
   if (operation_id == "security.grant_right") return "SBLR_SECURITY_GRANT_RIGHT";
@@ -3431,6 +3434,9 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (op.starts_with("catalog.mutation.")) result.api_result = api::EngineCatalogDescriptorMutation(TypedRequest<api::EngineCatalogDescriptorMutationRequest>(request));
   else if (op == "artifact.export_catalog") result.api_result = api::EngineExportCatalogArtifacts(TypedRequest<api::EngineExportCatalogArtifactsRequest>(request));
   else if (op == "artifact.import_catalog") result.api_result = api::EngineImportCatalogArtifacts(TypedRequest<api::EngineImportCatalogArtifactsRequest>(request));
+  else if (op == "artifact.external_git.export_snapshot") result.api_result = api::EngineExportExternalGitSnapshot(TypedRequest<api::EngineExportExternalGitSnapshotRequest>(request));
+  else if (op == "artifact.external_git.diff_snapshot") result.api_result = api::EngineDiffExternalGitSnapshot(TypedRequest<api::EngineDiffExternalGitSnapshotRequest>(request));
+  else if (op == "artifact.external_git.rollback_plan") result.api_result = api::EnginePlanExternalGitRollback(TypedRequest<api::EnginePlanExternalGitRollbackRequest>(request));
   else if (op == "ddl.create_database") result.api_result = api::EngineCreateDatabase(TypedRequest<api::EngineCreateDatabaseRequest>(request));
   else if (op == "ddl.create_schema") result.api_result = api::EngineCreateSchema(TypedRequest<api::EngineCreateSchemaRequest>(request));
   else if (op == "ddl.create_table") result.api_result = api::EngineCreateTable(TypedCreateTableRequest(request));

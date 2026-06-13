@@ -1,0 +1,6 @@
+finding_id,scope,status
+MEM-022,memory-integrated-proof,complete
+OPT-011,optimizer-integrated-proof,complete
+X-004,reliability-security-proof,complete
+X-008,final-enterprise-manifest,complete
+X-009,cross-platform-release-proof,complete

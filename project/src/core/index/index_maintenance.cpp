@@ -332,11 +332,17 @@ IndexMaintenancePlan PlanIndexMaintenance(const IndexMaintenanceRequest& request
   }
   plan.mutation_required = IsMutating(request.operation);
   const auto caps = CapabilitiesForFamily(request.family);
+  const auto* maintenance_route =
+      FindBuiltinIndexRouteCapabilityState(IndexRouteKind::maintenance,
+                                           request.family);
   const bool generic_operation_available =
       (request.operation == IndexMaintenanceOperation::verify &&
        caps.supports_verify) ||
       (request.operation == IndexMaintenanceOperation::rebuild &&
-       caps.supports_rebuild) ||
+       capability->rebuild &&
+       maintenance_route != nullptr &&
+       maintenance_route->route_complete() &&
+       maintenance_route->supports_mutation) ||
       (request.operation != IndexMaintenanceOperation::verify &&
        request.operation != IndexMaintenanceOperation::rebuild &&
        request.family != IndexFamily::bitmap &&

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "disk_device.hpp"
+#include "memory.hpp"
 #include "overflow_persistence.hpp"
 #include "page_manager.hpp"
 #include "uuid.hpp"
@@ -32,6 +33,7 @@ namespace {
 namespace disk = scratchbird::storage::disk;
 namespace page = scratchbird::storage::page;
 namespace platform = scratchbird::core::platform;
+namespace memory = scratchbird::core::memory;
 namespace uuid = scratchbird::core::uuid;
 
 constexpr platform::u32 kPageSize = 8192;
@@ -95,6 +97,26 @@ std::vector<platform::byte> Payload(std::size_t bytes) {
     payload.push_back(static_cast<platform::byte>((index * 29 + 11) & 0xffu));
   }
   return payload;
+}
+
+memory::AllocationPolicy MemoryPolicy() {
+  auto policy = memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name =
+      "engine_listener_overflow_blob_page_persistence_conformance";
+  policy.hard_limit_bytes = 32ull * 1024ull * 1024ull;
+  policy.soft_limit_bytes = 24ull * 1024ull * 1024ull;
+  policy.per_context_limit_bytes = 16ull * 1024ull * 1024ull;
+  policy.page_buffer_pool_limit_bytes = 8ull * 1024ull * 1024ull;
+  return policy;
+}
+
+void ConfigureMemoryFixture() {
+  const auto configured = memory::ConfigureDefaultMemoryManagerForFixture(
+      MemoryPolicy(),
+      "engine_listener_overflow_blob_page_persistence_conformance");
+  Require(configured.ok(), "overflow memory fixture configuration failed");
+  Require(configured.fixture_mode,
+          "overflow memory fixture mode was not active");
 }
 
 page::OverflowPersistRequest PersistRequest(const std::vector<platform::byte>& payload) {
@@ -327,6 +349,7 @@ void ProveAuthoritativeReclaim() {
 }  // namespace
 
 int main() {
+  ConfigureMemoryFixture();
   ProveWriteReadReopenAndLocations();
   ProveCorruptionRefusal();
   ProveAuthoritativeReclaim();

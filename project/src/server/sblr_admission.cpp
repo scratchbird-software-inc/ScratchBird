@@ -88,7 +88,7 @@ constexpr std::array<std::string_view, 1> kFailClosedSblrFamilies{{
     "sblr.cluster.private_operation.v3",
 }};
 
-constexpr std::array<std::string_view, 13> kNonPrimarySblrAuditFamilies{{
+constexpr std::array<std::string_view, 10> kNonPrimarySblrAuditFamilies{{
     "sblr.acceleration.operation.v3",
     "sblr.archive_replication.operation.v3",
     "sblr.cluster.private_operation.v3",
@@ -99,9 +99,6 @@ constexpr std::array<std::string_view, 13> kNonPrimarySblrAuditFamilies{{
     "sblr.management.runtime_operation.v3",
     "sblr.observability.inspect.v3",
     "sblr.query.multimodel_or_ddl.v3",
-    "sblr.query.values.v3",
-    "sblr.security.mutation_or_inspect.v3",
-    "sblr.storage.management_operation.v3",
 }};
 
 ServerDiagnostic AdmissionDiagnostic(std::string code,
@@ -748,10 +745,7 @@ bool IsUmbrellaSblrFamily(std::string_view family) {
          family == "sblr.jobs.operation.v3" ||
          family == "sblr.management.runtime_operation.v3" ||
          family == "sblr.observability.inspect.v3" ||
-         family == "sblr.query.multimodel_or_ddl.v3" ||
-         family == "sblr.query.values.v3" ||
-         family == "sblr.security.mutation_or_inspect.v3" ||
-         family == "sblr.storage.management_operation.v3";
+         family == "sblr.query.multimodel_or_ddl.v3";
 }
 
 std::string FamilyForPublicEnvelope(scratchbird::engine::SblrOperationFamily family) {
@@ -1164,8 +1158,7 @@ std::string ReconciledExplicitServerFamily(std::string family,
     if (resolved_family.has_value()) return *resolved_family;
   }
   if (operation_id == "query.plan_operation" &&
-      (family == "sblr.query.values.v3" ||
-       family == "sblr.query.relational.v3" ||
+      (family == "sblr.query.relational.v3" ||
        family == "sblr.query.multimodel_or_ddl.v3")) {
     if (preserve_query_plan_route_family) return family;
     const auto resolved_family = FamilyForOperationId(operation_id);
@@ -1173,9 +1166,7 @@ std::string ReconciledExplicitServerFamily(std::string family,
   }
   if (prefer_primary_family &&
       (family == "sblr.management.runtime_operation.v3" ||
-       family == "sblr.observability.inspect.v3" ||
-       family == "sblr.security.mutation_or_inspect.v3" ||
-       family == "sblr.storage.management_operation.v3")) {
+       family == "sblr.observability.inspect.v3")) {
     const auto resolved_family = FamilyForOperationId(operation_id);
     if (resolved_family.has_value()) return *resolved_family;
   }

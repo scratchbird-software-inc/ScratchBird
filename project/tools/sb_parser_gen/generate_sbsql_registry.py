@@ -31,6 +31,16 @@ ENGINE_PACKET_GAP_PLACEHOLDER = (
     "public_input_snapshot"
 )
 
+CPP_LICENSE_HEADER = """// Copyright (c) 2026 ScratchBird Software Inc.
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// SPDX-License-Identifier: MPL-2.0
+
+"""
+
 
 @dataclass(frozen=True)
 class GeneratedRow:
@@ -334,7 +344,8 @@ def cxx_string(value: str) -> str:
 def write_header(output_dir: Path, row_count: int) -> None:
     header = output_dir / "sbsql_generated_registry.hpp"
     header.write_text(
-        """#pragma once
+        CPP_LICENSE_HEADER
+        + """#pragma once
 
 #include <cstddef>
 #include <span>
@@ -417,7 +428,8 @@ def write_source(output_dir: Path, rows: Iterable[GeneratedRow]) -> None:
     source = output_dir / "sbsql_generated_registry.cpp"
     row_text = "\n".join(row_initializer(row) for row in rows)
     source.write_text(
-        f"""#include "registry/generated/sbsql_generated_registry.hpp"
+        CPP_LICENSE_HEADER
+        + f"""#include "registry/generated/sbsql_generated_registry.hpp"
 
 #include <array>
 

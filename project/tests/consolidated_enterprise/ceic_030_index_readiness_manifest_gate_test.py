@@ -121,8 +121,8 @@ def assert_manifest_shape(repo_root: pathlib.Path, data: dict) -> None:
         if isinstance(row, dict)
     }
     for value in range(90, 96):
-        if integrated.get(f"CEIC-{value:03d}") != "pending":
-            raise AssertionError(f"CEIC-{value:03d} must remain pending integrated proof")
+        if integrated.get(f"CEIC-{value:03d}") not in {"complete", "completed", "done", "closed", "complete_move_ready"}:
+            raise AssertionError(f"CEIC-{value:03d} integrated proof must be complete")
     drift = data.get("readiness_drift_gate_evidence", {})
     if successor.get("CEIC-042") in {"complete", "completed", "done", "closed", "complete_move_ready"}:
         if drift.get("state") != "complete":
@@ -294,7 +294,7 @@ def main() -> int:
     tool = repo_root / "project/tools/ceic_index_readiness_manifest.py"
     committed_manifest = (
         repo_root
-        / "docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure/artifacts/"
+        / "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/"
         / "CEIC-030_INDEX_READINESS_MANIFEST.yaml"
     )
 

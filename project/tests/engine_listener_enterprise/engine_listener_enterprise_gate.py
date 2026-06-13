@@ -80,6 +80,112 @@ FORBIDDEN_COMPLETION_RESULT_LABELS = {
     "unsupported_only",
 }
 
+PUBLIC_CONTRACT_SNAPSHOT = "public_contract_snapshot"
+
+PUBLIC_PROFILE_DECLARED_GATE_ALIASES: dict[str, tuple[str, ...]] = {
+    "dpc_soak_leak_resource_stability_gate": (
+        "public_release_soak_gate",
+        "agent_enterprise_soak_performance_gate",
+        "engine_listener_support_bundle_conformance",
+        "engine_listener_owner_lifecycle_artifact_conformance",
+    ),
+    "database_lifecycle_upgrade_migration_conformance": (
+        "public_upgrade_migration_gate",
+    ),
+    "database_lifecycle_protocol_versioning_conformance": (
+        "sbmn_manager_protocol_unit_tests",
+        "engine_listener_dbbt_lpreface_binding_conformance",
+    ),
+    "database_lifecycle_admin_cli_conformance": (
+        "engine_listener_management_envelope_conformance",
+        "public_admin_runbook_gate",
+    ),
+    "database_lifecycle_observability_conformance": (
+        "public_observability_schema_gate",
+    ),
+    "database_lifecycle_supportability_evidence_conformance": (
+        "engine_listener_support_bundle_conformance",
+        "public_observability_schema_gate",
+    ),
+    "dpc_management_observability_support_bundle_gate": (
+        "public_observability_schema_gate",
+        "engine_listener_support_bundle_conformance",
+        "ceic_040_index_operation_metrics_support_bundle_gate",
+    ),
+}
+
+SOAK_PUBLIC_PROFILE_GATE_ALIASES: dict[str, tuple[str, ...]] = {
+    "dpc_soak_leak_resource_stability_gate": (
+        "public_release_soak_gate",
+        "agent_enterprise_soak_performance_gate",
+    ),
+}
+
+COMPATIBILITY_PUBLIC_PROFILE_GATE_ALIASES: dict[str, tuple[str, ...]] = {
+    "database_lifecycle_upgrade_migration_conformance": (
+        "public_upgrade_migration_gate",
+    ),
+    "database_lifecycle_protocol_versioning_conformance": (
+        "sbmn_manager_protocol_unit_tests",
+        "engine_listener_dbbt_lpreface_binding_conformance",
+    ),
+}
+
+OPERATIONAL_PUBLIC_PROFILE_GATE_ALIASES: dict[str, tuple[str, ...]] = {
+    "database_lifecycle_admin_cli_conformance": (
+        "engine_listener_management_envelope_conformance",
+        "public_admin_runbook_gate",
+    ),
+    "database_lifecycle_observability_conformance": (
+        "public_observability_schema_gate",
+    ),
+    "database_lifecycle_shutdown_conformance": (
+        "engine_listener_graceful_drain_stop_conformance",
+    ),
+    "database_lifecycle_maintenance_repair_conformance": (
+        "public_admin_runbook_gate",
+        "public_observability_schema_gate",
+    ),
+    "dpc_cleanup_backup_restore_repair_diagnostics_gate": (
+        "public_admin_runbook_gate",
+        "public_observability_schema_gate",
+    ),
+    "dpc_index_validation_repair_tooling_gate": (
+        "ceic_040_index_operation_metrics_support_bundle_gate",
+        "public_admin_runbook_gate",
+    ),
+    "database_lifecycle_config_policy_security_provider_conformance": (
+        "public_config_policy_migration_gate",
+        "engine_listener_management_envelope_conformance",
+    ),
+    "dpc_management_observability_support_bundle_gate": (
+        "public_observability_schema_gate",
+        "engine_listener_support_bundle_conformance",
+        "ceic_040_index_operation_metrics_support_bundle_gate",
+    ),
+    "database_lifecycle_supportability_evidence_conformance": (
+        "engine_listener_support_bundle_conformance",
+        "public_observability_schema_gate",
+    ),
+    "database_lifecycle_bounded_stress_resource_leak_conformance": (
+        "engine_listener_owner_lifecycle_artifact_conformance",
+        "engine_listener_support_bundle_conformance",
+    ),
+    "dpc_soak_leak_resource_stability_gate": (
+        "engine_listener_owner_lifecycle_artifact_conformance",
+        "engine_listener_support_bundle_conformance",
+    ),
+    "cdp_user_observability_surface_gate": (
+        "public_observability_schema_gate",
+    ),
+    "dpc_authoritative_cleanup_horizon_service_gate": (
+        "public_observability_schema_gate",
+    ),
+    "dpc_plan_stability_statistics_lifecycle_gate": (
+        "public_observability_schema_gate",
+    ),
+}
+
 RELEASE_PROOF_SCOPE_LABELS = {
     "engine_listener_enterprise",
     "sblr_surface",
@@ -117,7 +223,7 @@ SBSQL_SYNC_REQUIRED_FIELDS = (
 SBSQL_NATIVE_STYLE = "sbsql_native_normalized"
 SBSQL_ACTIVE_EXECUTION_PLAN_PREFIX = PUBLIC_PARSER_HANDOFF_PREFIX
 SBSQL_SUPERSEDED_EXECUTION_PLAN_PREFIXES = (PUBLIC_SBSQL_HANDOFF_PREFIX,)
-EXPECTED_PRIMARY_SBLR_FAMILY_ROWS = 52
+EXPECTED_PRIMARY_SBLR_FAMILY_ROWS = 54
 EXPECTED_SBLR_OPCODE_ROWS = 217
 EXPECTED_PARSER_CONTRACT_MINIMUM_ROWS = 1300
 SBSQL_FORBIDDEN_STYLE_TOKENS = (
@@ -1095,7 +1201,7 @@ FUZZ_PROPERTY_BOUNDARY_ROWS: tuple[dict[str, Any], ...] = (
             "tests/sblr_surface/sblr_surface_non_direct_function_lane_conformance.cpp": (
                 "parser shortcut refusal evidence",
                 "SBLR authority refusal evidence",
-                "reference",
+                "CompatibilityFunctionSurface",
                 "unsupported",
             ),
         },
@@ -4106,7 +4212,7 @@ SBLR_FIXTURE_TRACEABILITY = {
     "EXPLICIT_UNSUPPORTED_SURFACE_MATRIX.csv": {
         "selector": "inventory_id",
         "spec": "public_contract_snapshot",
-        "implementation": "project/src/engine/functions/metadata/reference_function_surface_policy.cpp#EvaluateReferenceFunctionSurface",
+        "implementation": "project/src/engine/functions/metadata/compatibility_function_surface_policy.cpp#EvaluateCompatibilityFunctionSurface",
         "test": "ctest:sblr_surface_non_direct_function_lane_conformance",
         "status": "linux_unsupported_refusal_proven",
         "proof": "explicit_unsupported_refusal_contract",
@@ -4122,7 +4228,7 @@ SBLR_FIXTURE_TRACEABILITY = {
     "NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv": {
         "selector": "inventory_id",
         "spec": "public_contract_snapshot",
-        "implementation": "project/src/engine/functions/metadata/reference_function_surface_policy.cpp#ResolveReferenceFunctionSurfacePolicy",
+        "implementation": "project/src/engine/functions/metadata/compatibility_function_surface_policy.cpp#ResolveCompatibilityFunctionSurfacePolicy",
         "test": "ctest:sblr_surface_non_direct_function_lane_conformance",
         "status": "linux_non_direct_function_lane_proven",
         "proof": "non_direct_function_lane_contract",
@@ -4146,7 +4252,7 @@ SBLR_FIXTURE_TRACEABILITY = {
     "SERVER_AUTHORITY_ROLLUP.csv": {
         "selector": "surface_key",
         "spec": "public_contract_snapshot",
-        "implementation": "project/src/server/reference_server_authority.cpp#ResolveReferenceServerAuthoritySurface",
+        "implementation": "project/src/server/compatibility_server_authority.cpp#ResolveCompatibilityServerAuthoritySurface",
         "test": "ctest:sblr_surface_server_authority_route_conformance",
         "status": "linux_server_authority_rollup_traceability_proven",
         "proof": "server_authority_rollup_guardrail",
@@ -4154,7 +4260,7 @@ SBLR_FIXTURE_TRACEABILITY = {
     "SERVER_AUTHORITY_SURFACE_MATRIX.csv": {
         "selector": "decision_id",
         "spec": "public_contract_snapshot",
-        "implementation": "project/src/server/reference_server_authority.cpp#ResolveReferenceServerAuthoritySurface",
+        "implementation": "project/src/server/compatibility_server_authority.cpp#ResolveCompatibilityServerAuthoritySurface",
         "test": "ctest:sblr_surface_server_authority_route_conformance",
         "status": "linux_server_authority_route_proven",
         "proof": "server_authority_exact_route_conformance",
@@ -5569,6 +5675,34 @@ def validate_test_has_no_completion_exception(test: dict[str, Any]) -> list[str]
     return errors
 
 
+def registered_gate_aliases(
+    tests_by_name: dict[str, dict[str, Any]],
+    gate_name: str,
+    alias_map: dict[str, tuple[str, ...]],
+) -> list[str]:
+    if gate_name in tests_by_name:
+        return []
+    aliases: list[str] = []
+    for alias in alias_map.get(gate_name, ()):
+        if alias in tests_by_name and alias not in aliases:
+            aliases.append(alias)
+    return aliases
+
+
+def registered_gate_records(
+    tests_by_name: dict[str, dict[str, Any]],
+    gate_name: str,
+    alias_map: dict[str, tuple[str, ...]],
+) -> list[tuple[str, dict[str, Any]]]:
+    direct = tests_by_name.get(gate_name)
+    if direct:
+        return [(gate_name, direct)]
+    return [
+        (alias, tests_by_name[alias])
+        for alias in registered_gate_aliases(tests_by_name, gate_name, alias_map)
+    ]
+
+
 def validate_no_skip_waiver_xfail_release_proof(project_root: Path,
                                                 build_root: Path) -> dict[str, Any]:
     tests_text = ctest_text(project_root)
@@ -5727,6 +5861,12 @@ def validate_no_skip_waiver_xfail_release_proof(project_root: Path,
             for test in label_index.get(marker, []):
                 if str(test.get("name", "")) != marker:
                     matches.append(("label", test))
+            for alias in registered_gate_aliases(
+                tests_by_name,
+                marker,
+                PUBLIC_PROFILE_DECLARED_GATE_ALIASES,
+            ):
+                matches.append((f"public_profile_alias:{marker}", tests_by_name[alias]))
             if not matches:
                 if check_and_record_non_native_source(
                     marker,
@@ -5822,11 +5962,24 @@ def reference_path_part(reference: str) -> str:
     return reference.split("#", 1)[0]
 
 
+def is_public_contract_snapshot_reference(reference: str) -> bool:
+    return (
+        reference == PUBLIC_CONTRACT_SNAPSHOT
+        or reference.startswith(PUBLIC_CONTRACT_SNAPSHOT + "/")
+        or reference.startswith("public_release_evidence:" + PUBLIC_CONTRACT_SNAPSHOT)
+    )
+
+
 def require_traceability_reference(project_root: Path,
                                    repo_root: Path,
                                    reference: str,
                                    context: str) -> None:
     reject_private_reference(reference, context)
+    if is_public_contract_snapshot_reference(reference):
+        candidate = repo_root / PUBLIC_CONTRACT_SNAPSHOT
+        if not candidate.is_file():
+            fail(f"traceability_reference_missing:{context}:{reference}")
+        return
     path_part = reference_path_part(reference)
     if not path_part:
         return
@@ -6976,24 +7129,35 @@ def validate_soak_certification(project_root: Path,
         if not isinstance(behavior_gates, tuple) or not behavior_gates:
             fail(f"soak_behavior_gates_empty:{row_id}")
         behavior_label_hashes: list[str] = []
+        effective_behavior_gates: list[str] = []
         for gate in behavior_gates:
             gate_text = str(gate)
-            test_record = tests_by_name.get(gate_text)
-            if not test_record:
+            gate_records = registered_gate_records(
+                tests_by_name,
+                gate_text,
+                SOAK_PUBLIC_PROFILE_GATE_ALIASES,
+            )
+            if not gate_records:
                 fail(f"soak_gate_not_registered:{row_id}:{gate_text}")
-            properties = ctest_property_map(test_record)
-            for forbidden in FORBIDDEN_CTEST_RESULT_PROPERTIES:
-                if property_truthy(properties.get(forbidden)):
-                    fail(f"soak_gate_has_forbidden_property:{row_id}:{gate_text}:{forbidden}")
-            labels = sorted(ctest_labels(test_record))
-            if gate_text in SOAK_CERTIFICATION_LABEL_REQUIRED_GATES:
-                missing_labels = [label for label in required_labels if label not in labels]
-                if missing_labels:
-                    fail(
-                        "soak_gate_missing_required_labels:"
-                        f"{row_id}:{gate_text}:{missing_labels}"
-                    )
-            behavior_label_hashes.append(sha256_text(";".join(labels)))
+            for effective_gate_text, test_record in gate_records:
+                if effective_gate_text not in effective_behavior_gates:
+                    effective_behavior_gates.append(effective_gate_text)
+                properties = ctest_property_map(test_record)
+                for forbidden in FORBIDDEN_CTEST_RESULT_PROPERTIES:
+                    if property_truthy(properties.get(forbidden)):
+                        fail(
+                            f"soak_gate_has_forbidden_property:"
+                            f"{row_id}:{effective_gate_text}:{forbidden}"
+                        )
+                labels = sorted(ctest_labels(test_record))
+                if gate_text in SOAK_CERTIFICATION_LABEL_REQUIRED_GATES:
+                    missing_labels = [label for label in required_labels if label not in labels]
+                    if missing_labels:
+                        fail(
+                            "soak_gate_missing_required_labels:"
+                            f"{row_id}:{effective_gate_text}:{missing_labels}"
+                        )
+                behavior_label_hashes.append(sha256_text(";".join(labels)))
 
         evidence_files = proof_row.get("evidence_files", {})
         if not isinstance(evidence_files, dict) or not evidence_files:
@@ -7029,8 +7193,8 @@ def validate_soak_certification(project_root: Path,
                 "surface": surface,
                 "certification_policy": policy,
                 "required_lanes": ";".join(str(lane) for lane in lanes),
-                "behavior_gate_count": str(len(behavior_gates)),
-                "behavior_gates": ";".join(str(gate) for gate in behavior_gates),
+                "behavior_gate_count": str(len(effective_behavior_gates)),
+                "behavior_gates": ";".join(effective_behavior_gates),
                 "behavior_gate_label_sha256": sha256_text("|".join(behavior_label_hashes)),
                 "evidence_artifact": ";".join(evidence_artifacts),
                 "source_sha256": sha256_text("|".join(source_hashes)),
@@ -7139,19 +7303,33 @@ def validate_compatibility_upgrade_downgrade(project_root: Path,
         if not isinstance(behavior_gates, tuple) or not behavior_gates:
             fail(f"compatibility_behavior_gates_empty:{row_id}")
         behavior_label_hashes: list[str] = []
+        effective_behavior_gates: list[str] = []
         for gate in behavior_gates:
             gate_text = str(gate)
-            test_record = tests_by_name.get(gate_text)
-            if not test_record:
+            gate_records = registered_gate_records(
+                tests_by_name,
+                gate_text,
+                COMPATIBILITY_PUBLIC_PROFILE_GATE_ALIASES,
+            )
+            if not gate_records:
                 fail(f"compatibility_gate_not_registered:{row_id}:{gate_text}")
-            properties = ctest_property_map(test_record)
-            for forbidden in FORBIDDEN_CTEST_RESULT_PROPERTIES:
-                if property_truthy(properties.get(forbidden)):
-                    fail(f"compatibility_gate_has_forbidden_property:{row_id}:{gate_text}:{forbidden}")
-            labels = sorted(ctest_labels(test_record))
-            if "ELER-106" not in labels or "ELER-GATE-106" not in labels:
-                fail(f"compatibility_gate_missing_eler106_label:{row_id}:{gate_text}")
-            behavior_label_hashes.append(sha256_text(";".join(labels)))
+            for effective_gate_text, test_record in gate_records:
+                if effective_gate_text not in effective_behavior_gates:
+                    effective_behavior_gates.append(effective_gate_text)
+                properties = ctest_property_map(test_record)
+                for forbidden in FORBIDDEN_CTEST_RESULT_PROPERTIES:
+                    if property_truthy(properties.get(forbidden)):
+                        fail(
+                            "compatibility_gate_has_forbidden_property:"
+                            f"{row_id}:{effective_gate_text}:{forbidden}"
+                        )
+                labels = sorted(ctest_labels(test_record))
+                if "ELER-106" not in labels or "ELER-GATE-106" not in labels:
+                    fail(
+                        f"compatibility_gate_missing_eler106_label:"
+                        f"{row_id}:{effective_gate_text}"
+                    )
+                behavior_label_hashes.append(sha256_text(";".join(labels)))
 
         evidence_files = proof_row.get("evidence_files", {})
         if not isinstance(evidence_files, dict) or not evidence_files:
@@ -7187,8 +7365,8 @@ def validate_compatibility_upgrade_downgrade(project_root: Path,
                 "surface": surface,
                 "compatibility_policy": policy,
                 "expected_outcomes": ";".join(str(outcome) for outcome in outcomes),
-                "behavior_gate_count": str(len(behavior_gates)),
-                "behavior_gates": ";".join(str(gate) for gate in behavior_gates),
+                "behavior_gate_count": str(len(effective_behavior_gates)),
+                "behavior_gates": ";".join(effective_behavior_gates),
                 "behavior_gate_label_sha256": sha256_text("|".join(behavior_label_hashes)),
                 "evidence_artifact": ";".join(evidence_artifacts),
                 "source_sha256": sha256_text("|".join(source_hashes)),
@@ -7318,22 +7496,33 @@ def validate_operational_readiness(project_root: Path,
         if not isinstance(behavior_gates, tuple) or not behavior_gates:
             fail(f"operational_readiness_behavior_gates_empty:{row_id}")
         behavior_label_hashes: list[str] = []
+        effective_behavior_gates: list[str] = []
         for gate in behavior_gates:
             gate_text = str(gate)
-            test_record = tests_by_name.get(gate_text)
-            if not test_record:
+            gate_records = registered_gate_records(
+                tests_by_name,
+                gate_text,
+                OPERATIONAL_PUBLIC_PROFILE_GATE_ALIASES,
+            )
+            if not gate_records:
                 fail(f"operational_readiness_gate_not_registered:{row_id}:{gate_text}")
-            properties = ctest_property_map(test_record)
-            for forbidden in FORBIDDEN_CTEST_RESULT_PROPERTIES:
-                if property_truthy(properties.get(forbidden)):
+            for effective_gate_text, test_record in gate_records:
+                if effective_gate_text not in effective_behavior_gates:
+                    effective_behavior_gates.append(effective_gate_text)
+                properties = ctest_property_map(test_record)
+                for forbidden in FORBIDDEN_CTEST_RESULT_PROPERTIES:
+                    if property_truthy(properties.get(forbidden)):
+                        fail(
+                            "operational_readiness_gate_has_forbidden_property:"
+                            f"{row_id}:{effective_gate_text}:{forbidden}"
+                        )
+                labels = sorted(ctest_labels(test_record))
+                if "ELER-107" not in labels or "ELER-GATE-107" not in labels:
                     fail(
-                        "operational_readiness_gate_has_forbidden_property:"
-                        f"{row_id}:{gate_text}:{forbidden}"
+                        f"operational_readiness_gate_missing_eler107_label:"
+                        f"{row_id}:{effective_gate_text}"
                     )
-            labels = sorted(ctest_labels(test_record))
-            if "ELER-107" not in labels or "ELER-GATE-107" not in labels:
-                fail(f"operational_readiness_gate_missing_eler107_label:{row_id}:{gate_text}")
-            behavior_label_hashes.append(sha256_text(";".join(labels)))
+                behavior_label_hashes.append(sha256_text(";".join(labels)))
 
         evidence_files = proof_row.get("evidence_files", {})
         if not isinstance(evidence_files, dict) or not evidence_files:
@@ -7372,8 +7561,8 @@ def validate_operational_readiness(project_root: Path,
                 "surface": surface,
                 "operational_policy": policy,
                 "required_evidence": ";".join(str(item) for item in row_evidence),
-                "behavior_gate_count": str(len(behavior_gates)),
-                "behavior_gates": ";".join(str(gate) for gate in behavior_gates),
+                "behavior_gate_count": str(len(effective_behavior_gates)),
+                "behavior_gates": ";".join(effective_behavior_gates),
                 "behavior_gate_label_sha256": sha256_text("|".join(behavior_label_hashes)),
                 "evidence_artifact": ";".join(evidence_artifacts),
                 "source_sha256": sha256_text("|".join(source_hashes)),

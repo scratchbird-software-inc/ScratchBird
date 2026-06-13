@@ -45,8 +45,29 @@ api::EngineRequestContext Context(std::initializer_list<std::string_view> rights
   context.catalog_generation_id = 11;
   context.security_epoch = 12;
   context.resource_epoch = 13;
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      "019f0300-0000-7000-8000-000000000100";
+  context.authorization_context.principal_uuid = context.principal_uuid;
+  context.authorization_context.security_epoch = context.security_epoch;
+  context.authorization_context.policy_epoch = context.security_epoch;
+  context.authorization_context.catalog_generation_id =
+      context.catalog_generation_id;
+  context.authorization_context.effective_subjects.push_back(
+      {context.principal_uuid, "principal"});
+  std::uint64_t grant_index = 0;
   for (const auto right : rights) {
     context.trace_tags.push_back("right:" + std::string(right));
+    api::EngineMaterializedAuthorizationGrant grant;
+    const auto grant_uuid = uuid::GenerateEngineIdentityV7(
+        UuidKind::object, 1790000000200 + grant_index++);
+    Require(grant_uuid.ok(), "grant UUID generation failed");
+    grant.grant_uuid.canonical = uuid::UuidToString(grant_uuid.value.value);
+    grant.subject_uuid = context.principal_uuid;
+    grant.subject_kind = "principal";
+    grant.right = std::string(right);
+    grant.security_epoch = context.security_epoch;
+    context.authorization_context.grants.push_back(std::move(grant));
   }
   return context;
 }
@@ -198,6 +219,9 @@ std::string DiagnosticCodes(const api::EngineApiResult& result) {
   for (const auto& diagnostic : result.diagnostics) {
     if (!codes.empty()) { codes += ","; }
     codes += diagnostic.code;
+    if (!diagnostic.detail.empty()) {
+      codes += "(" + diagnostic.detail + ")";
+    }
   }
   return codes;
 }

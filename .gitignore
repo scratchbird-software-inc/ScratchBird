@@ -16,6 +16,7 @@
 !/THIRD_PARTY_NOTICES.md
 !/SBOM.json
 !/REFERENCE_SYSTEMS_AND_IP_BOUNDARY.md
+!/public_contract_snapshot
 
 /build/
 /build-*/

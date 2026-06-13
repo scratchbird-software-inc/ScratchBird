@@ -91,6 +91,8 @@ REQUIRED_ROUTE_REQUIREMENTS = {
     "no_hidden_replay",
 }
 
+ALLOWED_CONTRACT_STATUSES = {"beta_2", "planned_not_implemented"}
+
 REQUIRED_CONFORMANCE = {
     "connect_auth",
     "prepare_execute_fetch",
@@ -724,8 +726,14 @@ def run_contract_package(ctx: Context) -> int:
         errors.append("name mismatch")
     if contract.get("driver_family") != manifest_row.get("driver_family"):
         errors.append("driver_family mismatch with DriverPackageManifest")
-    if contract.get("status") != "beta_2":
-        errors.append("status must be beta_2")
+    contract_status = str(contract.get("status", ""))
+    manifest_status = str(manifest_row.get("driver_status", ""))
+    if contract_status not in ALLOWED_CONTRACT_STATUSES:
+        errors.append("status must be one of " + ", ".join(sorted(ALLOWED_CONTRACT_STATUSES)))
+    if contract_status != manifest_status:
+        errors.append("status mismatch with DriverPackageManifest driver_status")
+    if contract_status == "planned_not_implemented" and manifest_row.get("release_bucket") != "tracked_not_released":
+        errors.append("planned_not_implemented contracts must use tracked_not_released release_bucket")
     if contract.get("wire_protocol") != "sbwp_v1_1":
         errors.append("wire_protocol must be sbwp_v1_1")
     if contract.get("auth_authority") != "engine":

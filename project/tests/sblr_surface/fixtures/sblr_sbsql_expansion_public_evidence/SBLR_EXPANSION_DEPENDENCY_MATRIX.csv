@@ -1,0 +1,9 @@
+dependency_id,used_by,type,status,dependency_path,decision
+FSE-DEP-001,all,inventory_input,blocking,project/tests/fixture_inputs/final-sblr-sbsql-inventory-classification-closure/REFERENCE_UNSUPPORTED_NONCLUSTER_SURFACE_INVENTORY.csv,Non-cluster missing functionality rows feed SBLR expansion
+FSE-DEP-002,all,cluster_input,blocking,project/tests/fixture_inputs/final-sblr-sbsql-cluster-normalization-closure/NORMALIZED_REFERENCE_CLUSTER_COMMAND_SET.csv,Normalized cluster command rows feed SBLR cluster operation expansion
+FSE-DEP-003,all,canonical_sblr_contract,available,public_spec_snapshot/chapters/06-sblr-engine-contract.md,SBLR engine contract remains authority for parser/engine boundary
+FSE-DEP-004,P4,mga_authority,available,public_spec_snapshot/chapters/mga-transactions/,MGA remains transaction visibility recovery and finality authority
+FSE-DEP-005,P4,engine_sblr_sources,available,project/src/core/sblr/ and project/src/server/sblr_dispatch_server.cpp,Implementation routes must be added to current SBLR/server code
+FSE-DEP-006,P7,project_test_root,available,project/tests/,All proof evidence must regenerate under project/tests
+FSE-DEP-007,P7,parser_remap,downstream,project/tests/fixture_inputs/final-sblr-sbsql-parser-remap-closure/,Parser remap consumes implemented SBLR symbols
+FSE-DEP-008,P7,sbsql_expansion,downstream,project/tests/fixture_inputs/final-sblr-sbsql-language-expansion-closure/,SBsql expansion consumes implemented SBLR symbols

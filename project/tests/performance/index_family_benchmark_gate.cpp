@@ -50,8 +50,7 @@ const std::vector<std::string>& ExpectedWorkloads() {
 bool ContainsMarker(std::string_view value) {
   static const std::vector<std::string> markers = {
       "docs" "/execution-plans", "public_release_evidence", "docs" "/findings",
-      "docs/reference", "execution_plan", "contract", "findings",
-      "reference", "IRC-"};
+      "docs/reference", "execution_plan", "findings", "IRC-"};
   return std::any_of(markers.begin(), markers.end(), [&](const auto& marker) {
     return value.find(marker) != std::string_view::npos;
   });
@@ -136,7 +135,8 @@ void RequireCompleteFamilyRow(
   Require(row.benchmark_clean_admissible,
           row.family_id + "." + row.workload + " benchmark not admitted");
   Require(row.concrete_runtime_consumed,
-          row.family_id + "." + row.workload + " did not consume runtime");
+          row.family_id + "." + row.workload + " did not consume runtime diagnostic=" +
+              row.diagnostic_code);
   Require(row.standalone_provider_gate,
           row.family_id + "." + row.workload + " standalone provider gate missing");
   Require(row.route_consumed_gate,

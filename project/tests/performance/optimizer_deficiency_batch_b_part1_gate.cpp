@@ -89,6 +89,18 @@ opt::IndexStats IndexStats(const std::string& relation_uuid,
   stats.fragmentation_ratio = 0.05;
   stats.visibility_coverage = 1.0;
   stats.predicate_coverage = 1.0;
+  stats.route_benchmark_clean = true;
+  if (family == "btree" || family == "unique_btree" ||
+      family == "covering") {
+    stats.equality_lookup_supported = true;
+    stats.ordered_range_supported = true;
+  } else if (family == "hash") {
+    stats.equality_lookup_supported = true;
+  } else if (family == "brin_zone") {
+    stats.negative_prune_supported = true;
+  } else {
+    stats.candidate_set_producer = true;
+  }
   return stats;
 }
 

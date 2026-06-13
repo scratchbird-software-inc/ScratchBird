@@ -68,11 +68,23 @@ std::vector<platform::byte> SortableI64(std::int64_t value) {
   return out;
 }
 
+platform::TypedUuid StableScalarTypeDescriptorUuid() {
+  static const platform::TypedUuid uuid =
+      GeneratedUuid(platform::UuidKind::object, 1700000000000ull, 0x20);
+  return uuid;
+}
+
+platform::TypedUuid StableRawTypeDescriptorUuid() {
+  static const platform::TypedUuid uuid =
+      GeneratedUuid(platform::UuidKind::object, 1700000000200ull, 0x22);
+  return uuid;
+}
+
 std::vector<platform::byte> EncodedKey(std::int64_t value) {
   idx::IndexKeyEncodingComponent component;
   component.kind = idx::IndexKeyComponentKind::scalar;
   component.ordinal = 0;
-  component.type_descriptor_uuid = GeneratedUuid(platform::UuidKind::object, 1700000000000ull, 0x20);
+  component.type_descriptor_uuid = StableScalarTypeDescriptorUuid();
   component.sort_direction = idx::IndexKeySortDirection::ascending;
   component.null_placement = idx::IndexKeyNullPlacement::nulls_last;
   component.payload = SortableI64(value);
@@ -85,7 +97,7 @@ std::vector<platform::byte> EncodedNullKey() {
   idx::IndexKeyEncodingComponent component;
   component.kind = idx::IndexKeyComponentKind::scalar;
   component.ordinal = 0;
-  component.type_descriptor_uuid = GeneratedUuid(platform::UuidKind::object, 1700000000100ull, 0x21);
+  component.type_descriptor_uuid = StableScalarTypeDescriptorUuid();
   component.sort_direction = idx::IndexKeySortDirection::ascending;
   component.null_placement = idx::IndexKeyNullPlacement::nulls_last;
   component.is_null = true;
@@ -273,15 +285,21 @@ page::IndexBtreePhysicalScanBound Bound(const std::vector<platform::byte>& encod
 }
 
 std::vector<platform::byte> RawEncodedKey(platform::byte group, platform::byte suffix) {
-  return {'S', 'B', 'K', 'O', 0x7f, group, suffix, 0x00, 0x00};
+  idx::IndexKeyEncodingComponent component;
+  component.kind = idx::IndexKeyComponentKind::scalar;
+  component.ordinal = 0;
+  component.type_descriptor_uuid = StableRawTypeDescriptorUuid();
+  component.payload = {group, suffix};
+  const auto encoded = idx::EncodeIndexKey({component}, {});
+  Require(encoded.ok(), "SBKO raw key encoding failed");
+  return encoded.encoded;
 }
 
 std::vector<platform::byte> RawEncodedPrefix(platform::byte group) {
   idx::IndexKeyEncodingComponent component;
   component.kind = idx::IndexKeyComponentKind::scalar;
   component.ordinal = 0;
-  component.type_descriptor_uuid =
-      GeneratedUuid(platform::UuidKind::object, 1700000000200ull, 0x22);
+  component.type_descriptor_uuid = StableRawTypeDescriptorUuid();
   component.payload = {group};
   const auto prefix = idx::BuildEncodedPrefixMatcher({component}, {});
   Require(prefix.ok(), "SBKO prefix matcher generation failed");
@@ -333,7 +351,11 @@ void ReplaceImagePage(page::IndexBtreePhysicalTreeImage* image,
   const auto built = page::BuildIndexBtreePageBody(body, image->page_size);
   if (!built.ok()) {
     std::cerr << "replacement page build failed diagnostic="
-              << built.diagnostic.diagnostic_code << '\n';
+              << built.diagnostic.diagnostic_code
+              << " page=" << body.page_number
+              << " kind=" << page::IndexBtreePageKindName(body.page_kind)
+              << " level=" << body.tree_level
+              << " cells=" << body.cells.size() << '\n';
     std::exit(EXIT_FAILURE);
   }
   for (auto& page_image : image->pages) {
@@ -755,7 +777,7 @@ void UnsafeLegacyKeyRefusal() {
 
 void InsertSplitRootSplit() {
   auto init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700000500000ull, 0x81), 400);
+      GeneratedUuid(platform::UuidKind::object, 1700000500000ull, 0x81), 768);
   Require(init.ok(), "physical tree initialization failed");
   page::IndexBtreePhysicalTree tree = std::move(init.tree);
 
@@ -802,7 +824,7 @@ void InsertSplitRootSplit() {
 
 void PhysicalScanContracts() {
   auto init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700000650000ull, 0xc8), 400);
+      GeneratedUuid(platform::UuidKind::object, 1700000650000ull, 0xc8), 768);
   Require(init.ok(), "scan tree initialization failed");
   page::IndexBtreePhysicalTree tree = std::move(init.tree);
 
@@ -879,7 +901,7 @@ void PhysicalScanContracts() {
                      "ordered-limit");
 
   auto prefix_init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700000660000ull, 0xc9), 400);
+      GeneratedUuid(platform::UuidKind::object, 1700000660000ull, 0xc9), 768);
   Require(prefix_init.ok(), "prefix tree initialization failed");
   page::IndexBtreePhysicalTree prefix_tree = std::move(prefix_init.tree);
   std::vector<page::IndexBtreeCell> prefix_cells = {
@@ -1022,7 +1044,7 @@ void DeleteLeafRebalanceAndMergeRootCollapse() {
   VerifyTreeOrderingAndMetadata(rebalance_tree, rebalance_insert_count - rebalance_deletes.size());
 
   const auto merge_index_uuid = GeneratedUuid(platform::UuidKind::object, 1700000900000ull, 0xf4);
-  constexpr platform::u32 merge_page_size = 400;
+  constexpr platform::u32 merge_page_size = 768;
   const std::size_t merge_capacity = MaxRootLeafCapacity(merge_index_uuid, merge_page_size);
   Require(merge_capacity >= 2, "merge test requires root leaf capacity >= 2");
   auto merge_init = page::InitializeIndexBtreePhysicalTree(merge_index_uuid, merge_page_size);
@@ -1147,7 +1169,7 @@ void DeleteCrossParentLeafStructuralCompactionRebuild() {
 
 void ConcurrentLatchStress() {
   auto init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700001000000ull, 0x11), 512);
+      GeneratedUuid(platform::UuidKind::object, 1700001000000ull, 0x11), 768);
   Require(init.ok(), "concurrent latch tree initialization failed");
   page::IndexBtreePhysicalTree tree = std::move(init.tree);
 
@@ -1294,7 +1316,7 @@ void ConcurrentLatchStress() {
 
 void CrashReopenImageValidation() {
   const auto index_uuid = GeneratedUuid(platform::UuidKind::object, 1700001100000ull, 0x21);
-  constexpr platform::u32 page_size = 400;
+  constexpr platform::u32 page_size = 768;
   const std::size_t capacity = MaxRootLeafCapacity(index_uuid, page_size);
   Require(capacity >= 2, "crash/reopen test requires root leaf capacity >= 2");
   auto init = page::InitializeIndexBtreePhysicalTree(index_uuid, page_size);
@@ -1470,7 +1492,7 @@ void LeafRangePartitionCorruptionRefusal() {
 
 page::IndexBtreePhysicalTree BuildRepairReportTree(std::vector<page::IndexBtreeCell>* live) {
   auto init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700001600000ull, 0x30), 400);
+      GeneratedUuid(platform::UuidKind::object, 1700001600000ull, 0x30), 768);
   Require(init.ok(), "repair/report tree initialization failed");
   page::IndexBtreePhysicalTree tree = std::move(init.tree);
   for (int i = 0; i < 24; ++i) {
@@ -1603,9 +1625,12 @@ void ValidationReportSupportBundleAndCorruptionClassification() {
   page::IndexBtreePageBody bad_fence_parent = root;
   for (auto& fence : bad_fence_parent.cells) {
     if (fence.child_page_number == first_child.page_number) {
-      fence.encoded_key = RawEncodedKey(0x00, 0x01);
-      fence.row_uuid = GeneratedUuid(platform::UuidKind::row, 1700001700000ull, 0x41);
-      fence.version_uuid = GeneratedUuid(platform::UuidKind::row, 1700001800000ull, 0x42);
+      const page::IndexBtreeCell smaller_child_fence = first_child.cells.front();
+      Require(CompareCells(smaller_child_fence, FenceForChild(first_child)) < 0,
+              "fence corruption setup needs a smaller same-domain child key");
+      fence.encoded_key = smaller_child_fence.encoded_key;
+      fence.row_uuid = smaller_child_fence.row_uuid;
+      fence.version_uuid = smaller_child_fence.version_uuid;
       break;
     }
   }
@@ -1650,6 +1675,10 @@ void ValidationReportSupportBundleAndCorruptionClassification() {
   page::IndexBtreeCell overlap = order_leaves[1].cells.front();
   overlap.row_uuid = GeneratedUuid(platform::UuidKind::row, 1700001900000ull, 0x43);
   overlap.version_uuid = GeneratedUuid(platform::UuidKind::row, 1700002000000ull, 0x44);
+  Require(CompareCells(overlap, order_leaves[1].cells.front()) > 0,
+          "crafted order overlap cell did not sort after right first cell");
+  Require(CompareCells(overlapping_left.cells[overlapping_left.cells.size() - 2], overlap) < 0,
+          "crafted order overlap cell would break local left page order");
   overlapping_left.cells.back() = overlap;
   ReplaceImagePage(&order_image, overlapping_left);
   page::IndexBtreePageBody order_parent = Fetch(order_tree, overlapping_left.parent_page_number);
@@ -1798,7 +1827,7 @@ void RebuildAndRepairSupportContracts() {
 
 void UniqueAtomicConflictPath() {
   auto init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700002200000ull, 0x50), 512);
+      GeneratedUuid(platform::UuidKind::object, 1700002200000ull, 0x50), 768);
   Require(init.ok(), "unique tree initialization failed");
   page::IndexBtreePhysicalTree tree = std::move(init.tree);
 
@@ -1838,7 +1867,7 @@ void UniqueAtomicConflictPath() {
   VerifyTreeOrderingAndMetadata(tree, 1);
 
   auto same_row_init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700002210000ull, 0x53), 512);
+      GeneratedUuid(platform::UuidKind::object, 1700002210000ull, 0x53), 768);
   Require(same_row_init.ok(), "same-row unique tree initialization failed");
   page::IndexBtreePhysicalTree same_row_tree = std::move(same_row_init.tree);
   page::IndexBtreePhysicalUniqueInsertRequest original;
@@ -1877,7 +1906,7 @@ void UniqueAtomicConflictPath() {
   VerifyTreeOrderingAndMetadata(same_row_tree, 2);
 
   auto null_distinct_init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700002240000ull, 0x57), 512);
+      GeneratedUuid(platform::UuidKind::object, 1700002240000ull, 0x57), 768);
   Require(null_distinct_init.ok(), "nulls-distinct unique tree initialization failed");
   page::IndexBtreePhysicalTree null_distinct_tree = std::move(null_distinct_init.tree);
   page::IndexBtreePhysicalUniqueInsertRequest null_a;
@@ -1897,7 +1926,7 @@ void UniqueAtomicConflictPath() {
   VerifyTreeOrderingAndMetadata(null_distinct_tree, 2);
 
   auto null_not_distinct_init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700002250000ull, 0x5a), 512);
+      GeneratedUuid(platform::UuidKind::object, 1700002250000ull, 0x5a), 768);
   Require(null_not_distinct_init.ok(), "nulls-not-distinct unique tree initialization failed");
   page::IndexBtreePhysicalTree null_not_distinct_tree = std::move(null_not_distinct_init.tree);
   page::IndexBtreePhysicalUniqueInsertRequest null_c;
@@ -1915,7 +1944,7 @@ void UniqueAtomicConflictPath() {
   VerifyTreeOrderingAndMetadata(null_not_distinct_tree, 1);
 
   auto partial_init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700002260000ull, 0x5d), 512);
+      GeneratedUuid(platform::UuidKind::object, 1700002260000ull, 0x5d), 768);
   Require(partial_init.ok(), "partial unique tree initialization failed");
   page::IndexBtreePhysicalTree partial_tree = std::move(partial_init.tree);
   page::IndexBtreePhysicalUniqueInsertRequest partial_false;
@@ -1942,7 +1971,7 @@ void UniqueAtomicConflictPath() {
 
 void UniqueConcurrentSameKeyRace() {
   auto init = page::InitializeIndexBtreePhysicalTree(
-      GeneratedUuid(platform::UuidKind::object, 1700002300000ull, 0x70), 512);
+      GeneratedUuid(platform::UuidKind::object, 1700002300000ull, 0x70), 768);
   Require(init.ok(), "unique race tree initialization failed");
   page::IndexBtreePhysicalTree tree = std::move(init.tree);
 

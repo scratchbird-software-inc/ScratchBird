@@ -941,6 +941,37 @@ void InsertCellSorted(std::vector<IndexBtreeCell>* cells, IndexBtreeCell cell) {
   cells->insert(position, std::move(cell));
 }
 
+std::optional<std::size_t> FindSerializableSplitPoint(
+    IndexBtreePageBody left,
+    IndexBtreePageBody right,
+    const std::vector<IndexBtreeCell>& cells,
+    u32 page_size) {
+  if (cells.size() < 2) {
+    return std::nullopt;
+  }
+  const std::size_t midpoint = cells.size() / 2;
+  std::optional<std::size_t> best_split;
+  std::size_t best_distance = cells.size();
+  for (std::size_t split = 1; split < cells.size(); ++split) {
+    left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(split));
+    right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(split), cells.end());
+    if (!BuildIndexBtreePageBody(left, page_size).ok() ||
+        !BuildIndexBtreePageBody(right, page_size).ok()) {
+      continue;
+    }
+    const std::size_t distance =
+        split > midpoint ? split - midpoint : midpoint - split;
+    if (!best_split.has_value() || distance < best_distance) {
+      best_split = split;
+      best_distance = distance;
+      if (distance == 0) {
+        break;
+      }
+    }
+  }
+  return best_split;
+}
+
 u64 SelectChildPage(const IndexBtreePageBody& parent, const IndexBtreeCell& key) {
   for (const IndexBtreeCell& fence : parent.cells) {
     if (CompareIndexBtreeCellsUnchecked(key, fence) <= 0) {
@@ -1181,7 +1212,6 @@ IndexBtreePhysicalInsertResult SplitRootLeaf(IndexBtreePhysicalTree* tree,
                                              std::vector<IndexBtreeCell> cells) {
   const u64 left_page_number = tree->next_page_number++;
   const u64 right_page_number = tree->next_page_number++;
-  const std::size_t split = cells.size() / 2;
 
   IndexBtreePageBody left;
   left.index_uuid = tree->index_uuid;
@@ -1190,7 +1220,6 @@ IndexBtreePhysicalInsertResult SplitRootLeaf(IndexBtreePhysicalTree* tree,
   left.right_sibling_page_number = right_page_number;
   left.page_kind = IndexBtreePageKind::leaf;
   left.tree_level = 0;
-  left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(split));
 
   IndexBtreePageBody right;
   right.index_uuid = tree->index_uuid;
@@ -1199,7 +1228,16 @@ IndexBtreePhysicalInsertResult SplitRootLeaf(IndexBtreePhysicalTree* tree,
   right.left_sibling_page_number = left_page_number;
   right.page_kind = IndexBtreePageKind::leaf;
   right.tree_level = 0;
-  right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(split), cells.end());
+
+  const auto split =
+      FindSerializableSplitPoint(left, right, cells, tree->page_size);
+  if (!split.has_value()) {
+    return PhysicalInsertError("SB-INDEX-BTREE-PHYSICAL-CELL-TOO-LARGE",
+                               "storage.index_btree_physical.cell_too_large",
+                               "root_leaf_split");
+  }
+  left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(*split));
+  right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(*split), cells.end());
 
   IndexBtreePageBody new_root = root;
   new_root.tree_level = 1;
@@ -1260,7 +1298,6 @@ IndexBtreePhysicalInsertResult SplitInternalPage(IndexBtreePhysicalTree* tree,
                                std::to_string(page.page_number));
   }
   SortCells(&cells);
-  const std::size_t split = cells.size() / 2;
 
   if (page.page_kind == IndexBtreePageKind::root) {
     const u64 left_page_number = tree->next_page_number++;
@@ -1273,7 +1310,6 @@ IndexBtreePhysicalInsertResult SplitInternalPage(IndexBtreePhysicalTree* tree,
     left.right_sibling_page_number = right_page_number;
     left.page_kind = IndexBtreePageKind::internal;
     left.tree_level = page.tree_level;
-    left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(split));
 
     IndexBtreePageBody right;
     right.index_uuid = tree->index_uuid;
@@ -1282,7 +1318,18 @@ IndexBtreePhysicalInsertResult SplitInternalPage(IndexBtreePhysicalTree* tree,
     right.left_sibling_page_number = left_page_number;
     right.page_kind = IndexBtreePageKind::internal;
     right.tree_level = page.tree_level;
-    right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(split), cells.end());
+
+    const auto root_split =
+        FindSerializableSplitPoint(left, right, cells, tree->page_size);
+    if (!root_split.has_value()) {
+      return PhysicalInsertError("SB-INDEX-BTREE-PHYSICAL-INTERNAL-SPLIT-INVALID",
+                                 "storage.index_btree_physical.internal_split_invalid",
+                                 "root_internal_split");
+    }
+    left.cells.assign(cells.begin(),
+                      cells.begin() + static_cast<std::ptrdiff_t>(*root_split));
+    right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(*root_split),
+                       cells.end());
 
     IndexBtreePageBody new_root = page;
     new_root.parent_page_number = 0;
@@ -1352,7 +1399,6 @@ IndexBtreePhysicalInsertResult SplitInternalPage(IndexBtreePhysicalTree* tree,
 
   const u64 right_page_number = tree->next_page_number++;
   IndexBtreePageBody left = page;
-  left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(split));
   left.right_sibling_page_number = right_page_number;
 
   IndexBtreePageBody right;
@@ -1363,7 +1409,18 @@ IndexBtreePhysicalInsertResult SplitInternalPage(IndexBtreePhysicalTree* tree,
   right.right_sibling_page_number = page.right_sibling_page_number;
   right.page_kind = IndexBtreePageKind::internal;
   right.tree_level = page.tree_level;
-  right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(split), cells.end());
+
+  const auto non_root_split =
+      FindSerializableSplitPoint(left, right, cells, tree->page_size);
+  if (!non_root_split.has_value()) {
+    return PhysicalInsertError("SB-INDEX-BTREE-PHYSICAL-INTERNAL-SPLIT-INVALID",
+                               "storage.index_btree_physical.internal_split_invalid",
+                               "non_root_internal_split");
+  }
+  left.cells.assign(cells.begin(),
+                    cells.begin() + static_cast<std::ptrdiff_t>(*non_root_split));
+  right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(*non_root_split),
+                     cells.end());
 
   std::optional<IndexBtreePageBody> old_right;
   if (page.right_sibling_page_number != 0) {
@@ -1433,10 +1490,8 @@ IndexBtreePhysicalInsertResult SplitNonRootLeaf(IndexBtreePhysicalTree* tree,
                                                 const IndexBtreePageBody& leaf,
                                                 std::vector<IndexBtreeCell> cells) {
   const u64 right_page_number = tree->next_page_number++;
-  const std::size_t split = cells.size() / 2;
 
   IndexBtreePageBody left = leaf;
-  left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(split));
   left.right_sibling_page_number = right_page_number;
 
   IndexBtreePageBody right;
@@ -1447,7 +1502,16 @@ IndexBtreePhysicalInsertResult SplitNonRootLeaf(IndexBtreePhysicalTree* tree,
   right.right_sibling_page_number = leaf.right_sibling_page_number;
   right.page_kind = IndexBtreePageKind::leaf;
   right.tree_level = 0;
-  right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(split), cells.end());
+
+  const auto split =
+      FindSerializableSplitPoint(left, right, cells, tree->page_size);
+  if (!split.has_value()) {
+    return PhysicalInsertError("SB-INDEX-BTREE-PHYSICAL-CELL-TOO-LARGE",
+                               "storage.index_btree_physical.cell_too_large",
+                               "non_root_leaf_split");
+  }
+  left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(*split));
+  right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(*split), cells.end());
 
   std::optional<IndexBtreePageBody> old_right;
   if (leaf.right_sibling_page_number != 0) {

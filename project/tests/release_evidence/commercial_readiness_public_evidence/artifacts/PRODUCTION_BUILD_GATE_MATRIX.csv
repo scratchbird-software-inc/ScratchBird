@@ -1,0 +1,3 @@
+gate_id,source_anchor,status,validation
+production_build_cmake_gate,project/CMakeLists.txt,completed,commercial production build CMake gate anchor present
+production_build_safety_gate,project/cmake/CommercialReadinessProductionBuildGate.cmake,completed,CRP production build safety gate anchor present

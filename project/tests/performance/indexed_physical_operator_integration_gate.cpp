@@ -54,11 +54,11 @@ std::string UuidText(platform::UuidKind kind,
   return uuid::UuidToString(GeneratedUuid(kind, millis, suffix).value);
 }
 
-std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
+std::vector<platform::byte> EncodedKey(const std::string& key_descriptor_uuid,
                                        const std::string& key) {
   const auto descriptor_uuid =
       uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           index_uuid);
+                                           key_descriptor_uuid);
   Require(descriptor_uuid.ok(), "index uuid parse for key encoding failed");
   idx::IndexKeyEncodingComponent component;
   component.kind = idx::IndexKeyComponentKind::scalar;
@@ -70,13 +70,13 @@ std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
   return encoded.encoded;
 }
 
-page::IndexBtreePhysicalScanBound Bound(const std::string& index_uuid,
+page::IndexBtreePhysicalScanBound Bound(const std::string& key_descriptor_uuid,
                                         const std::string& key,
                                         bool inclusive = true) {
   page::IndexBtreePhysicalScanBound bound;
   bound.unbounded = false;
   bound.inclusive = inclusive;
-  bound.encoded_key = EncodedKey(index_uuid, key);
+  bound.encoded_key = EncodedKey(key_descriptor_uuid, key);
   return bound;
 }
 
@@ -90,13 +90,13 @@ page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
   return std::move(initialized.tree);
 }
 
-page::IndexBtreeCell Cell(const std::string& index_uuid,
+page::IndexBtreeCell Cell(const std::string& key_descriptor_uuid,
                           const std::string& key,
                           const std::string& row_uuid,
                           platform::byte version_suffix) {
   page::IndexBtreeCell cell;
   cell.key_ordinal = 0;
-  cell.encoded_key = EncodedKey(index_uuid, key);
+  cell.encoded_key = EncodedKey(key_descriptor_uuid, key);
   const auto parsed_row =
       uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::row,
                                            row_uuid);
@@ -178,6 +178,8 @@ exec::IndexedPhysicalOperatorRequest BaseRequest(
 struct Fixture {
   std::string index_uuid =
       UuidText(platform::UuidKind::object, 1700101000000ull, 0x41);
+  std::string key_descriptor_uuid =
+      UuidText(platform::UuidKind::object, 1700101001000ull, 0x42);
   std::string row_alpha =
       UuidText(platform::UuidKind::row, 1700102000000ull, 0x51);
   std::string row_bravo =
@@ -189,10 +191,10 @@ struct Fixture {
   page::IndexBtreePhysicalTree tree = MakeTree(index_uuid);
 
   Fixture() {
-    InsertCell(&tree, Cell(index_uuid, "alpha", row_alpha, 0x61));
-    InsertCell(&tree, Cell(index_uuid, "bravo", row_bravo, 0x62));
-    InsertCell(&tree, Cell(index_uuid, "charlie", row_charlie, 0x63));
-    InsertCell(&tree, Cell(index_uuid, "delta", row_delta, 0x64));
+    InsertCell(&tree, Cell(key_descriptor_uuid, "alpha", row_alpha, 0x61));
+    InsertCell(&tree, Cell(key_descriptor_uuid, "bravo", row_bravo, 0x62));
+    InsertCell(&tree, Cell(key_descriptor_uuid, "charlie", row_charlie, 0x63));
+    InsertCell(&tree, Cell(key_descriptor_uuid, "delta", row_delta, 0x64));
   }
 };
 
@@ -201,7 +203,7 @@ void TestPointRangeAndOrderedLimit() {
 
   auto point = BaseRequest(exec::IndexedPhysicalOperatorKind::point_lookup,
                            &fixture.tree);
-  point.encoded_point_key = EncodedKey(fixture.index_uuid, "bravo");
+  point.encoded_point_key = EncodedKey(fixture.key_descriptor_uuid, "bravo");
   auto result = exec::ExecuteIndexedPhysicalOperator(point);
   RequireCommonPhysicalEvidence(result, "point_lookup");
   Require(result.locators.size() == 1 &&
@@ -210,8 +212,8 @@ void TestPointRangeAndOrderedLimit() {
 
   auto range = BaseRequest(exec::IndexedPhysicalOperatorKind::range_scan,
                            &fixture.tree);
-  range.lower_bound = Bound(fixture.index_uuid, "bravo");
-  range.upper_bound = Bound(fixture.index_uuid, "delta", false);
+  range.lower_bound = Bound(fixture.key_descriptor_uuid, "bravo");
+  range.upper_bound = Bound(fixture.key_descriptor_uuid, "delta", false);
   result = exec::ExecuteIndexedPhysicalOperator(range);
   RequireCommonPhysicalEvidence(result, "range_scan");
   Require(result.locators.size() == 2, "range scan locator count mismatch");
@@ -240,13 +242,13 @@ void TestIndexedNestedLoopAndRuntimeFilter() {
       &fixture.tree);
   exec::IndexedPhysicalOuterProbe probe1;
   probe1.outer_ordinal = 7;
-  probe1.encoded_key = EncodedKey(fixture.index_uuid, "alpha");
+  probe1.encoded_key = EncodedKey(fixture.key_descriptor_uuid, "alpha");
   nested.outer_probes.push_back(probe1);
   exec::IndexedPhysicalOuterProbe probe2;
   probe2.outer_ordinal = 8;
   probe2.range_probe = true;
-  probe2.lower_bound = Bound(fixture.index_uuid, "charlie");
-  probe2.upper_bound = Bound(fixture.index_uuid, "delta");
+  probe2.lower_bound = Bound(fixture.key_descriptor_uuid, "charlie");
+  probe2.upper_bound = Bound(fixture.key_descriptor_uuid, "delta");
   nested.outer_probes.push_back(probe2);
   auto result = exec::ExecuteIndexedPhysicalOperator(nested);
   RequireCommonPhysicalEvidence(result, "indexed_nested_loop");
@@ -261,8 +263,8 @@ void TestIndexedNestedLoopAndRuntimeFilter() {
 
   auto filter = BaseRequest(exec::IndexedPhysicalOperatorKind::runtime_filter,
                             &fixture.tree);
-  filter.runtime_filter_keys.push_back(EncodedKey(fixture.index_uuid, "bravo"));
-  filter.runtime_filter_keys.push_back(EncodedKey(fixture.index_uuid, "delta"));
+  filter.runtime_filter_keys.push_back(EncodedKey(fixture.key_descriptor_uuid, "bravo"));
+  filter.runtime_filter_keys.push_back(EncodedKey(fixture.key_descriptor_uuid, "delta"));
   result = exec::ExecuteIndexedPhysicalOperator(filter);
   RequireCommonPhysicalEvidence(result, "runtime_filter");
   Require(result.locators.size() == 2, "runtime filter locator count mismatch");
@@ -277,17 +279,17 @@ void TestMergeOrderedInput() {
   const std::string right_index_uuid =
       UuidText(platform::UuidKind::object, 1700103000000ull, 0x71);
   auto right = MakeTree(right_index_uuid);
-  InsertCell(&right, Cell(right_index_uuid, "alpha",
+  InsertCell(&right, Cell(left.key_descriptor_uuid, "alpha",
                          UuidText(platform::UuidKind::row,
                                   1700104000000ull,
                                   0x81),
                          0x91));
-  InsertCell(&right, Cell(right_index_uuid, "charlie",
+  InsertCell(&right, Cell(left.key_descriptor_uuid, "charlie",
                          UuidText(platform::UuidKind::row,
                                   1700104001000ull,
                                   0x82),
                          0x92));
-  InsertCell(&right, Cell(right_index_uuid, "echo",
+  InsertCell(&right, Cell(left.key_descriptor_uuid, "echo",
                          UuidText(platform::UuidKind::row,
                                   1700104002000ull,
                                   0x83),
@@ -341,7 +343,7 @@ void TestFailClosedDiagnostics() {
       &fixture.tree);
   exec::IndexedPhysicalOuterProbe point_probe;
   point_probe.outer_ordinal = 1;
-  point_probe.encoded_key = EncodedKey(fixture.index_uuid, "alpha");
+  point_probe.encoded_key = EncodedKey(fixture.key_descriptor_uuid, "alpha");
   nested_missing_key_proof.outer_probes.push_back(point_probe);
   nested_missing_key_proof.encoded_key_proof = false;
   result = exec::ExecuteIndexedPhysicalOperator(nested_missing_key_proof);
@@ -363,8 +365,8 @@ void TestFailClosedDiagnostics() {
   exec::IndexedPhysicalOuterProbe range_probe;
   range_probe.outer_ordinal = 2;
   range_probe.range_probe = true;
-  range_probe.lower_bound = Bound(fixture.index_uuid, "alpha");
-  range_probe.upper_bound = Bound(fixture.index_uuid, "bravo");
+  range_probe.lower_bound = Bound(fixture.key_descriptor_uuid, "alpha");
+  range_probe.upper_bound = Bound(fixture.key_descriptor_uuid, "bravo");
   nested_missing_bounds_proof.outer_probes.push_back(range_probe);
   nested_missing_bounds_proof.encoded_bounds_proof = false;
   result = exec::ExecuteIndexedPhysicalOperator(nested_missing_bounds_proof);
@@ -393,7 +395,7 @@ void TestFailClosedDiagnostics() {
       exec::IndexedPhysicalOperatorKind::runtime_filter,
       &fixture.tree);
   runtime_filter_missing_key_proof.runtime_filter_keys.push_back(
-      EncodedKey(fixture.index_uuid, "alpha"));
+      EncodedKey(fixture.key_descriptor_uuid, "alpha"));
   runtime_filter_missing_key_proof.encoded_key_proof = false;
   result = exec::ExecuteIndexedPhysicalOperator(runtime_filter_missing_key_proof);
   Require(!result.ok &&

@@ -3,7 +3,7 @@
   "category": "driver",
   "name": "julia",
   "driver_family": "julia",
-  "status": "beta_2",
+  "status": "planned_not_implemented",
   "wire_protocol": "sbwp_v1_1",
   "auth_authority": "engine",
   "transaction_authority": "mga_engine",

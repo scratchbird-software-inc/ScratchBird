@@ -21,6 +21,9 @@ namespace {
 namespace mem = scratchbird::core::memory;
 namespace platform = scratchbird::core::platform;
 
+constexpr std::string_view kProtectedMemoryAuthorityScope =
+    "protected_memory_evidence_only_not_transaction_finality_visibility_security_authorization_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_or_agent_action_authority";
+
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
   std::exit(EXIT_FAILURE);
@@ -122,7 +125,7 @@ void ProtectedAllocationZeroizeAndRelease() {
   Require(!protected_buffer.evidence.platform_name.empty(),
           "MMCH-015 protected allocation omitted platform name");
   Require(protected_buffer.evidence.authority_scope ==
-              "protected_memory_evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority",
+              kProtectedMemoryAuthorityScope,
           "MMCH-015 protected allocation authority scope changed");
   Require(AllBytesEqual(protected_buffer.buffer.data(), protected_buffer.buffer.size(), 0),
           "MMCH-015 protected allocation was not zeroed");
@@ -165,7 +168,7 @@ void ProtectedDiagnosticRedactsMaterialClass() {
           "MMCH-015 protected material class was not redacted");
   Require(DiagnosticArgEquals(rejected.diagnostic,
                               "protected_memory_authority_scope",
-                              "protected_memory_evidence_only_not_transaction_finality_visibility_security_recovery_parser_reference_or_benchmark_authority"),
+                              kProtectedMemoryAuthorityScope),
           "MMCH-015 protected diagnostic authority scope changed");
   Require(!DiagnosticContainsValue(rejected.diagnostic, "actual-secret-value"),
           "MMCH-015 protected diagnostic leaked raw password material");

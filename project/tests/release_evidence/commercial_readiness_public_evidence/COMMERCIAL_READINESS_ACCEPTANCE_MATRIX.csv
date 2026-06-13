@@ -1,0 +1,4 @@
+gate_id,title,status,validation
+CRP-GATE-001,Manifest evidence fixture gate,completed,commercial readiness fixture rows are complete
+CRP-GATE-020,Release evidence fixture gate,completed,release provenance fixture rows are complete
+CRP-GATE-900,Final audit fixture gate,completed,final audit fixture contains required closure statements
