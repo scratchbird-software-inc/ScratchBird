@@ -1,0 +1,113 @@
+{
+  "corpus_id": "shared_sbsql_commands",
+  "description": "Shared SBSQL command fixture cases for beta drivers and tools. These are static request/response expectations, not executable SQL.",
+  "cases": [
+    {
+      "case_id": "BDRV-SBSQL-001",
+      "category": "sbsql_command_surface",
+      "command_surface": "prepare_select_by_uuid",
+      "coverage": [
+        "driver_sbsql_command_surface",
+        "sblr_uuid_server_revalidation"
+      ],
+      "driver_request": {
+        "operation": "PrepareSblr",
+        "sbsql_text": "select customer_id, display_name from app.customers where customer_id = ?",
+        "client_sblr_digest": "sha256:fixture-client-sblr-select-customer",
+        "uuid_bindings": [
+          {
+            "kind": "relation",
+            "uuid": "018f0a2b-0000-7000-9000-000000000101",
+            "path": "app.customers"
+          }
+        ]
+      },
+      "expected_server_admission": {
+        "revalidate_authorization": true,
+        "revalidate_sblr_digest": true,
+        "revalidate_uuid_bindings": true,
+        "revalidate_catalog_epoch": true
+      },
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-SBSQL-002",
+      "category": "sblr_uuid_server_revalidation",
+      "command_surface": "execute_prepared_sblr_with_stale_uuid",
+      "coverage": [
+        "sblr_uuid_server_revalidation",
+        "authorization_filtered_uuid_path_resolution",
+        "cache_lifecycle"
+      ],
+      "driver_request": {
+        "operation": "ExecutePreparedSblr",
+        "prepared_statement_id": "stmt-fixture-stale-uuid",
+        "client_sblr_digest": "sha256:fixture-client-sblr-stale-object",
+        "uuid_bindings": [
+          {
+            "kind": "relation",
+            "uuid": "018f0a2b-0000-7000-9000-000000000102",
+            "path": "app.orders"
+          }
+        ],
+        "client_catalog_epoch": 41
+      },
+      "expected_refusal": {
+        "diagnostic": "SB_DRIVER_REVALIDATION_REQUIRED",
+        "reason": "server catalog epoch or UUID binding differs from the driver cache"
+      },
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-SBSQL-003",
+      "category": "sbsql_command_surface",
+      "command_surface": "describe_authorized_relation",
+      "coverage": [
+        "driver_sbsql_command_surface",
+        "authorization_filtered_uuid_path_resolution"
+      ],
+      "driver_request": {
+        "operation": "DescribeObject",
+        "path": "app.payroll_private",
+        "language_profile": "en-US"
+      },
+      "expected_refusal": {
+        "diagnostic": "SB_AUTH_OBJECT_NOT_VISIBLE",
+        "reason": "driver-visible names are filtered by the effective server authorization context"
+      },
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-SBSQL-004",
+      "category": "sbsql_command_surface",
+      "command_surface": "render_server_diagnostic",
+      "coverage": [
+        "driver_sbsql_command_surface",
+        "language_fallback_standard_en"
+      ],
+      "driver_request": {
+        "operation": "RenderDiagnostic",
+        "diagnostic_code": "SB_AUTH_OBJECT_NOT_VISIBLE",
+        "requested_language": "fr-CA",
+        "fallback_language": "en-US"
+      },
+      "expected_server_admission": {
+        "canonical_diagnostic_code_required": true,
+        "localized_text_is_not_authority": true
+      },
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-SCOPE-DBEAVER-001",
+      "category": "scope_exclusion",
+      "command_surface": "adapter_scope_filter",
+      "coverage": [
+        "dbeaver_exclusion"
+      ],
+      "excluded_adapter": "scratchbird-dbeaver-driver",
+      "expected_behavior": "release fixture discovery must skip DBeaver-specific adapter paths for this corpus",
+      "server_revalidation": "not_applicable"
+    }
+  ],
+  "default_expected_boundary": "Drivers and tools may send prepared hints only; server-side admission, SBLR validation, UUID resolution, security, and MGA transaction authority remain server-owned."
+}

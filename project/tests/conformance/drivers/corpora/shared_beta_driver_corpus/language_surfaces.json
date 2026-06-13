@@ -1,0 +1,169 @@
+{
+  "corpus_id": "language_surfaces",
+  "description": "Language profile rendering and fallback fixtures for shared driver resource packs.",
+  "profiles": [
+    {
+      "language_tag": "en-US",
+      "fallback_chain": [
+        "en-US",
+        "en"
+      ],
+      "standard_english_fallback": true
+    },
+    {
+      "language_tag": "en-CA",
+      "fallback_chain": [
+        "en-CA",
+        "en"
+      ],
+      "standard_english_fallback": true
+    },
+    {
+      "language_tag": "fr-CA",
+      "fallback_chain": [
+        "fr-CA",
+        "fr-FR",
+        "en"
+      ],
+      "standard_english_fallback": true
+    },
+    {
+      "language_tag": "fr-FR",
+      "fallback_chain": [
+        "fr-FR",
+        "en"
+      ],
+      "standard_english_fallback": true
+    },
+    {
+      "language_tag": "de-DE",
+      "fallback_chain": [
+        "de-DE",
+        "en"
+      ],
+      "standard_english_fallback": true
+    },
+    {
+      "language_tag": "it-IT",
+      "fallback_chain": [
+        "it-IT",
+        "en"
+      ],
+      "standard_english_fallback": true
+    },
+    {
+      "language_tag": "es-ES",
+      "fallback_chain": [
+        "es-ES",
+        "en"
+      ],
+      "standard_english_fallback": true
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "BDRV-LANG-001",
+      "category": "language_rendering",
+      "coverage": [
+        "language_surface_en-US"
+      ],
+      "language_tag": "en-US",
+      "canonical_surface_id": "SB_DIAG_AUTH_OBJECT_NOT_VISIBLE",
+      "expected_rendering_key": "auth.object_not_visible",
+      "localized_text_is_not_authority": true,
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-LANG-002",
+      "category": "language_rendering",
+      "coverage": [
+        "language_surface_en-CA"
+      ],
+      "language_tag": "en-CA",
+      "canonical_surface_id": "SB_DIAG_AUTH_OBJECT_NOT_VISIBLE",
+      "expected_rendering_key": "auth.object_not_visible",
+      "localized_text_is_not_authority": true,
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-LANG-003",
+      "category": "language_rendering",
+      "coverage": [
+        "language_surface_fr-CA"
+      ],
+      "language_tag": "fr-CA",
+      "canonical_surface_id": "SB_DIAG_AUTH_OBJECT_NOT_VISIBLE",
+      "expected_rendering_key": "auth.object_not_visible",
+      "localized_text_is_not_authority": true,
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-LANG-004",
+      "category": "language_rendering",
+      "coverage": [
+        "language_surface_fr-FR"
+      ],
+      "language_tag": "fr-FR",
+      "canonical_surface_id": "SB_DIAG_AUTH_OBJECT_NOT_VISIBLE",
+      "expected_rendering_key": "auth.object_not_visible",
+      "localized_text_is_not_authority": true,
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-LANG-005",
+      "category": "language_rendering",
+      "coverage": [
+        "language_surface_de-DE"
+      ],
+      "language_tag": "de-DE",
+      "canonical_surface_id": "SB_DIAG_AUTH_OBJECT_NOT_VISIBLE",
+      "expected_rendering_key": "auth.object_not_visible",
+      "localized_text_is_not_authority": true,
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-LANG-006",
+      "category": "language_rendering",
+      "coverage": [
+        "language_surface_it-IT"
+      ],
+      "language_tag": "it-IT",
+      "canonical_surface_id": "SB_DIAG_AUTH_OBJECT_NOT_VISIBLE",
+      "expected_rendering_key": "auth.object_not_visible",
+      "localized_text_is_not_authority": true,
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-LANG-007",
+      "category": "language_rendering",
+      "coverage": [
+        "language_surface_es-ES"
+      ],
+      "language_tag": "es-ES",
+      "canonical_surface_id": "SB_DIAG_AUTH_OBJECT_NOT_VISIBLE",
+      "expected_rendering_key": "auth.object_not_visible",
+      "localized_text_is_not_authority": true,
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-LANG-008",
+      "category": "language_fallback",
+      "coverage": [
+        "language_fallback_standard_en"
+      ],
+      "requested_language": "es-MX",
+      "available_profiles": [
+        "es-ES",
+        "en-US"
+      ],
+      "expected_fallback_chain": [
+        "es-ES",
+        "en-US"
+      ],
+      "canonical_surface_id": "SB_DIAG_AUTH_OBJECT_NOT_VISIBLE",
+      "localized_text_is_not_authority": true,
+      "server_revalidation": "required"
+    }
+  ],
+  "default_expected_boundary": "Language profiles change only user-facing rendering; canonical SBSQL surface IDs, SBLR operation families, UUID identity, security, and transaction authority do not change by locale."
+}

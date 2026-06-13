@@ -47,8 +47,14 @@ const {
   KeepaliveManager,
   LeakDetector,
   TelemetryCollector,
+  betaDriverReadinessStatus,
+  resolveLanguageProfile,
+  validateAdvisoryCacheContext,
+  validateLanguageResourceState,
+  validatePreparedBundleReuse,
 } = require("../dist/index.js");
 const { AuthMethod, MessageType, applyAuthPluginSelection } = require("../dist/protocol.js");
+const packageMetadata = require("../package.json");
 
 test("parseDsn supports uri", () => {
   const cfg = parseDsn("scratchbird://user:pass@localhost:3092/db?sslmode=require");
@@ -58,6 +64,82 @@ test("parseDsn supports uri", () => {
   assert.equal(cfg.password, "pass");
   assert.equal(cfg.database, "db");
   assert.equal(cfg.sslmode, "require");
+});
+
+test("beta readiness status matches manifest lane and authority boundary", () => {
+  const status = betaDriverReadinessStatus();
+  assert.equal(status.component_id, "driver:node");
+  assert.equal(status.driver_package_uuid, "019e12a0-0008-7000-8000-000000000008");
+  assert.equal(status.driver_status, "beta_2");
+  assert.equal(status.release_bucket, "release_candidate");
+  assert.equal(status.conformance_profile_ref, "driver_node_gate");
+  assert.equal(status.authority_boundary.server_revalidation_required, true);
+  assert.equal(status.authority_boundary.local_sblr_is_advisory, true);
+  assert.equal(status.authority_boundary.local_uuid_cache_is_advisory, true);
+  assert.equal(status.authority_boundary.transaction_finality_owner, "engine_mga_transaction_inventory");
+  assert.ok(status.runtime_mapping.dsn_keys.includes("auth_method"));
+});
+
+test("advisory cache context refuses stale epochs and transaction reuse", () => {
+  const current = {
+    databaseUuid: "db-1",
+    schemaEpoch: "schema-2",
+    policyEpoch: "policy-2",
+    languageEpoch: "lang-2",
+    capabilityEpoch: "cap-2",
+    principalUuid: "principal-1",
+    roleSetHash: "role-a",
+    groupSetHash: "group-a",
+    transactionUuid: "txn-2",
+  };
+  let diag = validateAdvisoryCacheContext({ ...current, policyEpoch: "policy-1" }, current);
+  assert.equal(diag.code, "SB_DRIVER_CACHE_POLICY_EPOCH_STALE");
+  assert.equal(diag.sqlstate, "42501");
+
+  diag = validateAdvisoryCacheContext({ ...current, transactionUuid: "txn-1" }, current);
+  assert.equal(diag.code, "SB_DRIVER_CACHE_TRANSACTION_CONTEXT_MISMATCH");
+  assert.equal(diag.sqlstate, "25001");
+  assert.equal(validateAdvisoryCacheContext(current, current), undefined);
+});
+
+test("prepared bundle reuse requires server admission and matching context", () => {
+  const current = {
+    databaseUuid: "db-1",
+    schemaEpoch: "schema-1",
+    policyEpoch: "policy-1",
+    principalUuid: "principal-1",
+    transactionUuid: "txn-1",
+  };
+  let diag = validatePreparedBundleReuse({ ...current, serverAdmitted: false }, current);
+  assert.equal(diag.code, "SB_DRIVER_SBLR_SERVER_ADMISSION_REQUIRED");
+
+  diag = validatePreparedBundleReuse({ ...current, databaseUuid: "db-2", serverAdmitted: true }, current);
+  assert.equal(diag.code, "SB_DRIVER_CACHE_DATABASE_MISMATCH");
+});
+
+test("language resources fall back to standard English and reject stale epochs", () => {
+  let resolved = resolveLanguageProfile("fr_CA", { en_US: true });
+  assert.equal(resolved.selected, "en_US");
+  assert.equal(resolved.fallback, true);
+
+  resolved = resolveLanguageProfile("fr_CA", { en_US: true, fr_CA: true });
+  assert.equal(resolved.selected, "fr_CA");
+  assert.equal(resolved.fallback, false);
+
+  const diag = validateLanguageResourceState({
+    locale: "fr_CA",
+    schemaVersion: "1",
+    contentHash: "sha256:abc",
+    signature: "sig",
+    epoch: "lang-1",
+    expectedEpoch: "lang-2",
+  });
+  assert.equal(diag.code, "SB_DRIVER_LANGUAGE_RESOURCE_EPOCH_STALE");
+});
+
+test("package smoke reports MPL license", () => {
+  assert.equal(packageMetadata.name, "scratchbird");
+  assert.equal(packageMetadata.license, "MPL-2.0");
 });
 
 test("parseDsn supports key-value", () => {

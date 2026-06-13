@@ -1,0 +1,97 @@
+{
+  "corpus_id": "schema_resolution",
+  "description": "Authorization-filtered UUID/path resolution fixtures shared by beta drivers and command-line tools.",
+  "cases": [
+    {
+      "case_id": "BDRV-SCHEMA-001",
+      "category": "authorization_filtered_uuid_path_resolution",
+      "coverage": [
+        "authorization_filtered_uuid_path_resolution",
+        "sblr_uuid_server_revalidation"
+      ],
+      "resolution_direction": "path_to_uuid",
+      "request": {
+        "path": "app.customers",
+        "visible_to_roles": [
+          "report_reader"
+        ]
+      },
+      "expected_result": {
+        "uuid": "018f0a2b-0000-7000-9000-000000000101",
+        "redacted_paths": []
+      },
+      "authorization_filter": "required",
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-SCHEMA-002",
+      "category": "authorization_filtered_uuid_path_resolution",
+      "coverage": [
+        "authorization_filtered_uuid_path_resolution"
+      ],
+      "resolution_direction": "path_to_uuid",
+      "request": {
+        "path": "app.payroll_private",
+        "visible_to_roles": [
+          "payroll_admin"
+        ],
+        "requesting_roles": [
+          "report_reader"
+        ]
+      },
+      "expected_refusal": {
+        "diagnostic": "SB_AUTH_OBJECT_NOT_VISIBLE",
+        "reason": "server must not disclose whether a filtered path exists"
+      },
+      "authorization_filter": "required",
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-SCHEMA-003",
+      "category": "authorization_filtered_uuid_path_resolution",
+      "coverage": [
+        "authorization_filtered_uuid_path_resolution",
+        "cache_lifecycle"
+      ],
+      "resolution_direction": "uuid_to_path",
+      "request": {
+        "uuid": "018f0a2b-0000-7000-9000-000000000301",
+        "requesting_roles": [
+          "report_reader"
+        ],
+        "driver_cached_path": "app.payroll_private"
+      },
+      "expected_refusal": {
+        "diagnostic": "SB_AUTH_OBJECT_NOT_VISIBLE",
+        "reason": "UUID to path resolution is authorization-filtered and may not reveal hidden object names"
+      },
+      "authorization_filter": "required",
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-SCHEMA-004",
+      "category": "authorization_filtered_uuid_path_resolution",
+      "coverage": [
+        "authorization_filtered_uuid_path_resolution",
+        "cache_lifecycle"
+      ],
+      "resolution_direction": "uuid_to_path",
+      "request": {
+        "uuid": "018f0a2b-0000-7000-9000-000000000302",
+        "requesting_roles": [
+          "report_reader"
+        ],
+        "driver_cached_path": "app.old_customer_name",
+        "client_catalog_epoch": 8,
+        "server_catalog_epoch": 9
+      },
+      "expected_result": {
+        "path": "app.customer_profiles",
+        "cache_invalidation": "required"
+      },
+      "authorization_filter": "required",
+      "server_revalidation": "required"
+    }
+  ],
+  "default_expected_boundary": "UUID and path caches are filtered by effective authorization and catalog epoch; stale or unauthorized mappings fail closed."
+}

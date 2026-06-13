@@ -93,6 +93,7 @@ export {
 } from "./protocol";
 export * from "./metadata";
 export * from "./errors";
+export * from "./readiness";
 export * from "./circuit_breaker";
 export * from "./keepalive";
 export * from "./leak_detector";

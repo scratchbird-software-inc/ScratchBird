@@ -1,0 +1,53 @@
+{
+  "artifact_role": "driver_resource_soak_performance_requirements",
+  "authority_boundary": "Performance soak requirements are declarative targets for later live gates. This file is validated statically only.",
+  "budgets": [
+    {
+      "budget_id": "BDRV-PERF-001",
+      "category": "resource_soak_requirement",
+      "coverage": [
+        "resource_soak_requirement",
+        "cache_lifecycle"
+      ],
+      "name": "driver_cache_generation_churn",
+      "minimum_declared_cycles": 1000,
+      "maximum_stale_cache_acceptances": 0,
+      "requires_live_driver": false
+    },
+    {
+      "budget_id": "BDRV-PERF-002",
+      "category": "resource_soak_requirement",
+      "coverage": [
+        "resource_soak_requirement",
+        "wire_transcript_oracle"
+      ],
+      "name": "wire_revalidation_transcript_sampling",
+      "minimum_sampled_oracles": 3,
+      "maximum_driver_finality_frames": 0,
+      "requires_live_driver": false
+    },
+    {
+      "budget_id": "BDRV-PERF-003",
+      "category": "resource_soak_requirement",
+      "coverage": [
+        "resource_soak_requirement",
+        "language_fallback_standard_en"
+      ],
+      "name": "language_resource_pack_fallback",
+      "required_profiles": [
+        "en-US",
+        "en-CA",
+        "fr-CA",
+        "fr-FR",
+        "de-DE",
+        "it-IT",
+        "es-ES"
+      ],
+      "maximum_missing_standard_english_fallbacks": 0,
+      "requires_live_driver": false
+    }
+  ],
+  "driver_soak_requirements_id": "BDRV-PERF-RESOURCE-SOAK-001",
+  "requires_live_driver": false,
+  "resource_soak_requirements_id": "BDRV-RESOURCE-SOAK-001"
+}

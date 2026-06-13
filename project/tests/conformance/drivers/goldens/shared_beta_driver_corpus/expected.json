@@ -1,0 +1,55 @@
+{
+  "artifact_role": "shared_beta_driver_conformance_golden_expectation",
+  "does_not_close_live_driver_gates": true,
+  "expected_case_counts": {
+    "auth_injection": 4,
+    "cache_lifecycle": 4,
+    "language_surfaces": 8,
+    "schema_resolution": 4,
+    "shared_sbsql_commands": 5,
+    "wire_transcript_oracles": 3
+  },
+  "expected_fixture_state": "static_corpus_valid",
+  "expected_language_profiles": [
+    "en-US",
+    "en-CA",
+    "fr-CA",
+    "fr-FR",
+    "de-DE",
+    "it-IT",
+    "es-ES"
+  ],
+  "expected_static_inputs": [
+    "project/tests/conformance/resources/driver_resource_soak_requirements.json",
+    "project/tests/security/driver_auth_replay_refusal_corpus.json",
+    "project/tests/performance/driver_resource_soak_requirements.json"
+  ],
+  "fixture_id": "BDRV-FIX-SHARED-001",
+  "required_coverage": [
+    "driver_sbsql_command_surface",
+    "auth_context_injection",
+    "sblr_uuid_server_revalidation",
+    "cross_user_replay_refusal",
+    "role_group_replay_refusal",
+    "authorization_filtered_uuid_path_resolution",
+    "language_surface_en-US",
+    "language_surface_en-CA",
+    "language_surface_fr-CA",
+    "language_surface_fr-FR",
+    "language_surface_de-DE",
+    "language_surface_it-IT",
+    "language_surface_es-ES",
+    "language_fallback_standard_en",
+    "cache_lifecycle",
+    "wire_transcript_oracle",
+    "resource_soak_requirement",
+    "dbeaver_exclusion"
+  ],
+  "required_negative_controls": [
+    "cross_user_replay_refusal",
+    "role_group_replay_refusal",
+    "authorization_filtered_uuid_path_resolution",
+    "dbeaver_exclusion"
+  ],
+  "validation_entrypoint": "project/tests/conformance/drivers/validate_shared_beta_driver_corpus.py"
+}
