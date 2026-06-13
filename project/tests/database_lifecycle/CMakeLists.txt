@@ -4383,32 +4383,30 @@ if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_di
     LABELS "database_lifecycle_supportability_evidence_conformance;database_lifecycle_supportability_evidence;ELER-107;ELER-GATE-107;database_lifecycle;database_lifecycle_server_route;database_lifecycle_security;database_lifecycle_shutdown_notification;operational_readiness;mga_transaction_regression"
   )
 
-  if(TARGET sb_engine_internal_api AND TARGET sb_engine_sblr)
-    add_executable(database_lifecycle_backup_restore_export_admin_gate_conformance
-      backup_restore_export_admin_gate_conformance.cpp
-    )
-    target_compile_features(database_lifecycle_backup_restore_export_admin_gate_conformance PRIVATE cxx_std_23)
-    target_link_libraries(database_lifecycle_backup_restore_export_admin_gate_conformance
-      PRIVATE
-        sb_core_platform
-        sb_core_uuid
-        sb_engine_internal_api
-        sb_engine_sblr
-        sb_server_core
-        sb_storage_database
-        sb_storage_disk
-        sb_storage_page
-        sb_transaction_mga
-    )
+  add_executable(database_lifecycle_backup_restore_export_admin_gate_conformance
+    backup_restore_export_admin_gate_conformance.cpp
+  )
+  target_compile_features(database_lifecycle_backup_restore_export_admin_gate_conformance PRIVATE cxx_std_23)
+  target_link_libraries(database_lifecycle_backup_restore_export_admin_gate_conformance
+    PRIVATE
+      sb_core_platform
+      sb_core_uuid
+      sb_engine_internal_api
+      sb_engine_sblr
+      sb_server_core
+      sb_storage_database
+      sb_storage_disk
+      sb_storage_page
+      sb_transaction_mga
+  )
 
-    add_test(
-      NAME database_lifecycle_backup_restore_export_admin_gate_conformance
-      COMMAND database_lifecycle_backup_restore_export_admin_gate_conformance
-    )
-    set_tests_properties(database_lifecycle_backup_restore_export_admin_gate_conformance PROPERTIES
-      LABELS "database_lifecycle_backup_restore_export_admin_gate_conformance;CBQ-039;CBQ_GATE_BACKUP_RESTORE_EXPORT_ADMIN;database_lifecycle;database_lifecycle_server_route;database_lifecycle_storage;database_lifecycle_admin_cli;database_lifecycle_supportability_evidence;mga_transaction_regression"
-    )
-  endif()
+  add_test(
+    NAME database_lifecycle_backup_restore_export_admin_gate_conformance
+    COMMAND database_lifecycle_backup_restore_export_admin_gate_conformance
+  )
+  set_tests_properties(database_lifecycle_backup_restore_export_admin_gate_conformance PROPERTIES
+    LABELS "database_lifecycle_backup_restore_export_admin_gate_conformance;CBQ-039;CBQ_GATE_BACKUP_RESTORE_EXPORT_ADMIN;database_lifecycle;database_lifecycle_server_route;database_lifecycle_storage;database_lifecycle_admin_cli;database_lifecycle_supportability_evidence;mga_transaction_regression"
+  )
 
   add_executable(database_lifecycle_observability_conformance
     observability_conformance.cpp

@@ -50,7 +50,7 @@ struct B003Row {
   bool engine_api_command_route;
 };
 
-constexpr std::array<B003Row, 43> kRows{{
+constexpr std::array<B003Row, 46> kRows{{
     {"AUDIT-0383", "ENGINE AGENT REQUEST PAGE PREALLOCATION", "agents.request_page_preallocation", "SBLR_AGENT_REQUEST_PAGE_PREALLOCATION", "sblr.management.runtime_operation.v3", "result.shape.agent_hook_status", "EngineRequestPagePreallocation", "authority.engine.agent_management_api_required", true, true},
     {"AUDIT-0384", "ENGINE AGENT REQUEST PAGE RELOCATION", "agents.request_page_relocation", "SBLR_AGENT_REQUEST_PAGE_RELOCATION", "sblr.management.runtime_operation.v3", "result.shape.agent_hook_status", "EngineRequestPageRelocation", "authority.engine.agent_management_api_required", true, true},
     {"AUDIT-0385", "ENGINE AGENT REQUEST FILESPACE GROWTH", "agents.request_filespace_growth", "SBLR_AGENT_REQUEST_FILESPACE_GROWTH", "sblr.management.runtime_operation.v3", "result.shape.agent_hook_status", "EngineRequestFilespaceGrowth", "authority.engine.agent_management_api_required", true, true},
@@ -59,6 +59,9 @@ constexpr std::array<B003Row, 43> kRows{{
     {"AUDIT-0388", "ENGINE AGENT REQUEST INDEX REBUILD", "agents.request_index_rebuild_or_shadow_build", "SBLR_AGENT_REQUEST_INDEX_REBUILD_OR_SHADOW_BUILD", "sblr.management.runtime_operation.v3", "result.shape.agent_hook_status", "EngineRequestIndexRebuildOrShadowBuild", "authority.engine.agent_management_api_required", true, true},
     {"AUDIT-0390", "EXPORT CATALOG ARTIFACT", "artifact.export_catalog", "SBLR_ARTIFACT_EXPORT_CATALOG", "sblr.catalog.mutation.v3", "result.shape.catalog_artifact_rows", "EngineExportCatalogArtifacts", "authority.engine.catalog_artifact_api_required", true, true},
     {"AUDIT-0391", "IMPORT CATALOG ARTIFACT", "artifact.import_catalog", "SBLR_ARTIFACT_IMPORT_CATALOG", "sblr.catalog.mutation.v3", "result.shape.catalog_artifact_status", "EngineImportCatalogArtifacts", "authority.engine.catalog_artifact_api_required", true, true},
+    {"AUDIT-0391A", "EXPORT EXTERNAL GIT CATALOG SNAPSHOT", "artifact.external_git.export_snapshot", "SBLR_ARTIFACT_EXTERNAL_GIT_EXPORT_SNAPSHOT", "sblr.catalog.mutation.v3", "result.shape.external_git_snapshot_rows", "EngineExportExternalGitSnapshot", "authority.engine.catalog_artifact_api_required", true, true},
+    {"AUDIT-0391B", "DIFF EXTERNAL GIT CATALOG SNAPSHOT", "artifact.external_git.diff_snapshot", "SBLR_ARTIFACT_EXTERNAL_GIT_DIFF_SNAPSHOT", "sblr.catalog.mutation.v3", "result.shape.external_git_diff_rows", "EngineDiffExternalGitSnapshot", "authority.engine.catalog_artifact_api_required", true, true},
+    {"AUDIT-0391C", "PLAN EXTERNAL GIT CATALOG ROLLBACK", "artifact.external_git.rollback_plan", "SBLR_ARTIFACT_EXTERNAL_GIT_ROLLBACK_PLAN", "sblr.catalog.mutation.v3", "result.shape.external_git_rollback_plan_rows", "EnginePlanExternalGitRollback", "authority.engine.catalog_artifact_api_required", true, true},
     {"AUDIT-0392", "ENGINE IMPORT ROWS EXECUTE", "dml.execute_import_rows", "SBLR_DML_EXECUTE_IMPORT_ROWS", "sblr.dml.operation.v3", "result.shape.import_execution_status", "EngineExecuteImportRows", "authority.engine.dml_import_api_required", true, true},
     {"AUDIT-0393", "ENGINE IMPORT CHECKPOINT MODEL NORMALIZE", "dml.normalize_import_checkpoint_model", "SBLR_DML_IMPORT_CHECKPOINT_MODEL", "sblr.dml.operation.v3", "result.shape.import_checkpoint_model", "EngineNormalizeImportCheckpointModel", "authority.engine.dml_import_api_required", true, true},
     {"AUDIT-0394", "ENGINE IMPORT REJECT MODEL NORMALIZE", "dml.normalize_import_reject_model", "SBLR_DML_IMPORT_REJECT_MODEL", "sblr.dml.operation.v3", "result.shape.import_reject_model", "EngineNormalizeImportRejectModel", "authority.engine.dml_import_api_required", true, true},
@@ -311,6 +314,9 @@ api::EngineApiRequest ApiRequestForRow(const B003Row& row) {
       AddRelatedObject(&request, "019f0000-0000-7000-8000-00000000e903", "filespace");
     }
   } else if (StartsWith(row.operation_id, "artifact.")) {
+    if (StartsWith(row.operation_id, "artifact.external_git.")) {
+      request.option_envelopes.push_back("external_git_policy:enabled");
+    }
     request.rows.push_back(Row("artifact-row-1",
                                {{"artifact_format", TypedValue("text", "sb.catalog.artifact.v1")},
                                 {"object_uuid", TypedValue("uuid", "019f0000-0000-7000-8000-00000000e904")},

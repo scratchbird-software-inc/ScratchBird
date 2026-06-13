@@ -21,4 +21,19 @@ struct EngineImportCatalogArtifactsRequest : EngineApiRequest {};
 struct EngineImportCatalogArtifactsResult : EngineApiResult {};
 EngineImportCatalogArtifactsResult EngineImportCatalogArtifacts(const EngineImportCatalogArtifactsRequest& request);
 
+struct EngineExportExternalGitSnapshotRequest : EngineApiRequest {};
+struct EngineExportExternalGitSnapshotResult : EngineApiResult {};
+EngineExportExternalGitSnapshotResult EngineExportExternalGitSnapshot(
+    const EngineExportExternalGitSnapshotRequest& request);
+
+struct EngineDiffExternalGitSnapshotRequest : EngineApiRequest {};
+struct EngineDiffExternalGitSnapshotResult : EngineApiResult {};
+EngineDiffExternalGitSnapshotResult EngineDiffExternalGitSnapshot(
+    const EngineDiffExternalGitSnapshotRequest& request);
+
+struct EnginePlanExternalGitRollbackRequest : EngineApiRequest {};
+struct EnginePlanExternalGitRollbackResult : EngineApiResult {};
+EnginePlanExternalGitRollbackResult EnginePlanExternalGitRollback(
+    const EnginePlanExternalGitRollbackRequest& request);
+
 }  // namespace scratchbird::engine::internal_api
