@@ -100,6 +100,8 @@ def assert_agent_action_threads(status: dict[str, Any]) -> None:
     require(status.get("started") is True, "agent_runtime_not_started")
     worker_count = int(status.get("worker_thread_count", 0))
     require(worker_count >= 2, f"agent_runtime_worker_count_too_low:{worker_count}")
+    require(worker_count <= 5,
+            f"agent_runtime_idle_resident_worker_count_unbounded:{worker_count}")
     require(int(status.get("foreground_reserved_capacity", 0)) >= 1,
             f"foreground_capacity_not_reserved:{status}")
     require(int(status.get("background_worker_slots", 0)) == worker_count,
@@ -136,6 +138,10 @@ def assert_agent_action_threads(status: dict[str, Any]) -> None:
             f"page_allocator_action_decision_missing:{by_agent['page_allocation_manager']}")
     require(filespace_decisions >= 1,
             f"filespace_capacity_action_decision_missing:{by_agent['filespace_capacity_manager']}")
+    require("support_bundle_triage_agent" not in by_agent,
+            f"support_bundle_agent_should_not_be_idle_resident:{by_agent}")
+    require(int(status.get("durable_service_evidence_count", 0)) <= (worker_count * 2) + 4,
+            f"agent_runtime_idle_service_history_too_large:{status}")
 
 
 def run_client_pressure(args: argparse.Namespace, endpoint: Path, seconds: float = 2.0) -> None:

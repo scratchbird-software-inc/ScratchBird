@@ -64,6 +64,7 @@ def worker_leases_ready(status: dict[str, Any]) -> bool:
     return (
         status.get("started") is True
         and worker_count >= 2
+        and worker_count <= 5
         and int(status.get("durable_catalog_generation", 0)) > 0
         and int(status.get("durable_lease_count", 0)) >= worker_count
         and int(status.get("total_worker_ticks", 0)) >= worker_count

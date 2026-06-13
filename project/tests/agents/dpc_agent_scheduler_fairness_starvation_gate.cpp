@@ -655,6 +655,9 @@ void TestLiveServerRuntimeStatusEvidence(std::vector<EvidenceRow>* rows) {
               ",workers=" + std::to_string(snapshot.worker_thread_count));
   Require(!snapshot.durable_catalog_root_digest.empty(),
           "DPC-036 durable catalog root digest missing");
+  Require(snapshot.durable_service_evidence_count <=
+              (snapshot.worker_thread_count * 2) + 4,
+          "DPC-036 idle runtime created excessive durable service evidence");
 
   runtime.Stop();
   const auto stopped = runtime.Snapshot();
