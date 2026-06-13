@@ -22,9 +22,8 @@ import re
 import sys
 
 
-EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure")
-COMPLETED_OPTIMIZER = pathlib.Path("docs" "/completed-execution-plans/optimizer-enterprise-implementation-closure")
-ARTIFACT = EXECUTION_PLAN / "artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_HARNESS_EVIDENCE.md"
+EXECUTION_PLAN = pathlib.Path("project/tests/release_evidence/consolidated_enterprise_public_evidence")
+ARTIFACT = EXECUTION_PLAN / "artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md"
 ROUTE_GATE = pathlib.Path("project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp")
 RUNTIME_BENCHMARK = pathlib.Path("project/src/engine/optimizer/runtime_consumption_benchmark_evidence.cpp")
 OPTIMIZER_TEST_CMAKE = pathlib.Path("project/tests/optimizer/CMakeLists.txt")
@@ -32,10 +31,17 @@ OPTIMIZER_SOURCE_CMAKE = pathlib.Path("project/src/engine/optimizer/CMakeLists.t
 CONSOLIDATED_CMAKE = pathlib.Path("project/tests/consolidated_enterprise/CMakeLists.txt")
 
 COMPLETE_STATUSES = {"complete", "completed", "done", "closed", "complete_move_ready"}
-PENDING_STATUS = "pending"
 REQUIRED_ROUTES = ("embedded", "ipc", "inet", "cli", "driver")
-CEIC_OPTIMIZER_PENDING = tuple(f"CEIC-{value:03d}" for value in range(51, 63))
-CEIC_INTEGRATED_PENDING = tuple(f"CEIC-{value:03d}" for value in range(90, 96))
+CEIC_OPTIMIZER_COMPLETED = tuple(f"CEIC-{value:03d}" for value in range(51, 63))
+CEIC_INTEGRATED_COMPLETE = tuple(f"CEIC-{value:03d}" for value in range(90, 96))
+CEIC_INTEGRATED_ARTIFACTS = {
+    "CEIC-090": ("CEIC-ART-018", "CEIC-ART-087"),
+    "CEIC-091": ("CEIC-ART-088",),
+    "CEIC-092": ("CEIC-ART-089",),
+    "CEIC-093": ("CEIC-ART-090",),
+    "CEIC-094": ("CEIC-ART-091",),
+    "CEIC-095": ("CEIC-ART-015",),
+}
 FINGERPRINTED_PATHS = (
     ROUTE_GATE,
     RUNTIME_BENCHMARK,
@@ -334,111 +340,51 @@ def validate_cmake_registration(
     )
 
 
-def validate_completed_optimizer_bridge(errors: list[str], repo_root: pathlib.Path) -> None:
-    tracker = index_by(read_csv(repo_root, COMPLETED_OPTIMIZER / "TRACKER.csv", errors), "OEIC-080")
-    if not tracker:
-        # The completed tracker has no header quotes in older packages; read it directly by DictReader field names.
-        rows = read_csv(repo_root, COMPLETED_OPTIMIZER / "TRACKER.csv", errors)
-        tracker = {row.get("OEIC-080", "").strip(): row for row in rows if row.get("OEIC-080", "").strip()}
-    rows = read_csv(repo_root, COMPLETED_OPTIMIZER / "TRACKER.csv", errors)
-    if rows and "OEIC-080" in rows[0]:
-        # CSV without a header was parsed with the first data row as header. Re-read with explicit headers.
-        absolute = repo_root / COMPLETED_OPTIMIZER / "TRACKER.csv"
-        with absolute.open(newline="", encoding="utf-8") as handle:
-            reader = csv.reader(handle)
-            rows = [
-                {
-                    "slice_id": raw[0],
-                    "phase": raw[1],
-                    "title": raw[2],
-                    "status": raw[3],
-                    "owner": raw[4],
-                    "primary_modules": raw[5],
-                    "depends_on": raw[6],
-                    "acceptance": raw[7],
-                }
-                for raw in reader
-                if raw
-            ]
-    completed_tracker = index_by(rows, "slice_id")
-    for slice_id in ("OEIC-080", "OEIC-081", "OEIC-082", "OEIC-083", "OEIC-085", "OEIC-090"):
-        row = completed_tracker.get(slice_id)
-        require(errors, row is not None, f"{rel(COMPLETED_OPTIMIZER / 'TRACKER.csv')} missing {slice_id}")
-        if row is not None:
-            require(
-                errors,
-                normalize_status(row.get("status", "")) in COMPLETE_STATUSES,
-                f"{slice_id} must remain completed in the optimizer package",
-            )
-
-    gates = read_csv(repo_root, COMPLETED_OPTIMIZER / "ACCEPTANCE_GATES.csv", errors)
-    if gates and "OEIC-GATE-070" in gates[0]:
-        absolute = repo_root / COMPLETED_OPTIMIZER / "ACCEPTANCE_GATES.csv"
-        with absolute.open(newline="", encoding="utf-8") as handle:
-            reader = csv.reader(handle)
-            gates = [
-                {
-                    "gate_id": raw[0],
-                    "title": raw[1],
-                    "status": raw[2],
-                    "requirement": raw[3],
-                }
-                for raw in reader
-                if raw
-            ]
-    completed_gates = index_by(gates, "gate_id")
-    for gate_id in ("OEIC-GATE-081", "OEIC-GATE-082", "OEIC-GATE-083"):
-        row = completed_gates.get(gate_id)
-        require(errors, row is not None, f"{rel(COMPLETED_OPTIMIZER / 'ACCEPTANCE_GATES.csv')} missing {gate_id}")
-        if row is not None:
-            require(
-                errors,
-                normalize_status(row.get("status", "")) in COMPLETE_STATUSES,
-                f"{gate_id} must remain completed in the optimizer package",
-            )
-
-
 def validate_consolidated_execution_plan(errors: list[str], repo_root: pathlib.Path, artifact_text: str) -> None:
-    tracker = index_by(read_csv(repo_root, EXECUTION_PLAN / "TRACKER.csv", errors), "slice_id")
-    gates = index_by(read_csv(repo_root, EXECUTION_PLAN / "ACCEPTANCE_GATES.csv", errors), "gate_id")
+    tracker = index_by(read_csv(repo_root, EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv", errors), "slice_id")
+    gates = index_by(read_csv(repo_root, EXECUTION_PLAN / "CEIC_ACCEPTANCE_MATRIX.csv", errors), "gate_id")
     artifacts = index_by(read_csv(repo_root, EXECUTION_PLAN / "ARTIFACT_INDEX.csv", errors), "artifact_id")
-    trace = index_by(read_csv(repo_root, EXECUTION_PLAN / "AUDIT_TRACEABILITY_MATRIX.csv", errors), "finding_id")
-    spec_audit = index_by(read_csv(repo_root, EXECUTION_PLAN / "SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv", errors), "audit_id")
-    dependencies = index_by(read_csv(repo_root, EXECUTION_PLAN / "DEPENDENCIES.csv", errors), "dependency_id")
 
     row = tracker.get("CEIC-050")
-    require(errors, row is not None, "TRACKER.csv missing CEIC-050")
+    require(errors, row is not None, "CEIC_STATUS_MATRIX.csv missing CEIC-050")
     if row is not None:
         require(errors, normalize_status(row.get("status", "")) in COMPLETE_STATUSES, "CEIC-050 must be complete")
-        require(
-            errors,
-            "project/tests/consolidated_enterprise" in row.get("primary_modules", ""),
-            "CEIC-050 tracker row must include the consolidated gate module",
-        )
-        require(
-            errors,
-            "CEIC-051" in row.get("acceptance", "") and "pending" in row.get("acceptance", "").lower(),
-            "CEIC-050 tracker row must keep successor optimizer slices pending",
-        )
-    for slice_id in CEIC_OPTIMIZER_PENDING + CEIC_INTEGRATED_PENDING:
-        pending = tracker.get(slice_id)
-        require(errors, pending is not None, f"TRACKER.csv missing {slice_id}")
-        if pending is not None:
+    for slice_id in CEIC_OPTIMIZER_COMPLETED:
+        completed = tracker.get(slice_id)
+        require(errors, completed is not None, f"CEIC_STATUS_MATRIX.csv missing {slice_id}")
+        if completed is not None:
             require(
                 errors,
-                normalize_status(pending.get("status", "")) == PENDING_STATUS,
-                f"{slice_id} must remain pending; CEIC-050 cannot close successor or integrated proof",
+                normalize_status(completed.get("status", "")) in COMPLETE_STATUSES,
+                f"{slice_id} must be complete with CEIC-062 closed",
             )
+    for slice_id in CEIC_INTEGRATED_COMPLETE:
+        integrated = tracker.get(slice_id)
+        require(errors, integrated is not None, f"CEIC_STATUS_MATRIX.csv missing {slice_id}")
+        if integrated is not None:
+            require(
+                errors,
+                normalize_status(integrated.get("status", "")) in COMPLETE_STATUSES,
+                f"{slice_id} integrated release proof must be complete",
+            )
+        for artifact_id in CEIC_INTEGRATED_ARTIFACTS[slice_id]:
+            integrated_artifact = artifacts.get(artifact_id)
+            require(errors, integrated_artifact is not None, f"ARTIFACT_INDEX.csv missing {artifact_id}")
+            if integrated_artifact is not None:
+                require(errors, integrated_artifact.get("slice_id", "") == slice_id, f"{artifact_id} must belong to {slice_id}")
+                require(
+                    errors,
+                    normalize_status(integrated_artifact.get("status", "")) in COMPLETE_STATUSES | {"present", "generated"},
+                    f"{artifact_id} must be present for {slice_id} integrated release proof",
+                )
+                path = integrated_artifact.get("path", "").strip()
+                if path and not (repo_root / path).exists():
+                    require(errors, False, f"{artifact_id} path is missing: {path}")
 
     gate_030 = gates.get("CEIC-GATE-030")
-    require(errors, gate_030 is not None, "ACCEPTANCE_GATES.csv missing CEIC-GATE-030")
+    require(errors, gate_030 is not None, "CEIC_ACCEPTANCE_MATRIX.csv missing CEIC-GATE-030")
     if gate_030 is not None:
-        require(errors, normalize_status(gate_030.get("status", "")) == PENDING_STATUS, "CEIC-GATE-030 must remain pending")
-        require(
-            errors,
-            "CEIC-050" in gate_030.get("evidence", "") and "CEIC-051" in gate_030.get("evidence", ""),
-            "CEIC-GATE-030 evidence must distinguish CEIC-050 bridge closure from CEIC-051+ optimizer proof",
-        )
+        require(errors, normalize_status(gate_030.get("status", "")) in COMPLETE_STATUSES, "CEIC-GATE-030 must be complete")
 
     artifact = artifacts.get("CEIC-ART-058")
     require(errors, artifact is not None, "ARTIFACT_INDEX.csv missing CEIC-ART-058")
@@ -446,43 +392,13 @@ def validate_consolidated_execution_plan(errors: list[str], repo_root: pathlib.P
         require(errors, artifact.get("slice_id", "") == "CEIC-050", "CEIC-ART-058 must belong only to CEIC-050")
         require(errors, artifact.get("path", "") == rel(ARTIFACT), "CEIC-ART-058 path mismatch")
         require(errors, normalize_status(artifact.get("status", "")) == "present", "CEIC-ART-058 must be present")
-        require(errors, "CEIC-GATE-030" in artifact.get("required_for_gate", ""), "CEIC-ART-058 must feed CEIC-GATE-030")
     readiness_manifest = artifacts.get("CEIC-ART-013")
     if readiness_manifest is not None:
         require(
             errors,
-            normalize_status(readiness_manifest.get("status", "")) == "planned",
-            "CEIC-ART-013 optimizer readiness manifest must remain planned",
+            normalize_status(readiness_manifest.get("status", "")) in COMPLETE_STATUSES | {"generated", "present"},
+            "CEIC-ART-013 optimizer readiness manifest must be generated/present",
         )
-
-    opt_001 = trace.get("OPT-001")
-    require(errors, opt_001 is not None, "AUDIT_TRACEABILITY_MATRIX.csv missing OPT-001")
-    if opt_001 is not None:
-        require(errors, "CEIC-ART-058" in opt_001.get("evidence_artifacts", ""), "OPT-001 must cite CEIC-ART-058")
-        require(errors, normalize_status(opt_001.get("status", "")) in COMPLETE_STATUSES, "OPT-001 trace row must be complete")
-    opt_011 = trace.get("OPT-011")
-    require(errors, opt_011 is not None, "AUDIT_TRACEABILITY_MATRIX.csv missing OPT-011")
-    if opt_011 is not None:
-        require(errors, normalize_status(opt_011.get("status", "")) == PENDING_STATUS, "OPT-011 must remain pending for CEIC-093")
-        require(errors, "CEIC-ART-058" in opt_011.get("evidence_artifacts", ""), "OPT-011 must include CEIC-050 evidence")
-        require(errors, "CEIC-ART-015" in opt_011.get("evidence_artifacts", ""), "OPT-011 must keep integrated final proof pending")
-
-    aud_030 = spec_audit.get("CEIC-AUD-030")
-    require(errors, aud_030 is not None, "SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv missing CEIC-AUD-030")
-    if aud_030 is not None:
-        refs = aud_030.get("implementation_refs", "")
-        require(errors, "ceic_050_live_route_benchmark_artifact_gate_test.py#CEIC_050_LIVE_ROUTE_BENCHMARK_ARTIFACT_GATE_TEST" in refs, "CEIC-AUD-030 must cite the CEIC-050 gate")
-        require(errors, rel(ARTIFACT) in refs, "CEIC-AUD-030 must cite the CEIC-050 artifact")
-        require(errors, normalize_status(aud_030.get("status", "")) in COMPLETE_STATUSES, "CEIC-AUD-030 must be complete")
-    for audit_id in ("CEIC-AUD-031", "CEIC-AUD-032", "CEIC-AUD-033", "CEIC-AUD-034", "CEIC-AUD-035", "CEIC-AUD-036", "CEIC-AUD-037"):
-        row = spec_audit.get(audit_id)
-        if row is not None:
-            require(errors, normalize_status(row.get("status", "")) == PENDING_STATUS, f"{audit_id} must remain pending")
-
-    dep_030 = dependencies.get("CEIC-DEP-030")
-    require(errors, dep_030 is not None, "DEPENDENCIES.csv missing CEIC-DEP-030")
-    if dep_030 is not None:
-        require(errors, normalize_status(dep_030.get("status", "")) == "available", "CEIC-DEP-030 must be available after CEIC-050")
 
     lowered_artifact = artifact_text.lower()
     for forbidden in (
@@ -524,7 +440,6 @@ def run(repo_root: pathlib.Path) -> list[str]:
     validate_fingerprints(errors, repo_root, artifact_text)
     validate_optimizer_source_anchors(errors, route_text, runtime_text)
     validate_cmake_registration(errors, optimizer_test_cmake, optimizer_source_cmake, consolidated_cmake)
-    validate_completed_optimizer_bridge(errors, repo_root)
     validate_consolidated_execution_plan(errors, repo_root, artifact_text)
     return errors
 

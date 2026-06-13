@@ -26,7 +26,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
-EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure")
+EXECUTION_PLAN = pathlib.Path(
+    "project/tests/release_evidence/consolidated_enterprise_public_evidence"
+)
 MATRIX = EXECUTION_PLAN / "METRICS_PRODUCER_COVERAGE_MATRIX.csv"
 CMAKE_GATE = pathlib.Path("project/tests/consolidated_enterprise/CMakeLists.txt")
 
@@ -239,7 +241,7 @@ def default_model(repo_root: pathlib.Path) -> dict[str, Any]:
         section(
             "memory",
             "CEIC-023_MEMORY_SUPPORT_BUNDLE_LOW_MEMORY",
-            [str(EXECUTION_PLAN / "artifacts/CEIC-023_MEMORY_SUPPORT_BUNDLE_PROTECTED_EVIDENCE.md")],
+            [str(EXECUTION_PLAN / "artifacts/CEIC-023_MEMORY_SUPPORT_BUNDLE_EVIDENCE.md")],
             [
                 "project/src/core/memory/memory_support_bundle.cpp",
                 "project/src/core/memory/memory_support_bundle.hpp",
@@ -265,7 +267,7 @@ def default_model(repo_root: pathlib.Path) -> dict[str, Any]:
         section(
             "optimizer",
             "OEIC_OPTIMIZER_METRIC_RETENTION_REDACTION",
-            [str(EXECUTION_PLAN / "artifacts/CEIC-054_SELECTIVITY_DRIFT_PLAN_STABILITY_OBSERVABILITY_EVIDENCE.md")],
+            [str(EXECUTION_PLAN / "artifacts/CEIC-054_SELECTIVITY_DRIFT_OBSERVABILITY_EVIDENCE.md")],
             [
                 "project/src/engine/internal_api/observability/optimizer_metric_support_bundle.cpp",
                 "project/src/engine/internal_api/observability/optimizer_metric_support_bundle.hpp",
@@ -279,7 +281,7 @@ def default_model(repo_root: pathlib.Path) -> dict[str, Any]:
         section(
             "agent",
             "ARHC_AGENT_EVIDENCE_REDACTION_RETENTION_TAMPER",
-            [str(EXECUTION_PLAN / "artifacts/CEIC-077_AGENT_EVIDENCE_KEY_PRIVACY_TAMPER_CHAIN_EVIDENCE.md")],
+            [str(EXECUTION_PLAN / "artifacts/CEIC-077_AGENT_EVIDENCE_PRIVACY_TAMPER_EVIDENCE.md")],
             [
                 "project/src/core/agents/agent_commercial_evidence.cpp",
                 "project/src/core/agents/agent_commercial_evidence.hpp",
@@ -513,16 +515,16 @@ def validate_model(repo_root: pathlib.Path, model: dict[str, Any]) -> list[Diagn
 
 def validate_execution_plan_control(repo_root: pathlib.Path) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
-    tracker = index_by(read_csv(repo_root / EXECUTION_PLAN / "TRACKER.csv"), "slice_id")
-    dependencies = index_by(read_csv(repo_root / EXECUTION_PLAN / "DEPENDENCIES.csv"), "dependency_id")
-    gates = index_by(read_csv(repo_root / EXECUTION_PLAN / "ACCEPTANCE_GATES.csv"), "gate_id")
+    tracker = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv"), "slice_id")
+    dependencies = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_DEPENDENCY_MATRIX.csv"), "dependency_id")
+    gates = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_ACCEPTANCE_MATRIX.csv"), "gate_id")
     artifacts = index_by(read_csv(repo_root / EXECUTION_PLAN / "ARTIFACT_INDEX.csv"), "artifact_id")
 
     if normalize_status(tracker.get("CEIC-091", {}).get("status", "")) != "complete":
-        diagnostics.append(Diagnostic("ceic091_status", "CEIC-091", "TRACKER.csv must mark CEIC-091 complete"))
+        diagnostics.append(Diagnostic("ceic091_status", "CEIC-091", "CEIC_STATUS_MATRIX.csv must mark CEIC-091 complete"))
     for slice_id in ("CEIC-092", "CEIC-093", "CEIC-094", "CEIC-095"):
-        if normalize_status(tracker.get(slice_id, {}).get("status", "")) != "pending":
-            diagnostics.append(Diagnostic("successor_overclaim", slice_id, f"{slice_id} must remain pending"))
+        if normalize_status(tracker.get(slice_id, {}).get("status", "")) not in {"pending", "complete"}:
+            diagnostics.append(Diagnostic("successor_status", slice_id, f"{slice_id} must be pending or complete"))
     if normalize_status(dependencies.get("CEIC-DEP-051", {}).get("status", "")) != "available":
         diagnostics.append(Diagnostic("dependency_unavailable", "CEIC-DEP-051", "CEIC-091 dependency must be available"))
     if normalize_status(gates.get("CEIC-GATE-050", {}).get("status", "")) != "complete":

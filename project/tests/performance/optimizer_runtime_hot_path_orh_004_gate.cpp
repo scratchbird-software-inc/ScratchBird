@@ -378,12 +378,20 @@ void ProveCorrectedRouteCapabilityModel() {
                   "INDEX.ROUTE_CAPABILITY.KEYED_HASH_REQUIRED",
           "legacy hash route did not fail closed with keyed diagnostic");
 
-  RequireUnsupportedRouteDiagnostic(idx::IndexRouteKind::dml_update,
-                                    idx::IndexFamily::hash,
-                                    "hash DML update");
-  RequireUnsupportedRouteDiagnostic(idx::IndexRouteKind::dml_delete,
+  const auto& hash_dml = Route(idx::IndexRouteKind::dml_update,
+                               idx::IndexFamily::hash);
+  Require(hash_dml.route_complete() && hash_dml.supports_write &&
+              hash_dml.supports_mutation &&
+              hash_dml.requires_exact_recheck &&
+              !hash_dml.supports_ordered_range,
+          "hash DML update route did not expose keyed write support");
+  Require(Has(hash_dml.evidence,
+              "hash_dml_write_requires_explicit_hash_route=true") &&
+              Has(hash_dml.evidence, "hash_ordered_range_supported=false"),
+          "hash DML update route evidence did not expose exact route limits");
+  RequireUnsupportedRouteDiagnostic(idx::IndexRouteKind::nosql_vector,
                                     idx::IndexFamily::bloom,
-                                    "bloom DML delete");
+                                    "bloom NoSQL vector");
   RequireUnsupportedRouteDiagnostic(idx::IndexRouteKind::nosql_document,
                                     idx::IndexFamily::btree,
                                     "btree NoSQL document");

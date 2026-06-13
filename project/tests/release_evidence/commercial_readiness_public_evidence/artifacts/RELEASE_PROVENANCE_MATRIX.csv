@@ -1,0 +1,7 @@
+item,source_anchor,status,validation
+release_profile,project/CMakeLists.txt,completed,release profile source anchor is validated
+package_targets,project/CMakeLists.txt,completed,install target anchors are validated
+artifact_signing,project/tools/release_provenance/generate_release_evidence.py,completed,release generator is present
+sbom,project/tools/release_provenance/generate_release_evidence.py,completed,sbom_components anchor is validated
+dependency_provenance,project/tools/release_provenance/generate_release_evidence.py,completed,license_inventory anchor is validated
+release_ledger,project/tools/release_provenance/generate_release_evidence.py,completed,source_provenance and checksums anchors are validated

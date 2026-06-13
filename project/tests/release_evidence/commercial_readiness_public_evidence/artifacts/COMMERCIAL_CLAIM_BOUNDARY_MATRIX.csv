@@ -1,0 +1,3 @@
+claim_id,implemented,compiled,route_consumed,scale_proven,production_claim_status,status
+core_beta_release,yes,yes,yes,yes,implemented,completed
+cluster_claim_boundary,yes,yes,yes,blocked,blocked_for_public_build,completed

@@ -438,15 +438,15 @@ MemorySupportBundleResult BuildMemorySupportBundleEvidence(
   result.evidence.push_back("memory_support_bundle.row_limit=" +
                             std::to_string(request.limits.max_rows));
   result.evidence.push_back(
-      "memory_support_bundle.no_authority.transaction_finality=true");
+      "memory_support_bundle.transaction_finality_authority=false");
+  result.evidence.push_back("memory_support_bundle.visibility_authority=false");
   result.evidence.push_back(
-      "memory_support_bundle.no_authority.visibility=true");
+      "memory_support_bundle.authorization_security_authority=false");
+  result.evidence.push_back("memory_support_bundle.recovery_authority=false");
   result.evidence.push_back(
-      "memory_support_bundle.no_authority.authorization_security=true");
-  result.evidence.push_back("memory_support_bundle.no_authority.recovery=true");
-  result.evidence.push_back("memory_support_bundle.no_authority.parser_reference_wal=true");
+      "memory_support_bundle.parser_reference_wal_authority=false");
   result.evidence.push_back(
-      "memory_support_bundle.no_authority.benchmark_optimizer_index_agent=true");
+      "memory_support_bundle.benchmark_optimizer_index_agent_authority=false");
 
   result.protected_memory_review_passed =
       ProtectedReviewPasses(request.protected_memory_review, &result.evidence);

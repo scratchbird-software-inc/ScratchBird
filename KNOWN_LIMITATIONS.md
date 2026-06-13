@@ -12,6 +12,22 @@ ScratchBird is an early beta public source-review release.
 - AI-facing services are release-candidate or tracked surfaces unless a release evidence matrix says otherwise.
 - Unsupported features should fail closed with diagnostics rather than silently executing.
 
+## Planned Driver Lanes Not Implemented
+
+The following driver lanes are planned for the public beta driver surface but are not implemented in this source tree yet. They are present only as contract-package placeholders so the shared driver contract, package metadata shape, route requirements, and future conformance obligations remain visible.
+
+These lanes do not currently contain runnable driver source, package builds, full-route tests, or live server proof. They must not be described as release-supported, release-candidate, or executable driver implementations until their source, packaging, conformance tests, and live server evidence are added.
+
+| Driver lane | Current public status | Current tracked surface |
+| --- | --- | --- |
+| ADBC | Planned; not implemented | Contract package only at `project/drivers/driver/adbc/package_contract.json` |
+| Flight SQL | Planned; not implemented | Contract package only at `project/drivers/driver/flightsql/package_contract.json` |
+| Julia | Planned; not implemented | Contract package only at `project/drivers/driver/julia/package_contract.json` |
+| Perl DBI | Planned; not implemented | Contract package only at `project/drivers/driver/perl/package_contract.json` |
+| R2DBC | Planned; not implemented | Contract package only at `project/drivers/driver/r2dbc/package_contract.json` |
+
+`project/drivers/DriverPackageManifest.csv` and related source-inventory fixtures list these lanes as `planned_not_implemented` / `tracked_not_released` package-contract rows. That tracking metadata does not imply executable support.
+
 ## SBsql Language Support
 
 The public source tree includes beta SBsql language-resource support. The language-resource pack is generated, hashed, signed for source-review integrity, indexed in the seed-pack manifest, and verified by deterministic release gates.

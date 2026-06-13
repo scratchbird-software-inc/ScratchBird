@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 
-EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure")
+EXECUTION_PLAN = pathlib.Path("project/tests/release_evidence/consolidated_enterprise_public_evidence")
 DEFAULT_MANIFEST = EXECUTION_PLAN / "artifacts/CEIC-085_AGENT_READINESS_MANIFEST.yaml"
 EVIDENCE_MD = EXECUTION_PLAN / "artifacts/CEIC-085_AGENT_READINESS_MANIFEST_EVIDENCE.md"
 
@@ -36,7 +36,15 @@ PENDING_STATUS = {"pending", "planned"}
 
 AGENT_INPUT_SLICES = tuple(f"CEIC-{value:03d}" for value in range(70, 85))
 AGENT_MANIFEST_SLICES = AGENT_INPUT_SLICES + ("CEIC-085",)
-PENDING_INTEGRATED_SLICES = tuple(f"CEIC-{value:03d}" for value in range(90, 96))
+INTEGRATED_RELEASE_SLICES = tuple(f"CEIC-{value:03d}" for value in range(90, 96))
+INTEGRATED_RELEASE_ARTIFACTS = {
+    "CEIC-090": ("CEIC-ART-018", "CEIC-ART-087"),
+    "CEIC-091": ("CEIC-ART-088",),
+    "CEIC-092": ("CEIC-ART-089",),
+    "CEIC-093": ("CEIC-ART-090",),
+    "CEIC-094": ("CEIC-ART-091",),
+    "CEIC-095": ("CEIC-ART-015",),
+}
 
 REQUIRED_COMPONENT_ARTIFACTS = tuple(f"CEIC-ART-{value:03d}" for value in range(71, 86))
 REQUIRED_MANIFEST_ARTIFACTS = ("CEIC-ART-014", "CEIC-ART-086")
@@ -498,14 +506,14 @@ EXTRA_STATIC_ANCHORS = (
 )
 
 CONTROL_INPUTS = (
-    EXECUTION_PLAN / "TRACKER.csv",
+    EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv",
     EXECUTION_PLAN / "ARTIFACT_INDEX.csv",
-    EXECUTION_PLAN / "ACCEPTANCE_GATES.csv",
-    EXECUTION_PLAN / "AUDIT_TRACEABILITY_MATRIX.csv",
+    EXECUTION_PLAN / "CEIC_ACCEPTANCE_MATRIX.csv",
+    EXECUTION_PLAN / "CEIC_FINDING_TRACEABILITY_MATRIX.csv",
     EXECUTION_PLAN / "CLAIM_BOUNDARY_MATRIX.csv",
     EXECUTION_PLAN / "METRICS_PRODUCER_COVERAGE_MATRIX.csv",
-    EXECUTION_PLAN / "SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv",
-    EXECUTION_PLAN / "DEPENDENCIES.csv",
+    EXECUTION_PLAN / "CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
+    EXECUTION_PLAN / "CEIC_DEPENDENCY_MATRIX.csv",
     EXECUTION_PLAN / "EVIDENCE_MANIFEST_SCHEMA.md",
     EXECUTION_PLAN / "README.md",
     EXECUTION_PLAN / "INTERFACE_CONTRACTS.md",
@@ -610,7 +618,7 @@ def validate_execution_plan_inputs(
     *,
     writing: bool,
 ) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]], list[dict[str, str]]]:
-    tracker = index_by(read_csv(repo_root, EXECUTION_PLAN / "TRACKER.csv"), "slice_id", "TRACKER.csv")
+    tracker = index_by(read_csv(repo_root, EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv"), "slice_id", "CEIC_STATUS_MATRIX.csv")
     artifacts = index_by(read_csv(repo_root, EXECUTION_PLAN / "ARTIFACT_INDEX.csv"), "artifact_id", "ARTIFACT_INDEX.csv")
     metrics = read_csv(repo_root, EXECUTION_PLAN / "METRICS_PRODUCER_COVERAGE_MATRIX.csv")
 
@@ -619,9 +627,7 @@ def validate_execution_plan_inputs(
         if status not in COMPLETE_STATUS:
             raise ManifestError(f"{slice_id} must be complete before CEIC-085 manifest validation")
 
-    for slice_id in PENDING_INTEGRATED_SLICES:
-        if normalize_status(tracker.get(slice_id, {}).get("status", "")) not in PENDING_STATUS:
-            raise ManifestError(f"{slice_id} must remain pending integrated proof in CEIC-085")
+    validate_integrated_release_proof(repo_root, tracker, artifacts, writing=writing)
 
     manifest_row = artifacts.get("CEIC-ART-014")
     if manifest_row is None:
@@ -663,6 +669,31 @@ def validate_execution_plan_inputs(
             raise ManifestError(f"metric {row.get('metric_family', '<missing>')} has no validation gate")
 
     return tracker, artifacts, agent_metrics
+
+
+def validate_integrated_release_proof(
+    repo_root: pathlib.Path,
+    tracker: dict[str, dict[str, str]],
+    artifacts: dict[str, dict[str, str]],
+    *,
+    writing: bool,
+) -> None:
+    for slice_id in INTEGRATED_RELEASE_SLICES:
+        status = normalize_status(tracker.get(slice_id, {}).get("status", ""))
+        if status not in COMPLETE_STATUS:
+            raise ManifestError(f"{slice_id} integrated proof must be complete for CEIC-085 beta release validation")
+        if not tracker.get(slice_id, {}).get("acceptance", "").strip():
+            raise ManifestError(f"{slice_id} integrated proof acceptance text is required")
+        for artifact_id in INTEGRATED_RELEASE_ARTIFACTS[slice_id]:
+            row = artifacts.get(artifact_id)
+            if row is None:
+                raise ManifestError(f"{artifact_id} required for {slice_id} integrated proof but missing")
+            if row.get("slice_id", "").strip() != slice_id:
+                raise ManifestError(f"{artifact_id} must belong to {slice_id}")
+            if normalize_status(row.get("status", "")) not in PRESENT_STATUS:
+                raise ManifestError(f"{artifact_id} must be present for {slice_id} integrated proof")
+            if not writing and not artifact_exists(repo_root, row):
+                raise ManifestError(f"{artifact_id} is present but missing: {row.get('path', '')}")
 
 
 def validate_static_inputs(repo_root: pathlib.Path) -> None:
@@ -753,6 +784,16 @@ def collect_input_records(
                 rel_paths.add(match.relative_to(repo_root))
         else:
             rel_paths.add(pathlib.Path(raw_path))
+    for artifact_ids in INTEGRATED_RELEASE_ARTIFACTS.values():
+        for artifact_id in artifact_ids:
+            if artifact_id == "CEIC-ART-015":
+                continue
+            raw_path = artifacts[artifact_id]["path"].strip()
+            if any(char in raw_path for char in "*?["):
+                for match in sorted(repo_root.glob(raw_path)):
+                    rel_paths.add(match.relative_to(repo_root))
+            else:
+                rel_paths.add(pathlib.Path(raw_path))
 
     rel_paths.discard(DEFAULT_MANIFEST)
     records: list[dict[str, Any]] = []
@@ -958,13 +999,14 @@ def build_manifest(
         build_component(repo_root, spec, tracker, artifacts, input_digest)
         for spec in COMPONENT_SPECS
     ]
-    pending_integrated = [
+    integrated_release_proof = [
         {
             "slice_id": slice_id,
             "status": normalize_status(tracker[slice_id]["status"]),
-            "reason": "integrated proof is outside CEIC-085 and must remain pending",
+            "artifact_ids": list(INTEGRATED_RELEASE_ARTIFACTS[slice_id]),
+            "reason": "integrated release proof is complete and independently evidenced",
         }
-        for slice_id in PENDING_INTEGRATED_SLICES
+        for slice_id in INTEGRATED_RELEASE_SLICES
     ]
     artifact_evidence = [
         {
@@ -1057,13 +1099,13 @@ def build_manifest(
             "descriptor_only_readiness": False,
             "anchor_only_live_exposure": False,
             "generated_readiness_runtime_authority": False,
-            "production_live_claim": "blocked_pending_integrated_proof",
-            "enterprise_agent_readiness": "component_complete_integrated_proof_pending",
-            "integrated_readiness": "pending",
-            "support_bundle_readiness": "component_evidence_present_integrated_CEIC-091_pending",
+            "production_live_claim": "blocked_by_agent_manifest_scope_not_product_production_claim",
+            "enterprise_agent_readiness": "component_complete_integrated_release_proof_complete",
+            "integrated_readiness": "complete_via_integrated_release_evidence",
+            "support_bundle_readiness": "component_evidence_present_integrated_CEIC-091_complete",
             "cluster_production_claim": "fail_closed_missing_external_provider_proof",
             "cluster_readiness_claim": "fail_closed_missing_external_provider_proof",
-            "pending_integrated_proof": pending_integrated,
+            "integrated_release_proof": integrated_release_proof,
         },
         "cluster_boundary": {
             "cluster_agent_code_state": "compile_time_stubbed_external_provider_only",
@@ -1106,7 +1148,7 @@ def build_manifest(
             },
             "metrics_proof": {
                 "component_id": "metric_quorum_source_attestation",
-                "state": "producer_rows_indexed_CEIC-090_integrated_coverage_pending",
+                "state": "producer_rows_indexed_CEIC-090_integrated_coverage_complete",
                 "rows": metric_rows,
             },
             "action_approval_proof": {
@@ -1137,12 +1179,12 @@ def build_manifest(
             "crash_security_proof": {
                 "security_grant_gate": "agent_security_grant_matrix_gate",
                 "crash_fixture_hardening_gate": "agent_security_crash_fixture_hardening_gate",
-                "status": "focused_agent_gates_present_CEIC-093_integrated_suite_pending",
+                "status": "focused_agent_gates_present_CEIC-093_integrated_suite_complete",
             },
             "support_bundle_readiness": {
                 "zero_grey_gate": "agent_zero_grey_output_contract_gate",
-                "status": "bounded_redacted_agent_rows_present_integrated_CEIC-091_pending",
-                "integrated_support_bundle_ready": False,
+                "status": "bounded_redacted_agent_rows_present_integrated_CEIC-091_complete",
+                "integrated_support_bundle_ready": True,
             },
         },
         "components": components,
@@ -1274,24 +1316,24 @@ def validate_manifest_semantics(data: dict[str, Any]) -> list[str]:
     if readiness.get("generated_readiness_runtime_authority") is not False:
         errors.append("generated readiness cannot be runtime authority")
     if str(readiness.get("production_live_claim", "")).startswith("blocked") is not True:
-        errors.append("production live claim must remain blocked pending integrated proof")
-    if readiness.get("integrated_readiness") != "pending":
-        errors.append("integrated readiness must remain pending")
-    if "pending" not in str(readiness.get("support_bundle_readiness", "")):
-        errors.append("support-bundle readiness must keep CEIC-091 pending")
+        errors.append("production live claim must remain blocked by agent manifest scope")
+    if readiness.get("integrated_readiness") != "complete_via_integrated_release_evidence":
+        errors.append("integrated readiness must reflect complete integrated release evidence")
+    if "complete" not in str(readiness.get("support_bundle_readiness", "")):
+        errors.append("support-bundle readiness must reflect complete CEIC-091 proof")
     if "fail_closed" not in str(readiness.get("cluster_production_claim", "")):
         errors.append("cluster production claim must fail closed")
     if "fail_closed" not in str(readiness.get("cluster_readiness_claim", "")):
         errors.append("cluster readiness claim must fail closed")
 
-    pending = {
+    integrated = {
         row.get("slice_id"): row.get("status")
-        for row in readiness.get("pending_integrated_proof", [])
+        for row in readiness.get("integrated_release_proof", [])
         if isinstance(row, dict)
     }
-    for slice_id in PENDING_INTEGRATED_SLICES:
-        if pending.get(slice_id) not in PENDING_STATUS:
-            errors.append(f"{slice_id} must remain pending integrated proof")
+    for slice_id in INTEGRATED_RELEASE_SLICES:
+        if integrated.get(slice_id) not in COMPLETE_STATUS:
+            errors.append(f"{slice_id} integrated proof must be complete")
 
     cluster = data.get("cluster_boundary", {})
     if cluster.get("cluster_agent_code_state") != "compile_time_stubbed_external_provider_only":
@@ -1351,8 +1393,8 @@ def validate_manifest_semantics(data: dict[str, Any]) -> list[str]:
         errors.append(f"readiness proof sections missing: {', '.join(missing_proofs)}")
     if proofs.get("index_optimizer_coupling_proof", {}).get("recommendation_only") is not True:
         errors.append("index/optimizer coupling must remain recommendation-only")
-    if proofs.get("support_bundle_readiness", {}).get("integrated_support_bundle_ready") is not False:
-        errors.append("support-bundle readiness must not close CEIC-091")
+    if proofs.get("support_bundle_readiness", {}).get("integrated_support_bundle_ready") is not True:
+        errors.append("support-bundle readiness must close CEIC-091 integrated proof")
 
     components = data.get("components", [])
     if not isinstance(components, list):

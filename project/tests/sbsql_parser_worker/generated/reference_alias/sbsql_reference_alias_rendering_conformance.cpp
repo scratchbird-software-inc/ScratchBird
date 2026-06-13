@@ -331,7 +331,7 @@ void ValidateReferenceMatrices(const CsvTable& canonical_aliases,
     harness->Check(Contains(Field(backlog, "parser_owned_behavior"), "reference syntax") &&
                        Contains(Field(backlog, "parser_owned_behavior"),
                                 "reference error rendering"),
-                   reference_surface + " parser-owned behavior lacks reference rendering");
+                   reference_surface + " parser-owned behavior lacks reference rendering; lacks compatibility rendering");
     harness->Check(Contains(Field(backlog, "engine_owned_behavior"), "UUID authority") &&
                        Contains(Field(backlog, "engine_owned_behavior"),
                                 "SBLR execution"),

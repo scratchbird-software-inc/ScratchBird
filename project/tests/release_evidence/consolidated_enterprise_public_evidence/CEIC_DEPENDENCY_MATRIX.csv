@@ -1,0 +1,6 @@
+dependency_id,depends_on,status
+CEIC-DEP-050,CEIC-024;CEIC-030;CEIC-062;CEIC-085,available
+CEIC-DEP-051,CEIC-090,available
+CEIC-DEP-052,CEIC-093,available
+CEIC-DEP-053,CEIC-090;CEIC-091,available
+CEIC-DEP-054,CEIC-092,available

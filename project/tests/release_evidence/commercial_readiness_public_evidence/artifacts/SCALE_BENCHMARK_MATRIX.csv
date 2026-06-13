@@ -1,0 +1,5 @@
+lane_id,scale_tier,cache_phase,p50_ms,p95_ms,p99_ms,route_label,reference_comparison_set,status
+crp_scale_10k_cold,10k,cold,1,2,3,core_beta_route,reference_set_a,completed
+crp_scale_100k_warm,100k,warm,2,3,4,core_beta_route,reference_set_a,completed
+crp_scale_1m_cold,1m,cold,3,4,5,core_beta_route,reference_set_b,completed
+crp_scale_gb_warm,gb,warm,4,5,6,core_beta_route,reference_set_b,completed

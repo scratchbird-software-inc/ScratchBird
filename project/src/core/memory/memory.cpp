@@ -936,27 +936,7 @@ AllocationResult BoundedAllocator::Reallocate(void* pointer, usize bytes, usize 
   std::memcpy(replacement.pointer, pointer, std::min(old_record.bytes, replacement.bytes));
   const auto freed = Deallocate(pointer, old_record.tag);
   if (!freed.ok()) {
-    AllocationRecord replacement_record;
-    bool replacement_found = false;
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      replacement_record = RemoveAllocation(replacement.pointer, &replacement_found);
-      if (!replacement_found) {
-        replacement_record = {replacement.bytes, replacement.alignment, tag};
-        ApplyAllocationRemovalAccounting(replacement_record);
-      }
-    }
-    if (replacement_found) {
-      if (policy_.zero_memory_on_release) {
-        std::memset(replacement.pointer, 0, replacement_record.bytes);
-      }
-      ::operator delete(replacement.pointer, std::align_val_t(replacement_record.alignment));
-    } else {
-      if (policy_.zero_memory_on_release) {
-        std::memset(replacement.pointer, 0, replacement_record.bytes);
-      }
-      ::operator delete(replacement.pointer, std::align_val_t(replacement_record.alignment));
-    }
+    (void)Deallocate(replacement.pointer, tag);
     AllocationResult result;
     result.status = freed.status;
     result.diagnostic = freed.diagnostic;
@@ -1787,10 +1767,16 @@ AllocationResult ArenaAllocator::Allocate(usize bytes, usize alignment) {
     return result;
   }
   const usize needed = bytes + alignment - 1;
-  const usize chunk_bytes = std::max(kDefaultArenaChunkBytes, needed);
   MemoryTag tag = tag_;
   tag.lifetime = MemoryLifetime::arena;
-  AllocationResult chunk = allocator_->Allocate(chunk_bytes, alignment, tag);
+  auto allocate_chunk = [&](usize chunk_bytes) {
+    return allocator_->Allocate(chunk_bytes, alignment, tag);
+  };
+  const usize preferred_chunk_bytes = std::max(kDefaultArenaChunkBytes, needed);
+  AllocationResult chunk = allocate_chunk(preferred_chunk_bytes);
+  if (!chunk.ok() && needed < preferred_chunk_bytes) {
+    chunk = allocate_chunk(needed);
+  }
   if (!chunk.ok()) {
     return chunk;
   }

@@ -1,0 +1,1304 @@
+{
+  "schema_id": "scratchbird.ceic.evidence_manifest",
+  "schema_version": 1,
+  "manifest_kind": "optimizer_readiness_manifest",
+  "search_key": "CEIC_062_OPTIMIZER_READINESS_MANIFEST",
+  "subsystem": "optimizer",
+  "slice_ids": [
+    "CEIC-050",
+    "CEIC-051",
+    "CEIC-052",
+    "CEIC-053",
+    "CEIC-054",
+    "CEIC-055",
+    "CEIC-056",
+    "CEIC-057",
+    "CEIC-058",
+    "CEIC-059",
+    "CEIC-060",
+    "CEIC-061",
+    "CEIC-062"
+  ],
+  "manifest_uuid": "1919a677-ce85-5d54-8b60-2d7c9a78c8f7",
+  "source_commit": "1a02ae5b0355a03100a23f5c0b886df00824141d",
+  "source_branch": "codex/migration-project-issue-closures",
+  "generated_at_utc": "2026-06-13T12:38:17-04:00",
+  "generated_by": "project/tools/ceic_optimizer_readiness_manifest.py#CEIC_062_OPTIMIZER_READINESS_MANIFEST_TOOL",
+  "source_evidence_digest": "a8dabf25ce9024bb9c047083cef5cad6ee615221bbb9019ffe1cd120e61fe0d1",
+  "auditor": {
+    "slice_id": "CEIC-062",
+    "timestamp_utc": "2026-06-13T12:38:17-04:00",
+    "proof_state": "generated_and_validated"
+  },
+  "authority_boundary": {
+    "boundary_token": "optimizer_readiness_manifest_is_generated_evidence_only_not_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_dominance_optimizer_plan_truth_index_finality_provider_finality_cluster_memory_or_agent_action_authority",
+    "transaction_finality_authority": false,
+    "visibility_authority": false,
+    "authorization_security_authority": false,
+    "security_authority": false,
+    "recovery_authority": false,
+    "parser_authority": false,
+    "reference_authority": false,
+    "reference_result_authority": false,
+    "reference_execution_authority": false,
+    "reference_storage_authority": false,
+    "wal_authority": false,
+    "benchmark_authority": false,
+    "benchmark_dominance_authority": false,
+    "optimizer_plan_authority": false,
+    "optimizer_plan_truth_authority": false,
+    "index_finality_authority": false,
+    "provider_finality_authority": false,
+    "cluster_authority": false,
+    "local_cluster_authority": false,
+    "memory_authority": false,
+    "agent_action_authority": false
+  },
+  "readiness_state": {
+    "optimizer_manifest": "generated",
+    "docs_alone_runtime_proof": false,
+    "static_only_proof": false,
+    "benchmark_clean_claim": "evidence_only_not_benchmark_dominance",
+    "production_live_claim": "blocked_by_optimizer_manifest_scope_not_product_production_claim",
+    "optimizer_plan_truth_claim": false,
+    "integrated_readiness": "complete_via_integrated_release_evidence",
+    "cluster_production_claim": "blocked_external_provider_only",
+    "required_completed_coupling": [
+      {
+        "slice_id": "CEIC-059",
+        "status": "complete",
+        "artifact_id": "CEIC-ART-067",
+        "requirement": "governed memory feedback"
+      },
+      {
+        "slice_id": "CEIC-060",
+        "status": "complete",
+        "artifact_id": "CEIC-ART-068",
+        "requirement": "index readiness plan admission"
+      },
+      {
+        "slice_id": "CEIC-061",
+        "status": "complete",
+        "artifact_id": "CEIC-ART-069",
+        "requirement": "LLVM foreign-memory accounting"
+      }
+    ],
+    "integrated_release_proof": [
+      {
+        "slice_id": "CEIC-090",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-018",
+          "CEIC-ART-087"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      },
+      {
+        "slice_id": "CEIC-091",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-088"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      },
+      {
+        "slice_id": "CEIC-092",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-089"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      },
+      {
+        "slice_id": "CEIC-093",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-090"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      },
+      {
+        "slice_id": "CEIC-094",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-091"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      },
+      {
+        "slice_id": "CEIC-095",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-015"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      }
+    ]
+  },
+  "production_test_separation": {
+    "fixtures_enabled": false,
+    "synthetic_evidence_enabled": false,
+    "local_default_statistics_enabled": false,
+    "policy_default_statistics_enabled": false,
+    "placeholder_result_contracts_enabled": false,
+    "placeholder_epochs_enabled": false,
+    "placeholder_provider_generations_enabled": false,
+    "cluster_stub_enabled": false,
+    "production_cluster_claims_enabled_without_external_provider": false
+  },
+  "cluster_boundary": {
+    "cluster_optimization_state": "compile_time_stubbed_external_provider_only",
+    "external_cluster_provider_only": true,
+    "local_cluster_optimizer_readiness": "fail_closed",
+    "local_cluster_evidence_present": false,
+    "external_cluster_overclaim": false,
+    "cluster_route_in_live_routes": false,
+    "public_tree_cluster_api_claim": "forbidden_without_external_provider_library"
+  },
+  "source_anchors": [
+    {
+      "slice_id": "CEIC-050",
+      "path": "project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp",
+      "search_key": "OEIC_LIVE_PARSER_SBLR_OPTIMIZER_EXECUTOR_ROUTE",
+      "surface": "live route benchmark artifact harness",
+      "sha256": "a3f01e2f35ec884024b754c3047b4282b366a05e3cd6eb200334de6aed408c6b"
+    },
+    {
+      "slice_id": "CEIC-050",
+      "path": "project/src/engine/optimizer/runtime_consumption_benchmark_evidence.cpp",
+      "search_key": "ValidateOptimizerBenchmarkRouteEvidence",
+      "surface": "runtime route benchmark evidence",
+      "sha256": "8665e9d4246f0cf1cd9ce9d984acd7ce24febf5560d97700ea1bb7d44e951ec1"
+    },
+    {
+      "slice_id": "CEIC-051",
+      "path": "project/src/engine/optimizer/optimizer_benchmark_evidence_schema.hpp",
+      "search_key": "CEIC_051_PERSISTED_OPTIMIZER_BENCHMARK_EVIDENCE_SCHEMA",
+      "surface": "persisted benchmark evidence schema",
+      "sha256": "0a97c4ac68de0baaebc188c4f574c38fa026bb24ce45f08b41987b5a66354b22"
+    },
+    {
+      "slice_id": "CEIC-052",
+      "path": "project/src/engine/optimizer/optimizer_correctness_oracle.hpp",
+      "search_key": "CEIC_052_OPTIMIZER_CORRECTNESS_ORACLE",
+      "surface": "correctness oracle suite",
+      "sha256": "a260e4d6ca2bf02c2cd743056058e86fa6a11a3139267b34bfee8abc0c153567"
+    },
+    {
+      "slice_id": "CEIC-053",
+      "path": "project/src/engine/optimizer/optimizer_crash_reopen_persistence.hpp",
+      "search_key": "CEIC_053_OPTIMIZER_CRASH_REOPEN_PERSISTENCE",
+      "surface": "crash reopen persistence",
+      "sha256": "9b686fceb0df934a4ca5bfe74b4ed0fb3d9a5bc26bb9dbe2fa58596d05894ece"
+    },
+    {
+      "slice_id": "CEIC-054",
+      "path": "project/src/engine/optimizer/optimizer_selectivity_drift_observability.hpp",
+      "search_key": "CEIC_054_SELECTIVITY_DRIFT_PLAN_STABILITY_OBSERVABILITY",
+      "surface": "selectivity drift and plan-stability observability",
+      "sha256": "1a820723c4d0270b91a70ffde8c0d210257c2e7fd5ddcdf9b6cbf6a8ee19262d"
+    },
+    {
+      "slice_id": "CEIC-055",
+      "path": "project/src/engine/optimizer/optimizer_transformation_memo_coverage.hpp",
+      "search_key": "CEIC_055_OPTIMIZER_TRANSFORMATION_MEMO_COVERAGE",
+      "surface": "transformation memo coverage",
+      "sha256": "ae008d4082eadb75ef496fe173e2fac7d042538ad56fcd086a97f72a7da7222f"
+    },
+    {
+      "slice_id": "CEIC-056",
+      "path": "project/src/engine/optimizer/optimizer_workload_regression_budget.hpp",
+      "search_key": "CEIC_056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET",
+      "surface": "workload regression budget",
+      "sha256": "5bcb5f5aa4c19db5554473496c741ffa5720c55cafe4ce6dee48bade72e766e4"
+    },
+    {
+      "slice_id": "CEIC-057",
+      "path": "project/src/engine/optimizer/optimizer_driver_explain_compatibility.hpp",
+      "search_key": "CEIC_057_DRIVER_VISIBLE_EXPLAIN_COMPATIBILITY",
+      "surface": "driver visible explain compatibility",
+      "sha256": "b955f67c7f230609a438fdb2d055325a16aec7bbf40eae164b11afb608578d70"
+    },
+    {
+      "slice_id": "CEIC-058",
+      "path": "project/src/engine/optimizer/optimizer_live_reference_comparison_artifacts.hpp",
+      "search_key": "CEIC_058_LIVE_REFERENCE_COMPARISON_ARTIFACTS",
+      "surface": "live reference comparison artifacts",
+      "sha256": "32758bf92a2a36cba9d015fd337ebab625b49206d5e770714965c42387a253b1"
+    },
+    {
+      "slice_id": "CEIC-059",
+      "path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.hpp",
+      "search_key": "MMCH_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE_BRIDGE",
+      "surface": "governed optimizer memory feedback",
+      "sha256": "2d2baaab8b178a9a9ff5313ca15724ff8c49f10e9770d8652dcfeca27eba7271"
+    },
+    {
+      "slice_id": "CEIC-059",
+      "path": "project/src/engine/optimizer/optimizer_memory_spill_feedback_enterprise.hpp",
+      "search_key": "OEIC_MEMORY_SPILL_FEEDBACK_ENTERPRISE",
+      "surface": "optimizer spill feedback persistence",
+      "sha256": "ff6f840a832c0cfdf1a8de00539f55180ee716765c28c1330e4fde5fd1ad51e5"
+    },
+    {
+      "slice_id": "CEIC-060",
+      "path": "project/src/core/index/index_optimizer_integration.hpp",
+      "search_key": "SB-INDEX-OPTIMIZER-INTEGRATION-CLOSURE-ANCHOR",
+      "surface": "index readiness plan admission",
+      "sha256": "d6dbd93f43b4d4a2f67bf6ef568f2061d5c84a5050b265d6d8ae7e25dce63400"
+    },
+    {
+      "slice_id": "CEIC-060",
+      "path": "project/src/engine/optimizer/optimizer_index_costing.hpp",
+      "search_key": "OEIC_INDEX_COSTING_ENTERPRISE_CLOSURE",
+      "surface": "optimizer index costing admission",
+      "sha256": "d2ec72307238df10953c54c31355fb06d39ecf79231e7e4536ad08e3b16a7ea9"
+    },
+    {
+      "slice_id": "CEIC-061",
+      "path": "project/src/core/memory/llvm_memory_accounting.hpp",
+      "search_key": "CEIC_061_LLVM_MEMORY_ACCOUNTING",
+      "surface": "LLVM dynamic/static memory accounting",
+      "sha256": "cedc11c03b574cbe4c1d6884cf94934a75561a48438c4002a4b932eaee341824"
+    },
+    {
+      "slice_id": "CEIC-061",
+      "path": "project/src/engine/native_compile/native_compile.hpp",
+      "search_key": "SB_ENGINE_NATIVE_COMPILE_RUNTIME",
+      "surface": "native compile memory accounting",
+      "sha256": "53179081140b40ddff7982d64088b1da73ff3ce4624fa41427dbadfba8cd17a6"
+    },
+    {
+      "slice_id": "CEIC-062",
+      "path": "project/tools/ceic_optimizer_readiness_manifest.py",
+      "search_key": "CEIC_062_OPTIMIZER_READINESS_MANIFEST_TOOL",
+      "surface": "optimizer readiness manifest producer",
+      "sha256": "91870b5c4c9534e6853bd04904e420a7f6f4ae0ac1c244e685ae26c4bc427112"
+    }
+  ],
+  "components": [
+    {
+      "slice_id": "CEIC-050",
+      "component_id": "live_routes",
+      "title": "Live-route benchmark artifact harness",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-058",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
+      "artifact_sha256": "223c6eda001a690faab1cc44441bf7f133d4baf5fa42f053145aa2fcfc8df594",
+      "artifact_state": "present",
+      "ctest": "ceic_050_live_route_benchmark_artifact_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.live_route_artifact_harness.v1",
+      "source_anchor": {
+        "path": "project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp",
+        "search_key": "OEIC_LIVE_PARSER_SBLR_OPTIMIZER_EXECUTOR_ROUTE",
+        "sha256": "a3f01e2f35ec884024b754c3047b4282b366a05e3cd6eb200334de6aed408c6b"
+      },
+      "proof_kind": "live_route_runtime_evidence",
+      "result_contract_hash": "sha256:9c4c9d86be03be7ea12bacc44593114837b480b0a91b8731a8aa02a267ff3450",
+      "evidence_digest": "sha256:c2b77a554eccb813a7a5216e5abcdba51b22f03f1a5f29cf2f307841602ed53d",
+      "catalog_epoch": 62050,
+      "security_epoch": 72050,
+      "redaction_epoch": 82050,
+      "statistics_epoch": 92050,
+      "provider_generation": 102050,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only",
+      "live_routes": [
+        "embedded",
+        "ipc",
+        "inet",
+        "cli",
+        "driver"
+      ],
+      "local_cluster_route_admitted": false
+    },
+    {
+      "slice_id": "CEIC-051",
+      "component_id": "persisted_benchmark_evidence",
+      "title": "Persisted optimizer benchmark evidence schema",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-059",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-051_PERSISTED_OPTIMIZER_BENCHMARK_SCHEMA_EVIDENCE.md",
+      "artifact_sha256": "abdaed3ba91aac18a76b698ffbfe9379f83413fac5b57eee5d1788b0d98d919f",
+      "artifact_state": "present",
+      "ctest": "ceic_051_persisted_optimizer_benchmark_evidence_schema_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.benchmark_evidence.v1",
+      "source_anchor": {
+        "path": "project/src/engine/optimizer/optimizer_benchmark_evidence_schema.hpp",
+        "search_key": "CEIC_051_PERSISTED_OPTIMIZER_BENCHMARK_EVIDENCE_SCHEMA",
+        "sha256": "0a97c4ac68de0baaebc188c4f574c38fa026bb24ce45f08b41987b5a66354b22"
+      },
+      "proof_kind": "benchmark_schema_validation",
+      "result_contract_hash": "sha256:e6dac1b368793b40451201ba38b66f4bc3772efb29407c81d39b42de2ff1504c",
+      "evidence_digest": "sha256:ee305443541b484d7c60a271e6c8e75183295dbc4f1acaef92fb7fa3b372c53b",
+      "catalog_epoch": 62051,
+      "security_epoch": 72051,
+      "redaction_epoch": 82051,
+      "statistics_epoch": 92051,
+      "provider_generation": 102051,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only"
+    },
+    {
+      "slice_id": "CEIC-052",
+      "component_id": "correctness_oracles",
+      "title": "Optimizer correctness oracle suite",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-060",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-052_OPTIMIZER_CORRECTNESS_ORACLE_EVIDENCE.md",
+      "artifact_sha256": "4a0fb529775d6399c280a2658a3451a2b135e3157fab3949bbc79c4616cc9eaa",
+      "artifact_state": "present",
+      "ctest": "ceic_052_optimizer_correctness_oracle_suite_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.correctness_oracle.v1",
+      "source_anchor": {
+        "path": "project/src/engine/optimizer/optimizer_correctness_oracle.hpp",
+        "search_key": "CEIC_052_OPTIMIZER_CORRECTNESS_ORACLE",
+        "sha256": "a260e4d6ca2bf02c2cd743056058e86fa6a11a3139267b34bfee8abc0c153567"
+      },
+      "proof_kind": "correctness_oracle_validation",
+      "result_contract_hash": "sha256:d8871a4f822a41d175a45538fdb88d034125283e0410b21081255e7320767d30",
+      "evidence_digest": "sha256:b87b20fe788f1b11bd1866f7d42b562bde218b8d88a1c3683e16bd69ec469064",
+      "catalog_epoch": 62052,
+      "security_epoch": 72052,
+      "redaction_epoch": 82052,
+      "statistics_epoch": 92052,
+      "provider_generation": 102052,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only",
+      "correctness_classes": [
+        "inner_join",
+        "outer_join",
+        "semi_join",
+        "anti_join",
+        "correlated_dependency",
+        "aggregation",
+        "distinct",
+        "window",
+        "topn",
+        "dml_locator",
+        "document_path",
+        "vector",
+        "text_search",
+        "graph",
+        "mixed_fusion"
+      ],
+      "baseline_is_engine_reference_route": true,
+      "optimized_route_consumed": true
+    },
+    {
+      "slice_id": "CEIC-053",
+      "component_id": "crash_reopen_persistence",
+      "title": "Optimizer crash reopen persistence tests",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-061",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-053_OPTIMIZER_CRASH_REOPEN_EVIDENCE.md",
+      "artifact_sha256": "9f128d34df715d1f478dc1ac7003b8e57182eb2433123ff8d4c1a1c36f71bbb1",
+      "artifact_state": "present",
+      "ctest": "ceic_053_optimizer_crash_reopen_persistence_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.crash_reopen_persistence.v1",
+      "source_anchor": {
+        "path": "project/src/engine/optimizer/optimizer_crash_reopen_persistence.hpp",
+        "search_key": "CEIC_053_OPTIMIZER_CRASH_REOPEN_PERSISTENCE",
+        "sha256": "9b686fceb0df934a4ca5bfe74b4ed0fb3d9a5bc26bb9dbe2fa58596d05894ece"
+      },
+      "proof_kind": "crash_reopen_matrix_validation",
+      "result_contract_hash": "sha256:905a449ac4c280232a4fba7b1a0190534dc052f8260fce9e3eab805fd59dbbd5",
+      "evidence_digest": "sha256:400f22526197504b010975ab68923077f424ef2fea8efeb336b7690f4cc9c1d1",
+      "catalog_epoch": 62053,
+      "security_epoch": 72053,
+      "redaction_epoch": 82053,
+      "statistics_epoch": 92053,
+      "provider_generation": 102053,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only",
+      "crash_points": [
+        "before_persist",
+        "during_write",
+        "after_fsync_before_commit",
+        "after_commit_before_publish",
+        "after_publish",
+        "during_reopen",
+        "after_replay_refusal"
+      ],
+      "reopen_decisions": [
+        "reload_accepted",
+        "reload_refused",
+        "recovered_rebuilt",
+        "quarantined"
+      ],
+      "committed_mga_inventory_required": true
+    },
+    {
+      "slice_id": "CEIC-054",
+      "component_id": "metrics_feedback",
+      "title": "Selectivity drift and plan-stability observability",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-062",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-054_SELECTIVITY_DRIFT_OBSERVABILITY_EVIDENCE.md",
+      "artifact_sha256": "ac82e1518fc5cf58c13740c62012e36bf851893148f55b59acf2660deb7c8c3b",
+      "artifact_state": "present",
+      "ctest": "ceic_054_selectivity_drift_plan_stability_observability_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.selectivity_drift_observability.v1",
+      "source_anchor": {
+        "path": "project/src/engine/optimizer/optimizer_selectivity_drift_observability.hpp",
+        "search_key": "CEIC_054_SELECTIVITY_DRIFT_PLAN_STABILITY_OBSERVABILITY",
+        "sha256": "1a820723c4d0270b91a70ffde8c0d210257c2e7fd5ddcdf9b6cbf6a8ee19262d"
+      },
+      "proof_kind": "metrics_feedback_and_observability",
+      "result_contract_hash": "sha256:cdd9adb953ab5f204ae4b23cf4eb0219a851adf4b3a9e7c75987cfdbe71f5916",
+      "evidence_digest": "sha256:191fe6ad8d7e891afc3059b66ab71a4b55ecc506549817728bfabd3b1bb13ed4",
+      "catalog_epoch": 62054,
+      "security_epoch": 72054,
+      "redaction_epoch": 82054,
+      "statistics_epoch": 92054,
+      "provider_generation": 102054,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only",
+      "feedback_inputs": [
+        "estimate_actual_drift",
+        "plan_flip_reason",
+        "spill_prediction",
+        "ann_recall_exact_rerank"
+      ],
+      "advisory_only": true
+    },
+    {
+      "slice_id": "CEIC-055",
+      "component_id": "transformation_memo_coverage",
+      "title": "Optimizer transformation memo coverage",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-063",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-055_OPTIMIZER_TRANSFORMATION_MEMO_EVIDENCE.md",
+      "artifact_sha256": "e34d985937e43b7550ad3fb41998946452df7b837d01172d8c452bc9dbe11a21",
+      "artifact_state": "present",
+      "ctest": "ceic_055_optimizer_transformation_memo_coverage_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.transformation_memo_coverage.v1",
+      "source_anchor": {
+        "path": "project/src/engine/optimizer/optimizer_transformation_memo_coverage.hpp",
+        "search_key": "CEIC_055_OPTIMIZER_TRANSFORMATION_MEMO_COVERAGE",
+        "sha256": "ae008d4082eadb75ef496fe173e2fac7d042538ad56fcd086a97f72a7da7222f"
+      },
+      "proof_kind": "transformation_memo_validation",
+      "result_contract_hash": "sha256:d85cfe09e67be84b352d0490805d26c97b5d9130a877a0fe7fa77eed0cd68cc5",
+      "evidence_digest": "sha256:6b870d404bc853fa8ed53c059ae0b898622dd030ce8b7d22a7bf49e677a88dc1",
+      "catalog_epoch": 62055,
+      "security_epoch": 72055,
+      "redaction_epoch": 82055,
+      "statistics_epoch": 92055,
+      "provider_generation": 102055,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only"
+    },
+    {
+      "slice_id": "CEIC-056",
+      "component_id": "workload_regression_budgets",
+      "title": "Optimizer workload regression budgets",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-064",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET_EVIDENCE.md",
+      "artifact_sha256": "6b443fd1bac71875537dec240a52de65559dc9db0d2be567dedf083771d5ba22",
+      "artifact_state": "present",
+      "ctest": "ceic_056_optimizer_workload_regression_budget_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.workload_regression_budget.v1",
+      "source_anchor": {
+        "path": "project/src/engine/optimizer/optimizer_workload_regression_budget.hpp",
+        "search_key": "CEIC_056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET",
+        "sha256": "5bcb5f5aa4c19db5554473496c741ffa5720c55cafe4ce6dee48bade72e766e4"
+      },
+      "proof_kind": "workload_budget_validation",
+      "result_contract_hash": "sha256:b4a87cf8eb13f97e5a0ac5037464efa8c0f19918b93ef044c9798f6a2002d7d8",
+      "evidence_digest": "sha256:250596a4366a42df57abc8171cded38f307ed0049c40750aeeb3be09f688e926",
+      "catalog_epoch": 62056,
+      "security_epoch": 72056,
+      "redaction_epoch": 82056,
+      "statistics_epoch": 92056,
+      "provider_generation": 102056,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only"
+    },
+    {
+      "slice_id": "CEIC-057",
+      "component_id": "driver_visible_explain",
+      "title": "Driver-visible explain compatibility",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-065",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-057_DRIVER_VISIBLE_EXPLAIN_EVIDENCE.md",
+      "artifact_sha256": "cb9e5df864ab7f079cd48fcc9b7a14ecbadb051e8558ee67ae1cdf4f2db74adc",
+      "artifact_state": "present",
+      "ctest": "ceic_057_driver_visible_explain_compatibility_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.driver_visible_explain_compatibility.v1",
+      "source_anchor": {
+        "path": "project/src/engine/optimizer/optimizer_driver_explain_compatibility.hpp",
+        "search_key": "CEIC_057_DRIVER_VISIBLE_EXPLAIN_COMPATIBILITY",
+        "sha256": "b955f67c7f230609a438fdb2d055325a16aec7bbf40eae164b11afb608578d70"
+      },
+      "proof_kind": "driver_visible_explain_validation",
+      "result_contract_hash": "sha256:63d24da69e99ae1287ebb19a087c0d5a7a9894af3f5c6059c7f3f663373d4bc6",
+      "evidence_digest": "sha256:439944d5208de2109fa5ac27cc8827122f0142f95bd7014acf261dce54c7d64a",
+      "catalog_epoch": 62057,
+      "security_epoch": 72057,
+      "redaction_epoch": 82057,
+      "statistics_epoch": 92057,
+      "provider_generation": 102057,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only",
+      "driver_visible_routes": [
+        "embedded",
+        "ipc",
+        "inet",
+        "cli",
+        "driver"
+      ],
+      "redaction_required": true,
+      "sql_text_leak_allowed": false,
+      "raw_uuid_leak_allowed": false,
+      "protected_material_leak_allowed": false
+    },
+    {
+      "slice_id": "CEIC-058",
+      "component_id": "reference_comparison_artifacts",
+      "title": "Live reference comparison artifacts",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-066",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-058_LIVE_REFERENCE_COMPARISON_ARTIFACTS_EVIDENCE.md",
+      "artifact_sha256": "9575956d9c5b0e13ff7ec6502039ac0648c95c5ecc4697719e50ef1f77ecd81b",
+      "artifact_state": "present",
+      "ctest": "ceic_058_live_reference_comparison_artifacts_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.live_reference_comparison_artifacts.v1",
+      "source_anchor": {
+        "path": "project/src/engine/optimizer/optimizer_live_reference_comparison_artifacts.hpp",
+        "search_key": "CEIC_058_LIVE_REFERENCE_COMPARISON_ARTIFACTS",
+        "sha256": "32758bf92a2a36cba9d015fd337ebab625b49206d5e770714965c42387a253b1"
+      },
+      "proof_kind": "reference_comparison_artifact_validation",
+      "result_contract_hash": "sha256:413211d3124a281b2af661f87cbae7b11e24578ac09b928dda0460876b59fa78",
+      "evidence_digest": "sha256:eb064877c2ece92c995842c59cd13ddc7ffba385956cd0883281024b345b045c",
+      "catalog_epoch": 62058,
+      "security_epoch": 72058,
+      "redaction_epoch": 82058,
+      "statistics_epoch": 92058,
+      "provider_generation": 102058,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only",
+      "minimum_reference_count": 24,
+      "reference_reference_only": true,
+      "reference_as_authority": false,
+      "reference_storage_finality_substitution": false
+    },
+    {
+      "slice_id": "CEIC-059",
+      "component_id": "memory_feedback",
+      "title": "Optimizer memory feedback from governed ledger",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-067",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-059_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE.md",
+      "artifact_sha256": "36e0a0c2197a07c72e4dbd5ea2c26d275314bd2171df35ba154fe4b53bb831cc",
+      "artifact_state": "present",
+      "ctest": "ceic_059_optimizer_memory_feedback_governed_ledger_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.memory_feedback_evidence.v1",
+      "source_anchor": {
+        "path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.hpp",
+        "search_key": "MMCH_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE_BRIDGE",
+        "sha256": "2d2baaab8b178a9a9ff5313ca15724ff8c49f10e9770d8652dcfeca27eba7271"
+      },
+      "proof_kind": "governed_memory_feedback_validation",
+      "result_contract_hash": "sha256:5cb5af264cbd9a2b9f884e85398186ed38ccdd2febe53327b22c381c69da4e5c",
+      "evidence_digest": "sha256:241e73ce60826e10ed0289e8357e474b867fc6986da2635fa02e8de46e896049",
+      "catalog_epoch": 62059,
+      "security_epoch": 72059,
+      "redaction_epoch": 82059,
+      "statistics_epoch": 92059,
+      "provider_generation": 102059,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only",
+      "governed_sources": [
+        "resource_governance_reservation_ledger",
+        "memory_support_bundle_metric_snapshot",
+        "real_operation_memory_metrics"
+      ],
+      "reservation_proof_required": true,
+      "advisory_only": true
+    },
+    {
+      "slice_id": "CEIC-060",
+      "component_id": "index_readiness_coupling",
+      "title": "Index readiness coupling in plan admission",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-068",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-060_INDEX_READINESS_PLAN_ADMISSION_EVIDENCE.md",
+      "artifact_sha256": "0a0814ef742fe79be47cf94c3c1fea34700dca32ec9cc5b40df13859995b7aae",
+      "artifact_state": "present",
+      "ctest": "ceic_060_index_readiness_plan_admission_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.index_readiness_plan_admission.v1",
+      "source_anchor": {
+        "path": "project/src/core/index/index_optimizer_integration.hpp",
+        "search_key": "SB-INDEX-OPTIMIZER-INTEGRATION-CLOSURE-ANCHOR",
+        "sha256": "d6dbd93f43b4d4a2f67bf6ef568f2061d5c84a5050b265d6d8ae7e25dce63400"
+      },
+      "proof_kind": "index_readiness_coupling_validation",
+      "result_contract_hash": "sha256:f4fa3038d6f9f95506ba98e63c2a5684fb9a855006e64679d3b81ef97309fb75",
+      "evidence_digest": "sha256:11f1a8d8f5fc204a5c056fdd65be1a7e731ec330dbaf9dc5845c7235199c0d3f",
+      "catalog_epoch": 62060,
+      "security_epoch": 72060,
+      "redaction_epoch": 82060,
+      "statistics_epoch": 92060,
+      "provider_generation": 102060,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only",
+      "required_index_artifacts": [
+        "CEIC-ART-012",
+        "CEIC-ART-055",
+        "CEIC-ART-056"
+      ],
+      "index_manifest_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
+      "generated_manifest_current": true,
+      "route_runtime_proof_required": true,
+      "exact_mga_security_recheck_required": true
+    },
+    {
+      "slice_id": "CEIC-061",
+      "component_id": "llvm_memory_accounting",
+      "title": "LLVM dynamic/static linkage memory accounting",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-069",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-061_LLVM_MEMORY_ACCOUNTING_EVIDENCE.md",
+      "artifact_sha256": "6b715b09275d6a2e120c155ca003346e14db368f4872867753f0442f98869eca",
+      "artifact_state": "present",
+      "ctest": "ceic_061_llvm_memory_accounting_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.optimizer.llvm_memory_accounting.v1",
+      "source_anchor": {
+        "path": "project/src/core/memory/llvm_memory_accounting.hpp",
+        "search_key": "CEIC_061_LLVM_MEMORY_ACCOUNTING",
+        "sha256": "cedc11c03b574cbe4c1d6884cf94934a75561a48438c4002a4b932eaee341824"
+      },
+      "proof_kind": "llvm_foreign_memory_accounting_validation",
+      "result_contract_hash": "sha256:8b844720a77e4b8ccf0742d08aeb1494aa7a08ad6b55bb5300972e612fe1a686",
+      "evidence_digest": "sha256:461fade063a101249e62408c553c7e3a07e01683f200ce94a23011e85defcf11",
+      "catalog_epoch": 62061,
+      "security_epoch": 72061,
+      "redaction_epoch": 82061,
+      "statistics_epoch": 92061,
+      "provider_generation": 102061,
+      "static_only_proof": false,
+      "smoke_only_proof": false,
+      "placeholder_runtime_evidence": false,
+      "synthetic_statistics": false,
+      "local_default_statistics": false,
+      "policy_default_statistics": false,
+      "reference_authority_claimed": false,
+      "benchmark_dominance_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "provider_finality_claimed": false,
+      "index_finality_claimed": false,
+      "local_cluster_evidence_present": false,
+      "external_cluster_overclaim": false,
+      "cluster_mode": "external_provider_delegated_only",
+      "external_cluster_provider_required": true,
+      "cluster_claim_blocked": true,
+      "authority": "evidence_only",
+      "linkage_modes": [
+        "dynamic_library",
+        "static_library"
+      ],
+      "foreign_memory_handle_required": true,
+      "reserve_before_llvm_or_native_call": true
+    }
+  ],
+  "artifact_evidence": [
+    {
+      "artifact_id": "CEIC-ART-058",
+      "slice_id": "CEIC-050",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
+      "sha256": "223c6eda001a690faab1cc44441bf7f133d4baf5fa42f053145aa2fcfc8df594",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-059",
+      "slice_id": "CEIC-051",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-051_PERSISTED_OPTIMIZER_BENCHMARK_SCHEMA_EVIDENCE.md",
+      "sha256": "abdaed3ba91aac18a76b698ffbfe9379f83413fac5b57eee5d1788b0d98d919f",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-060",
+      "slice_id": "CEIC-052",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-052_OPTIMIZER_CORRECTNESS_ORACLE_EVIDENCE.md",
+      "sha256": "4a0fb529775d6399c280a2658a3451a2b135e3157fab3949bbc79c4616cc9eaa",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-061",
+      "slice_id": "CEIC-053",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-053_OPTIMIZER_CRASH_REOPEN_EVIDENCE.md",
+      "sha256": "9f128d34df715d1f478dc1ac7003b8e57182eb2433123ff8d4c1a1c36f71bbb1",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-062",
+      "slice_id": "CEIC-054",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-054_SELECTIVITY_DRIFT_OBSERVABILITY_EVIDENCE.md",
+      "sha256": "ac82e1518fc5cf58c13740c62012e36bf851893148f55b59acf2660deb7c8c3b",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-063",
+      "slice_id": "CEIC-055",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-055_OPTIMIZER_TRANSFORMATION_MEMO_EVIDENCE.md",
+      "sha256": "e34d985937e43b7550ad3fb41998946452df7b837d01172d8c452bc9dbe11a21",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-064",
+      "slice_id": "CEIC-056",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET_EVIDENCE.md",
+      "sha256": "6b443fd1bac71875537dec240a52de65559dc9db0d2be567dedf083771d5ba22",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-065",
+      "slice_id": "CEIC-057",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-057_DRIVER_VISIBLE_EXPLAIN_EVIDENCE.md",
+      "sha256": "cb9e5df864ab7f079cd48fcc9b7a14ecbadb051e8558ee67ae1cdf4f2db74adc",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-066",
+      "slice_id": "CEIC-058",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-058_LIVE_REFERENCE_COMPARISON_ARTIFACTS_EVIDENCE.md",
+      "sha256": "9575956d9c5b0e13ff7ec6502039ac0648c95c5ecc4697719e50ef1f77ecd81b",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-067",
+      "slice_id": "CEIC-059",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-059_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE.md",
+      "sha256": "36e0a0c2197a07c72e4dbd5ea2c26d275314bd2171df35ba154fe4b53bb831cc",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-068",
+      "slice_id": "CEIC-060",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-060_INDEX_READINESS_PLAN_ADMISSION_EVIDENCE.md",
+      "sha256": "0a0814ef742fe79be47cf94c3c1fea34700dca32ec9cc5b40df13859995b7aae",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-069",
+      "slice_id": "CEIC-061",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-061_LLVM_MEMORY_ACCOUNTING_EVIDENCE.md",
+      "sha256": "6b715b09275d6a2e120c155ca003346e14db368f4872867753f0442f98869eca",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-070",
+      "slice_id": "CEIC-062",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST_EVIDENCE.md",
+      "sha256": "1ed8dca6554b22627ebc3276fb6aabfe735739b060ad6a1e360e3c2e51f2ba8f",
+      "status": "present"
+    }
+  ],
+  "metrics_evidence": {
+    "state": "optimizer_metric_rows_indexed_CEIC-090_integrated_coverage_complete",
+    "matrix": "project/tests/release_evidence/consolidated_enterprise_public_evidence/METRICS_PRODUCER_COVERAGE_MATRIX.csv",
+    "rows": [
+      {
+        "metric_family": "optimizer_runtime_metrics",
+        "subsystem": "optimizer",
+        "required_producer_path": "project/src/engine/optimizer/optimizer_route_metrics.cpp",
+        "operation_path": "project/src/engine/optimizer/runtime_consumption_benchmark_evidence.cpp",
+        "support_bundle_path": "project/src/engine/internal_api/observability/optimizer_metric_support_bundle.hpp",
+        "validation_gate": "ceic_062_optimizer_readiness_manifest_gate",
+        "status": "complete"
+      },
+      {
+        "metric_family": "optimizer_estimate_actual_error",
+        "subsystem": "optimizer",
+        "required_producer_path": "project/src/engine/optimizer/optimizer_selectivity_drift_observability.cpp",
+        "operation_path": "project/src/engine/optimizer/selectivity_model.cpp",
+        "support_bundle_path": "project/src/engine/internal_api/observability/optimizer_metric_support_bundle.hpp",
+        "validation_gate": "ceic_054_selectivity_drift_plan_stability_observability_gate",
+        "status": "complete"
+      },
+      {
+        "metric_family": "optimizer_feedback_metrics",
+        "subsystem": "optimizer",
+        "required_producer_path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.cpp",
+        "operation_path": "project/src/engine/optimizer/optimizer_feedback_stability.cpp",
+        "support_bundle_path": "project/src/engine/internal_api/observability/optimizer_metric_support_bundle.hpp",
+        "validation_gate": "ceic_059_optimizer_memory_feedback_governed_ledger_gate",
+        "status": "complete"
+      },
+      {
+        "metric_family": "optimizer_memory_feedback",
+        "subsystem": "optimizer",
+        "required_producer_path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.cpp",
+        "operation_path": "project/src/engine/optimizer/optimizer_feedback_stability.cpp",
+        "support_bundle_path": "project/src/engine/internal_api/observability/optimizer_metric_support_bundle.hpp",
+        "validation_gate": "ceic_059_optimizer_memory_feedback_governed_ledger_gate",
+        "status": "complete"
+      },
+      {
+        "metric_family": "optimizer_route_latency",
+        "subsystem": "optimizer",
+        "required_producer_path": "project/src/engine/optimizer/runtime_consumption_benchmark_evidence.cpp",
+        "operation_path": "project/src/engine/optimizer/runtime_consumption_benchmark_evidence.cpp",
+        "support_bundle_path": "project/src/engine/internal_api/observability/optimizer_metric_support_bundle.hpp",
+        "validation_gate": "ceic_062_optimizer_readiness_manifest_gate",
+        "status": "complete"
+      }
+    ]
+  },
+  "build": {
+    "cmake_file": "project/tests/consolidated_enterprise/CMakeLists.txt",
+    "focused_ctest": "ceic_062_optimizer_readiness_manifest_gate",
+    "focused_target": "ceic_062_optimizer_readiness_manifest_gate_check",
+    "component_ctests": [
+      "ceic_050_live_route_benchmark_artifact_gate",
+      "ceic_051_persisted_optimizer_benchmark_evidence_schema_gate",
+      "ceic_052_optimizer_correctness_oracle_suite_gate",
+      "ceic_053_optimizer_crash_reopen_persistence_gate",
+      "ceic_054_selectivity_drift_plan_stability_observability_gate",
+      "ceic_055_optimizer_transformation_memo_coverage_gate",
+      "ceic_056_optimizer_workload_regression_budget_gate",
+      "ceic_057_driver_visible_explain_compatibility_gate",
+      "ceic_058_live_reference_comparison_artifacts_gate",
+      "ceic_059_optimizer_memory_feedback_governed_ledger_gate",
+      "ceic_060_index_readiness_plan_admission_gate",
+      "ceic_061_llvm_memory_accounting_gate"
+    ],
+    "proof_control_ctest": "consolidated_enterprise_proof_control_gate",
+    "state": "CMake-visible focused gates defined"
+  },
+  "input_records": [
+    {
+      "path": "project/src/core/index/index_optimizer_integration.hpp",
+      "sha256": "d6dbd93f43b4d4a2f67bf6ef568f2061d5c84a5050b265d6d8ae7e25dce63400",
+      "bytes": 7369
+    },
+    {
+      "path": "project/src/core/memory/llvm_memory_accounting.hpp",
+      "sha256": "cedc11c03b574cbe4c1d6884cf94934a75561a48438c4002a4b932eaee341824",
+      "bytes": 4632
+    },
+    {
+      "path": "project/src/engine/native_compile/native_compile.hpp",
+      "sha256": "53179081140b40ddff7982d64088b1da73ff3ce4624fa41427dbadfba8cd17a6",
+      "bytes": 4241
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_benchmark_evidence_schema.hpp",
+      "sha256": "0a97c4ac68de0baaebc188c4f574c38fa026bb24ce45f08b41987b5a66354b22",
+      "bytes": 6293
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_correctness_oracle.hpp",
+      "sha256": "a260e4d6ca2bf02c2cd743056058e86fa6a11a3139267b34bfee8abc0c153567",
+      "bytes": 5258
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_crash_reopen_persistence.hpp",
+      "sha256": "9b686fceb0df934a4ca5bfe74b4ed0fb3d9a5bc26bb9dbe2fa58596d05894ece",
+      "bytes": 7135
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_driver_explain_compatibility.hpp",
+      "sha256": "b955f67c7f230609a438fdb2d055325a16aec7bbf40eae164b11afb608578d70",
+      "bytes": 5949
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_index_costing.hpp",
+      "sha256": "d2ec72307238df10953c54c31355fb06d39ecf79231e7e4536ad08e3b16a7ea9",
+      "bytes": 3385
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_live_reference_comparison_artifacts.hpp",
+      "sha256": "32758bf92a2a36cba9d015fd337ebab625b49206d5e770714965c42387a253b1",
+      "bytes": 7501
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_memory_feedback_bridge.hpp",
+      "sha256": "2d2baaab8b178a9a9ff5313ca15724ff8c49f10e9770d8652dcfeca27eba7271",
+      "bytes": 3916
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_memory_spill_feedback_enterprise.hpp",
+      "sha256": "ff6f840a832c0cfdf1a8de00539f55180ee716765c28c1330e4fde5fd1ad51e5",
+      "bytes": 3997
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_selectivity_drift_observability.hpp",
+      "sha256": "1a820723c4d0270b91a70ffde8c0d210257c2e7fd5ddcdf9b6cbf6a8ee19262d",
+      "bytes": 10198
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_transformation_memo_coverage.hpp",
+      "sha256": "ae008d4082eadb75ef496fe173e2fac7d042538ad56fcd086a97f72a7da7222f",
+      "bytes": 8151
+    },
+    {
+      "path": "project/src/engine/optimizer/optimizer_workload_regression_budget.hpp",
+      "sha256": "5bcb5f5aa4c19db5554473496c741ffa5720c55cafe4ce6dee48bade72e766e4",
+      "bytes": 7384
+    },
+    {
+      "path": "project/src/engine/optimizer/runtime_consumption_benchmark_evidence.cpp",
+      "sha256": "8665e9d4246f0cf1cd9ce9d984acd7ce24febf5560d97700ea1bb7d44e951ec1",
+      "bytes": 45763
+    },
+    {
+      "path": "project/tests/consolidated_enterprise/CMakeLists.txt",
+      "sha256": "d453141a1e46454ec0920351e52ea48466a16de5b94aee8a0d367249d29d1fa4",
+      "bytes": 51048
+    },
+    {
+      "path": "project/tests/consolidated_enterprise/ceic_062_optimizer_readiness_manifest_gate_test.py",
+      "sha256": "f94376542f37ad821780e56f20212e277c3f9d6eb1edcc0b521118668650f722",
+      "bytes": 9943
+    },
+    {
+      "path": "project/tests/optimizer/optimizer_enterprise_route_validation_gate.cpp",
+      "sha256": "a3f01e2f35ec884024b754c3047b4282b366a05e3cd6eb200334de6aed408c6b",
+      "bytes": 17206
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/ARTIFACT_INDEX.csv",
+      "sha256": "3ed5cee541bd71ce506f891c2882a93cc3875f5c33ced9f0c2bdbda84900855f",
+      "bytes": 12926
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_ACCEPTANCE_MATRIX.csv",
+      "sha256": "3f347f008a047fb27c69226525d52239beac56c40214346d6b66dc45a85c95d1",
+      "bytes": 245
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_DEPENDENCY_MATRIX.csv",
+      "sha256": "bde25fdefe33f878b126d702c9d1aae8eb94da9c03facb198ebb41a53a024e69",
+      "bytes": 228
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_FINDING_TRACEABILITY_MATRIX.csv",
+      "sha256": "cc5a044c63cab44d85740427743575dc2dc6cb1abe02d9df3a679707a4203cb6",
+      "bytes": 447
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
+      "sha256": "04a6d4ed7a073e233347fe25363cb4c8839e41721be728d49f1a93798f93471b",
+      "bytes": 546
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_STATUS_MATRIX.csv",
+      "sha256": "a1b2d44da0222b6afdc9a05e340977fdec0e08ad23c5240635705244672874d1",
+      "bytes": 7066
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CLAIM_BOUNDARY_MATRIX.csv",
+      "sha256": "18adbc50170fd43a6d17debcc189237fc3544403f5d675b0d6b000c9c62080e6",
+      "bytes": 883
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/EVIDENCE_MANIFEST_SCHEMA.md",
+      "sha256": "3c260f7572b00d847d4865f2e893a3af55494d13e896b7819ebd202b0cc64536",
+      "bytes": 183
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/INTERFACE_CONTRACTS.md",
+      "sha256": "7b16310ea861e445d2d570fef351b21b7f0ba56961e028e0f60ea97ddbbe62e8",
+      "bytes": 1216
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/METRICS_PRODUCER_COVERAGE_MATRIX.csv",
+      "sha256": "3f47eee8891525cbef49ada01071e0c6243b184e65003cce29f9de472fb059e8",
+      "bytes": 5875
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/README.md",
+      "sha256": "6341a681e39cc239f0a267d8ca5bf7a63c71994f8457d44f7fd4d801d68b6226",
+      "bytes": 714
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-050_LIVE_ROUTE_BENCHMARK_ARTIFACT_EVIDENCE.md",
+      "sha256": "223c6eda001a690faab1cc44441bf7f133d4baf5fa42f053145aa2fcfc8df594",
+      "bytes": 1152
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-051_PERSISTED_OPTIMIZER_BENCHMARK_SCHEMA_EVIDENCE.md",
+      "sha256": "abdaed3ba91aac18a76b698ffbfe9379f83413fac5b57eee5d1788b0d98d919f",
+      "bytes": 216
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-052_OPTIMIZER_CORRECTNESS_ORACLE_EVIDENCE.md",
+      "sha256": "4a0fb529775d6399c280a2658a3451a2b135e3157fab3949bbc79c4616cc9eaa",
+      "bytes": 228
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-053_OPTIMIZER_CRASH_REOPEN_EVIDENCE.md",
+      "sha256": "9f128d34df715d1f478dc1ac7003b8e57182eb2433123ff8d4c1a1c36f71bbb1",
+      "bytes": 206
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-054_SELECTIVITY_DRIFT_OBSERVABILITY_EVIDENCE.md",
+      "sha256": "ac82e1518fc5cf58c13740c62012e36bf851893148f55b59acf2660deb7c8c3b",
+      "bytes": 265
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-055_OPTIMIZER_TRANSFORMATION_MEMO_EVIDENCE.md",
+      "sha256": "e34d985937e43b7550ad3fb41998946452df7b837d01172d8c452bc9dbe11a21",
+      "bytes": 193
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-056_OPTIMIZER_WORKLOAD_REGRESSION_BUDGET_EVIDENCE.md",
+      "sha256": "6b443fd1bac71875537dec240a52de65559dc9db0d2be567dedf083771d5ba22",
+      "bytes": 220
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-057_DRIVER_VISIBLE_EXPLAIN_EVIDENCE.md",
+      "sha256": "cb9e5df864ab7f079cd48fcc9b7a14ecbadb051e8558ee67ae1cdf4f2db74adc",
+      "bytes": 231
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-058_LIVE_REFERENCE_COMPARISON_ARTIFACTS_EVIDENCE.md",
+      "sha256": "9575956d9c5b0e13ff7ec6502039ac0648c95c5ecc4697719e50ef1f77ecd81b",
+      "bytes": 270
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-059_OPTIMIZER_MEMORY_FEEDBACK_EVIDENCE.md",
+      "sha256": "36e0a0c2197a07c72e4dbd5ea2c26d275314bd2171df35ba154fe4b53bb831cc",
+      "bytes": 241
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-060_INDEX_READINESS_PLAN_ADMISSION_EVIDENCE.md",
+      "sha256": "0a0814ef742fe79be47cf94c3c1fea34700dca32ec9cc5b40df13859995b7aae",
+      "bytes": 227
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-061_LLVM_MEMORY_ACCOUNTING_EVIDENCE.md",
+      "sha256": "6b715b09275d6a2e120c155ca003346e14db368f4872867753f0442f98869eca",
+      "bytes": 206
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST_EVIDENCE.md",
+      "sha256": "1ed8dca6554b22627ebc3276fb6aabfe735739b060ad6a1e360e3c2e51f2ba8f",
+      "bytes": 238
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-090_METRICS_PRODUCER_COVERAGE_EVIDENCE.md",
+      "sha256": "0c22c94c9a75ee26785c4b8abfae4519f4b3685e9f1046e2829a0403d04eff21",
+      "bytes": 325
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-091_INTEGRATED_SUPPORT_BUNDLE_BOUNDARY_EVIDENCE.md",
+      "sha256": "de19ad3eb08993608f9c3e5cacac84d96d916c729a3b1e4a2af31aaed9e7b45d",
+      "bytes": 207
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-092_ROUTE_CHAIN_PROOF_EVIDENCE.md",
+      "sha256": "34ac8f481b185de90bfdde41ffdab568218f3138e35d7de00ce4709331aaa285",
+      "bytes": 271
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-093_INTEGRATED_RELIABILITY_BOUNDARY_EVIDENCE.md",
+      "sha256": "d74af43448ef5b42801ae3998ade51b1272104e7f0e6df3d3b943590b3a3b234",
+      "bytes": 205
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-094_CROSS_PLATFORM_BOUNDARY_EVIDENCE.md",
+      "sha256": "c328f01c8a1126b4e600f0920c468f859718bbb2d5160c7d2cffb127e2de939f",
+      "bytes": 162
+    },
+    {
+      "path": "project/tools/ceic_optimizer_readiness_manifest.py",
+      "sha256": "91870b5c4c9534e6853bd04904e420a7f6f4ae0ac1c244e685ae26c4bc427112",
+      "bytes": 51748
+    }
+  ]
+}

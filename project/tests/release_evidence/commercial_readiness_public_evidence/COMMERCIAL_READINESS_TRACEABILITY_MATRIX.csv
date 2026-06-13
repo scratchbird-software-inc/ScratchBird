@@ -1,0 +1,4 @@
+anchor,implementation,status,validation
+CRP_MANIFEST_FIXTURE,project/tests/commercial_readiness/commercial_readiness_gate.py,completed,gate reads implementation-test fixtures only
+CRP_RELEASE_FIXTURE,project/tools/release_provenance/generate_release_evidence.py,completed,release provenance anchors are source validated
+CRP_FINAL_FIXTURE,project/tests/release_evidence/commercial_readiness_public_evidence/artifacts/COMMERCIAL_READINESS_SUMMARY.md,completed,final audit is a read-only fixture artifact

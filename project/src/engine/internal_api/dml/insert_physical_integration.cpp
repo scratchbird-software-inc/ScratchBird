@@ -542,6 +542,55 @@ void AddVisibleRowKeysForProof(
   }
 }
 
+void AddVisibleRowKeysForSortedBuild(
+    const CrudState& state,
+    const EngineRequestContext& context,
+    const CrudIndexRecord& index,
+    std::vector<scratchbird::core::index::SortedBulkIndexRowInput>* keys) {
+  if (keys == nullptr) {
+    return;
+  }
+  std::uint64_t ordinal = 0;
+  std::set<std::string> visible_row_keys;
+  for (const auto& row :
+       VisibleCrudRowsForContext(state, index.table_uuid, context)) {
+    for (const auto& key : CrudIndexKeysForValues(index, row.values)) {
+      scratchbird::core::index::SortedBulkIndexRowInput input;
+      input.encoded_key = key;
+      input.row_uuid = row.row_uuid;
+      input.version_uuid = row.version_uuid;
+      input.payload_value = CrudFieldValue(row.values, index.column_name);
+      input.source_ordinal = ordinal++;
+      input.null_key = DirectNullValue(input.encoded_key) ||
+                       input.encoded_key.find("<NULL>") !=
+                           std::string::npos;
+      keys->push_back(std::move(input));
+      visible_row_keys.insert(row.row_uuid + "\n" + key);
+    }
+  }
+  for (const auto& entry : state.index_entries) {
+    if (entry.index_uuid != index.index_uuid ||
+        entry.table_uuid != index.table_uuid ||
+        !CrudCreatorVisible(state,
+                            entry.creator_tx,
+                            entry.event_sequence,
+                            context.local_transaction_id) ||
+        visible_row_keys.count(entry.row_uuid + "\n" + entry.key_value) ==
+            0) {
+      continue;
+    }
+    scratchbird::core::index::SortedBulkIndexRowInput input;
+    input.encoded_key = entry.key_value;
+    input.row_uuid = entry.row_uuid;
+    input.version_uuid = entry.version_uuid;
+    input.payload_value = entry.payload_value;
+    input.source_ordinal = ordinal++;
+    input.null_key = DirectNullValue(input.encoded_key) ||
+                     input.encoded_key.find("<NULL>") != std::string::npos;
+    keys->push_back(std::move(input));
+  }
+}
+
 void AddVisibleParentKeysForProof(
     const CrudState& state,
     const EngineRequestContext& context,
@@ -1209,6 +1258,7 @@ struct DirectSortedBulkIndexBuildSelection {
 
 DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
     const DirectPhysicalBulkAppendRequest& request,
+    const CrudState& state,
     const std::vector<CrudIndexRecord>& synchronous_indexes,
     const std::vector<CrudRowVersionRecord>& staged_rows,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch) {
@@ -1281,24 +1331,6 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
       selection.retail_indexes.push_back(index);
       continue;
     }
-    if (DirectIndexIsUnique(index)) {
-      selection.evidence.push_back(
-          {"orh_deferred_index_bulk_publish_unique_deferred_gated",
-           "reservation_ledger_required"});
-      selection.evidence.push_back(
-          {"orh_deferred_index_bulk_publish_benchmark_clean", "blocked"});
-      if (DirectDeferredIndexBenchmarkCleanRequired(request)) {
-        selection.ok = false;
-        selection.failure_reason =
-            "deferred_index_bulk_publish_unique_reservation_proof_required";
-        selection.diagnostic =
-            DeferredIndexUniqueReservationProofRequiredDiagnostic();
-        return selection;
-      }
-      selection.retail_indexes.push_back(index);
-      continue;
-    }
-
     const TypedUuid index_uuid =
         ParseDirectTypedUuid(UuidKind::object, index.index_uuid);
     if (!index_uuid.valid()) {
@@ -1309,7 +1341,6 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
           selection.failure_reason);
       return selection;
     }
-
     scratchbird::core::index::SortedBulkIndexBuildRequest build;
     build.metadata.index_uuid = index_uuid;
     build.metadata.table_uuid = table_uuid;
@@ -1323,6 +1354,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
     build.metadata.order_proof_valid = false;
     build.metadata.policy_allows_mutation = true;
     build.metadata.leaf_entry_capacity = 128;
+    scratchbird::core::index::UniqueIndexReservationLedger unique_ledger;
     for (std::size_t row_index = 0; row_index < staged_rows.size(); ++row_index) {
       for (const auto& key : CrudIndexKeysForValues(index, logical_value_batch[row_index])) {
         scratchbird::core::index::SortedBulkIndexRowInput input;
@@ -1336,6 +1368,36 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
         build.rows.push_back(std::move(input));
       }
     }
+    if (build.metadata.unique) {
+      AddVisibleRowKeysForSortedBuild(state,
+                                      request.context,
+                                      index,
+                                      &build.visible_unique_keys);
+      build.unique_reservation_ledger = &unique_ledger;
+      build.validate_unique_reservation_batch = true;
+      build.unique_constraint_uuid = index_uuid;
+      build.transaction_uuid =
+          ParseDirectTypedUuid(UuidKind::transaction,
+                               request.context.transaction_uuid.canonical);
+      build.local_transaction_id = request.context.local_transaction_id;
+      build.unique_reservation_validation_evidence_token =
+          "direct_sorted_bulk_unique_reservation_validation";
+      scratchbird::core::index::UniqueIndexReservationTransactionProof proof;
+      proof.transaction_uuid = build.transaction_uuid;
+      proof.local_transaction_id = build.local_transaction_id;
+      proof.state = scratchbird::transaction::mga::TransactionState::active;
+      proof.engine_mga_authority = true;
+      proof.durable_transaction_inventory_authoritative = true;
+      proof.evidence_token =
+          "direct_sorted_bulk_engine_transaction_inventory_active";
+      build.unique_transaction_state_proofs.push_back(std::move(proof));
+      selection.evidence.push_back(
+          {"orh_deferred_index_bulk_publish_unique_deferred_gated",
+           "reservation_ledger_validated"});
+      selection.evidence.push_back(
+          {"orh_deferred_index_bulk_publish_unique_constraint_uuid",
+           index.index_uuid});
+    }
 
     const auto built = scratchbird::core::index::BuildSortedExactBulkIndex(build);
     if (!built.ok()) {
@@ -1345,13 +1407,29 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
                                      : "sorted_bulk_index_build_refused";
       selection.diagnostic = MakeEngineApiDiagnostic(
           built.diagnostic.diagnostic_code.empty()
-              ? "SB_ENGINE_API_INVALID_REQUEST"
+              ? (build.metadata.unique
+                     ? "SB_ORH_DEFERRED_INDEX_BULK_PUBLISH.UNIQUE_RESERVATION_PROOF_REQUIRED"
+                     : "SB_ENGINE_API_INVALID_REQUEST")
               : built.diagnostic.diagnostic_code,
           built.diagnostic.message_key.empty()
-              ? "engine.api.invalid_request"
+              ? (build.metadata.unique
+                     ? "orh.deferred_index_bulk_publish.unique_reservation_proof_required"
+                     : "engine.api.invalid_request")
               : built.diagnostic.message_key,
           selection.failure_reason,
           true);
+      return selection;
+    }
+    if (build.metadata.unique &&
+        (!built.unique_reservation_ledger_used ||
+         !built.unique_reservation_validation_passed)) {
+      selection.ok = false;
+      selection.failure_reason =
+          "deferred_index_bulk_publish_unique_reservation_proof_required";
+      selection.diagnostic = DeferredIndexUniqueReservationProofRequiredDiagnostic();
+      selection.evidence.push_back(
+          {"orh_deferred_index_bulk_publish_unique_deferred_gated",
+           "reservation_ledger_required"});
       return selection;
     }
     if (!ProveDirectSortedRootPublishRecovery(built,
@@ -1380,6 +1458,11 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
       selection.evidence.push_back({item.evidence_kind, item.evidence_id});
     }
     selection.evidence.push_back({"sorted_bulk_index_uuid", index.index_uuid});
+    selection.evidence.push_back({"sorted_bulk_index_build_selected", "true"});
+    if (build.metadata.unique && built.uniqueness_proven) {
+      selection.evidence.push_back({"sorted_bulk_index_uniqueness_proof",
+                                    "sorted_duplicate_runs_absent"});
+    }
   }
 
   selection.evidence.push_back({"sorted_bulk_index_build_route",
@@ -2826,6 +2909,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const auto synchronous_indexes = DirectSynchronousIndexes(batch_context);
   const auto sorted_index_build = BuildDirectSortedBulkIndexArtifacts(
       request,
+      state,
       synchronous_indexes,
       staged_rows,
       logical_value_batch);

@@ -12,6 +12,8 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/schema_tree_api.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <sstream>
@@ -67,6 +69,212 @@ std::string OptionValue(const EngineApiRequest& request, const std::string& pref
     if (StartsWith(option, prefix)) { return option.substr(prefix.size()); }
   }
   return fallback;
+}
+
+std::uint64_t Fnv1a64(const std::string& value) {
+  std::uint64_t hash = 1469598103934665603ull;
+  for (unsigned char c : value) {
+    hash ^= static_cast<std::uint64_t>(c);
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
+std::string StableArtifactHash(const std::string& object_uuid,
+                               const std::string& object_kind,
+                               const std::string& default_name,
+                               const std::string& payload) {
+  return std::to_string(Fnv1a64(object_uuid + "\n" + object_kind + "\n" +
+                                default_name + "\n" + payload));
+}
+
+struct ArtifactSnapshotEntry {
+  std::string object_uuid;
+  std::string object_kind;
+  std::string default_name;
+  std::string payload;
+  std::string content_hash;
+};
+
+std::string SnapshotSignature(const ArtifactSnapshotEntry& entry) {
+  return entry.object_kind + "\n" + entry.default_name + "\n" + entry.payload;
+}
+
+void AddExternalGitAuthorityEvidence(EngineApiResult* result) {
+  AddApiBehaviorEvidence(result, "external_git_versioning", "convenience_snapshot_review_only");
+  AddApiBehaviorEvidence(result, "git_runtime_authority", "false");
+  AddApiBehaviorEvidence(result, "external_git_repository_authority", "false");
+  AddApiBehaviorEvidence(result, "catalog_runtime_authority", "ScratchBird_catalog_api");
+  AddApiBehaviorEvidence(result, "mga_transaction_authority", "local_mga_transaction_inventory");
+}
+
+EngineApiDiagnostic ValidateExternalGitRequest(const EngineApiRequest& request,
+                                               const std::string& operation_id,
+                                               bool require_rows) {
+  const auto context_status = ValidateApiBehaviorContext(request.context, operation_id, true, true);
+  if (context_status.error) { return context_status; }
+  if (!HasOption(request, "external_git_policy:enabled") &&
+      !HasOption(request, "allow_external_git_versioning:true")) {
+    return MakeInvalidRequestDiagnostic(operation_id, "external_git_policy_required");
+  }
+  if (HasOption(request, "git_runtime_authority:true") ||
+      HasOption(request, "external_git_direct_authority:true") ||
+      HasOption(request, "external_git_direct_apply:true")) {
+    return MakeInvalidRequestDiagnostic(operation_id, "external_git_authority_forbidden");
+  }
+  if (require_rows && request.rows.empty()) {
+    return MakeInvalidRequestDiagnostic(operation_id, "external_git_snapshot_rows_required");
+  }
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+}
+
+std::vector<ArtifactSnapshotEntry> CurrentArtifactSnapshot(const EngineRequestContext& context) {
+  std::vector<ArtifactSnapshotEntry> rows;
+  for (const auto& schema : VisibleSchemaTreeRecords(context, context.local_transaction_id)) {
+    ArtifactSnapshotEntry entry;
+    entry.object_uuid = schema.schema_uuid;
+    entry.object_kind = "schema";
+    entry.default_name = schema.default_name;
+    entry.payload = schema.payload;
+    entry.content_hash =
+        StableArtifactHash(entry.object_uuid, entry.object_kind, entry.default_name, entry.payload);
+    rows.push_back(std::move(entry));
+  }
+  for (const auto& record : VisibleApiBehaviorRecords(context, {}, context.local_transaction_id)) {
+    if (record.object_kind == "schema") { continue; }
+    ArtifactSnapshotEntry entry;
+    entry.object_uuid = record.object_uuid;
+    entry.object_kind = record.object_kind;
+    entry.default_name = record.default_name;
+    entry.payload = record.payload;
+    entry.content_hash =
+        StableArtifactHash(entry.object_uuid, entry.object_kind, entry.default_name, entry.payload);
+    rows.push_back(std::move(entry));
+  }
+  std::sort(rows.begin(), rows.end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.object_uuid < rhs.object_uuid;
+  });
+  return rows;
+}
+
+EngineApiDiagnostic SnapshotRowsFromRequest(const EngineApiRequest& request,
+                                            const std::string& operation_id,
+                                            std::vector<ArtifactSnapshotEntry>* rows) {
+  std::set<std::string> seen;
+  for (const auto& row : request.rows) {
+    const std::string entry_kind = FieldValue(row, "snapshot_entry_kind");
+    if (entry_kind == "manifest") { continue; }
+    const std::string format = FieldValue(row, "artifact_format");
+    if (!format.empty() && format != "sb.catalog.artifact.v1" &&
+        format != "sb.external_git.catalog_snapshot.v1") {
+      return MakeInvalidRequestDiagnostic(operation_id, "external_git_snapshot_format_invalid");
+    }
+    ArtifactSnapshotEntry entry;
+    entry.object_uuid = FieldValue(row, "object_uuid");
+    entry.object_kind = FieldValue(row, "object_kind");
+    entry.default_name = FieldValue(row, "default_name");
+    entry.payload = FieldValue(row, "payload");
+    if (entry.object_uuid.empty() || entry.object_kind.empty()) {
+      return MakeInvalidRequestDiagnostic(operation_id, "external_git_snapshot_object_required");
+    }
+    if (seen.contains(entry.object_uuid)) {
+      return MakeInvalidRequestDiagnostic(operation_id,
+                                          "external_git_snapshot_duplicate_uuid:" +
+                                              entry.object_uuid);
+    }
+    entry.content_hash =
+        StableArtifactHash(entry.object_uuid, entry.object_kind, entry.default_name, entry.payload);
+    const std::string supplied_hash = FieldValue(row, "content_hash");
+    if (!supplied_hash.empty() && supplied_hash != entry.content_hash) {
+      return MakeInvalidRequestDiagnostic(operation_id,
+                                          "external_git_snapshot_hash_mismatch:" +
+                                              entry.object_uuid);
+    }
+    rows->push_back(std::move(entry));
+    seen.insert(rows->back().object_uuid);
+  }
+  std::sort(rows->begin(), rows->end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.object_uuid < rhs.object_uuid;
+  });
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+}
+
+std::map<std::string, ArtifactSnapshotEntry> SnapshotMap(
+    const std::vector<ArtifactSnapshotEntry>& rows) {
+  std::map<std::string, ArtifactSnapshotEntry> out;
+  for (const auto& row : rows) { out[row.object_uuid] = row; }
+  return out;
+}
+
+void AddExternalGitManifestRow(EngineApiResult* result,
+                               const EngineRequestContext& context,
+                               const std::string& entry_count,
+                               const std::string& mode) {
+  AddApiBehaviorRow(result,
+                    {{"artifact_format", "sb.external_git.catalog_snapshot.v1"},
+                     {"snapshot_entry_kind", "manifest"},
+                     {"snapshot_mode", mode},
+                     {"database_uuid", context.database_uuid.canonical},
+                     {"local_transaction_id", std::to_string(context.local_transaction_id)},
+                     {"catalog_artifact_format", "sb.catalog.artifact.v1"},
+                     {"entry_count", entry_count},
+                     {"identity_authority", "uuid"},
+                     {"catalog_runtime_authority", "ScratchBird_catalog_api"},
+                     {"mga_transaction_authority", "local_mga_transaction_inventory"},
+                     {"git_runtime_authority", "false"},
+                     {"external_git_repository_authority", "false"}});
+}
+
+void AddExternalGitObjectRow(EngineApiResult* result,
+                             const ArtifactSnapshotEntry& entry,
+                             const std::string& snapshot_mode) {
+  AddApiBehaviorRow(result,
+                    {{"artifact_format", "sb.external_git.catalog_snapshot.v1"},
+                     {"catalog_artifact_format", "sb.catalog.artifact.v1"},
+                     {"snapshot_entry_kind", "object"},
+                     {"snapshot_mode", snapshot_mode},
+                     {"object_uuid", entry.object_uuid},
+                     {"object_kind", entry.object_kind},
+                     {"default_name", entry.default_name},
+                     {"payload", entry.payload},
+                     {"content_hash", entry.content_hash},
+                     {"identity_authority", "uuid"},
+                     {"runtime_authority", "false"}});
+}
+
+void AddExternalGitDiffRow(EngineApiResult* result,
+                           const std::string& diff_kind,
+                           const ArtifactSnapshotEntry* current,
+                           const ArtifactSnapshotEntry* candidate) {
+  const ArtifactSnapshotEntry* effective = current != nullptr ? current : candidate;
+  AddApiBehaviorRow(result,
+                    {{"artifact_format", "sb.external_git.catalog_diff.v1"},
+                     {"diff_kind", diff_kind},
+                     {"object_uuid", effective == nullptr ? "" : effective->object_uuid},
+                     {"object_kind", effective == nullptr ? "" : effective->object_kind},
+                     {"current_hash", current == nullptr ? "" : current->content_hash},
+                     {"candidate_hash", candidate == nullptr ? "" : candidate->content_hash},
+                     {"git_runtime_authority", "false"},
+                     {"requires_authorized_catalog_import", "true"},
+                     {"mga_transaction_authority", "local_mga_transaction_inventory"}});
+}
+
+void AddExternalGitRollbackRow(EngineApiResult* result,
+                               const std::string& action,
+                               const ArtifactSnapshotEntry& entry,
+                               const std::string& target_hash) {
+  AddApiBehaviorRow(result,
+                    {{"artifact_format", "sb.external_git.rollback_plan.v1"},
+                     {"rollback_action", action},
+                     {"object_uuid", entry.object_uuid},
+                     {"object_kind", entry.object_kind},
+                     {"default_name", entry.default_name},
+                     {"payload", entry.payload},
+                     {"restore_hash", entry.content_hash},
+                     {"target_hash", target_hash},
+                     {"apply_route", "authorized_catalog_api"},
+                     {"git_runtime_authority", "false"},
+                     {"plan_runtime_authority", "false"}});
 }
 
 std::vector<EngineLocalizedName> LocalizedNamesFromPayload(const std::string& payload,
@@ -218,6 +426,14 @@ EngineImportCatalogArtifactsResult EngineImportCatalogArtifacts(const EngineImpo
         "artifact.import_catalog",
         context_status);
   }
+  if (HasOption(request, "git_runtime_authority:true") ||
+      HasOption(request, "external_git_direct_authority:true") ||
+      HasOption(request, "external_git_direct_apply:true")) {
+    return MakeApiBehaviorDiagnostic<EngineImportCatalogArtifactsResult>(
+        request.context,
+        "artifact.import_catalog",
+        MakeInvalidRequestDiagnostic("artifact.import_catalog", "external_git_authority_forbidden"));
+  }
   if (request.rows.empty()) {
     return MakeApiBehaviorDiagnostic<EngineImportCatalogArtifactsResult>(
         request.context,
@@ -271,6 +487,158 @@ EngineImportCatalogArtifactsResult EngineImportCatalogArtifacts(const EngineImpo
   }
   AddApiBehaviorEvidence(&result, "catalog_artifact_import_count", std::to_string(staged.size()));
   AddApiBehaviorEvidence(&result, "git_runtime_authority", "false");
+  if (HasOption(request, "external_git_policy:enabled") ||
+      HasOption(request, "allow_external_git_versioning:true")) {
+    AddApiBehaviorEvidence(&result,
+                           "external_git_import_authority",
+                           "authorized_catalog_api_not_git_repository");
+    AddApiBehaviorEvidence(&result,
+                           "mga_transaction_authority",
+                           "local_mga_transaction_inventory");
+  }
+  return result;
+}
+
+EngineExportExternalGitSnapshotResult EngineExportExternalGitSnapshot(
+    const EngineExportExternalGitSnapshotRequest& request) {
+  const auto status =
+      ValidateExternalGitRequest(request, "artifact.external_git.export_snapshot", false);
+  if (status.error) {
+    return MakeApiBehaviorDiagnostic<EngineExportExternalGitSnapshotResult>(
+        request.context,
+        "artifact.external_git.export_snapshot",
+        status);
+  }
+  auto result = MakeApiBehaviorSuccess<EngineExportExternalGitSnapshotResult>(
+      request.context, "artifact.external_git.export_snapshot");
+  const auto rows = CurrentArtifactSnapshot(request.context);
+  AddExternalGitManifestRow(&result,
+                            request.context,
+                            std::to_string(rows.size()),
+                            "export_snapshot");
+  for (const auto& row : rows) { AddExternalGitObjectRow(&result, row, "export_snapshot"); }
+  AddExternalGitAuthorityEvidence(&result);
+  AddApiBehaviorEvidence(&result, "external_git_snapshot_export_count", std::to_string(rows.size()));
+  return result;
+}
+
+EngineDiffExternalGitSnapshotResult EngineDiffExternalGitSnapshot(
+    const EngineDiffExternalGitSnapshotRequest& request) {
+  const auto status =
+      ValidateExternalGitRequest(request, "artifact.external_git.diff_snapshot", true);
+  if (status.error) {
+    return MakeApiBehaviorDiagnostic<EngineDiffExternalGitSnapshotResult>(
+        request.context,
+        "artifact.external_git.diff_snapshot",
+        status);
+  }
+  std::vector<ArtifactSnapshotEntry> candidate_rows;
+  const auto row_status =
+      SnapshotRowsFromRequest(request, "artifact.external_git.diff_snapshot", &candidate_rows);
+  if (row_status.error) {
+    return MakeApiBehaviorDiagnostic<EngineDiffExternalGitSnapshotResult>(
+        request.context,
+        "artifact.external_git.diff_snapshot",
+        row_status);
+  }
+  auto result = MakeApiBehaviorSuccess<EngineDiffExternalGitSnapshotResult>(
+      request.context, "artifact.external_git.diff_snapshot");
+  const auto current = SnapshotMap(CurrentArtifactSnapshot(request.context));
+  const auto candidate = SnapshotMap(candidate_rows);
+  std::size_t changed = 0;
+  for (const auto& [uuid, current_entry] : current) {
+    const auto candidate_it = candidate.find(uuid);
+    if (candidate_it == candidate.end()) {
+      AddExternalGitDiffRow(&result, "removed_from_candidate", &current_entry, nullptr);
+      ++changed;
+      continue;
+    }
+    if (SnapshotSignature(current_entry) != SnapshotSignature(candidate_it->second)) {
+      AddExternalGitDiffRow(&result, "modified", &current_entry, &candidate_it->second);
+      ++changed;
+    }
+  }
+  for (const auto& [uuid, candidate_entry] : candidate) {
+    if (!current.contains(uuid)) {
+      AddExternalGitDiffRow(&result, "added_in_candidate", nullptr, &candidate_entry);
+      ++changed;
+    }
+  }
+  if (changed == 0) {
+    AddApiBehaviorRow(&result,
+                      {{"artifact_format", "sb.external_git.catalog_diff.v1"},
+                       {"diff_kind", "unchanged"},
+                       {"git_runtime_authority", "false"},
+                       {"requires_authorized_catalog_import", "true"}});
+  }
+  AddExternalGitAuthorityEvidence(&result);
+  AddApiBehaviorEvidence(&result, "external_git_diff_count", std::to_string(changed));
+  return result;
+}
+
+EnginePlanExternalGitRollbackResult EnginePlanExternalGitRollback(
+    const EnginePlanExternalGitRollbackRequest& request) {
+  const auto status =
+      ValidateExternalGitRequest(request, "artifact.external_git.rollback_plan", true);
+  if (status.error) {
+    return MakeApiBehaviorDiagnostic<EnginePlanExternalGitRollbackResult>(
+        request.context,
+        "artifact.external_git.rollback_plan",
+        status);
+  }
+  std::vector<ArtifactSnapshotEntry> target_rows;
+  const auto row_status =
+      SnapshotRowsFromRequest(request, "artifact.external_git.rollback_plan", &target_rows);
+  if (row_status.error) {
+    return MakeApiBehaviorDiagnostic<EnginePlanExternalGitRollbackResult>(
+        request.context,
+        "artifact.external_git.rollback_plan",
+        row_status);
+  }
+  auto result = MakeApiBehaviorSuccess<EnginePlanExternalGitRollbackResult>(
+      request.context, "artifact.external_git.rollback_plan");
+  const auto current = SnapshotMap(CurrentArtifactSnapshot(request.context));
+  const auto target = SnapshotMap(target_rows);
+  std::size_t plan_rows = 0;
+  for (const auto& [uuid, current_entry] : current) {
+    const auto target_it = target.find(uuid);
+    if (target_it == target.end()) {
+      AddExternalGitRollbackRow(&result,
+                                "restore_current_catalog_artifact",
+                                current_entry,
+                                "");
+      ++plan_rows;
+      continue;
+    }
+    if (SnapshotSignature(current_entry) != SnapshotSignature(target_it->second)) {
+      AddExternalGitRollbackRow(&result,
+                                "restore_current_catalog_artifact",
+                                current_entry,
+                                target_it->second.content_hash);
+      ++plan_rows;
+    }
+  }
+  for (const auto& [uuid, target_entry] : target) {
+    if (!current.contains(uuid)) {
+      AddExternalGitRollbackRow(&result,
+                                "reject_candidate_only_object_until_authorized_catalog_create",
+                                target_entry,
+                                target_entry.content_hash);
+      ++plan_rows;
+    }
+  }
+  if (plan_rows == 0) {
+    AddApiBehaviorRow(&result,
+                      {{"artifact_format", "sb.external_git.rollback_plan.v1"},
+                       {"rollback_action", "no_action_required"},
+                       {"git_runtime_authority", "false"},
+                       {"plan_runtime_authority", "false"}});
+  }
+  AddExternalGitAuthorityEvidence(&result);
+  AddApiBehaviorEvidence(&result, "external_git_rollback_plan_count", std::to_string(plan_rows));
+  AddApiBehaviorEvidence(&result,
+                         "external_git_rollback_apply_route",
+                         "authorized_catalog_api_not_git_repository");
   return result;
 }
 

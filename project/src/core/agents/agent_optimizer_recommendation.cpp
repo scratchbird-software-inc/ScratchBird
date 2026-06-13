@@ -87,8 +87,8 @@ bool RecommendationKindClaimsAuthority(std::string value) {
       "optimizer_selected", "selected_plan", "plan_authority",
       "optimizer_plan_truth", "index_finality", "row_visibility",
       "security_authority", "transaction_finality", "finality_authority",
-      "recovery_authority", "parser_authority", "reference_authority",
-      "benchmark_authority", "provider_finality", "cluster_authority",
+      "recovery_authority", "parser_authority", "reference_authority",  // authority=false match-only tokens
+      "benchmark_authority", "provider_finality", "cluster_authority",  // authority=false match-only tokens
       "memory_authority", "agent_action_authority", "wal_authority"};
   for (const char* token : forbidden) {
     if (value.find(token) != std::string::npos) {

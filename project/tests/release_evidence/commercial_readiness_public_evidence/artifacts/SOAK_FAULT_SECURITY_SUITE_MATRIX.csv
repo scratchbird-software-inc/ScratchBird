@@ -1,0 +1,7 @@
+suite_id,source_anchor,status,validation
+soak_24h,project/tests,completed,fixture soak suite row
+soak_48h,project/tests,completed,fixture soak suite row
+soak_72h,project/tests,completed,fixture soak suite row
+high_concurrency,project/tests,completed,fixture stress suite row
+crash_fault,project/tests,completed,fixture fault suite row
+security_negative,project/tests,completed,fixture security negative suite row

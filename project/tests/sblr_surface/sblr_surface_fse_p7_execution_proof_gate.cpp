@@ -30,7 +30,7 @@ using Row = std::map<std::string, std::string>;
 constexpr int kSkipReturnCode = 77;
 
 std::string ResolveSblrExpansionRoot(const std::string& input) {
-  if (input.find("final-sblr-sbsql-sblr-expansion-closure") != std::string::npos) {
+  if (input.find("sblr_sbsql_expansion_public_evidence") != std::string::npos) {
     return input;
   }
   return input + "/public_execution_plan";
@@ -510,10 +510,10 @@ int main(int argc, char** argv) {
   const auto p5 = LoadCsv(dir + "/SBLR_CLUSTER_AND_EXTERNAL_AUTHORITY_POLICY_MATRIX.csv");
   const auto p6 = LoadCsv(dir + "/SBLR_RESULT_VECTOR_AND_DIAGNOSTIC_MATRIX.csv");
   const auto p7 = LoadCsv(dir + "/SBLR_EXECUTION_PROOF_MATRIX.csv");
-  const auto tracker = LoadCsv(dir + "/TRACKER.csv");
-  const auto gates = LoadCsv(dir + "/ACCEPTANCE_GATES.csv");
+  const auto tracker = LoadCsv(dir + "/SBLR_EXPANSION_STATUS_MATRIX.csv");
+  const auto gates = LoadCsv(dir + "/SBLR_EXPANSION_ACCEPTANCE_MATRIX.csv");
   const auto outputs = LoadCsv(dir + "/OUTPUT_CONTRACT.csv");
-  const auto audit = LoadCsv(dir + "/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv");
+  const auto audit = LoadCsv(dir + "/SBLR_EXPANSION_TRACEABILITY_MATRIX.csv");
 
   RequireColumns(
       p7,

@@ -35,6 +35,10 @@ bool PersistentMutationOrMaintenanceRoute(IndexRouteKind route) {
          route == IndexRouteKind::validate_repair;
 }
 
+bool GenericAccessMethodFamily(IndexFamily family) {
+  return family != IndexFamily::bitmap;
+}
+
 bool GenerationHandleValid(const IndexProviderGenerationHandle& generation) {
   return generation.generation_uuid.valid() &&
          generation.generation_number != 0 &&
@@ -209,15 +213,19 @@ IndexAccessMethodCapabilities CapabilitiesForFamily(IndexFamily family) {
   caps.returns_lossy_candidates = true;
   caps.requires_mga_recheck = true;
   caps.requires_security_recheck = true;
-  if (family == IndexFamily::bitmap) {
-    return caps;
-  }
-  caps.supports_insert = state->runtime_available && state->physical_writer;
+  const bool generic_access_method = GenericAccessMethodFamily(family);
+  caps.supports_insert = generic_access_method &&
+                         state->runtime_available &&
+                         state->physical_writer;
   caps.supports_delete = caps.supports_insert;
   caps.supports_update = caps.supports_insert;
-  caps.supports_scan = state->runtime_available && state->physical_reader;
+  caps.supports_scan = generic_access_method &&
+                       state->runtime_available &&
+                       state->physical_reader;
   caps.supports_verify = state->runtime_available && state->validate;
-  caps.supports_rebuild = state->runtime_available && state->rebuild;
+  caps.supports_rebuild = generic_access_method &&
+                          state->runtime_available &&
+                          state->rebuild;
   caps.can_satisfy_order = caps.supports_scan && descriptor->supports_ordering;
   caps.can_be_unique = caps.supports_insert && descriptor->supports_uniqueness;
   return caps;

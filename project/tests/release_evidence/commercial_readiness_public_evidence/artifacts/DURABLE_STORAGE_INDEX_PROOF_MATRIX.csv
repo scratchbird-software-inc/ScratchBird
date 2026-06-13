@@ -1,0 +1,12 @@
+family,source_anchor,status,validation
+btree,project/src/core/index,completed,fixture durable index proof row
+unique_btree,project/src/core/index,completed,fixture durable index proof row
+hash,project/src/core/index,completed,fixture durable index proof row
+brin_zone,project/src/core/index,completed,fixture durable index proof row
+bloom,project/src/core/index,completed,fixture durable index proof row
+columnar_zone,project/src/core/index,completed,fixture durable index proof row
+document_path,project/src/core/index,completed,fixture durable index proof row
+text_inverted_gin_ngram,project/src/core/index,completed,fixture durable index proof row
+spatial_gist_spgist,project/src/core/index,completed,fixture durable index proof row
+vector_exact_hnsw_ivf,project/src/core/index,completed,fixture durable index proof row
+graph,project/src/core/index,completed,fixture durable index proof row

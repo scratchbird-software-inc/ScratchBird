@@ -1,0 +1,3 @@
+risk_id,area,status,notes
+CEIC-RISK-001,release-evidence,closed,All integrated CEIC rows resolve to public release-evidence artifacts.
+CEIC-RISK-002,authority-boundary,accepted,Residual interpretation risk is accepted with explicit non-authority claim boundaries and CTest gates.

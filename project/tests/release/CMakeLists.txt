@@ -941,6 +941,22 @@ set_tests_properties(public_generated_sql_object_uuid_binding_gate PROPERTIES
   LABELS "public_release_correctness;public_generated_sql_object_uuid_binding_gate;PCR-GATE-006;PCR-008;PCR-009;uuid;identity;generated_sql_object;literal_binding;resolver_conversion"
 )
 
+add_executable(public_external_git_versioning_gate
+  public_external_git_versioning_gate.cpp
+)
+target_compile_features(public_external_git_versioning_gate PRIVATE cxx_std_23)
+target_link_libraries(public_external_git_versioning_gate PRIVATE
+  sb_engine_internal_api
+  sb_engine_sblr
+)
+add_test(
+  NAME public_external_git_versioning_gate
+  COMMAND public_external_git_versioning_gate
+)
+set_tests_properties(public_external_git_versioning_gate PROPERTIES
+  LABELS "public_release_correctness;public_external_git_versioning_gate;PCR-GATE-010;external_git;catalog_artifact;versioning;rollback_plan;mga_transaction_regression"
+)
+
 add_executable(public_uuid_identity_resolution_gate
   public_uuid_identity_resolution_gate.cpp
 )
@@ -2056,7 +2072,7 @@ add_test(
           ${CMAKE_CURRENT_BINARY_DIR}/public_observability_schema_gate_artifacts/public_observability_schema_matrix.csv
 )
 set_tests_properties(public_observability_schema_gate PROPERTIES
-  LABELS "public_release_correctness;public_observability_schema_gate;PCR-GATE-137;PCR-137;observability;metrics;events;traces;health;redaction;stable_schema;memory;storage;transactions;index;optimizer;agents;backup;archive;security;repair;cluster_boundary;support_bundle;fail_closed"
+  LABELS "public_release_correctness;public_observability_schema_gate;PCR-GATE-137;PCR-137;ELER-107;ELER-GATE-107;observability;metrics;events;traces;health;redaction;stable_schema;memory;storage;transactions;index;optimizer;agents;backup;archive;security;repair;cluster_boundary;support_bundle;fail_closed;operational_readiness"
 )
 
 # PUBLIC_PERFORMANCE_BASELINE_GATE
@@ -2096,7 +2112,7 @@ add_test(
           --evidence-output ${CMAKE_CURRENT_BINARY_DIR}/public_admin_runbook_gate/public_admin_runbook_gate.json
 )
 set_tests_properties(public_admin_runbook_gate PROPERTIES
-  LABELS "public_release_correctness;public_admin_runbook_gate;PCR-GATE-140;PCR-140;ELER-108;ELER-GATE-108;ELER-109;ELER-GATE-109;runbooks;admin_docs;operations;create;open;config;security;backup;restore;verify;repair;memory_pressure;sweep;archive;diagnostics;unsupported_features;upgrade;release_artifact_trust;enterprise_documentation;linux_proof"
+  LABELS "public_release_correctness;public_admin_runbook_gate;PCR-GATE-140;PCR-140;ELER-107;ELER-GATE-107;ELER-108;ELER-GATE-108;ELER-109;ELER-GATE-109;runbooks;admin_docs;operations;create;open;config;security;backup;restore;verify;repair;memory_pressure;sweep;archive;diagnostics;unsupported_features;upgrade;release_artifact_trust;enterprise_documentation;operational_readiness;linux_proof"
 )
 
 # PUBLIC_API_ABI_COMPAT_GATE
@@ -2237,7 +2253,7 @@ add_test(
           --evidence-output ${CMAKE_CURRENT_BINARY_DIR}/public_config_policy_migration_gate/public_config_policy_migration_gate.json
 )
 set_tests_properties(public_config_policy_migration_gate PROPERTIES
-  LABELS "public_release_correctness;public_config_policy_migration_gate;PCR-GATE-147;PCR-147;config;policy;migration;policy_pack;versioning;diff;export;import;post_create_filesystem_refusal;admin_diagnostics;mga_catalog_commit;fail_closed"
+  LABELS "public_release_correctness;public_config_policy_migration_gate;PCR-GATE-147;PCR-147;ELER-107;ELER-GATE-107;config;policy;migration;policy_pack;versioning;diff;export;import;post_create_filesystem_refusal;admin_diagnostics;mga_catalog_commit;fail_closed;operational_readiness"
 )
 
 # PUBLIC_LIFECYCLE_POLICY_GATE

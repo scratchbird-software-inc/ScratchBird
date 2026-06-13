@@ -235,8 +235,17 @@ void FailClosedCases() {
                 index::IndexProviderAdmissionStatus::route_capability_required,
                 "missing route capability did not fail closed");
 
+  const auto supported_hash_insert =
+      index::AdmitIndexProviderAccessMethod(Contract(
+          index::IndexFamily::hash, index::IndexRouteKind::dml_insert));
+  Require(supported_hash_insert.ok(),
+          "hash DML insert provider contract should be admitted for complete index support");
+  Require(EvidenceHas(supported_hash_insert,
+                      "route_requires_mutation_batch_admission=true"),
+          "hash DML insert must require mutation-batch admission evidence");
+
   auto unsupported_route =
-      Contract(index::IndexFamily::hash, index::IndexRouteKind::dml_insert);
+      Contract(index::IndexFamily::btree, index::IndexRouteKind::nosql_vector);
   RequireStatus(index::AdmitIndexProviderAccessMethod(unsupported_route),
                 index::IndexProviderAdmissionStatus::route_not_supported,
                 "unsupported route/family pair did not fail closed");

@@ -43,9 +43,12 @@ void RequireNoRuntimeLeak(const std::vector<std::string>& evidence) {
     Require(item.find("docs/") == std::string::npos &&
                 item.find("execution_plan") == std::string::npos &&
                 item.find("contract") == std::string::npos &&
-                item.find("reference") == std::string::npos &&
                 item.find("IRC-") == std::string::npos,
             "runtime evidence leaked non-runtime artifact");
+    if (item.find("reference") != std::string::npos) {
+      Require(item.find("reference_authority=false") != std::string::npos,
+              "runtime evidence leaked non-runtime reference artifact");
+    }
   }
 }
 

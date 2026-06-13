@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 
-EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure")
+EXECUTION_PLAN = pathlib.Path("project/tests/release_evidence/consolidated_enterprise_public_evidence")
 DEFAULT_MANIFEST = EXECUTION_PLAN / "artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml"
 
 REGISTRY_HPP = pathlib.Path("project/src/core/index/index_family_registry.hpp")
@@ -132,6 +132,14 @@ CEIC_042_EVIDENCE_MD = EXECUTION_PLAN / "artifacts/CEIC-042_INDEX_READINESS_DRIF
 
 INDEX_FUTURE_SLICES = tuple(f"CEIC-{value:03d}" for value in range(31, 43))
 INTEGRATED_INDEX_BOUNDARY_SLICES = tuple(f"CEIC-{value:03d}" for value in range(90, 96))
+INTEGRATED_RELEASE_ARTIFACTS = {
+    "CEIC-090": ("CEIC-ART-018", "CEIC-ART-087"),
+    "CEIC-091": ("CEIC-ART-088",),
+    "CEIC-092": ("CEIC-ART-089",),
+    "CEIC-093": ("CEIC-ART-090",),
+    "CEIC-094": ("CEIC-ART-091",),
+    "CEIC-095": ("CEIC-ART-015",),
+}
 PERSISTENT_PROOF_SLICES = ("CEIC-031", "CEIC-032", "CEIC-041")
 SECURITY_RECHECK_SLICES = ("CEIC-037",)
 METRIC_PROOF_SLICES = ("CEIC-040",)
@@ -168,13 +176,13 @@ ROUTE_KIND_ORDER = (
 )
 
 CONTROL_INPUTS = (
-    EXECUTION_PLAN / "TRACKER.csv",
+    EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv",
     EXECUTION_PLAN / "ARTIFACT_INDEX.csv",
-    EXECUTION_PLAN / "AUDIT_TRACEABILITY_MATRIX.csv",
-    EXECUTION_PLAN / "SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv",
+    EXECUTION_PLAN / "CEIC_FINDING_TRACEABILITY_MATRIX.csv",
+    EXECUTION_PLAN / "CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
     EXECUTION_PLAN / "METRICS_PRODUCER_COVERAGE_MATRIX.csv",
-    EXECUTION_PLAN / "DEPENDENCIES.csv",
-    EXECUTION_PLAN / "ACCEPTANCE_GATES.csv",
+    EXECUTION_PLAN / "CEIC_DEPENDENCY_MATRIX.csv",
+    EXECUTION_PLAN / "CEIC_ACCEPTANCE_MATRIX.csv",
     EXECUTION_PLAN / "CLAIM_BOUNDARY_MATRIX.csv",
     REGISTRY_HPP,
     REGISTRY_CPP,
@@ -476,6 +484,15 @@ def sha256_file(path: pathlib.Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def artifact_exists(repo_root: pathlib.Path, row: dict[str, str]) -> bool:
+    raw_path = row.get("path", "").strip()
+    if not raw_path:
+        return False
+    if any(char in raw_path for char in "*?["):
+        return any(repo_root.glob(raw_path))
+    return (repo_root / raw_path).exists()
 
 
 def render_json(data: dict[str, Any]) -> str:
@@ -1421,7 +1438,7 @@ def build_family_row(
 
 
 def validate_execution_plan_inputs(repo_root: pathlib.Path, *, writing: bool) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
-    tracker = index_by(read_csv(repo_root, EXECUTION_PLAN / "TRACKER.csv"), "slice_id", "TRACKER.csv")
+    tracker = index_by(read_csv(repo_root, EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv"), "slice_id", "CEIC_STATUS_MATRIX.csv")
     artifacts = index_by(read_csv(repo_root, EXECUTION_PLAN / "ARTIFACT_INDEX.csv"), "artifact_id", "ARTIFACT_INDEX.csv")
 
     ceic_030_status = normalize_status(tracker.get("CEIC-030", {}).get("status", ""))
@@ -1494,10 +1511,24 @@ def index_successor_slice_statuses(tracker: dict[str, dict[str, str]]) -> list[d
     return rows
 
 
-def collect_input_records(repo_root: pathlib.Path) -> tuple[list[dict[str, Any]], str]:
+def collect_input_records(
+    repo_root: pathlib.Path,
+    artifacts: dict[str, dict[str, str]],
+) -> tuple[list[dict[str, Any]], str]:
     records: list[dict[str, Any]] = []
     digest = hashlib.sha256()
-    for rel_path in sorted(set(CONTROL_INPUTS), key=lambda path: path.as_posix()):
+    rel_paths = set(CONTROL_INPUTS)
+    for artifact_ids in INTEGRATED_RELEASE_ARTIFACTS.values():
+        for artifact_id in artifact_ids:
+            if artifact_id == "CEIC-ART-015":
+                continue
+            raw_path = artifacts[artifact_id]["path"].strip()
+            if any(char in raw_path for char in "*?["):
+                for match in sorted(repo_root.glob(raw_path)):
+                    rel_paths.add(match.relative_to(repo_root))
+            else:
+                rel_paths.add(pathlib.Path(raw_path))
+    for rel_path in sorted(rel_paths, key=lambda path: path.as_posix()):
         path = repo_root / rel_path
         if not path.exists():
             raise ManifestError(f"manifest input missing: {rel_path.as_posix()}")
@@ -1591,10 +1622,29 @@ def integrated_boundary_slice_statuses(tracker: dict[str, dict[str, str]]) -> li
     return rows
 
 
-def validate_integrated_boundary_pending(tracker: dict[str, dict[str, str]]) -> None:
+def validate_integrated_boundary_complete(
+    repo_root: pathlib.Path,
+    tracker: dict[str, dict[str, str]],
+    artifacts: dict[str, dict[str, str]],
+    *,
+    writing: bool,
+) -> None:
     for row in integrated_boundary_slice_statuses(tracker):
-        if row["status"] not in PENDING_STATUS:
-            raise ManifestError(f"{row['slice_id']} must remain pending integrated proof for CEIC-042")
+        slice_id = row["slice_id"]
+        if row["status"] not in COMPLETE_STATUS:
+            raise ManifestError(f"{slice_id} integrated proof must be complete for CEIC-042 beta release validation")
+        if not row["acceptance"].strip():
+            raise ManifestError(f"{slice_id} integrated proof acceptance text is required")
+        for artifact_id in INTEGRATED_RELEASE_ARTIFACTS[slice_id]:
+            artifact_row = artifacts.get(artifact_id)
+            if artifact_row is None:
+                raise ManifestError(f"{artifact_id} required for {slice_id} integrated proof but missing")
+            if artifact_row.get("slice_id", "").strip() != slice_id:
+                raise ManifestError(f"{artifact_id} must belong to {slice_id}")
+            if normalize_status(artifact_row.get("status", "")) not in PRESENT_STATUS:
+                raise ManifestError(f"{artifact_id} must be present for {slice_id} integrated proof")
+            if not writing and not artifact_exists(repo_root, artifact_row):
+                raise ManifestError(f"{artifact_id} is present but missing: {artifact_row.get('path', '')}")
 
 
 def ceic_042_readiness_drift_proof_complete(
@@ -1608,13 +1658,13 @@ def ceic_042_readiness_drift_proof_complete(
     if status not in COMPLETE_STATUS:
         return False
 
-    validate_integrated_boundary_pending(tracker)
+    validate_integrated_boundary_complete(repo_root, tracker, artifacts, writing=writing)
     validate_registered_index_proof_inputs(repo_root, tracker, artifacts, writing=writing)
 
     gates = index_by(
-        read_csv(repo_root, EXECUTION_PLAN / "ACCEPTANCE_GATES.csv"),
+        read_csv(repo_root, EXECUTION_PLAN / "CEIC_ACCEPTANCE_MATRIX.csv"),
         "gate_id",
-        "ACCEPTANCE_GATES.csv",
+        "CEIC_ACCEPTANCE_MATRIX.csv",
     )
     if normalize_status(gates.get("CEIC-GATE-020", {}).get("status", "")) not in COMPLETE_STATUS:
         raise ManifestError("CEIC-GATE-020 must be complete when CEIC-042 is complete")
@@ -1773,7 +1823,7 @@ def build_manifest(
     route_kinds = parse_route_kinds(route_header)
     descriptors = parse_descriptors(registry_source, enum_order)
     capabilities = parse_capabilities(registry_source, enum_order)
-    input_records, input_digest = collect_input_records(repo_root)
+    input_records, input_digest = collect_input_records(repo_root, artifacts)
 
     source_commit = carried.get("source_commit") or git_value(repo_root, ["rev-parse", "HEAD"], "unknown")
     source_branch = carried.get("source_branch") or git_value(
@@ -1884,7 +1934,7 @@ def build_manifest(
             "stale_manifest_allowed": False,
             "registry_route_capability_required": True,
             "provider_metrics_crash_corruption_required_slices": list(INDEX_FUTURE_SLICES[:-1]),
-            "integrated_slices_must_remain_pending": list(INTEGRATED_INDEX_BOUNDARY_SLICES),
+            "integrated_slices_required_complete": list(INTEGRATED_INDEX_BOUNDARY_SLICES),
             "cluster_production_claim": "blocked_external_provider_only",
             "reference_emulated_runtime_claim": "blocked_non_authority",
             "policy_blocked_runtime_claim": "blocked_non_runtime",
@@ -2218,8 +2268,8 @@ def validate_manifest_semantics(data: dict[str, Any]) -> list[str]:
             if isinstance(row, dict)
         }
         for slice_id in INTEGRATED_INDEX_BOUNDARY_SLICES:
-            if integrated_seen.get(slice_id) not in PENDING_STATUS:
-                errors.append(f"{slice_id} must remain pending integrated proof")
+            if integrated_seen.get(slice_id) not in COMPLETE_STATUS:
+                errors.append(f"{slice_id} integrated proof must be complete")
     for field in ("source_commit", "source_branch", "source_evidence_digest", "generated_at_utc", "generated_by"):
         if not data.get(field):
             errors.append(f"{field} is required")

@@ -31,6 +31,9 @@ ALLOWED_RELEASE_BUCKETS = {
     "tracked_not_released",
 }
 
+CONTRACT_ONLY_DRIVER_STATUS = "planned_not_implemented"
+CONTRACT_ONLY_RELEASE_BUCKET = "tracked_not_released"
+
 CAPTURED_BENCHMARK_STATES = {
     "captured",
     "passed",
@@ -69,6 +72,12 @@ REQUIRED_TEXT_SNIPPETS = {
         "early beta public source-review release",
         "Reference regression tests are external fixtures",
         "Benchmark harnesses are included for reproducibility",
+        "Planned Driver Lanes Not Implemented",
+        "ADBC",
+        "Flight SQL",
+        "Perl DBI",
+        "planned_not_implemented",
+        "tracked_not_released",
     ),
     "RELEASE_TERMS.md": (
         "release-complete profile",
@@ -274,6 +283,32 @@ def validate_driver_manifest(repo_root: Path) -> tuple[list[str], dict[str, int]
             continue
         counts[bucket] = counts.get(bucket, 0) + 1
         buckets[component_id] = bucket
+        if row.get("category") == "driver":
+            source_path = row.get("source_path", "")
+            source_dir = repo_root / source_path
+            if source_dir.is_dir():
+                source_files = sorted(
+                    path.relative_to(source_dir).as_posix()
+                    for path in source_dir.rglob("*")
+                    if path.is_file()
+                )
+                if source_files == ["package_contract.json"]:
+                    if row.get("driver_status") != CONTRACT_ONLY_DRIVER_STATUS:
+                        errors.append(
+                            f"{component_id} contract-only driver must use "
+                            f"{CONTRACT_ONLY_DRIVER_STATUS} driver_status"
+                        )
+                    if bucket != CONTRACT_ONLY_RELEASE_BUCKET:
+                        errors.append(
+                            f"{component_id} contract-only driver must use "
+                            f"{CONTRACT_ONLY_RELEASE_BUCKET} release_bucket"
+                        )
+                    contract = load_json(source_dir / "package_contract.json")
+                    if contract.get("status") != CONTRACT_ONLY_DRIVER_STATUS:
+                        errors.append(
+                            f"{component_id} contract-only package_contract.json "
+                            f"must use {CONTRACT_ONLY_DRIVER_STATUS} status"
+                        )
     return errors, counts, buckets
 
 

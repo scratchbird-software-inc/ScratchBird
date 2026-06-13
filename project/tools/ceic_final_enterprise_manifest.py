@@ -27,31 +27,31 @@ from dataclasses import dataclass
 from typing import Any
 
 
-EXECUTION_PLAN_NAME = "consolidated-enterprise-proof-implementation-closure"
-ACTIVE_EXECUTION_PLAN = pathlib.Path("docs" "/execution-plans") / EXECUTION_PLAN_NAME
-COMPLETED_EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans") / EXECUTION_PLAN_NAME
+EXECUTION_PLAN_NAME = "consolidated_enterprise_public_evidence"
+ACTIVE_EXECUTION_PLAN = pathlib.Path("project/tests/release_evidence") / EXECUTION_PLAN_NAME
+COMPLETED_EXECUTION_PLAN = ACTIVE_EXECUTION_PLAN
 DEFAULT_MANIFEST = pathlib.Path("artifacts/ceic/integrated/final_enterprise_manifest.yaml")
 CMAKE_GATE = pathlib.Path("project/tests/consolidated_enterprise/CMakeLists.txt")
 
 REQUIRED_PACKAGE_FILES = (
     "README.md",
-    "TRACKER.csv",
-    "ACCEPTANCE_GATES.csv",
-    "DEPENDENCIES.csv",
-    "SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv",
-    "VALIDATION_PLAN.md",
-    "IMPLEMENTATION_SEQUENCE.md",
+    "CEIC_STATUS_MATRIX.csv",
+    "CEIC_ACCEPTANCE_MATRIX.csv",
+    "CEIC_DEPENDENCY_MATRIX.csv",
+    "CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
+    "CEIC_VALIDATION_PROTOCOL.md",
+    "CEIC_PROOF_SEQUENCE.md",
     "CLAIM_BOUNDARY_MATRIX.csv",
     "EVIDENCE_MANIFEST_SCHEMA.md",
-    "SLICE_DONE_DEFINITION.md",
-    "RISK_REGISTER.csv",
-    "DECISION_LOG.md",
+    "CEIC_ACCEPTANCE_CRITERIA.md",
+    "CEIC_RISK_MATRIX.csv",
+    "CEIC_DECISION_MATRIX.md",
     "ARTIFACT_INDEX.csv",
-    "ROLLBACK_AND_MIGRATION_PLAN.md",
+    "CEIC_ROLLBACK_AND_MIGRATION_PROCEDURE.md",
     "EXECUTION_PROTOCOL.md",
-    "AUDIT_TRACEABILITY_MATRIX.csv",
-    "FINAL_AUDIT_TEMPLATE.md",
-    "FINAL_AUDIT.md",
+    "CEIC_FINDING_TRACEABILITY_MATRIX.csv",
+    "CEIC_PUBLIC_READINESS_SUMMARY_TEMPLATE.md",
+    "CEIC_PUBLIC_READINESS_SUMMARY.md",
     "METRICS_PRODUCER_COVERAGE_MATRIX.csv",
     "INTERFACE_CONTRACTS.md",
 )
@@ -192,7 +192,7 @@ def resolve_execution_plan(repo_root: pathlib.Path, override: pathlib.Path | Non
         raise FileNotFoundError(str(override))
     if (repo_root / ACTIVE_EXECUTION_PLAN).exists():
         return ACTIVE_EXECUTION_PLAN
-    if (repo_root / COMPLETED_EXECUTION_PLAN).exists():
+    if COMPLETED_EXECUTION_PLAN != ACTIVE_EXECUTION_PLAN and (repo_root / COMPLETED_EXECUTION_PLAN).exists():
         return COMPLETED_EXECUTION_PLAN
     raise FileNotFoundError(str(ACTIVE_EXECUTION_PLAN))
 
@@ -204,7 +204,7 @@ def alias_execution_plan_path(rel: pathlib.Path, execution_plan_root: pathlib.Pa
     selected = execution_plan_root.as_posix()
     if text.startswith(active + "/"):
         return pathlib.Path(selected) / text[len(active) + 1 :]
-    if text.startswith(completed + "/"):
+    if completed != active and text.startswith(completed + "/"):
         return pathlib.Path(selected) / text[len(completed) + 1 :]
     return None
 
@@ -265,13 +265,13 @@ def artifact_available(
 
 def load_tables(repo_root: pathlib.Path, execution_plan_root: pathlib.Path) -> dict[str, list[dict[str, str]]]:
     return {
-        "tracker": read_execution_plan_csv(repo_root, execution_plan_root, "TRACKER.csv"),
-        "gates": read_execution_plan_csv(repo_root, execution_plan_root, "ACCEPTANCE_GATES.csv"),
+        "tracker": read_execution_plan_csv(repo_root, execution_plan_root, "CEIC_STATUS_MATRIX.csv"),
+        "gates": read_execution_plan_csv(repo_root, execution_plan_root, "CEIC_ACCEPTANCE_MATRIX.csv"),
         "artifacts": read_execution_plan_csv(repo_root, execution_plan_root, "ARTIFACT_INDEX.csv"),
-        "risks": read_execution_plan_csv(repo_root, execution_plan_root, "RISK_REGISTER.csv"),
-        "trace": read_execution_plan_csv(repo_root, execution_plan_root, "AUDIT_TRACEABILITY_MATRIX.csv"),
-        "audit": read_execution_plan_csv(repo_root, execution_plan_root, "SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv"),
-        "dependencies": read_execution_plan_csv(repo_root, execution_plan_root, "DEPENDENCIES.csv"),
+        "risks": read_execution_plan_csv(repo_root, execution_plan_root, "CEIC_RISK_MATRIX.csv"),
+        "trace": read_execution_plan_csv(repo_root, execution_plan_root, "CEIC_FINDING_TRACEABILITY_MATRIX.csv"),
+        "audit": read_execution_plan_csv(repo_root, execution_plan_root, "CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv"),
+        "dependencies": read_execution_plan_csv(repo_root, execution_plan_root, "CEIC_DEPENDENCY_MATRIX.csv"),
         "claims": read_execution_plan_csv(repo_root, execution_plan_root, "CLAIM_BOUNDARY_MATRIX.csv"),
     }
 

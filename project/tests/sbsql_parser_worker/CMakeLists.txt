@@ -3457,32 +3457,30 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   )
 endif()
 
-if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engine_sblr)
-  add_executable(
-    sbsql_sblr_final_cleanup_b003_engine_api_route_conformance
-    sbsql_sblr_final_cleanup_b003_engine_api_route_conformance.cpp
-  )
-  target_compile_features(sbsql_sblr_final_cleanup_b003_engine_api_route_conformance PRIVATE cxx_std_23)
-  target_compile_definitions(
-    sbsql_sblr_final_cleanup_b003_engine_api_route_conformance
-    PRIVATE
-      SCRATCHBIRD_PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
-  )
-  target_link_libraries(
-    sbsql_sblr_final_cleanup_b003_engine_api_route_conformance
-    PRIVATE
-      sbl_sbsql_parser_pipeline
-      sb_server_core
-      sb_engine_sblr
-  )
-  add_test(
-    NAME sbsql_sblr_final_cleanup_b003_engine_api_route_conformance
-    COMMAND sbsql_sblr_final_cleanup_b003_engine_api_route_conformance
-  )
-  set_tests_properties(sbsql_sblr_final_cleanup_b003_engine_api_route_conformance PROPERTIES
-    LABELS "sbsql_sblr_final_cleanup_b003_engine_api_route_conformance;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_result_shape_contracts;sbsql_security_privilege_contracts;sbsql_message_vector_rendering;sbsql_sblr_final_cleanup_full_route;sbsql_parser_worker;sbsql_e2e_passed"
-  )
-endif()
+add_executable(
+  sbsql_sblr_final_cleanup_b003_engine_api_route_conformance
+  sbsql_sblr_final_cleanup_b003_engine_api_route_conformance.cpp
+)
+target_compile_features(sbsql_sblr_final_cleanup_b003_engine_api_route_conformance PRIVATE cxx_std_23)
+target_compile_definitions(
+  sbsql_sblr_final_cleanup_b003_engine_api_route_conformance
+  PRIVATE
+    SCRATCHBIRD_PROJECT_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+)
+target_link_libraries(
+  sbsql_sblr_final_cleanup_b003_engine_api_route_conformance
+  PRIVATE
+    sbl_sbsql_parser_pipeline
+    sb_server_core
+    sb_engine_sblr
+)
+add_test(
+  NAME sbsql_sblr_final_cleanup_b003_engine_api_route_conformance
+  COMMAND sbsql_sblr_final_cleanup_b003_engine_api_route_conformance
+)
+set_tests_properties(sbsql_sblr_final_cleanup_b003_engine_api_route_conformance PROPERTIES
+  LABELS "sbsql_sblr_final_cleanup_b003_engine_api_route_conformance;sbsql_sblr_api_routes;sbsql_engine_behavior_complete;sbsql_result_shape_contracts;sbsql_security_privilege_contracts;sbsql_message_vector_rendering;sbsql_sblr_final_cleanup_full_route;sbsql_parser_worker;sbsql_e2e_passed"
+)
 
 if(TARGET sb_server_core AND TARGET sb_engine_sblr)
   add_executable(
