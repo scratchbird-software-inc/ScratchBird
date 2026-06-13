@@ -21,6 +21,7 @@
 namespace {
 
 namespace metrics = scratchbird::core::metrics;
+namespace memory = scratchbird::core::memory;
 namespace page = scratchbird::storage::page;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::TypedUuid;
@@ -73,6 +74,26 @@ page::PageCachePolicy Policy(u64 max_pages = 64) {
   policy.strict_bulk_load_ring_pages = 2;
   return policy;
 }
+
+memory::MemoryManager Manager(u64 pages) {
+  auto policy = memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name = "odf049_page_cache_context_ring_fixture";
+  policy.hard_limit_bytes = pages * 16384ull;
+  policy.soft_limit_bytes = pages * 16384ull;
+  policy.per_context_limit_bytes = pages * 16384ull;
+  policy.page_buffer_pool_limit_bytes = pages * 16384ull;
+  policy.reject_over_soft_limit = false;
+  return memory::MemoryManager(policy);
+}
+
+struct CacheFixture {
+  memory::MemoryManager manager;
+  page::PageCacheLedger ledger;
+
+  explicit CacheFixture(u64 pages) : manager(Manager(pages)) {
+    page::BindPageCacheMemoryManager(&ledger, &manager);
+  }
+};
 
 page::PageCacheEntry Entry(const Ids& ids,
                            u64 page_number,
@@ -161,13 +182,16 @@ void TestContextNames() {
 
 void TestBoundedRing(page::PageCacheIoContext context) {
   const Ids ids;
-  page::PageCacheLedger ledger;
+  CacheFixture cache(64);
+  auto& ledger = cache.ledger;
   const auto policy = Policy(64);
 
   for (u64 index = 0; index < 4; ++index) {
     const auto admitted = page::AdmitPageCacheEntryForContext(
         &ledger, policy, Entry(ids, 10 + index), context);
-    Require(admitted.ok(), "ODF-049 bounded ring admission failed");
+    Require(admitted.ok(),
+            "ODF-049 bounded ring admission failed: " +
+                admitted.diagnostic.diagnostic_code);
   }
 
   const auto snapshot = page::SnapshotPageCacheContext(ledger, context);
@@ -179,7 +203,8 @@ void TestBoundedRing(page::PageCacheIoContext context) {
 
 void TestNormalHotProtection() {
   const Ids ids;
-  page::PageCacheLedger ledger;
+  CacheFixture cache(64);
+  auto& ledger = cache.ledger;
   const auto policy = Policy(3);
   const auto normal_a = Entry(ids, 100, true);
   const auto normal_b = Entry(ids, 101, true);
@@ -214,7 +239,8 @@ void TestNormalHotProtection() {
 void TestPinnedAndDirtyRefusals() {
   const Ids ids;
   {
-    page::PageCacheLedger ledger;
+    CacheFixture cache(64);
+    auto& ledger = cache.ledger;
     auto policy = Policy(64);
     policy.strict_bulk_load_ring_pages = 1;
     const auto first = Entry(ids, 200);
@@ -239,7 +265,8 @@ void TestPinnedAndDirtyRefusals() {
   }
 
   {
-    page::PageCacheLedger ledger;
+    CacheFixture cache(64);
+    auto& ledger = cache.ledger;
     auto policy = Policy(64);
     policy.bulk_write_ring_pages = 1;
     const auto first = Entry(ids, 300, false, true);
@@ -261,7 +288,8 @@ void TestPinnedAndDirtyRefusals() {
 
 void TestMetrics() {
   const Ids ids;
-  page::PageCacheLedger ledger;
+  CacheFixture cache(64);
+  auto& ledger = cache.ledger;
   auto policy = Policy(64);
   policy.index_build_ring_pages = 1;
   Require(page::AdmitPageCacheEntryForContext(&ledger,

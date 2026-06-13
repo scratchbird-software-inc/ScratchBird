@@ -157,7 +157,9 @@ std::uint32_t IntegerBits(CanonicalTypeId type_id) {
 
 std::string TrimLeadingZeros(std::string digits) {
   const bool negative = !digits.empty() && digits.front() == '-';
-  std::size_t first = negative ? 1 : 0;
+  const bool signed_prefix =
+      !digits.empty() && (digits.front() == '-' || digits.front() == '+');
+  std::size_t first = signed_prefix ? 1 : 0;
   while (first + 1 < digits.size() && digits[first] == '0') { ++first; }
   std::string normalized = digits.substr(first);
   if (normalized.empty()) { normalized = "0"; }
@@ -593,6 +595,132 @@ bool AlignDecimalScales(ParsedDecimal* left, ParsedDecimal* right, std::uint32_t
     right->coefficient *= Pow10U128(diff);
     right->scale = target_scale;
   }
+  return true;
+}
+
+struct ExactDecimalTextParts {
+  bool negative = false;
+  std::string integer_part = "0";
+  std::string fractional_part;
+};
+
+bool ParseExactDecimalTextParts(const std::string& input,
+                                ExactDecimalTextParts* out) {
+  std::string value = TrimAsciiWhitespace(input);
+  if (value.empty()) { return false; }
+  ExactDecimalTextParts parts;
+  if (value.front() == '+' || value.front() == '-') {
+    parts.negative = value.front() == '-';
+    value.erase(value.begin());
+  }
+  if (value.empty()) { return false; }
+  const std::size_t exponent_pos = value.find_first_of("eE");
+  std::string significand =
+      exponent_pos == std::string::npos ? value : value.substr(0, exponent_pos);
+  long long exponent = 0;
+  if (exponent_pos != std::string::npos &&
+      !ParseSignedDecimalExponent(value.substr(exponent_pos + 1), &exponent)) {
+    return false;
+  }
+  const std::size_t decimal_pos = significand.find('.');
+  if (decimal_pos != std::string::npos &&
+      significand.find('.', decimal_pos + 1) != std::string::npos) {
+    return false;
+  }
+  std::string digits;
+  long long fractional_digits = 0;
+  bool saw_digit = false;
+  for (std::size_t i = 0; i < significand.size(); ++i) {
+    const char c = significand[i];
+    if (c == '.') { continue; }
+    if (!std::isdigit(static_cast<unsigned char>(c))) { return false; }
+    saw_digit = true;
+    digits.push_back(c);
+    if (decimal_pos != std::string::npos && i > decimal_pos) {
+      ++fractional_digits;
+    }
+  }
+  if (!saw_digit) { return false; }
+  while (!digits.empty() && digits.front() == '0') {
+    digits.erase(digits.begin());
+  }
+  if (digits.empty()) {
+    parts.negative = false;
+    *out = std::move(parts);
+    return true;
+  }
+  long long final_scale = fractional_digits - exponent;
+  if (final_scale < 0) {
+    digits.append(static_cast<std::size_t>(-final_scale), '0');
+    final_scale = 0;
+  }
+  const auto scale = static_cast<std::size_t>(final_scale);
+  if (scale == 0) {
+    parts.integer_part = std::move(digits);
+  } else if (digits.size() <= scale) {
+    parts.integer_part = "0";
+    parts.fractional_part.assign(scale - digits.size(), '0');
+    parts.fractional_part += digits;
+  } else {
+    const std::size_t integer_digits = digits.size() - scale;
+    parts.integer_part = digits.substr(0, integer_digits);
+    parts.fractional_part = digits.substr(integer_digits);
+  }
+  while (parts.integer_part.size() > 1 && parts.integer_part.front() == '0') {
+    parts.integer_part.erase(parts.integer_part.begin());
+  }
+  while (!parts.fractional_part.empty() &&
+         parts.fractional_part.back() == '0') {
+    parts.fractional_part.pop_back();
+  }
+  *out = std::move(parts);
+  return true;
+}
+
+bool CompareFiniteDecimalText(const std::string& left_text,
+                              const std::string& right_text,
+                              int* comparison) {
+  ExactDecimalTextParts left;
+  ExactDecimalTextParts right;
+  if (!ParseExactDecimalTextParts(left_text, &left) ||
+      !ParseExactDecimalTextParts(right_text, &right)) {
+    return false;
+  }
+  if (left.negative != right.negative) {
+    *comparison = left.negative ? -1 : 1;
+    return true;
+  }
+  if (left.integer_part.size() < right.integer_part.size()) {
+    *comparison = left.negative ? 1 : -1;
+    return true;
+  }
+  if (left.integer_part.size() > right.integer_part.size()) {
+    *comparison = left.negative ? -1 : 1;
+    return true;
+  }
+  if (left.integer_part < right.integer_part) {
+    *comparison = left.negative ? 1 : -1;
+    return true;
+  }
+  if (left.integer_part > right.integer_part) {
+    *comparison = left.negative ? -1 : 1;
+    return true;
+  }
+  const std::size_t max_fraction =
+      std::max(left.fractional_part.size(), right.fractional_part.size());
+  for (std::size_t i = 0; i < max_fraction; ++i) {
+    const char l = i < left.fractional_part.size() ? left.fractional_part[i] : '0';
+    const char r = i < right.fractional_part.size() ? right.fractional_part[i] : '0';
+    if (l < r) {
+      *comparison = left.negative ? 1 : -1;
+      return true;
+    }
+    if (l > r) {
+      *comparison = left.negative ? -1 : 1;
+      return true;
+    }
+  }
+  *comparison = 0;
   return true;
 }
 
@@ -1522,8 +1650,18 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
     return result;
   }
   if (request.left.type_id == CanonicalTypeId::decimal ||
-      request.left.type_id == CanonicalTypeId::decimal_float ||
-      IsReal(request.left.type_id)) {
+      request.left.type_id == CanonicalTypeId::decimal_float) {
+    if (!CompareFiniteDecimalText(left, right, &result.comparison)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status,
+          "SB_DATATYPE_COMPARISON_REJECTED",
+          "datatype.comparison.rejected",
+          "numeric_comparison_invalid");
+    }
+    return result;
+  }
+  if (IsReal(request.left.type_id)) {
     const long double left_value = std::strtold(left.c_str(), nullptr);
     const long double right_value = std::strtold(right.c_str(), nullptr);
     result.comparison = left_value < right_value ? -1 : (left_value > right_value ? 1 : 0);
@@ -1547,6 +1685,153 @@ std::string OrderedIntegerKey(const std::string& value) {
     digit = static_cast<char>('9' - (digit - '0'));
   }
   return "0" + magnitude;
+}
+
+std::string FixedWidthUnsigned(std::size_t value, std::size_t width) {
+  std::string out = std::to_string(value);
+  if (out.size() < width) {
+    out.insert(out.begin(), width - out.size(), '0');
+  }
+  return out;
+}
+
+void InvertDecimalDigits(std::string* value) {
+  for (char& digit : *value) {
+    digit = static_cast<char>('9' - (digit - '0'));
+  }
+}
+
+struct DecimalSortParts {
+  bool negative = false;
+  std::string integer_part;
+  std::string fractional_part;
+};
+
+bool DecimalSortPartsFromText(const std::string& value,
+                              DecimalSortParts* parts) {
+  ParsedDecimal parsed;
+  if (!ParseDecimalFiniteText(value, &parsed)) {
+    return false;
+  }
+  while (parsed.scale > 0 && (parsed.coefficient % 10) == 0) {
+    parsed.coefficient /= 10;
+    --parsed.scale;
+  }
+
+  parts->negative = parsed.negative && parsed.coefficient != 0;
+  parts->integer_part = "0";
+  parts->fractional_part.clear();
+  if (parsed.coefficient == 0) {
+    return true;
+  }
+
+  std::string digits = U128ToString(parsed.coefficient);
+  if (parsed.scale == 0) {
+    parts->integer_part = std::move(digits);
+    return true;
+  }
+  const auto scale = static_cast<std::size_t>(parsed.scale);
+  if (digits.size() <= scale) {
+    parts->integer_part = "0";
+    parts->fractional_part.assign(scale - digits.size(), '0');
+    parts->fractional_part += digits;
+  } else {
+    const std::size_t integer_digits = digits.size() - scale;
+    parts->integer_part = digits.substr(0, integer_digits);
+    parts->fractional_part = digits.substr(integer_digits);
+  }
+  while (parts->integer_part.size() > 1 && parts->integer_part.front() == '0') {
+    parts->integer_part.erase(parts->integer_part.begin());
+  }
+  while (!parts->fractional_part.empty() &&
+         parts->fractional_part.back() == '0') {
+    parts->fractional_part.pop_back();
+  }
+  return true;
+}
+
+std::string OrderedFiniteDecimalKey(const std::string& value) {
+  DecimalSortParts parts;
+  if (!DecimalSortPartsFromText(value, &parts)) {
+    return {};
+  }
+  if (parts.integer_part == "0" && parts.fractional_part.empty()) {
+    return "1:zero";
+  }
+
+  static constexpr std::size_t kIntegerLengthWidth = 6;
+  static constexpr std::size_t kMaxEncodedIntegerLength = 999999;
+  static constexpr std::size_t kNegativeFractionWidth = 10000;
+  const std::size_t integer_length =
+      std::min(parts.integer_part.size(), kMaxEncodedIntegerLength);
+  if (!parts.negative) {
+    return "2:" + FixedWidthUnsigned(integer_length, kIntegerLengthWidth) +
+           ":" + parts.integer_part + ":" + parts.fractional_part;
+  }
+
+  std::string inverted_integer = parts.integer_part;
+  InvertDecimalDigits(&inverted_integer);
+  std::string inverted_fraction = parts.fractional_part;
+  if (inverted_fraction.size() < kNegativeFractionWidth) {
+    inverted_fraction.append(kNegativeFractionWidth - inverted_fraction.size(),
+                             '0');
+  }
+  if (inverted_fraction.size() > kNegativeFractionWidth) {
+    inverted_fraction.resize(kNegativeFractionWidth);
+  }
+  InvertDecimalDigits(&inverted_fraction);
+  return "0:" + FixedWidthUnsigned(kMaxEncodedIntegerLength - integer_length,
+                                   kIntegerLengthWidth) +
+         ":" + inverted_integer + ":" + inverted_fraction;
+}
+
+bool CanonicalHashPayload(const DatatypeOperationValue& value,
+                          std::string* payload,
+                          std::string* failure_detail) {
+  if (value.is_null) {
+    payload->clear();
+    return true;
+  }
+  if (IsInteger(value.type_id)) {
+    if (!IntegerFits(value.type_id, value.encoded_value)) {
+      *failure_detail = "integer_hash_value_invalid";
+      return false;
+    }
+    *payload = TrimLeadingZeros(value.encoded_value);
+    return true;
+  }
+  if (value.type_id == CanonicalTypeId::decimal) {
+    ParsedDecimal parsed;
+    if (!ParseDecimalFiniteText(value.encoded_value, &parsed)) {
+      *failure_detail = "decimal_hash_value_invalid";
+      return false;
+    }
+    while (parsed.scale > 0 && (parsed.coefficient % 10) == 0) {
+      parsed.coefficient /= 10;
+      --parsed.scale;
+    }
+    *payload = RenderFixedDecimal(parsed);
+    return true;
+  }
+  if (value.type_id == CanonicalTypeId::decimal_float) {
+    DatatypeNumericContext context;
+    context.precision = 38;
+    context.allow_special_values = true;
+    if (!CanonicalizeDecimalFloatText(value.encoded_value, context, payload)) {
+      *failure_detail = "decimal_float_hash_value_invalid";
+      return false;
+    }
+    return true;
+  }
+  if (IsReal(value.type_id)) {
+    if (!CanonicalizeReal128Text(value.encoded_value, payload)) {
+      *failure_detail = "real_hash_value_invalid";
+      return false;
+    }
+    return true;
+  }
+  *payload = value.encoded_value;
+  return true;
 }
 
 DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request) {
@@ -1590,7 +1875,31 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
     return result;
   }
   if (IsNumeric(request.value.type_id)) {
-    result.sort_key = "11:" + value;
+    const ParsedSpecialNumeric special = ParseSpecialNumericText(value);
+    if (special.kind == NumericSpecialKind::negative_infinity) {
+      result.sort_key = "11:00:-inf";
+      return result;
+    }
+    if (special.kind == NumericSpecialKind::positive_infinity) {
+      result.sort_key = "11:fe:+inf";
+      return result;
+    }
+    if (special.kind == NumericSpecialKind::quiet_nan ||
+        special.kind == NumericSpecialKind::signaling_nan) {
+      result.sort_key = "11:ff:nan";
+      return result;
+    }
+    const std::string ordered = OrderedFiniteDecimalKey(value);
+    if (ordered.empty()) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(
+          result.status,
+          "SB_DATATYPE_SORT_KEY_REJECTED",
+          "datatype.sort_key.rejected",
+          "numeric_sort_key_invalid");
+      return result;
+    }
+    result.sort_key = "11:" + ordered;
     return result;
   }
   if (IsTemporal(request.value.type_id) || request.value.type_id == CanonicalTypeId::interval) {
@@ -1612,7 +1921,18 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
   };
   mix(static_cast<std::uint64_t>(request.value.type_id));
   mix(request.value.is_null ? 1u : 0u);
-  for (unsigned char c : request.value.encoded_value) {
+  std::string payload;
+  std::string failure_detail;
+  if (!CanonicalHashPayload(request.value, &payload, &failure_detail)) {
+    result.status = ErrorStatus();
+    result.diagnostic = MakeDatatypeOperationDiagnostic(
+        result.status,
+        "SB_DATATYPE_HASH_REJECTED",
+        "datatype.hash.rejected",
+        failure_detail);
+    return result;
+  }
+  for (unsigned char c : payload) {
     mix(c);
   }
   static constexpr char kHex[] = "0123456789abcdef";

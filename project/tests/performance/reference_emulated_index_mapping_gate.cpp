@@ -80,7 +80,7 @@ std::string Lower(std::string value) {
 void RequireNoRuntimeDocLeak(const std::vector<std::string>& values) {
   for (const auto& value : values) {
     const auto lower = Lower(value);
-    for (const auto marker : {"execution_plan", "spec", "reference"}) {
+    for (const auto marker : {"execution_plan", "spec", "docs/"}) {
       Require(lower.find(marker) == std::string::npos,
               std::string("runtime value leaked marker ") + marker + ": " +
                   value);

@@ -441,6 +441,18 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind, u64 salt) {
   return generated.ok() ? generated.value : platform::TypedUuid{};
 }
 
+platform::TypedUuid StableBenchTypeDescriptorUuid(u64 salt) {
+  const auto generated =
+      uuid::GenerateCompatibilityUnixTimeV7(1780005000000ULL + salt);
+  if (!generated.ok()) {
+    return {};
+  }
+  auto value = generated.value;
+  value.bytes[15] = static_cast<platform::byte>(salt & 0xffu);
+  const auto typed = uuid::MakeTypedUuid(platform::UuidKind::object, value);
+  return typed.ok() ? typed.value : platform::TypedUuid{};
+}
+
 IndexValidationRepairTarget ValidationTarget(IndexFamily family, u64 salt) {
   IndexValidationRepairTarget target;
   target.database_uuid = GeneratedUuid(platform::UuidKind::database, salt + 1);
@@ -513,8 +525,7 @@ IndexKeyEncodingResult EncodeBenchKeyBytes(std::vector<platform::byte> payload,
   IndexKeyEncodingComponent component;
   component.kind = IndexKeyComponentKind::scalar;
   component.ordinal = 0;
-  component.type_descriptor_uuid =
-      GeneratedUuid(platform::UuidKind::object, type_salt);
+  component.type_descriptor_uuid = StableBenchTypeDescriptorUuid(type_salt);
   component.sort_direction = IndexKeySortDirection::ascending;
   component.null_placement = IndexKeyNullPlacement::nulls_last;
   component.payload = std::move(payload);
@@ -602,11 +613,17 @@ OperationSample BtreeSample(const IndexFamilyDescriptor& descriptor,
   OperationSample sample;
   sample.operation_count = 1;
   auto cells = BtreeCells(salt);
+  std::sort(cells.begin(), cells.end(), [](const auto& left, const auto& right) {
+    return std::lexicographical_compare(left.encoded_key.begin(),
+                                        left.encoded_key.end(),
+                                        right.encoded_key.begin(),
+                                        right.encoded_key.end());
+  });
   const auto index_uuid = GeneratedUuid(platform::UuidKind::object, salt + 70);
   if (workload.workload == std::string("bulk_build")) {
     page::IndexBtreePhysicalBulkBuildRequest request;
     request.index_uuid = index_uuid;
-    request.page_size = 512;
+    request.page_size = 768;
     request.leaf_entry_capacity = 3;
     request.internal_entry_capacity = 3;
     request.sorted_cells = cells;

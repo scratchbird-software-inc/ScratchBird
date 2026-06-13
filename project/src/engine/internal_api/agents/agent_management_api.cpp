@@ -338,6 +338,10 @@ std::vector<AgentObservedMetricSnapshot> ObservedMetricSnapshotsFromRequest(
       OptionValue(request, "agent_metric_snapshot_scope_uuid:").empty()
           ? context.database_uuid
           : OptionValue(request, "agent_metric_snapshot_scope_uuid:");
+  const auto source_quorum =
+      std::max<platform::u64>(
+          1,
+          OptionU64(request, "agent_metric_snapshot_source_quorum:", 2));
   platform::u64 generation = request.context.resource_epoch == 0
                                  ? 1
                                  : request.context.resource_epoch;
@@ -354,28 +358,53 @@ std::vector<AgentObservedMetricSnapshot> ObservedMetricSnapshotsFromRequest(
   }
 
   for (const auto& dependency : descriptor.metric_dependencies) {
-    AgentObservedMetricSnapshot snapshot;
-    snapshot.metric_family = dependency.metric_family;
-    snapshot.namespace_path = dependency.namespace_prefix.empty()
-                                  ? dependency.metric_family
-                                  : dependency.namespace_prefix + ".observed";
-    snapshot.generation = generation;
-    snapshot.observed_wall_microseconds = observed_wall;
-    snapshot.scope_uuid = scope_uuid;
-    snapshot.digest = digest + ":" + dependency.metric_family;
-    snapshot.source_quality = source_quality;
-    snapshot.present = SecurityOptionBool(request,
-                                          "agent_metric_snapshot_observed:",
-                                          false);
-    snapshot.trusted = SecurityOptionBool(request,
-                                         "agent_metric_snapshot_trusted:",
-                                         false);
-    snapshot.schema_compatible =
-        !SecurityOptionPresent(request, "agent_metric_snapshot_schema_incompatible:true");
-    snapshot.trust_provenance = trust_provenance;
-    snapshot.evidence_uuid = evidence_uuid;
-    snapshot.snapshot_id = snapshot_id + ":" + dependency.metric_family;
-    snapshots.push_back(std::move(snapshot));
+    for (platform::u64 source_index = 0; source_index < source_quorum;
+         ++source_index) {
+      AgentObservedMetricSnapshot snapshot;
+      snapshot.metric_family = dependency.metric_family;
+      snapshot.namespace_path = dependency.namespace_prefix.empty()
+                                    ? dependency.metric_family
+                                    : dependency.namespace_prefix + ".observed";
+      snapshot.source_id =
+          "engine_metric_registry:" + descriptor.type_id + ":" +
+          dependency.metric_family + ":" + std::to_string(source_index);
+      snapshot.generation = generation;
+      snapshot.source_sequence = generation + source_index;
+      snapshot.observed_wall_microseconds = observed_wall;
+      snapshot.scope_uuid = scope_uuid;
+      snapshot.digest = digest + ":" + dependency.metric_family;
+      snapshot.value_digest = digest + ":" + dependency.metric_family + ":value";
+      snapshot.schema_digest =
+          "sha256:" + DeterministicAgentRuntimeObjectUuidFromKey(
+                          "agent_metric_snapshot_schema|" +
+                          descriptor.type_id + "|" + dependency.metric_family);
+      snapshot.source_quality = source_quality;
+      snapshot.present = SecurityOptionBool(request,
+                                            "agent_metric_snapshot_observed:",
+                                            false);
+      snapshot.trusted = SecurityOptionBool(request,
+                                           "agent_metric_snapshot_trusted:",
+                                           false);
+      snapshot.schema_compatible =
+          !SecurityOptionPresent(request, "agent_metric_snapshot_schema_incompatible:true");
+      snapshot.attestation_verified = true;
+      snapshot.redacted = true;
+      snapshot.external_provider_attested =
+          dependency.cluster_only && context.cluster_authority_available;
+      snapshot.trust_provenance = trust_provenance;
+      snapshot.provenance_record =
+          "agent_metric_snapshot_observed:" + evidence_uuid;
+      snapshot.attestation_key_id =
+          "agent_metric_snapshot_attestation:" + snapshot.source_id;
+      snapshot.attestation_digest =
+          "sha256:" + DeterministicAgentRuntimeObjectUuidFromKey(
+                          "agent_metric_snapshot_attestation|" +
+                          snapshot.source_id + "|" + snapshot.digest);
+      snapshot.evidence_uuid = evidence_uuid;
+      snapshot.snapshot_id = snapshot_id + ":" + dependency.metric_family +
+                             ":" + std::to_string(source_index);
+      snapshots.push_back(std::move(snapshot));
+    }
   }
   return snapshots;
 }
@@ -1746,6 +1775,7 @@ TResult MutatingAgentOperation(const EngineApiRequest& request,
   }
   EngineAgentDurableRuntimeState effective_durable_state = durable_state;
   std::optional<AgentDurableCatalogStoreResult> loaded_store_catalog;
+  std::string loaded_store_catalog_root_digest;
   bool store_backed_catalog = false;
   const bool durable_required =
       DurableRuntimeRequired(request, effective_durable_state);
@@ -1767,6 +1797,8 @@ TResult MutatingAgentOperation(const EngineApiRequest& request,
       return *failure;
     }
     loaded_store_catalog = std::move(loaded);
+    loaded_store_catalog_root_digest =
+        loaded_store_catalog->image.authority.catalog_root_digest;
     effective_durable_state.catalog = &loaded_store_catalog->image;
     effective_durable_state.mutable_catalog = &loaded_store_catalog->image;
     store_backed_catalog = true;
@@ -1870,6 +1902,8 @@ TResult MutatingAgentOperation(const EngineApiRequest& request,
       store_request.image = *effective_durable_state.mutable_catalog;
       store_request.evidence_uuid =
           effective_durable_state.mutable_catalog->authority.evidence_uuid;
+      store_request.expected_catalog_root_digest =
+          loaded_store_catalog_root_digest;
       store_request.production_live_path = true;
       store_request.fsync_or_checkpoint_evidence =
           DurableCatalogStoreCheckpointEvidencePresent(request);

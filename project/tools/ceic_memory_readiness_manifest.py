@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 
-EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure")
+EXECUTION_PLAN = pathlib.Path("project/tests/release_evidence/consolidated_enterprise_public_evidence")
 DEFAULT_MANIFEST = EXECUTION_PLAN / "artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml"
 
 AUTHORITY_BOUNDARY_TOKEN = (
@@ -40,7 +40,12 @@ PRESENT_STATUS = {"present", "complete", "completed", "generated"}
 MEMORY_COMPLETED_SLICES = tuple(f"CEIC-{value:03d}" for value in range(10, 24))
 MEMORY_MANIFEST_SLICES = MEMORY_COMPLETED_SLICES + ("CEIC-024",)
 MEMORY_EXTENSION_SLICES = ("CEIC-025", "CEIC-026", "CEIC-027", "CEIC-028", "CEIC-029")
-PENDING_INTEGRATED_SLICES = ("CEIC-091", "CEIC-093", "CEIC-094")
+INTEGRATED_RELEASE_SLICES = ("CEIC-091", "CEIC-093", "CEIC-094")
+INTEGRATED_RELEASE_ARTIFACTS = {
+    "CEIC-091": ("CEIC-ART-088",),
+    "CEIC-093": ("CEIC-ART-090",),
+    "CEIC-094": ("CEIC-ART-091",),
+}
 
 REQUIRED_MEMORY_ARTIFACTS = (
     "CEIC-ART-020",
@@ -270,13 +275,13 @@ FOCUSED_TARGETS = (
 )
 
 CONTROL_INPUTS = (
-    EXECUTION_PLAN / "TRACKER.csv",
+    EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv",
     EXECUTION_PLAN / "ARTIFACT_INDEX.csv",
-    EXECUTION_PLAN / "ACCEPTANCE_GATES.csv",
-    EXECUTION_PLAN / "AUDIT_TRACEABILITY_MATRIX.csv",
+    EXECUTION_PLAN / "CEIC_ACCEPTANCE_MATRIX.csv",
+    EXECUTION_PLAN / "CEIC_FINDING_TRACEABILITY_MATRIX.csv",
     EXECUTION_PLAN / "CLAIM_BOUNDARY_MATRIX.csv",
     EXECUTION_PLAN / "METRICS_PRODUCER_COVERAGE_MATRIX.csv",
-    EXECUTION_PLAN / "SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv",
+    EXECUTION_PLAN / "CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
     EXECUTION_PLAN / "EVIDENCE_MANIFEST_SCHEMA.md",
     EXECUTION_PLAN / "README.md",
     EXECUTION_PLAN / "INTERFACE_CONTRACTS.md",
@@ -396,7 +401,7 @@ def validate_execution_plan_inputs(
     list[str],
     list[str],
 ]:
-    tracker = index_by(read_csv(repo_root, EXECUTION_PLAN / "TRACKER.csv"), "slice_id", "TRACKER.csv")
+    tracker = index_by(read_csv(repo_root, EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv"), "slice_id", "CEIC_STATUS_MATRIX.csv")
     artifacts = index_by(read_csv(repo_root, EXECUTION_PLAN / "ARTIFACT_INDEX.csv"), "artifact_id", "ARTIFACT_INDEX.csv")
     metrics = read_csv(repo_root, EXECUTION_PLAN / "METRICS_PRODUCER_COVERAGE_MATRIX.csv")
 
@@ -416,9 +421,7 @@ def validate_execution_plan_inputs(
             pending_extension_slices.append(slice_id)
         else:
             raise ManifestError(f"{slice_id} must be pending or complete for CEIC-024 manifest refresh")
-    for slice_id in PENDING_INTEGRATED_SLICES:
-        if normalize_status(tracker.get(slice_id, {}).get("status", "")) != "pending":
-            raise ManifestError(f"{slice_id} must remain pending integrated proof in CEIC-024")
+    validate_integrated_release_proof(repo_root, tracker, artifacts, writing=writing)
 
     manifest_row = artifacts.get("CEIC-ART-011")
     if not manifest_row:
@@ -454,6 +457,31 @@ def validate_execution_plan_inputs(
             raise ManifestError(f"metric {row.get('metric_family', '<missing>')} has no validation gate")
 
     return tracker, artifacts, memory_metrics, completed_extension_slices, pending_extension_slices
+
+
+def validate_integrated_release_proof(
+    repo_root: pathlib.Path,
+    tracker: dict[str, dict[str, str]],
+    artifacts: dict[str, dict[str, str]],
+    *,
+    writing: bool,
+) -> None:
+    for slice_id in INTEGRATED_RELEASE_SLICES:
+        status = normalize_status(tracker.get(slice_id, {}).get("status", ""))
+        if status not in COMPLETE_STATUS:
+            raise ManifestError(f"{slice_id} integrated proof must be complete for CEIC-024 beta release validation")
+        if not tracker.get(slice_id, {}).get("acceptance", "").strip():
+            raise ManifestError(f"{slice_id} integrated proof acceptance text is required")
+        for artifact_id in INTEGRATED_RELEASE_ARTIFACTS[slice_id]:
+            row = artifacts.get(artifact_id)
+            if row is None:
+                raise ManifestError(f"{artifact_id} required for {slice_id} integrated proof but missing")
+            if row.get("slice_id", "").strip() != slice_id:
+                raise ManifestError(f"{artifact_id} must belong to {slice_id}")
+            if normalize_status(row.get("status", "")) not in PRESENT_STATUS:
+                raise ManifestError(f"{artifact_id} must be present for {slice_id} integrated proof")
+            if not writing and not artifact_exists(repo_root, row):
+                raise ManifestError(f"{artifact_id} is present but missing: {row.get('path', '')}")
 
 
 def validate_static_inputs(repo_root: pathlib.Path) -> None:
@@ -529,6 +557,14 @@ def collect_input_records(
                 rel_paths.add(match.relative_to(repo_root))
         else:
             rel_paths.add(pathlib.Path(raw_path))
+    for artifact_ids in INTEGRATED_RELEASE_ARTIFACTS.values():
+        for artifact_id in artifact_ids:
+            raw_path = artifacts[artifact_id]["path"].strip()
+            if any(char in raw_path for char in "*?["):
+                for match in sorted(repo_root.glob(raw_path)):
+                    rel_paths.add(match.relative_to(repo_root))
+            else:
+                rel_paths.add(pathlib.Path(raw_path))
 
     rel_paths.discard(DEFAULT_MANIFEST)
     records: list[dict[str, Any]] = []
@@ -657,14 +693,15 @@ def build_manifest(
             }
         )
 
-    pending_integrated = []
-    for slice_id in PENDING_INTEGRATED_SLICES:
-        pending_integrated.append(
+    integrated_release_proof = []
+    for slice_id in INTEGRATED_RELEASE_SLICES:
+        integrated_release_proof.append(
             {
                 "slice_id": slice_id,
                 "title": tracker[slice_id]["title"],
-                "status": "pending",
-                "ceic_024_state": "pending_integrated_proof_not_satisfied_by_memory_manifest",
+                "status": normalize_status(tracker[slice_id]["status"]),
+                "artifact_ids": list(INTEGRATED_RELEASE_ARTIFACTS[slice_id]),
+                "ceic_024_state": "complete_integrated_release_proof_required_for_beta_release",
             }
         )
 
@@ -704,12 +741,12 @@ def build_manifest(
             "completed_memory_extension_slices": completed_extension_slices,
             "ceic_024_gate": "generated_and_validated",
             "docs_alone_runtime_proof": False,
-            "production_claim": "blocked_pending_integrated_proof",
-            "benchmark_clean_claim": "blocked_pending_live_route_and_integrated_soak",
-            "integrated_readiness": "pending",
+            "production_claim": "blocked_by_memory_manifest_scope_not_product_production_claim",
+            "benchmark_clean_claim": "blocked_by_memory_manifest_scope_not_benchmark_dominance_claim",
+            "integrated_readiness": "complete_via_integrated_release_evidence",
             "cluster_production_claim": "blocked_external_provider_only",
             "pending_memory_slices": pending_extension_slices,
-            "pending_integrated_proof": pending_integrated,
+            "integrated_release_proof": integrated_release_proof,
         },
         "production_test_separation": {
             "fixtures_enabled": False,
@@ -727,11 +764,11 @@ def build_manifest(
         },
         "platform": {
             "os": "declared_cross_platform_lanes",
-            "version": "CEIC-094_pending_cross_platform_release_proof",
+            "version": "CEIC-094_complete_cross_platform_release_proof",
             "arch": "declared_by_CEIC-022_lane_manifest",
             "compiler": "CMake toolchain selected by focused validation build",
             "declared_platforms": platforms,
-            "cross_platform_release_proof_state": "pending_CEIC-094",
+            "cross_platform_release_proof_state": "complete_CEIC-094",
         },
         "source_anchors": source_anchors,
         "input_records": input_records,
@@ -745,7 +782,7 @@ def build_manifest(
             "state": "CMake-visible focused gates defined; current run evidence remains external validation output",
         },
         "soak_evidence": {
-            "state": "defined_soak_lanes_pending_CEIC-093_execution",
+            "state": "complete_CEIC-093_integrated_reliability_security_proof",
             "lane_manifest": "project/tools/ceic_memory_verification_lanes.json",
             "authority_boundary": AUTHORITY_BOUNDARY_TOKEN,
             "lanes": soak_lanes,
@@ -754,12 +791,12 @@ def build_manifest(
             "state": "focused_memory_support_bundle_implemented",
             "artifact": "CEIC-ART-038",
             "source_anchor": "project/src/core/memory/memory_support_bundle.cpp#CEIC-023_MEMORY_SUPPORT_BUNDLE_LOW_MEMORY",
-            "integrated_signed_chained_bundle_state": "pending_CEIC-091",
+            "integrated_signed_chained_bundle_state": "complete_CEIC-091",
             "authority": "observability_evidence_only",
         },
         "metrics_evidence": {
             "state": "memory_metric_rows_indexed_with_pending_runtime_producer_closure_preserved",
-            "matrix": "docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure/METRICS_PRODUCER_COVERAGE_MATRIX.csv",
+            "matrix": "project/tests/release_evidence/consolidated_enterprise_public_evidence/METRICS_PRODUCER_COVERAGE_MATRIX.csv",
             "rows": metric_rows,
         },
         "production_gate_evidence": {
@@ -816,17 +853,17 @@ def validate_manifest_semantics(data: dict[str, Any]) -> list[str]:
         value = str(readiness.get(field, ""))
         if not value.startswith("blocked"):
             errors.append(f"static claim without generated/integrated proof: {field}={value}")
-    if readiness.get("integrated_readiness") != "pending":
-        errors.append("integrated readiness must remain pending")
+    if readiness.get("integrated_readiness") != "complete_via_integrated_release_evidence":
+        errors.append("integrated readiness must reflect complete integrated release evidence")
 
-    pending_ids = {
+    integrated_ids = {
         row.get("slice_id"): row.get("status")
-        for row in readiness.get("pending_integrated_proof", [])
+        for row in readiness.get("integrated_release_proof", [])
         if isinstance(row, dict)
     }
-    for slice_id in PENDING_INTEGRATED_SLICES:
-        if pending_ids.get(slice_id) != "pending":
-            errors.append(f"{slice_id} must remain pending integrated proof")
+    for slice_id in INTEGRATED_RELEASE_SLICES:
+        if integrated_ids.get(slice_id) not in COMPLETE_STATUS:
+            errors.append(f"{slice_id} integrated proof must be complete")
 
     separation = data.get("production_test_separation", {})
     for key in (
@@ -841,12 +878,12 @@ def validate_manifest_semantics(data: dict[str, Any]) -> list[str]:
         if separation.get(key) is not False:
             errors.append(f"production/test separation {key} must be false")
 
-    if data.get("soak_evidence", {}).get("state") != "defined_soak_lanes_pending_CEIC-093_execution":
-        errors.append("soak evidence must remain defined-only pending CEIC-093")
-    if data.get("platform", {}).get("cross_platform_release_proof_state") != "pending_CEIC-094":
-        errors.append("cross-platform proof must remain pending CEIC-094")
-    if data.get("support_bundle_evidence", {}).get("integrated_signed_chained_bundle_state") != "pending_CEIC-091":
-        errors.append("integrated support bundle proof must remain pending CEIC-091")
+    if data.get("soak_evidence", {}).get("state") != "complete_CEIC-093_integrated_reliability_security_proof":
+        errors.append("soak evidence must reflect complete CEIC-093 integrated proof")
+    if data.get("platform", {}).get("cross_platform_release_proof_state") != "complete_CEIC-094":
+        errors.append("cross-platform proof must reflect complete CEIC-094 proof")
+    if data.get("support_bundle_evidence", {}).get("integrated_signed_chained_bundle_state") != "complete_CEIC-091":
+        errors.append("integrated support bundle proof must reflect complete CEIC-091 proof")
 
     return errors
 

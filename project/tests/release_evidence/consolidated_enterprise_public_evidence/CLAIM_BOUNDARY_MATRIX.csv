@@ -1,0 +1,9 @@
+claim_surface,status,boundary
+memory,complete,Memory evidence is not transaction finality visibility or recovery authority.
+metrics,complete,Metrics do not authorize rows commits recovery or security.
+indexes,complete,Indexes cannot become result transaction finality or visibility authority and require exact MGA security recheck before result use.
+optimizer,complete,Optimizer evidence cannot become row visibility transaction finality reference or parser authority.
+agents,complete,Agents cannot become transaction recovery security optimizer plan or index finality authority.
+support_bundles,complete,Support bundles are observability artifacts only.
+reference_comparisons,complete,Reference comparisons are comparison only and never ScratchBird runtime authority.
+cluster,complete,Cluster public stubs are fail-closed; production cluster behavior requires an external provider.

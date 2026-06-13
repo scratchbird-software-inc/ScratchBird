@@ -9,6 +9,7 @@
 #include "mga_relation_store/mga_physical_cleanup_coordinator.hpp"
 
 #include "disk_device.hpp"
+#include "memory.hpp"
 #include "row_data_page.hpp"
 #include "uuid.hpp"
 
@@ -37,6 +38,7 @@ namespace {
 namespace api = scratchbird::engine::internal_api;
 namespace disk = scratchbird::storage::disk;
 namespace idx = scratchbird::core::index;
+namespace memory = scratchbird::core::memory;
 namespace page = scratchbird::storage::page;
 namespace platform = scratchbird::core::platform;
 namespace txn = scratchbird::transaction::mga;
@@ -114,6 +116,26 @@ txn::TransactionIdentity TransactionIdentity(platform::u64 local_id) {
   identity.transaction_uuid = TransactionUuid(local_id);
   identity.scope = txn::TransactionScope::local_node;
   return identity;
+}
+
+memory::AllocationPolicy MemoryPolicy() {
+  auto policy = memory::DefaultLocalEngineMemoryPolicy();
+  policy.policy_name =
+      "engine_listener_mga_integrated_physical_cleanup_conformance";
+  policy.hard_limit_bytes = 64ull * 1024ull * 1024ull;
+  policy.soft_limit_bytes = 48ull * 1024ull * 1024ull;
+  policy.per_context_limit_bytes = 32ull * 1024ull * 1024ull;
+  policy.page_buffer_pool_limit_bytes = 16ull * 1024ull * 1024ull;
+  return policy;
+}
+
+void ConfigureMemoryFixture() {
+  const auto configured = memory::ConfigureDefaultMemoryManagerForFixture(
+      MemoryPolicy(),
+      "engine_listener_mga_integrated_physical_cleanup_conformance");
+  Require(configured.ok(), "ELER-024 memory fixture configuration failed");
+  Require(configured.fixture_mode,
+          "ELER-024 memory fixture mode was not active");
 }
 
 txn::TransactionInventoryEntry InventoryEntry(platform::u64 local_id,
@@ -783,6 +805,7 @@ void ProveCurrentRowProofIsNotInvented() {
 }  // namespace
 
 int main() {
+  ConfigureMemoryFixture();
   ProveIntegratedCleanup();
   ProveMissingAuthorityFailsClosed();
   ProveCurrentRowProofIsNotInvented();

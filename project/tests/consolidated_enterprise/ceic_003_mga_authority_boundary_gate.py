@@ -22,7 +22,9 @@ import sys
 from dataclasses import dataclass
 
 
-EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure")
+EXECUTION_PLAN = pathlib.Path(
+    "project/tests/release_evidence/consolidated_enterprise_public_evidence"
+)
 
 
 @dataclass(frozen=True)

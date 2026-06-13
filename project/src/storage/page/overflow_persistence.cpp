@@ -1004,13 +1004,26 @@ OverflowBlobPageResult WriteOverflowValueBlobPages(
                            agreed.diagnostic.diagnostic_code);
     }
 
-    std::vector<byte> page_bytes(request.page_size, 0);
+    auto page_buffer = AllocateManagedPageBuffer(context,
+                                                 scratchbird::storage::disk::PageType::blob,
+                                                 "overflow_blob_page_write_buffer");
+    if (!page_buffer.ok()) {
+      return BlobPageError("overflow_blob_page_write_buffer_failed",
+                           "storage.page.overflow.blob_page_write_buffer_failed",
+                           page_buffer.diagnostic.diagnostic_code);
+    }
+    auto* page_bytes = static_cast<byte*>(page_buffer.buffer.data());
+    const auto page_bytes_size = page_buffer.buffer.size();
+    if (page_bytes_size != request.page_size) {
+      return BlobPageError("overflow_blob_page_write_buffer_size_mismatch",
+                           "storage.page.overflow.blob_page_write_buffer_size_mismatch");
+    }
     std::copy(header.serialized.begin(),
               header.serialized.end(),
-              page_bytes.begin());
+              page_bytes);
     std::copy(body.serialized.begin(),
               body.serialized.end(),
-              page_bytes.begin() + kPageHeaderSerializedBytes);
+              page_bytes + kPageHeaderSerializedBytes);
 
     const auto page_offset =
         CheckedPageOffset(request.page_size, chunk.page_number);
@@ -1020,9 +1033,9 @@ OverflowBlobPageResult WriteOverflowValueBlobPages(
                            page_offset.diagnostic.diagnostic_code);
     }
     const auto write = request.device->WriteAt(page_offset.offset,
-                                               page_bytes.data(),
-                                               page_bytes.size());
-    if (!write.ok() || write.bytes_transferred != page_bytes.size()) {
+                                               page_bytes,
+                                               page_bytes_size);
+    if (!write.ok() || write.bytes_transferred != page_bytes_size) {
       return BlobPageError("overflow_blob_page_write_failed",
                            "storage.page.overflow.blob_page_write_failed",
                            write.diagnostic.diagnostic_code);
@@ -1083,19 +1096,32 @@ OverflowBlobPageResult ReadOverflowValueBlobPages(
                            page_offset.diagnostic.diagnostic_code);
     }
 
-    std::vector<byte> page_bytes(request.page_size, 0);
+    auto page_buffer = AllocateManagedPageBuffer(context,
+                                                 scratchbird::storage::disk::PageType::blob,
+                                                 "overflow_blob_page_read_buffer");
+    if (!page_buffer.ok()) {
+      return BlobPageError("overflow_blob_page_read_buffer_failed",
+                           "storage.page.overflow.blob_page_read_buffer_failed",
+                           page_buffer.diagnostic.diagnostic_code);
+    }
+    auto* page_bytes = static_cast<byte*>(page_buffer.buffer.data());
+    const auto page_bytes_size = page_buffer.buffer.size();
+    if (page_bytes_size != request.page_size) {
+      return BlobPageError("overflow_blob_page_read_buffer_size_mismatch",
+                           "storage.page.overflow.blob_page_read_buffer_size_mismatch");
+    }
     const auto read = request.device->ReadAt(page_offset.offset,
-                                             page_bytes.data(),
-                                             page_bytes.size());
-    if (!read.ok() || read.bytes_transferred != page_bytes.size()) {
+                                             page_bytes,
+                                             page_bytes_size);
+    if (!read.ok() || read.bytes_transferred != page_bytes_size) {
       return BlobPageError("overflow_blob_page_read_failed",
                            "storage.page.overflow.blob_page_read_failed",
                            read.diagnostic.diagnostic_code);
     }
 
     scratchbird::storage::disk::SerializedPageHeader serialized_header{};
-    std::copy(page_bytes.begin(),
-              page_bytes.begin() + kPageHeaderSerializedBytes,
+    std::copy(page_bytes,
+              page_bytes + kPageHeaderSerializedBytes,
               serialized_header.begin());
     const auto header = ValidateManagedPageHeader(context, serialized_header);
     if (!header.ok()) {
@@ -1112,8 +1138,8 @@ OverflowBlobPageResult ReadOverflowValueBlobPages(
     }
 
     std::vector<byte> body_bytes(
-        page_bytes.begin() + kPageHeaderSerializedBytes,
-        page_bytes.end());
+        page_bytes + kPageHeaderSerializedBytes,
+        page_bytes + page_bytes_size);
     PageBodyAgreementRequest agreement;
     agreement.header = serialized_header;
     agreement.body = body_bytes;

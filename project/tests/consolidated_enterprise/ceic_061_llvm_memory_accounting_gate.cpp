@@ -185,8 +185,8 @@ void ValidateSupportBundle(
                    "CEIC-016_FOREIGN_MEMORY_RESERVATION_COVERAGE"),
           "support bundle foreign-memory evidence anchor missing");
   Require(Contains(bundle.evidence,
-                   "no_authority.benchmark_optimizer_index_agent=true"),
-          "support bundle no-authority evidence missing");
+                   "memory_support_bundle.benchmark_optimizer_index_agent_authority=false"),
+          "support bundle authority=false evidence missing");
 }
 
 void ValidateDynamicDefaultAndCleanup(

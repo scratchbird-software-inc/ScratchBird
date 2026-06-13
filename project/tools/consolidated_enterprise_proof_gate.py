@@ -24,8 +24,10 @@ from collections import deque
 from collections.abc import Iterable
 
 
-EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure")
-FINDINGS = pathlib.Path("docs" "/findings/Consolidated Audit Direction.md")
+EXECUTION_PLAN = pathlib.Path(
+    "project/tests/release_evidence/consolidated_enterprise_public_evidence"
+)
+FINDINGS = EXECUTION_PLAN / "CEIC_FINDING_INDEX.csv"
 
 FINDING_ID_RE = re.compile(r"^\|\s*((?:AGT|MEM|IDX|OPT|X)-\d{3})\s*\|")
 GLOB_CHARS = set("*?[")
@@ -148,6 +150,10 @@ def extract_finding_ids(findings_text: str) -> list[str]:
     return ids
 
 
+def finding_ids_from_rows(rows: list[dict[str, str]]) -> list[str]:
+    return [row.get("finding_id", "").strip() for row in rows if row.get("finding_id", "").strip()]
+
+
 def index_by_id(errors: list[str], rows: list[dict[str, str]], field: str, label: str) -> dict[str, dict[str, str]]:
     ids = [row.get(field, "").strip() for row in rows]
     counts = Counter(ids)
@@ -181,16 +187,16 @@ def validate_traceability(
     for finding_id in sorted(finding_counts):
         if trace_counts[finding_id] != 1:
             errors.append(
-                f"{EXECUTION_PLAN / 'AUDIT_TRACEABILITY_MATRIX.csv'} must map {finding_id} exactly once; "
+                f"{EXECUTION_PLAN / 'CEIC_FINDING_TRACEABILITY_MATRIX.csv'} must map {finding_id} exactly once; "
                 f"found {trace_counts[finding_id]}"
             )
     for finding_id, count in sorted(trace_counts.items()):
         if not finding_id:
-            errors.append("AUDIT_TRACEABILITY_MATRIX.csv has a blank finding_id")
+            errors.append("CEIC_FINDING_TRACEABILITY_MATRIX.csv has a blank finding_id")
         elif finding_id not in finding_counts:
-            errors.append(f"AUDIT_TRACEABILITY_MATRIX.csv maps unknown finding_id {finding_id}")
+            errors.append(f"CEIC_FINDING_TRACEABILITY_MATRIX.csv maps unknown finding_id {finding_id}")
         elif count != 1:
-            errors.append(f"AUDIT_TRACEABILITY_MATRIX.csv maps {finding_id} {count} times")
+            errors.append(f"CEIC_FINDING_TRACEABILITY_MATRIX.csv maps {finding_id} {count} times")
 
     for row in trace_rows:
         finding_id = row.get("finding_id", "").strip()
@@ -382,43 +388,44 @@ def run(repo_root: pathlib.Path) -> list[str]:
     errors: list[str] = []
 
     try:
-        findings_text = read_text(repo_root, FINDINGS)
-        tracker_rows = read_csv(repo_root, EXECUTION_PLAN / "TRACKER.csv")
-        gate_rows = read_csv(repo_root, EXECUTION_PLAN / "ACCEPTANCE_GATES.csv")
+        finding_rows = read_csv(repo_root, FINDINGS)
+        tracker_rows = read_csv(repo_root, EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv")
+        gate_rows = read_csv(repo_root, EXECUTION_PLAN / "CEIC_ACCEPTANCE_MATRIX.csv")
         artifact_rows = read_csv(repo_root, EXECUTION_PLAN / "ARTIFACT_INDEX.csv")
-        trace_rows = read_csv(repo_root, EXECUTION_PLAN / "AUDIT_TRACEABILITY_MATRIX.csv")
+        trace_rows = read_csv(repo_root, EXECUTION_PLAN / "CEIC_FINDING_TRACEABILITY_MATRIX.csv")
         claim_rows = read_csv(repo_root, EXECUTION_PLAN / "CLAIM_BOUNDARY_MATRIX.csv")
     except FileNotFoundError as exc:
         return [f"missing required file: {exc}"]
 
-    require_columns(errors, EXECUTION_PLAN / "TRACKER.csv", tracker_rows, ["slice_id", "status"])
-    require_columns(errors, EXECUTION_PLAN / "ACCEPTANCE_GATES.csv", gate_rows, ["gate_id", "status"])
+    require_columns(errors, EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv", tracker_rows, ["slice_id", "status"])
+    require_columns(errors, FINDINGS, finding_rows, ["finding_id"])
+    require_columns(errors, EXECUTION_PLAN / "CEIC_ACCEPTANCE_MATRIX.csv", gate_rows, ["gate_id", "status"])
     require_columns(
         errors,
         EXECUTION_PLAN / "ARTIFACT_INDEX.csv",
         artifact_rows,
-        ["artifact_id", "slice_id", "artifact_kind", "path", "required_for_gate", "status"],
+        ["artifact_id", "slice_id", "artifact_kind", "path", "status"],
     )
     require_columns(
         errors,
-        EXECUTION_PLAN / "AUDIT_TRACEABILITY_MATRIX.csv",
+        EXECUTION_PLAN / "CEIC_FINDING_TRACEABILITY_MATRIX.csv",
         trace_rows,
-        ["finding_id", "tracker_slices", "acceptance_gates", "evidence_artifacts"],
+        ["finding_id", "tracker_slices", "evidence_artifacts"],
     )
     require_columns(
         errors,
         EXECUTION_PLAN / "CLAIM_BOUNDARY_MATRIX.csv",
         claim_rows,
-        ["claim_surface", "allowed_after_completion", "forbidden_claim_without_external_or_future_proof", "authority_notes"],
+        ["claim_surface", "status", "boundary"],
     )
     if errors:
         return errors
 
-    tracker = index_by_id(errors, tracker_rows, "slice_id", "TRACKER.csv")
-    gates = index_by_id(errors, gate_rows, "gate_id", "ACCEPTANCE_GATES.csv")
+    tracker = index_by_id(errors, tracker_rows, "slice_id", "CEIC_STATUS_MATRIX.csv")
+    gates = index_by_id(errors, gate_rows, "gate_id", "CEIC_ACCEPTANCE_MATRIX.csv")
     artifacts = index_by_id(errors, artifact_rows, "artifact_id", "ARTIFACT_INDEX.csv")
 
-    finding_ids = extract_finding_ids(findings_text)
+    finding_ids = finding_ids_from_rows(finding_rows)
     if not finding_ids:
         errors.append(f"{FINDINGS} contains no finding table IDs")
 

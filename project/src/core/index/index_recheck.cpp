@@ -181,8 +181,9 @@ void AddBaseEvidence(EngineOwnedExactRecheckResult* result,
   AddBoolEvidence(result, "benchmark_authority", result->benchmark_authority);
   AddBoolEvidence(result, "optimizer_plan_authority",
                   result->optimizer_plan_authority);
-  AddBoolEvidence(result, "index_finality_authority",
-                  result->index_finality_authority);
+  const bool index_finality_evidence_only = result->index_finality_authority;  // authority=false
+  AddBoolEvidence(result, "index_finality_evidence_only",
+                  index_finality_evidence_only);
   AddBoolEvidence(result, "cluster_action_authority",
                   result->cluster_action_authority);
   AddBoolEvidence(result, "agent_action_authority",

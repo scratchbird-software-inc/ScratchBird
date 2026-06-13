@@ -98,9 +98,11 @@ api::EngineRequestContext Context(const Fixture& fixture,
   context.cluster_uuid.canonical = Id(platform::UuidKind::object, 9);
   context.local_transaction_id = 17017;
   context.security_context_present = true;
+  context.trust_mode = api::EngineTrustMode::embedded_in_process;
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
   context.resource_epoch = 1;
+  context.trace_tags.push_back("security.fixture_trace_authority");
   for (const auto right : rights) {
     context.trace_tags.push_back("right:" + std::string(right));
   }

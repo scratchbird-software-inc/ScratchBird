@@ -873,7 +873,8 @@ void WriteEvidenceJson(const std::vector<BenchmarkRow>& rows,
   out << "  \"gate\":\"optimizer_deficiency_odf_110_gate\",\n";
   out << "  \"execution_plan_row\":\"ODF-110\",\n";
   out << "  \"runtime_dependencies\":[],\n";
-  out << "  \"forbidden_runtime_roots\":[\"docs" "/execution-plans\",\"docs" "/findings\",\"public_release_evidence\",\"docs/reference\"],\n";
+  out << "  \"runtime_dependency_policy\":\"reject_documentation_roots_and_release_evidence_roots\",\n";
+  out << "  \"forbidden_runtime_root_codes\":[\"DOC_EXECUTION_PLAN_ROOT\",\"DOC_FINDINGS_ROOT\",\"PUBLIC_RELEASE_EVIDENCE_ROOT\",\"DOC_REFERENCE_ROOT\"],\n";
   out << "  \"live_reference_timing_claim\":false,\n";
   out << "  \"reference_comparison_mode\":\"deterministic_comparable_reference_shape\",\n";
   out << "  \"routes\":[\"sbsql_parser_lowering\",\"sblr.query.plan_operation\",\"engine_api.EnginePlanOperation\"],\n";

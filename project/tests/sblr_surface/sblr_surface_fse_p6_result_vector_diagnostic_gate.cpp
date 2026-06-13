@@ -31,7 +31,7 @@ using Row = std::map<std::string, std::string>;
 constexpr int kSkipReturnCode = 77;
 
 std::string ResolveSblrExpansionRoot(const std::string& input) {
-  if (input.find("final-sblr-sbsql-sblr-expansion-closure") != std::string::npos) {
+  if (input.find("sblr_sbsql_expansion_public_evidence") != std::string::npos) {
     return input;
   }
   return input + "/public_execution_plan";

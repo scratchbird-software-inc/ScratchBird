@@ -59,7 +59,7 @@ struct QueryMemoryArenaLimits {
   u64 query_limit_bytes = 0;
   u64 spill_limit_bytes = 0;
   bool allow_spill = false;
-  bool require_hierarchical_reservation = true;
+  bool require_hierarchical_reservation = false;
 };
 
 // MMCH_UNIFIED_MEMORY_SPILL_BUDGET

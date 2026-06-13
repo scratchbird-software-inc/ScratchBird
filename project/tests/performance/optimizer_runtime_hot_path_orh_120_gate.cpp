@@ -1018,7 +1018,7 @@ void ProveCompressionAndVectorEquivalence() {
                            job.record.runtime_correctness_blocker}));
 }
 
-void ProveNoSqlProviderEquivalenceAndOrh091Refusal() {
+void ProveNoSqlProviderEquivalenceAndDocumentPathRuntime() {
   TempDatabase db("nosql");
   const auto writer = DocumentContext(db.path, 900);
   SeedCrudTransaction(writer);
@@ -1044,31 +1044,31 @@ void ProveNoSqlProviderEquivalenceAndOrh091Refusal() {
   Require(EvidenceContains(found, "document_provider_index_consumed", "true"),
           "document provider did not consume provider index");
   Require(EvidenceContains(found,
-                           "document_index_runtime_blocker",
-                           api::kDocumentPathIndexRuntimeUnproven),
-          "ORH-091 blocker evidence missing");
+                           "benchmark_clean_index_runtime_closure",
+                           "true"),
+          "document path runtime closure evidence missing");
   CompareSemanticEquivalent(
       "nosql_provider_generation_path_rows",
       AcceptedCapture("document:T1", {"T1|active"}, "document_uuid"),
       AcceptedCapture("document:T1", {"T1|active"}, "document_uuid",
                       {"provider_generation=" +
                        std::to_string(generation.generation_id),
-                       "document_path_index_runtime_blocked=true"}));
+                       "document_path_index_runtime_proven=true"}));
 
   auto strict = find;
   strict.require_benchmark_clean_index_runtime = true;
   auto strict_result = api::EngineDocumentFind(strict);
-  Require(!strict_result.ok,
-          "strict NoSQL path-index runtime proof was accepted");
-  Require(DiagnosticContains(strict_result,
-                             api::kDocumentPathIndexRuntimeUnproven),
-          "strict NoSQL path-index diagnostic mismatch");
+  Require(strict_result.ok,
+          "strict NoSQL path-index runtime proof was refused");
+  Require(EvidenceContains(strict_result,
+                           "benchmark_clean_index_runtime_closure",
+                           "true"),
+          "strict NoSQL path-index runtime closure evidence missing");
   CompareSemanticEquivalent(
-      "orh091_document_path_index_runtime_refusal",
-      RefusedCapture(api::kDocumentPathIndexRuntimeUnproven,
-                     {"tracker_row=ORH-091:blocked"}),
-      RefusedCapture(api::kDocumentPathIndexRuntimeUnproven,
-                     {"tracker_row=ORH-091:blocked"}));
+      "document_path_index_runtime_strict_route",
+      AcceptedCapture("document:T1", {"T1|active"}, "document_uuid"),
+      AcceptedCapture("document:T1", {"T1|active"}, "document_uuid",
+                      {"document_path_index_runtime_proven=true"}));
 }
 
 void ProveSnapshotCacheAndMetricsEquivalence() {
@@ -1158,7 +1158,7 @@ int main() {
   ProveDmlAndHotPointEquivalence();
   ProveStreamingAndDirectFrameEquivalence();
   ProveCompressionAndVectorEquivalence();
-  ProveNoSqlProviderEquivalenceAndOrh091Refusal();
+  ProveNoSqlProviderEquivalenceAndDocumentPathRuntime();
   ProveSnapshotCacheAndMetricsEquivalence();
   ProveIndexDependentBlockersRemainExact();
   std::cout << "optimizer_runtime_hot_path_orh_120_gate=passed\n";

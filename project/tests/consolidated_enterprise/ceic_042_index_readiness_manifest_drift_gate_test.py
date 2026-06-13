@@ -23,7 +23,7 @@ import tempfile
 
 
 COMPLETE_STATUSES = {"complete", "completed", "done", "closed", "complete_move_ready"}
-INTEGRATED_PENDING = tuple(f"CEIC-{value:03d}" for value in range(90, 96))
+INTEGRATED_COMPLETE = tuple(f"CEIC-{value:03d}" for value in range(90, 96))
 
 
 def run(command: list[str], *, expect_success: bool) -> subprocess.CompletedProcess[str]:
@@ -72,9 +72,9 @@ def assert_ceic_042_shape(data: dict) -> None:
         for row in data.get("integrated_boundary_slice_statuses", [])
         if isinstance(row, dict)
     }
-    for slice_id in INTEGRATED_PENDING:
-        if integrated.get(slice_id) != "pending":
-            raise AssertionError(f"{slice_id} must remain pending integrated proof")
+    for slice_id in INTEGRATED_COMPLETE:
+        if integrated.get(slice_id) not in COMPLETE_STATUSES:
+            raise AssertionError(f"{slice_id} integrated proof must be complete")
 
     drift = data.get("readiness_drift_gate_evidence", {})
     if drift.get("state") != "complete":
@@ -120,7 +120,7 @@ def main() -> int:
     tool = repo_root / "project/tools/ceic_index_readiness_manifest.py"
     committed_manifest = (
         repo_root
-        / "docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure/artifacts/"
+        / "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/"
         / "CEIC-030_INDEX_READINESS_MANIFEST.yaml"
     )
 
@@ -213,13 +213,13 @@ def main() -> int:
         integrated_overclaim = load(generated)
         for row in integrated_overclaim["integrated_boundary_slice_statuses"]:
             if row["slice_id"] == "CEIC-093":
-                row["status"] = "complete"
+                row["status"] = "pending"
                 break
         integrated_path = temp_dir / "integrated_overclaim.yaml"
         write(integrated_path, integrated_overclaim)
         expect_failure_contains(
             [sys.executable, str(tool), "--repo-root", str(repo_root), "--manifest", str(integrated_path)],
-            "CEIC-093 must remain pending integrated proof",
+            "CEIC-093 integrated proof must be complete",
         )
 
     print("ceic_042_index_readiness_manifest_drift_gate_test=pass")
