@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "backup_archive/backup_archive_api.hpp"
+#include "artifacts/artifact_api.hpp"
 #include "database_lifecycle.hpp"
 #include "maintenance_coordinator.hpp"
 #include "manager_control.hpp"
@@ -154,6 +155,41 @@ bool HasEvidence(const api::EngineApiResult& result,
     if (evidence.evidence_kind == kind && evidence.evidence_id == evidence_id) return true;
   }
   return false;
+}
+
+api::EngineTypedValue TextValue(std::string value) {
+  api::EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = "text";
+  typed.encoded_value = std::move(value);
+  return typed;
+}
+
+api::EngineRowValue ArtifactRow(std::string uuid,
+                                std::string kind,
+                                std::string name,
+                                std::string payload) {
+  api::EngineRowValue row;
+  row.requested_row_uuid.canonical = uuid + "-row";
+  row.fields.push_back({"artifact_format", TextValue("sb.catalog.artifact.v1")});
+  row.fields.push_back({"object_uuid", TextValue(std::move(uuid))});
+  row.fields.push_back({"object_kind", TextValue(std::move(kind))});
+  row.fields.push_back({"default_name", TextValue(std::move(name))});
+  row.fields.push_back({"payload", TextValue(std::move(payload))});
+  return row;
+}
+
+std::string RowField(const api::EngineRowValue& row, std::string_view name) {
+  for (const auto& [field_name, value] : row.fields) {
+    if (field_name == name) { return value.encoded_value; }
+  }
+  return {};
+}
+
+bool RowHasField(const api::EngineRowValue& row,
+                 std::string_view name,
+                 std::string_view expected) {
+  return RowField(row, name) == expected;
 }
 
 bool HasEncodedManifestField(std::string_view manifest,
@@ -378,6 +414,140 @@ void TestSblrExportAndSupportBundleRoutes(const std::filesystem::path& temp_dir)
               HasDiagnostic(protected_result.api_result,
                             "OPS.SUPPORT_BUNDLE.PROTECTED_MATERIAL_FORBIDDEN"),
           "support bundle route accepted protected material export");
+}
+
+void TestExternalGitCatalogVersioningRoutes(const std::filesystem::path& temp_dir) {
+  const auto database_path = temp_dir / "external_git_versioning.sbdb";
+  WriteFile(database_path, "SBDB_EXTERNAL_GIT_VERSIONING_ROUTE");
+
+  api::EngineImportCatalogArtifactsRequest import;
+  import.context = EngineContext(database_path, 700);
+  import.option_envelopes.push_back("external_git_policy:enabled");
+  import.rows.push_back(ArtifactRow("019e3900-0000-7000-8000-00000000cb57",
+                                    "schema",
+                                    "git_review_schema",
+                                    "localized_name=en,default,git_review_schema,git_review_schema,default"));
+  const auto imported = api::EngineImportCatalogArtifacts(import);
+  Require(imported.ok, "external Git seed import failed");
+  Require(HasEvidence(imported,
+                      "external_git_import_authority",
+                      "authorized_catalog_api_not_git_repository"),
+          "external Git import did not prove ScratchBird catalog authority");
+  Require(HasEvidence(imported,
+                      "mga_transaction_authority",
+                      "local_mga_transaction_inventory"),
+          "external Git import did not preserve MGA transaction authority");
+
+  api::EngineExportExternalGitSnapshotRequest export_request;
+  export_request.context = EngineContext(database_path, 701);
+  export_request.option_envelopes.push_back("external_git_policy:enabled");
+  const auto exported = api::EngineExportExternalGitSnapshot(export_request);
+  Require(exported.ok, "external Git snapshot export failed");
+  Require(HasEvidence(exported,
+                      "external_git_versioning",
+                      "convenience_snapshot_review_only"),
+          "external Git snapshot omitted versioning evidence");
+  Require(HasEvidence(exported, "git_runtime_authority", "false"),
+          "external Git snapshot became runtime authority");
+  Require(HasEvidence(exported,
+                      "catalog_runtime_authority",
+                      "ScratchBird_catalog_api"),
+          "external Git snapshot omitted ScratchBird catalog authority");
+  Require(HasEvidence(exported,
+                      "mga_transaction_authority",
+                      "local_mga_transaction_inventory"),
+          "external Git snapshot omitted MGA transaction authority");
+
+  std::vector<api::EngineRowValue> candidate_rows;
+  for (auto row : exported.result_shape.rows) {
+    if (RowHasField(row, "snapshot_entry_kind", "manifest")) { continue; }
+    if (RowHasField(row, "object_uuid", "019e3900-0000-7000-8000-00000000cb57")) {
+      for (auto& [name, value] : row.fields) {
+        if (name == "payload") {
+          value.encoded_value =
+              "localized_name=en,default,git_review_schema,git_review_schema_reviewed,default";
+        }
+        if (name == "content_hash") { value.encoded_value.clear(); }
+      }
+    }
+    candidate_rows.push_back(std::move(row));
+  }
+  Require(!candidate_rows.empty(), "external Git snapshot exported no object rows");
+
+  api::EngineDiffExternalGitSnapshotRequest diff_request;
+  diff_request.context = EngineContext(database_path, 702);
+  diff_request.option_envelopes.push_back("external_git_policy:enabled");
+  diff_request.rows = candidate_rows;
+  const auto diff = api::EngineDiffExternalGitSnapshot(diff_request);
+  Require(diff.ok, "external Git snapshot diff failed");
+  Require(HasEvidence(diff, "external_git_diff_count", "1"),
+          "external Git diff did not detect the candidate change");
+  bool saw_modified = false;
+  for (const auto& row : diff.result_shape.rows) {
+    saw_modified = saw_modified || RowHasField(row, "diff_kind", "modified");
+  }
+  Require(saw_modified, "external Git diff omitted modified row");
+  Require(HasEvidence(diff, "git_runtime_authority", "false"),
+          "external Git diff became runtime authority");
+
+  api::EnginePlanExternalGitRollbackRequest rollback_request;
+  rollback_request.context = EngineContext(database_path, 703);
+  rollback_request.option_envelopes.push_back("external_git_policy:enabled");
+  rollback_request.rows = candidate_rows;
+  const auto rollback_plan = api::EnginePlanExternalGitRollback(rollback_request);
+  Require(rollback_plan.ok, "external Git rollback plan failed");
+  Require(HasEvidence(rollback_plan, "external_git_rollback_plan_count", "1"),
+          "external Git rollback plan did not detect the candidate change");
+  Require(HasEvidence(rollback_plan,
+                      "external_git_rollback_apply_route",
+                      "authorized_catalog_api_not_git_repository"),
+          "external Git rollback plan omitted authorized apply route");
+  bool saw_restore = false;
+  for (const auto& row : rollback_plan.result_shape.rows) {
+    saw_restore = saw_restore ||
+                  RowHasField(row, "rollback_action", "restore_current_catalog_artifact");
+  }
+  Require(saw_restore, "external Git rollback plan omitted restore action");
+
+  auto corrupt_rows = exported.result_shape.rows;
+  for (auto& row : corrupt_rows) {
+    if (!RowHasField(row, "object_uuid", "019e3900-0000-7000-8000-00000000cb57")) { continue; }
+    for (auto& [name, value] : row.fields) {
+      if (name == "payload") { value.encoded_value += ";policy_status:invalid_by_hash"; }
+    }
+  }
+  api::EngineDiffExternalGitSnapshotRequest corrupt_request;
+  corrupt_request.context = EngineContext(database_path, 704);
+  corrupt_request.option_envelopes.push_back("external_git_policy:enabled");
+  corrupt_request.rows = corrupt_rows;
+  const auto corrupt = api::EngineDiffExternalGitSnapshot(corrupt_request);
+  Require(!corrupt.ok &&
+              HasDiagnostic(corrupt,
+                            "external_git_snapshot_hash_mismatch:019e3900-0000-7000-8000-00000000cb57"),
+          "external Git diff accepted a corrupt snapshot row");
+
+  api::EngineImportCatalogArtifactsRequest forbidden_import;
+  forbidden_import.context = EngineContext(database_path, 705);
+  forbidden_import.option_envelopes.push_back("external_git_policy:enabled");
+  forbidden_import.option_envelopes.push_back("external_git_direct_apply:true");
+  forbidden_import.rows.push_back(import.rows.front());
+  const auto forbidden = api::EngineImportCatalogArtifacts(forbidden_import);
+  Require(!forbidden.ok && HasDiagnostic(forbidden, "external_git_authority_forbidden"),
+          "catalog import accepted external Git direct authority");
+
+  api::EngineApiRequest sblr_request;
+  sblr_request.context = EngineContext(database_path, 706);
+  sblr_request.option_envelopes.push_back("external_git_policy:enabled");
+  const auto sblr_export = DispatchEncoded("artifact.external_git.export_snapshot",
+                                           "SBLR_ARTIFACT_EXTERNAL_GIT_EXPORT_SNAPSHOT",
+                                           sblr_request.context,
+                                           sblr_request,
+                                           true);
+  Require(sblr_export.accepted && sblr_export.dispatched_to_api &&
+              sblr_export.api_result.ok,
+          "encoded SBLR external Git export route failed");
+  Require(HasEvidence(sblr_export.api_result, "git_runtime_authority", "false"),
+          "encoded SBLR external Git route became runtime authority");
 }
 
 struct DatabaseFixture {
@@ -621,6 +791,7 @@ int main() {
   TestBackupRestoreEngineOwnedLifecycle(temp_dir);
   TestRestoreCoverageRefusal(temp_dir);
   TestSblrExportAndSupportBundleRoutes(temp_dir);
+  TestExternalGitCatalogVersioningRoutes(temp_dir);
   TestServerAdminManagementRoutes(temp_dir);
   TestServerCreateOpenAttachDetachRoutes(temp_dir);
   std::filesystem::remove_all(temp_dir);
