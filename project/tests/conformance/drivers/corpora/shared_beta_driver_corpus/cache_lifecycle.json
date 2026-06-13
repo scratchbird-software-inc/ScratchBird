@@ -1,0 +1,71 @@
+{
+  "corpus_id": "cache_lifecycle",
+  "description": "Driver-local cache lifecycle fixtures. All cached entries are hints and require server generation checks.",
+  "cache_families": [
+    "sblr_preparation_cache",
+    "uuid_path_resolution_cache",
+    "language_resource_cache"
+  ],
+  "cases": [
+    {
+      "case_id": "BDRV-CACHE-001",
+      "category": "cache_lifecycle",
+      "coverage": [
+        "cache_lifecycle",
+        "sblr_uuid_server_revalidation"
+      ],
+      "cache_family": "sblr_preparation_cache",
+      "event": "catalog_epoch_advanced",
+      "client_cache_generation": 11,
+      "server_cache_generation": 12,
+      "expected_action": "discard_and_reprepare",
+      "expected_refusal_before_reprepare": "SB_DRIVER_CACHE_STALE",
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-CACHE-002",
+      "category": "cache_lifecycle",
+      "coverage": [
+        "cache_lifecycle",
+        "authorization_filtered_uuid_path_resolution"
+      ],
+      "cache_family": "uuid_path_resolution_cache",
+      "event": "authorization_snapshot_changed",
+      "client_security_generation": 3,
+      "server_security_generation": 4,
+      "expected_action": "discard_filtered_resolution_entries",
+      "expected_refusal_before_reprepare": "SB_DRIVER_CACHE_STALE",
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-CACHE-003",
+      "category": "cache_lifecycle",
+      "coverage": [
+        "cache_lifecycle",
+        "language_fallback_standard_en"
+      ],
+      "cache_family": "language_resource_cache",
+      "event": "language_pack_generation_changed",
+      "client_resource_generation": 5,
+      "server_resource_generation": 6,
+      "expected_action": "refresh_localized_resources",
+      "canonical_surface_id_required": true,
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-CACHE-004",
+      "category": "sblr_uuid_server_revalidation",
+      "coverage": [
+        "sblr_uuid_server_revalidation",
+        "cache_lifecycle"
+      ],
+      "cache_family": "sblr_preparation_cache",
+      "event": "client_digest_reused_after_server_rewrite",
+      "client_sblr_digest": "sha256:fixture-client-pre-rewrite",
+      "server_sblr_digest": "sha256:fixture-server-post-rewrite",
+      "expected_action": "server_digest_wins_and_driver_cache_updates",
+      "server_revalidation": "required"
+    }
+  ],
+  "default_expected_boundary": "A driver cache cannot authorize execution, object visibility, UUID identity, localized meaning, transaction finality, or recovery state."
+}

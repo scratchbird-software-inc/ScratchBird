@@ -16,12 +16,12 @@ version = "0.1.0"
 description = "ScratchBird Python DB-API 2.0 driver (native protocol)"
 readme = "README.md"
 requires-python = ">=3.8"
-license = {text = "Apache-2.0"}
+license = {text = "MPL-2.0"}
 authors = [{name = "ScratchBird Project"}]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
 ]
 
 [project.optional-dependencies]

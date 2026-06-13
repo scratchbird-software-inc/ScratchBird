@@ -1,0 +1,11 @@
+{
+  "artifact_role": "driver_fixture_discovery_manifest",
+  "authority_boundary": "This discovery manifest points release tooling at public static fixture files only. It does not make a live readiness claim.",
+  "fixture_family": "shared_beta_driver_conformance_corpus",
+  "fixture_manifest": "project/tests/conformance/drivers/fixtures/shared_beta_driver_corpus/manifest.json",
+  "golden": "project/tests/conformance/drivers/goldens/shared_beta_driver_corpus/expected.json",
+  "requires_live_driver": false,
+  "requires_live_server": false,
+  "schema_version": 1,
+  "validation_entrypoint": "project/tests/conformance/drivers/validate_shared_beta_driver_corpus.py"
+}

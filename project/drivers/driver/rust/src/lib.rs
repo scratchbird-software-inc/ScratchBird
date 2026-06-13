@@ -12,6 +12,7 @@ mod errors;
 pub mod metadata;
 pub mod pool;
 pub mod protocol;
+pub mod readiness;
 mod scram;
 pub mod sql;
 pub mod types;
@@ -37,6 +38,12 @@ pub use protocol::{
     canonical_read_committed_mode_label, READ_COMMITTED_MODE_DEFAULT,
     READ_COMMITTED_MODE_NO_RECORD_VERSION, READ_COMMITTED_MODE_READ_CONSISTENCY,
     READ_COMMITTED_MODE_RECORD_VERSION,
+};
+pub use readiness::{
+    beta_driver_readiness_status, resolve_language_profile, validate_advisory_cache_context,
+    validate_language_resource_state, validate_prepared_bundle_reuse, AdvisoryCacheContext,
+    BetaReadinessStatus, DriverAuthorityBoundary, DriverRuntimeMapping, LanguageProfileResolution,
+    LanguageResourceState, PreparedBundleContext, ReadinessDiagnostic,
 };
 pub use sql::{normalize, normalize_callable, normalize_callable_sql, NormalizedQuery, Params};
 pub use types::{

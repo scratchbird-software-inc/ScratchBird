@@ -1,0 +1,105 @@
+{
+  "corpus_id": "auth_injection",
+  "description": "Authentication and authorization-context injection fixtures for shared beta driver tests.",
+  "cases": [
+    {
+      "case_id": "BDRV-AUTH-001",
+      "category": "auth_context_injection",
+      "coverage": [
+        "auth_context_injection",
+        "sblr_uuid_server_revalidation"
+      ],
+      "driver_request": {
+        "operation": "Attach",
+        "principal": "alice",
+        "effective_user_uuid": "018f0a2b-0000-7000-9000-000000000201",
+        "role_set": [
+          "report_reader"
+        ],
+        "group_set": [
+          "finance_ro"
+        ],
+        "auth_context_generation": 7
+      },
+      "expected_server_admission": {
+        "inject_effective_authorization_context": true,
+        "bind_session_to_security_snapshot": true,
+        "reject_missing_context": true
+      },
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-AUTH-002",
+      "category": "cross_user_role_group_replay_refusal",
+      "coverage": [
+        "cross_user_replay_refusal",
+        "sblr_uuid_server_revalidation"
+      ],
+      "replay_context": {
+        "original_user": "alice",
+        "replay_user": "bob",
+        "same_prepared_statement_id": true,
+        "same_client_sblr_digest": true
+      },
+      "expected_refusal": {
+        "diagnostic": "SB_DRIVER_REPLAY_CONTEXT_MISMATCH",
+        "reason": "prepared SBLR cannot be replayed under a different effective user without server reprepare"
+      },
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-AUTH-003",
+      "category": "cross_user_role_group_replay_refusal",
+      "coverage": [
+        "role_group_replay_refusal",
+        "sblr_uuid_server_revalidation"
+      ],
+      "replay_context": {
+        "original_user": "alice",
+        "replay_user": "alice",
+        "original_roles": [
+          "report_reader"
+        ],
+        "replay_roles": [
+          "payroll_admin"
+        ],
+        "original_groups": [
+          "finance_ro"
+        ],
+        "replay_groups": [
+          "finance_admin"
+        ]
+      },
+      "expected_refusal": {
+        "diagnostic": "SB_DRIVER_REPLAY_CONTEXT_MISMATCH",
+        "reason": "role or group set drift invalidates driver-local prepared material"
+      },
+      "server_revalidation": "required"
+    },
+    {
+      "case_id": "BDRV-AUTH-004",
+      "category": "auth_context_injection",
+      "coverage": [
+        "auth_context_injection",
+        "authorization_filtered_uuid_path_resolution"
+      ],
+      "driver_request": {
+        "operation": "ResolvePath",
+        "path": "sys.security.users",
+        "effective_user_uuid": "018f0a2b-0000-7000-9000-000000000204",
+        "role_set": [
+          "application_user"
+        ],
+        "group_set": [
+          "public"
+        ]
+      },
+      "expected_refusal": {
+        "diagnostic": "SB_AUTH_OBJECT_NOT_VISIBLE",
+        "reason": "security catalog paths are filtered from non-privileged authorization contexts"
+      },
+      "server_revalidation": "required"
+    }
+  ],
+  "default_expected_boundary": "Authorization context is injected and checked by the server for every prepared, cached, resolved, or replayed driver request."
+}

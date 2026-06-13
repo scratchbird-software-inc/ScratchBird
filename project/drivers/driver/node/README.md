@@ -8,6 +8,23 @@ Native ScratchBird driver for Node.js with full TypeScript types.
 - API reference
 - Baseline requirement mapping: [`BASELINE_REQUIREMENT_MAPPING.md`](BASELINE_REQUIREMENT_MAPPING.md)
 
+## Beta Readiness Surface
+
+- manifest identity/status is exported by `betaDriverReadinessStatus()`
+  (`driver:node`, package UUID `019e12a0-0008-7000-8000-000000000008`,
+  `beta_2`, `driver_node_gate`)
+- runtime mapping follows the native language binding over direct listener or
+  `manager_proxy` with `sbwp_v1_1`, `native_sqlstate`, and recursive
+  `sys_information` metadata
+- `validateAdvisoryCacheContext(...)` and
+  `validatePreparedBundleReuse(...)` refuse stale policy, schema, language,
+  capability, authorization, database, or transaction contexts
+- driver-local SBLR, UUID, and result caches are advisory only; server
+  revalidation remains required before execution, and transaction finality
+  remains owned by the engine MGA transaction inventory
+- `resolveLanguageProfile(...)` and `validateLanguageResourceState(...)`
+  select supported language resources or fall back to standard English
+
 ## MGA Recovery Contract
 
 This lane follows ScratchBird's MGA/state-based engine recovery model.

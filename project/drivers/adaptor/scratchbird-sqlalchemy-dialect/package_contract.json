@@ -1,0 +1,93 @@
+{
+  "component_id": "adaptor:scratchbird-sqlalchemy-dialect",
+  "category": "adaptor",
+  "name": "scratchbird-sqlalchemy-dialect",
+  "driver_family": "sqlalchemy",
+  "status": "beta_2",
+  "release_scope": "in_scope_required",
+  "release_bucket": "release_candidate",
+  "wire_protocol": "sbwp_v1_1",
+  "auth_authority": "engine",
+  "transaction_authority": "mga_engine",
+  "server_revalidation_required": true,
+  "driver_local_authority": "advisory_only",
+  "api_surface": [
+    "sqlalchemy_dialect",
+    "create_connect_args",
+    "type_mapping",
+    "table_reflection",
+    "index_reflection",
+    "pk_fk_reflection"
+  ],
+  "route_requirements": [
+    "sbwp_v1_1",
+    "scratchbird_tls_1_3_floor",
+    "engine_authentication_authority",
+    "engine_authorization_authority",
+    "mga_transaction_finality",
+    "sys_information_metadata",
+    "uuid_identity",
+    "no_hidden_replay"
+  ],
+  "conformance": [
+    "connect_auth",
+    "prepare_execute_fetch",
+    "transactions",
+    "metadata",
+    "type_mapping",
+    "error_mapping",
+    "reconnect",
+    "protocol_negotiation",
+    "cancellation"
+  ],
+  "delegation_posture": {
+    "mode": "delegates_to_python",
+    "target_component": "driver:python",
+    "host_runtime": "SQLAlchemy dialect",
+    "authority_boundaries": [
+      "dialect may shape SQLAlchemy connection and reflection requests",
+      "Python driver handles transport and protocol binding",
+      "server revalidates authentication, authorization, SBLR, UUID, cache, schema, and transaction claims",
+      "MGA transaction finality remains engine-owned"
+    ],
+    "lane_specific_proof": [
+      "python3 -m pytest -q tests",
+      "test_dialect_contract.py",
+      "test_package_contract.py"
+    ]
+  },
+  "artifact_verification": {
+    "package_type": "python_wheel",
+    "build_command": "python3 -m build",
+    "install_smoke": "python3 -m pytest -q tests",
+    "expected_outputs": [
+      "dist/scratchbird_sqlalchemy-0.1.0-py3-none-any.whl"
+    ],
+    "sbom": "release_gate_required",
+    "signing": "release_gate_required",
+    "license": "MPL-2.0"
+  },
+  "best_in_class_deltas": [
+    {
+      "comparator": "SQLAlchemy PostgreSQL dialect",
+      "delta": "connect args, type mapping, schema-qualified table/index reflection, and PK/FK reflection",
+      "proof": "test_dialect_contract.py"
+    },
+    {
+      "comparator": "SQLAlchemy PostgreSQL dialect",
+      "delta": "unsafe binary/TLS and staged auth values fail closed before delegated execution",
+      "proof": "test_create_connect_args_maps_aliases_and_enforces_binary_tls_guardrails"
+    }
+  ],
+  "dbeaver_exclusion": {
+    "excluded_component_id": "adaptor:scratchbird-dbeaver-driver",
+    "excluded_source_path": "project/drivers/adaptor/scratchbird-dbeaver-driver",
+    "release_controller_status": "separate_controller_out_of_scope",
+    "this_artifact_includes_dbeaver": false
+  },
+  "package_files": [
+    "package_contract.json",
+    "pyproject.toml",
+    "README.md"
+  ]
+}

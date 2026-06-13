@@ -44,3 +44,6 @@ scratchbird = "scratchbird_superset.engine_spec:ScratchBirdEngineSpec"
 
 [tool.setuptools]
 packages = ["scratchbird_superset"]
+
+[tool.setuptools.data-files]
+"share/scratchbird-superset" = ["package_contract.json"]

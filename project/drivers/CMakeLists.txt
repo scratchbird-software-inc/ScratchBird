@@ -38,6 +38,9 @@ set(SB_DRIVER_P4_DOCS_REFERENCE_GATE
 set(SB_DRIVER_RELEASE_DECLARATION_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/scripts/driver_release_declaration_gate.py"
 )
+set(SB_DRIVER_STATIC_REQUIREMENT_GATE
+  "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/driver_static_requirement_gate.py"
+)
 set(SB_DRIVER_BUILD_ROOT
   "${PROJECT_BINARY_DIR}/drivers"
 )
@@ -100,6 +103,20 @@ function(sb_add_driver_component_gate test_name component)
     LABELS "driver;driver_lane_ctest_gate;driver_tool_adaptor_gate;${test_name}"
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
     SKIP_RETURN_CODE 77
+  )
+endfunction()
+
+function(sb_add_driver_static_requirement_gate test_name mode)
+  add_test(
+    NAME "${test_name}"
+    COMMAND
+      "${Python3_EXECUTABLE}" "${SB_DRIVER_STATIC_REQUIREMENT_GATE}"
+      "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--mode" "${mode}"
+  )
+  set_tests_properties("${test_name}" PROPERTIES
+    LABELS "driver;driver_static_requirement_gate;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
   )
 endfunction()
 
@@ -198,6 +215,12 @@ sb_add_driver_gate(driver_execution_plan10_runner_gate execution_plan10)
 sb_add_driver_gate(driver_static_hygiene_gate static-hygiene)
 sb_add_driver_gate(driver_release_claim_gate release-claims)
 sb_add_driver_gate(drivers_final_zero_drift_audit final-zero-drift)
+
+sb_add_driver_static_requirement_gate(driver_sblr_uuid_bundle sblr_uuid_bundle)
+sb_add_driver_static_requirement_gate(driver_schema_path_resolution schema_path_resolution)
+sb_add_driver_static_requirement_gate(sbsql_language_resource sbsql_language_resource)
+sb_add_driver_static_requirement_gate(driver_sblr_uuid_authorization sblr_uuid_authorization)
+sb_add_driver_static_requirement_gate(driver_cache_lifecycle cache_lifecycle)
 
 sb_add_driver_status_package_gate(driver_row_status_manifest_gate driver-row-status DSR-030 DSR-032)
 sb_add_driver_status_package_gate(adapter_row_status_manifest_gate adapter-row-status DSR-031 DSR-032)

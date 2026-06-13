@@ -10,8 +10,9 @@
 name = "scratchbird"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "MPL-2.0"
 description = "Native ScratchBird Rust driver"
+readme = "README.md"
 
 [dependencies]
 base64 = "0.21"

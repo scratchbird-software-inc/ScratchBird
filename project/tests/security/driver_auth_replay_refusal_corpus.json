@@ -1,0 +1,110 @@
+{
+  "artifact_role": "driver_security_replay_refusal_corpus",
+  "authority_boundary": "Security replay fixtures are static negative controls. Server-side admission and authorization checks remain required for any live driver.",
+  "cases": [
+    {
+      "case_id": "BDRV-SEC-001",
+      "category": "cross_user_replay_refusal",
+      "coverage": [
+        "cross_user_replay_refusal",
+        "sblr_uuid_server_revalidation"
+      ],
+      "attack_vector": "prepared_statement_id_replayed_by_different_user",
+      "original_context": {
+        "user": "alice",
+        "roles": [
+          "report_reader"
+        ],
+        "groups": [
+          "finance_ro"
+        ]
+      },
+      "replay_context": {
+        "user": "bob",
+        "roles": [
+          "report_reader"
+        ],
+        "groups": [
+          "finance_ro"
+        ]
+      },
+      "expected_refusal": "SB_DRIVER_REPLAY_CONTEXT_MISMATCH",
+      "requires_server_revalidation": true
+    },
+    {
+      "case_id": "BDRV-SEC-002",
+      "category": "role_group_replay_refusal",
+      "coverage": [
+        "role_group_replay_refusal",
+        "sblr_uuid_server_revalidation"
+      ],
+      "attack_vector": "prepared_statement_id_replayed_after_role_escalation",
+      "original_context": {
+        "user": "alice",
+        "roles": [
+          "report_reader"
+        ],
+        "groups": [
+          "finance_ro"
+        ]
+      },
+      "replay_context": {
+        "user": "alice",
+        "roles": [
+          "payroll_admin"
+        ],
+        "groups": [
+          "finance_ro"
+        ]
+      },
+      "expected_refusal": "SB_DRIVER_REPLAY_CONTEXT_MISMATCH",
+      "requires_server_revalidation": true
+    },
+    {
+      "case_id": "BDRV-SEC-003",
+      "category": "role_group_replay_refusal",
+      "coverage": [
+        "role_group_replay_refusal",
+        "authorization_filtered_uuid_path_resolution"
+      ],
+      "attack_vector": "uuid_path_resolution_cache_replayed_after_group_change",
+      "original_context": {
+        "user": "carol",
+        "roles": [
+          "application_user"
+        ],
+        "groups": [
+          "public"
+        ]
+      },
+      "replay_context": {
+        "user": "carol",
+        "roles": [
+          "application_user"
+        ],
+        "groups": [
+          "finance_admin"
+        ]
+      },
+      "expected_refusal": "SB_DRIVER_REPLAY_CONTEXT_MISMATCH",
+      "requires_server_revalidation": true
+    },
+    {
+      "case_id": "BDRV-SEC-004",
+      "category": "authorization_filtered_uuid_path_resolution",
+      "coverage": [
+        "authorization_filtered_uuid_path_resolution"
+      ],
+      "attack_vector": "hidden_uuid_resolution_used_as_existence_oracle",
+      "request": {
+        "uuid": "018f0a2b-0000-7000-9000-000000000301",
+        "requesting_role": "report_reader"
+      },
+      "expected_refusal": "SB_AUTH_OBJECT_NOT_VISIBLE",
+      "expected_redaction": "do_not_disclose_path_or_existence",
+      "requires_server_revalidation": true
+    }
+  ],
+  "requires_live_driver": false,
+  "security_corpus_id": "BDRV-SECURITY-REPLAY-001"
+}
