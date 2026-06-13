@@ -56,46 +56,46 @@
     <extension point="org.eclipse.ui.commands">
         <category
             id="org.jkiss.dbeaver.ext.scratchbird.ui.category"
-            name="ScratchBird"/>
+            name="%category.scratchbird.name"/>
         <command
             id="org.jkiss.dbeaver.ext.scratchbird.ui.open"
-            name="ScratchBird Properties"
-            description="Open the ScratchBird management form for the selected object."
+            name="%command.scratchbird.open.name"
+            description="%command.scratchbird.open.description"
             categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
         <command
             id="org.jkiss.dbeaver.ext.scratchbird.ui.new"
-            name="ScratchBird New"
-            description="Open the ScratchBird create form for the selected scope."
+            name="%command.scratchbird.new.name"
+            description="%command.scratchbird.new.description"
             categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
         <command
             id="org.jkiss.dbeaver.ext.scratchbird.ui.alter"
-            name="ScratchBird Alter"
-            description="Open the ScratchBird alter form for the selected object."
+            name="%command.scratchbird.alter.name"
+            description="%command.scratchbird.alter.description"
             categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
         <command
             id="org.jkiss.dbeaver.ext.scratchbird.ui.delete"
-            name="ScratchBird Delete"
-            description="Open the ScratchBird destructive action wizard for the selected object."
+            name="%command.scratchbird.delete.name"
+            description="%command.scratchbird.delete.description"
             categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
         <command
             id="org.jkiss.dbeaver.ext.scratchbird.ui.tasks"
-            name="ScratchBird Tasks"
-            description="Open ScratchBird administrative task launcher for the selected object."
+            name="%command.scratchbird.tasks.name"
+            description="%command.scratchbird.tasks.description"
             categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
         <command
             id="org.jkiss.dbeaver.ext.scratchbird.ui.reports"
-            name="ScratchBird Reports"
-            description="Open ScratchBird reports for the selected object."
+            name="%command.scratchbird.reports.name"
+            description="%command.scratchbird.reports.description"
             categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
         <command
             id="org.jkiss.dbeaver.ext.scratchbird.ui.sourceStatus"
-            name="ScratchBird Source Status"
-            description="Inspect ScratchBird form/report source-surface status."
+            name="%command.scratchbird.sourceStatus.name"
+            description="%command.scratchbird.sourceStatus.description"
             categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
         <command
             id="org.jkiss.dbeaver.ext.scratchbird.ui.validateSql"
-            name="Validate ScratchBird v3 SQL"
-            description="Validate the active SQL editor selection or statement with the local ScratchBird v3 parser."
+            name="%command.scratchbird.validateSql.name"
+            description="%command.scratchbird.validateSql.description"
             categoryId="org.jkiss.dbeaver.ext.scratchbird.ui.category"/>
     </extension>
 
@@ -149,7 +149,7 @@
         <menuContribution allPopups="false" locationURI="popup:org.jkiss.dbeaver.ui.editors.sql.SQLEditor.EditorContext?after=sql.additions">
             <menu
                 id="org.jkiss.dbeaver.ext.scratchbird.ui.sqlEditorMenu"
-                label="ScratchBird"
+                label="%menu.scratchbird.label"
                 icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/scratchbird_icon.png">
                 <visibleWhen>
                     <with variable="activeEditor">
@@ -165,7 +165,7 @@
         <menuContribution allPopups="false" locationURI="popup:org.eclipse.ui.popup.any?after=additions">
             <menu
                 id="org.jkiss.dbeaver.ext.scratchbird.ui.menu"
-                label="ScratchBird"
+                label="%menu.scratchbird.label"
                 icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/scratchbird_icon.png">
                 <visibleWhen>
                     <with variable="selection">

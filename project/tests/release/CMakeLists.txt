@@ -894,6 +894,16 @@ set_tests_properties(public_private_reference_scan_gate PROPERTIES
   LABELS "public_release_correctness;public_private_reference_scan_gate;PCR-GATE-002;PCR-003;release_hygiene"
 )
 
+# DBEAVER_MANAGEMENT_PLATFORM_GATE_TEST
+add_test(
+  NAME dbeaver_management_platform_gate_test
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_CURRENT_SOURCE_DIR}/dbeaver_management_platform_gate_test.py
+)
+set_tests_properties(dbeaver_management_platform_gate_test PROPERTIES
+  LABELS "public_release_correctness;dbeaver_management_platform_gate;DBEAVER-MGMT-003;DBEAVER-MGMT-006;DBEAVER-MGMT-023;DBEAVER-MGMT-026;DBEAVER-MGMT-027;DBEAVER-MGMT-028;DBEAVER-MGMT-029;DBEAVER-MGMT-034;DBEAVER-MGMT-043;DBEAVER-MGMT-044;DBEAVER-MGMT-046;dbeaver;release_controller;api_drift;secure_properties;license_ip;network_egress"
+)
+
 # PUBLIC_PROOF_MIGRATION_GATE
 add_test(
   NAME public_proof_migration_gate

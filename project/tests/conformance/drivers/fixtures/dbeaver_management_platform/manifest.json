@@ -1,0 +1,68 @@
+{
+  "artifact_role": "dbeaver_management_platform_conformance_fixture_manifest",
+  "authority_boundary": "DBeaver management-platform fixtures are conformance inputs only. DBeaver-local SBsql, SBLR, UUID, resolver, metadata, import/export, and data-editor material is advisory until the ScratchBird server admits and revalidates it, and MGA transaction inventory remains the only transaction-finality authority.",
+  "component_id": "adaptor:scratchbird-dbeaver-driver",
+  "consumer_interfaces": [
+    "dbeaver_management_platform_corpus_gate",
+    "driver_lane_conformance_gate",
+    "future_live_server_dbeaver_gate"
+  ],
+  "corpora": [
+    {
+      "corpus_id": "dbeaver_management_platform_corpus",
+      "path": "project/tests/conformance/drivers/corpora/dbeaver_management_platform/management_corpus.json",
+      "required_categories": [
+        "language_and_sblr",
+        "live_server_corpus",
+        "multi_session_isolation",
+        "management_authorization",
+        "preview_apply_conflict",
+        "data_editor_crud",
+        "long_operation_lifecycle",
+        "data_transfer",
+        "object_graph_tooling",
+        "feature_boundary_refusal"
+      ]
+    }
+  ],
+  "driver_finality_authority": false,
+  "fixture_family": "dbeaver_management_platform_conformance_corpus",
+  "fixture_id": "DBEAVER-MGMT-FIX-001",
+  "gate_ids": [
+    "DBEAVER-MGMT-GATE-011",
+    "DBEAVER-MGMT-GATE-021",
+    "DBEAVER-MGMT-GATE-036",
+    "DBEAVER-MGMT-GATE-037",
+    "DBEAVER-MGMT-GATE-038",
+    "DBEAVER-MGMT-GATE-039",
+    "DBEAVER-MGMT-GATE-040",
+    "DBEAVER-MGMT-GATE-041",
+    "DBEAVER-MGMT-GATE-042",
+    "DBEAVER-MGMT-GATE-045"
+  ],
+  "golden_path": "project/tests/conformance/drivers/goldens/dbeaver_management_platform/expected.json",
+  "parser_execution_authority": false,
+  "related_static_inputs": [
+    "project/tests/conformance/drivers/fixtures/live_driver_test_server/manifest.json",
+    "project/tests/conformance/drivers/fixtures/shared_beta_driver_corpus/manifest.json"
+  ],
+  "requires_live_driver_for_static_gate": false,
+  "requires_live_server_before_closure": true,
+  "requires_live_server_for_static_gate": false,
+  "schema_version": 1,
+  "source_path": "project/drivers/adaptor/scratchbird-dbeaver-driver",
+  "transaction_authority": "server_mga_transaction_inventory",
+  "validation_entrypoint": "project/tests/conformance/drivers/validate_dbeaver_management_platform_corpus.py",
+  "workplan_ids": [
+    "DBEAVER-MGMT-011",
+    "DBEAVER-MGMT-021",
+    "DBEAVER-MGMT-036",
+    "DBEAVER-MGMT-037",
+    "DBEAVER-MGMT-038",
+    "DBEAVER-MGMT-039",
+    "DBEAVER-MGMT-040",
+    "DBEAVER-MGMT-041",
+    "DBEAVER-MGMT-042",
+    "DBEAVER-MGMT-045"
+  ]
+}

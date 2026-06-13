@@ -272,11 +272,13 @@ insert_after_regex_once \
   "    <plugin id=\"org.jkiss.dbeaver.ext.scratchbird.test\" version=\"0.0.0\"/>"
 
 cat <<EOF
+ScratchBird DBeaver source checkout install completed successfully.
+
 ScratchBird DBeaver integration installed into:
   ${DBEAVER_DIR}
 
 Next steps:
   1) Build plugin/test in DBeaver:
      cd ${DBEAVER_DIR}
-     ../dbeaver-common/mvnw -f product/aggregate/pom.xml -pl ../../../dbeaver-common/modules/org.jkiss.utils,../../../dbeaver-common/modules/com.dbeaver.jdbc.api,../../plugins/org.jkiss.dbeaver.model,../../plugins/org.jkiss.dbeaver.model.rcp,../../plugins/org.jkiss.dbeaver.model.jdbc,../../plugins/org.jkiss.dbeaver.model.lsm,../../plugins/org.jkiss.dbeaver.model.sql,../../plugins/org.jkiss.dbeaver.model.sql.jdbc,../../plugins/org.jkiss.dbeaver.registry,../../plugins/org.jkiss.dbeaver.ui,../../plugins/org.jkiss.dbeaver.ui.forms,../../plugins/org.jkiss.dbeaver.ui.editors.base,../../plugins/org.jkiss.dbeaver.ui.editors.connection,../../plugins/org.jkiss.dbeaver.ui.editors.data,../../plugins/org.jkiss.dbeaver.ui.editors.entity,../../plugins/org.jkiss.dbeaver.ui.navigator,../../plugins/org.jkiss.dbeaver.data.transfer,../../plugins/org.jkiss.dbeaver.data.transfer.ui,../../plugins/org.jkiss.dbeaver.tasks.ui,../../plugins/org.jkiss.dbeaver.tasks.native,../../plugins/org.jkiss.dbeaver.tasks.native.ui,../../plugins/org.jkiss.dbeaver.ui.editors.sql,../../plugins/org.jkiss.dbeaver.ext.generic,../../plugins/org.jkiss.dbeaver.ext.scratchbird,../../plugins/org.jkiss.dbeaver.ext.scratchbird.ui,../../test/org.jkiss.dbeaver.ext.scratchbird.test -am verify -DskipITs
+     ../dbeaver-common/mvnw -f product/aggregate/pom.xml -pl ../../../dbeaver-common/modules/org.jkiss.utils,../../../dbeaver-common/modules/com.dbeaver.jdbc.api,../../plugins/org.jkiss.dbeaver.model,../../plugins/org.jkiss.dbeaver.model.rcp,../../plugins/org.jkiss.dbeaver.model.jdbc,../../plugins/org.jkiss.dbeaver.model.lsm,../../plugins/org.jkiss.dbeaver.model.sql,../../plugins/org.jkiss.dbeaver.model.sql.jdbc,../../plugins/org.jkiss.dbeaver.registry,../../plugins/org.jkiss.dbeaver.ui,../../plugins/org.jkiss.dbeaver.ui.forms,../../plugins/org.jkiss.dbeaver.ui.editors.base,../../plugins/org.jkiss.dbeaver.ui.editors.connection,../../plugins/org.jkiss.dbeaver.ui.editors.data,../../plugins/org.jkiss.dbeaver.ui.editors.entity,../../plugins/org.jkiss.dbeaver.ui.navigator,../../plugins/org.jkiss.dbeaver.data.transfer,../../plugins/org.jkiss.dbeaver.data.transfer.ui,../../plugins/org.jkiss.dbeaver.tasks.ui,../../plugins/org.jkiss.dbeaver.tasks.native,../../plugins/org.jkiss.dbeaver.tasks.native.ui,../../plugins/org.jkiss.dbeaver.ui.editors.sql,../../plugins/org.jkiss.dbeaver.ext.generic,../../plugins/org.jkiss.dbeaver.ext.scratchbird,../../plugins/org.jkiss.dbeaver.ext.scratchbird.ui,../../test/org.jkiss.dbeaver.ext.scratchbird.test -am verify
 EOF
