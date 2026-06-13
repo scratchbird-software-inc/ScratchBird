@@ -1,7 +1,8 @@
 # Windows Build Requirements
 
 Targets: Windows 11 x64 and Windows Server 2022/2025 x64. Win32 is not a supported release target. Win32 is not a
-supported release target; use x64 tools, x64 dependencies, x64 Python.
+supported release target; use x64 tools, x64 dependencies, x64 Python. Windows x86, i386, i686 targets are refused
+before release support can be claimed.
 
 Use MSYS2 UCRT64 with GNU C++ and gcc 15. Install or provide:
 
@@ -27,11 +28,28 @@ Use MSYS2 UCRT64 with GNU C++ and gcc 15. Install or provide:
 Native proof contract:
 
 ```powershell
-cmake -S project -B build-windows-public-release-proof -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake -DSB_BUILD_TESTS=ON -DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON -DSB_NONCLUSTER_ENGINE_PROFILE=release-complete -DSB_ENABLE_CLUSTER_PROVIDER=OFF -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF -DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF -DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF -DSB_LLVM_LINK_MODE=dynamic
+cmake -S project -B build-windows-public-release-proof -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake -DSB_BUILD_TESTS=ON -DSB_BUILD_PUBLIC_RELEASE_CORRECTNESS=ON -DSB_NONCLUSTER_ENGINE_PROFILE=release-complete -DSB_ENABLE_CLUSTER_PROVIDER=OFF -DSB_CLUSTER_PROVIDER_STUB=ON -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=OFF -DSCRATCHBIRD_ENABLE_HOTPATH_TRACE=OFF -DSCRATCHBIRD_ENABLE_EXEC_PROFILE_TRACE=OFF -DSCRATCHBIRD_ENABLE_PREPARED_TRACE=OFF -DSB_LLVM_LINK_MODE=dynamic
 cmake --build build-windows-public-release-proof -j 2
 ctest --test-dir build-windows-public-release-proof -L public_release_correctness --output-on-failure
 ctest --test-dir build-windows-public-release-proof -L engine_listener_enterprise --output-on-failure
 ```
+
+Native Platform Handoff Proof Package:
+
+- support_claim_before_native_runner=false
+- product_completion_claim=false
+- external_audit_completion_claim=false
+- native-platform-eler.xml
+- native-public-release.xml
+- native-engine-listener-enterprise.xml
+- native-sblr-surface.xml
+- native-cluster-boundary.xml
+- CMakeCache.txt
+- Testing/Temporary/LastTest.log
+- tests/engine_listener_enterprise/engine_listener_native_platform_handoff_gate.json
+- tests/engine_listener_enterprise/engine_listener_native_platform_handoff_gate.csv
+- tests/engine_listener_enterprise/engine_listener_gold_enterprise_readiness_gate.json
+- tests/engine_listener_enterprise/engine_listener_third_audit_evidence_package_gate.json
 
 cluster execution succeeds without the external cluster provider only after
 native public release evidence passes.

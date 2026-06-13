@@ -1,0 +1,6 @@
+finding_id,scope,status,tracker_slices,evidence_artifacts
+MEM-022,memory-integrated-proof,complete,CEIC-090;CEIC-091;CEIC-092;CEIC-093,CEIC-ART-090
+OPT-011,optimizer-integrated-proof,complete,CEIC-090;CEIC-091;CEIC-092;CEIC-093,CEIC-ART-090
+X-004,reliability-security-proof,complete,CEIC-093,CEIC-ART-090
+X-008,final-enterprise-manifest,complete,CEIC-095,CEIC-ART-015
+X-009,cross-platform-release-proof,complete,CEIC-094,CEIC-ART-090;CEIC-ART-091

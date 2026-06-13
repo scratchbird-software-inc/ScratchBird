@@ -1,0 +1,1984 @@
+{
+  "schema_id": "scratchbird.ceic.evidence_manifest",
+  "schema_version": 1,
+  "manifest_kind": "agent_enterprise_readiness_manifest",
+  "search_key": "CEIC_085_AGENT_READINESS_MANIFEST",
+  "subsystem": "agents",
+  "slice_ids": [
+    "CEIC-070",
+    "CEIC-071",
+    "CEIC-072",
+    "CEIC-073",
+    "CEIC-074",
+    "CEIC-075",
+    "CEIC-076",
+    "CEIC-077",
+    "CEIC-078",
+    "CEIC-079",
+    "CEIC-080",
+    "CEIC-081",
+    "CEIC-082",
+    "CEIC-083",
+    "CEIC-084",
+    "CEIC-085"
+  ],
+  "manifest_uuid": "02bcc169-1c7b-5312-980c-464020ea1f90",
+  "source_commit": "1a02ae5b0355a03100a23f5c0b886df00824141d",
+  "source_branch": "codex/migration-project-issue-closures",
+  "generated_at_utc": "2026-06-13T12:38:17-04:00",
+  "generated_by": "project/tools/ceic_agent_readiness_manifest.py#CEIC_085_AGENT_READINESS_MANIFEST_TOOL",
+  "source_evidence_digest": "d7ba59b87061bdc5e9a47da553d2ff265939a0b773cf1d9220114e3171457e20",
+  "auditor": {
+    "slice_id": "CEIC-085",
+    "timestamp_utc": "2026-06-13T12:38:17-04:00",
+    "proof_state": "generated_and_validated"
+  },
+  "authority_boundary": {
+    "boundary_token": "agent_readiness_manifest_is_generated_evidence_only_not_runtime_authority_transaction_finality_visibility_authorization_security_recovery_parser_reference_wal_benchmark_optimizer_plan_index_finality_provider_finality_cluster_memory_or_agent_action_authority",
+    "runtime_authority": false,
+    "transaction_finality_authority": false,
+    "visibility_authority": false,
+    "authorization_security_authority": false,
+    "security_authority": false,
+    "recovery_authority": false,
+    "parser_authority": false,
+    "reference_authority": false,
+    "wal_authority": false,
+    "benchmark_authority": false,
+    "optimizer_plan_authority": false,
+    "index_finality_authority": false,
+    "provider_finality_authority": false,
+    "memory_authority": false,
+    "cluster_authority": false,
+    "agent_action_authority": false
+  },
+  "readiness_state": {
+    "agent_manifest": "generated",
+    "docs_alone_runtime_proof": false,
+    "static_only_readiness": false,
+    "descriptor_only_readiness": false,
+    "anchor_only_live_exposure": false,
+    "generated_readiness_runtime_authority": false,
+    "production_live_claim": "blocked_by_agent_manifest_scope_not_product_production_claim",
+    "enterprise_agent_readiness": "component_complete_integrated_release_proof_complete",
+    "integrated_readiness": "complete_via_integrated_release_evidence",
+    "support_bundle_readiness": "component_evidence_present_integrated_CEIC-091_complete",
+    "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+    "cluster_readiness_claim": "fail_closed_missing_external_provider_proof",
+    "integrated_release_proof": [
+      {
+        "slice_id": "CEIC-090",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-018",
+          "CEIC-ART-087"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      },
+      {
+        "slice_id": "CEIC-091",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-088"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      },
+      {
+        "slice_id": "CEIC-092",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-089"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      },
+      {
+        "slice_id": "CEIC-093",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-090"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      },
+      {
+        "slice_id": "CEIC-094",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-091"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      },
+      {
+        "slice_id": "CEIC-095",
+        "status": "complete",
+        "artifact_ids": [
+          "CEIC-ART-015"
+        ],
+        "reason": "integrated release proof is complete and independently evidenced"
+      }
+    ]
+  },
+  "cluster_boundary": {
+    "cluster_agent_code_state": "compile_time_stubbed_external_provider_only",
+    "local_cluster_readiness": "fail_closed",
+    "external_cluster_provider_only": true,
+    "external_cluster_provider_proof_present": false,
+    "external_cluster_provider_proof_id": "",
+    "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+    "cluster_readiness_claim": "fail_closed_missing_external_provider_proof",
+    "cluster_stub_claimed_as_production": false,
+    "local_cluster_evidence_present": false,
+    "cluster_runtime_authority": false
+  },
+  "production_test_separation": {
+    "fixture_test_only_production_paths": false,
+    "test_keys_in_production": false,
+    "synthetic_metric_quorum": false,
+    "placeholder_evidence_contracts": false,
+    "sidecar_only_evidence": false,
+    "anchor_only_live_exposure": false,
+    "cluster_stub_enabled_for_production": false
+  },
+  "readiness_proofs": {
+    "agent_profiles": {
+      "component_id": "agent_profiles",
+      "profiles": [
+        {
+          "agent_type": "node_resource_agent",
+          "claim_level": "live_ready_noncluster",
+          "lane": "foreground_guard"
+        },
+        {
+          "agent_type": "storage_health_manager",
+          "claim_level": "live_ready_noncluster",
+          "lane": "storage_maintenance"
+        },
+        {
+          "agent_type": "memory_governor",
+          "claim_level": "live_ready_noncluster",
+          "lane": "memory_pressure"
+        },
+        {
+          "agent_type": "index_health_manager",
+          "claim_level": "advisory_noncluster",
+          "lane": "index_maintenance"
+        },
+        {
+          "agent_type": "runtime_learning_agent",
+          "claim_level": "advisory_noncluster",
+          "lane": "optimizer_advisory"
+        },
+        {
+          "agent_type": "support_bundle_triage_agent",
+          "claim_level": "workflow_only_noncluster",
+          "lane": "support_observability"
+        },
+        {
+          "agent_type": "cluster_autoscale_manager",
+          "claim_level": "external_provider_only_cluster",
+          "lane": "fail_closed"
+        }
+      ]
+    },
+    "policies": {
+      "component_ids": [
+        "signed_typed_policies",
+        "policy_override_resolution"
+      ],
+      "signed_typed_policy_lifecycle": "complete",
+      "override_resolution": "complete"
+    },
+    "lane_slo_proof": {
+      "component_id": "lane_slo_cost_governance",
+      "lanes": [
+        "foreground_guard",
+        "storage_maintenance",
+        "memory_pressure",
+        "optimizer_advisory",
+        "index_maintenance",
+        "backup_archive",
+        "security_session",
+        "support_observability",
+        "low_priority_background"
+      ],
+      "slo_cost_governance": "complete"
+    },
+    "metrics_proof": {
+      "component_id": "metric_quorum_source_attestation",
+      "state": "producer_rows_indexed_CEIC-090_integrated_coverage_complete",
+      "rows": [
+        {
+          "metric_family": "agent_metric_quorum",
+          "subsystem": "agents",
+          "required_producer_path": "project/src/core/agents/agent_metric_runtime.cpp",
+          "operation_path": "project/src/core/agents/agent_metric_runtime.cpp",
+          "support_bundle_path": "project/src/engine/internal_api/observability/agent_observability_api.cpp",
+          "validation_gate": "agent_metric_quorum_source_attestation_gate",
+          "status": "complete"
+        },
+        {
+          "metric_family": "agent_lane_governance",
+          "subsystem": "agents",
+          "required_producer_path": "project/src/core/agents/agent_execution_lane_governance.cpp",
+          "operation_path": "project/src/core/agents/agent_action_dispatch.cpp",
+          "support_bundle_path": "project/src/engine/internal_api/agents/agent_management_api.cpp",
+          "validation_gate": "agent_execution_lane_governance_gate",
+          "status": "complete"
+        },
+        {
+          "metric_family": "agent_tenant_coordination",
+          "subsystem": "agents",
+          "required_producer_path": "project/src/core/agents/agent_tenant_coordination.cpp",
+          "operation_path": "project/src/core/agents/agent_tenant_coordination.cpp",
+          "support_bundle_path": "project/src/engine/internal_api/observability/agent_observability_api.cpp",
+          "validation_gate": "agent_tenant_coordination_gate",
+          "status": "complete"
+        },
+        {
+          "metric_family": "agent_memory_pressure",
+          "subsystem": "agents",
+          "required_producer_path": "project/src/core/agents/agent_memory_coupling.cpp",
+          "operation_path": "project/src/core/agents/agent_memory_coupling.cpp",
+          "support_bundle_path": "project/src/core/memory/memory_support_bundle.cpp",
+          "validation_gate": "agent_memory_pressure_metric_integration_gate",
+          "status": "complete"
+        },
+        {
+          "metric_family": "agent_index_optimizer_boundary",
+          "subsystem": "agents",
+          "required_producer_path": "project/src/core/agents/agent_optimizer_recommendation.cpp",
+          "operation_path": "project/src/engine/optimizer/agent_optimizer_recommendation_bridge.cpp",
+          "support_bundle_path": "project/src/engine/internal_api/observability/optimizer_metric_support_bundle.hpp",
+          "validation_gate": "agent_index_optimizer_boundary_gate",
+          "status": "complete"
+        },
+        {
+          "metric_family": "agent_evidence_persistence",
+          "subsystem": "agent",
+          "required_producer_path": "project/src/core/agents/agent_metric_runtime.cpp",
+          "operation_path": "project/src/core/agents/agent_metric_runtime.cpp",
+          "support_bundle_path": "project/src/engine/internal_api/observability/agent_observability_api.cpp",
+          "validation_gate": "agent_metric_quorum_source_attestation_gate",
+          "status": "complete"
+        },
+        {
+          "metric_family": "agent_metric_quorum_result",
+          "subsystem": "agent",
+          "required_producer_path": "project/src/core/agents/agent_metric_runtime.cpp",
+          "operation_path": "project/src/core/agents/agent_metric_runtime.cpp",
+          "support_bundle_path": "project/src/engine/internal_api/observability/agent_observability_api.cpp",
+          "validation_gate": "agent_metric_quorum_source_attestation_gate",
+          "status": "complete"
+        }
+      ]
+    },
+    "action_approval_proof": {
+      "component_ids": [
+        "action_safety_rollout",
+        "approval_break_glass"
+      ],
+      "safety_rollout": "complete",
+      "approval_break_glass": "complete"
+    },
+    "evidence_proof": {
+      "component_ids": [
+        "evidence_key_privacy_tamper_chain",
+        "replay_compensation_quarantine"
+      ],
+      "privacy_tamper_chain": "complete",
+      "replay_quarantine": "complete"
+    },
+    "plugin_provenance_proof": {
+      "component_id": "package_plugin_actuator_provenance",
+      "package_plugin_actuator_provenance": "complete"
+    },
+    "memory_coupling_proof": {
+      "component_id": "memory_pressure_metric_integration",
+      "memory_manifest": "CEIC-ART-011",
+      "agent_memory_pressure_integration": "complete"
+    },
+    "index_optimizer_coupling_proof": {
+      "component_id": "index_optimizer_boundary",
+      "index_manifest": "CEIC-ART-012",
+      "optimizer_manifest": "CEIC-ART-013",
+      "recommendation_only": true
+    },
+    "crash_security_proof": {
+      "security_grant_gate": "agent_security_grant_matrix_gate",
+      "crash_fixture_hardening_gate": "agent_security_crash_fixture_hardening_gate",
+      "status": "focused_agent_gates_present_CEIC-093_integrated_suite_complete"
+    },
+    "support_bundle_readiness": {
+      "zero_grey_gate": "agent_zero_grey_output_contract_gate",
+      "status": "bounded_redacted_agent_rows_present_integrated_CEIC-091_complete",
+      "integrated_support_bundle_ready": true
+    }
+  },
+  "components": [
+    {
+      "slice_id": "CEIC-070",
+      "component_id": "agent_profiles",
+      "title": "AgentSystemProfile claim levels",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-071",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-070_AGENT_SYSTEM_PROFILE_EVIDENCE.md",
+      "artifact_sha256": "00ccc7de9e07d6c71a327ae0c6f04c6144fd8ecb7ce57c308dac2fa654557900",
+      "artifact_state": "present",
+      "ctest": "agent_system_profile_claim_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.system_profile.v1",
+      "proof_kind": "profile_claim_level_validation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_system_profile.hpp",
+          "search_key": "CEIC_070_AGENT_SYSTEM_PROFILE_DURABLE_CLAIM_LEVELS",
+          "surface": "durable profile claim levels",
+          "sha256": "662bcfb2731f01a7a84f971b7bed952f750fdc98fe48f1235c744c5291cda1f6"
+        },
+        {
+          "path": "project/src/core/agents/agent_system_profile.cpp",
+          "search_key": "ValidateAgentSystemProfileClaim",
+          "surface": "profile validation",
+          "sha256": "a89a6ef35010842d84b1aa65e8f8b0cfd8d9c572c8790535d56eeeec699108c2"
+        }
+      ],
+      "evidence_contract_hash": "sha256:9b7575010133a8511b62e76a91a0d383dfbfbecc67fbfa7e4d9587f77ee78eb4",
+      "evidence_digest": "sha256:b4d101ba65e499b5339203ee3f9c2977ae22d0310dec3b0887ef213dfcb8deff",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "claim_levels": [
+        "disabled",
+        "dry_run",
+        "advisory",
+        "live_ready_noncluster",
+        "external_provider_only_cluster"
+      ],
+      "profiles": [
+        {
+          "agent_type": "node_resource_agent",
+          "claim_level": "live_ready_noncluster",
+          "lane": "foreground_guard"
+        },
+        {
+          "agent_type": "storage_health_manager",
+          "claim_level": "live_ready_noncluster",
+          "lane": "storage_maintenance"
+        },
+        {
+          "agent_type": "memory_governor",
+          "claim_level": "live_ready_noncluster",
+          "lane": "memory_pressure"
+        },
+        {
+          "agent_type": "index_health_manager",
+          "claim_level": "advisory_noncluster",
+          "lane": "index_maintenance"
+        },
+        {
+          "agent_type": "runtime_learning_agent",
+          "claim_level": "advisory_noncluster",
+          "lane": "optimizer_advisory"
+        },
+        {
+          "agent_type": "support_bundle_triage_agent",
+          "claim_level": "workflow_only_noncluster",
+          "lane": "support_observability"
+        },
+        {
+          "agent_type": "cluster_autoscale_manager",
+          "claim_level": "external_provider_only_cluster",
+          "lane": "fail_closed"
+        }
+      ]
+    },
+    {
+      "slice_id": "CEIC-071",
+      "component_id": "signed_typed_policies",
+      "title": "Signed typed policy lifecycle",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-072",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-071_AGENT_POLICY_LIFECYCLE_EVIDENCE.md",
+      "artifact_sha256": "4893dfffc5d3067522f1a99b7c5d0defae6b0fa227c966f89777f9ad7f4306c6",
+      "artifact_state": "present",
+      "ctest": "agent_policy_lifecycle_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.policy_lifecycle.v1",
+      "proof_kind": "signed_typed_policy_validation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_policy_lifecycle.hpp",
+          "search_key": "CEIC_071_SIGNED_TYPED_POLICY_LIFECYCLE",
+          "surface": "signed lifecycle schema",
+          "sha256": "c973d21bf47a457654cb372c3b4b19577077d8682ddc135db8b5a1082254dcda"
+        },
+        {
+          "path": "project/src/core/agents/agent_policy_lifecycle.cpp",
+          "search_key": "ValidateAgentSignedPolicyLifecycle",
+          "surface": "signed lifecycle validation",
+          "sha256": "19ef9c610d6d6014d31967845f83828d5a82b06b81ad34d7f47e64af126960f7"
+        },
+        {
+          "path": "project/src/core/agents/agent_policy_schema.hpp",
+          "search_key": "ARHC_TYPED_POLICY_SCHEMAS_DEFAULTS",
+          "surface": "typed policy schema coverage",
+          "sha256": "473f3e6be25a04e440a9b147842121364b9cd6b0b38ee460383438a0cdfabe33"
+        }
+      ],
+      "evidence_contract_hash": "sha256:5de8b7f2464aac8ccf112cfc2395f88e462efee63def1760f0142a5b3621f5df",
+      "evidence_digest": "sha256:120eac50f46ff36eb158e9a15b9dfe6e25697eb12eb48ac2c518098d3956b004",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "policy_layers": [
+        "root",
+        "database",
+        "filespace",
+        "tenant",
+        "application",
+        "session"
+      ],
+      "requires_digest_signature": true,
+      "requires_author_approver": true,
+      "requires_key_policy": true
+    },
+    {
+      "slice_id": "CEIC-072",
+      "component_id": "policy_override_resolution",
+      "title": "Policy inheritance and override resolution",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-073",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-072_AGENT_POLICY_OVERRIDE_RESOLUTION_EVIDENCE.md",
+      "artifact_sha256": "2bce75f9928f278c7d4e33bb853549d99963a685773c93ff2ffd1005d9fecacb",
+      "artifact_state": "present",
+      "ctest": "agent_policy_override_resolution_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.policy_override_resolution.v1",
+      "proof_kind": "deterministic_override_resolution",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_policy_override_resolution.hpp",
+          "search_key": "CEIC_072_AGENT_POLICY_OVERRIDE_RESOLUTION",
+          "surface": "policy override schema",
+          "sha256": "edd264518a0e5feb4ec1f2ca83ba3a559dc105ce7379cda42ea042b821555122"
+        },
+        {
+          "path": "project/src/core/agents/agent_policy_override_resolution.cpp",
+          "search_key": "ResolveAgentPolicyOverrides",
+          "surface": "deterministic override resolver",
+          "sha256": "00bf9df0a52d8e499dc6db2ca1257329d25300ee416476b570ca2b6d729da147"
+        }
+      ],
+      "evidence_contract_hash": "sha256:a6234c481a8a5f54569c37de51124acd22c55610112513211c62f6b604eee17b",
+      "evidence_digest": "sha256:f53a3ec4b48a39008ce70b1ae4d6308ca653daa52ea5b47a75e83f2b9e4a3e77",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "scope_order": [
+        "root",
+        "database",
+        "filespace",
+        "tenant",
+        "application",
+        "session"
+      ],
+      "requires_approved_field_lists": true,
+      "conflict_trace_required": true
+    },
+    {
+      "slice_id": "CEIC-073",
+      "component_id": "lane_slo_cost_governance",
+      "title": "Execution lane SLO and cost governance",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-074",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-073_AGENT_EXECUTION_LANE_GOVERNANCE_EVIDENCE.md",
+      "artifact_sha256": "8251b84178a702f07784cc6b65ca707f79a1f68da3e23e42f34684723f2e3b09",
+      "artifact_state": "present",
+      "ctest": "agent_execution_lane_governance_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.execution_lane_governance.v1",
+      "proof_kind": "lane_slo_cost_governance",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_execution_lane_governance.hpp",
+          "search_key": "CEIC_073_AGENT_EXECUTION_LANE_GOVERNANCE",
+          "surface": "lane governance schema",
+          "sha256": "181b93238c96bb12e6785d33796b9ed48fa16bd5ab7c6f04bc49bc8770676c28"
+        },
+        {
+          "path": "project/src/core/agents/agent_execution_lane_governance.cpp",
+          "search_key": "EvaluateAgentExecutionLaneAdmission",
+          "surface": "lane admission validator",
+          "sha256": "25dfbc9f183a806858826c655c0ed971408c5165963ac5434853e4fc60932800"
+        }
+      ],
+      "evidence_contract_hash": "sha256:14aed681dfd29cd21321397c4d31d7e5480415407f2f886b88d2a9919fd3b534",
+      "evidence_digest": "sha256:c04b01bbf41f80ec27433e1d689210afc0bae235e11cb9446a5f5fdd1209289e",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "lanes": [
+        "foreground_guard",
+        "storage_maintenance",
+        "memory_pressure",
+        "optimizer_advisory",
+        "index_maintenance",
+        "backup_archive",
+        "security_session",
+        "support_observability",
+        "low_priority_background"
+      ],
+      "slo_windows_required": true,
+      "cost_center_chargeback_required": true
+    },
+    {
+      "slice_id": "CEIC-074",
+      "component_id": "metric_quorum_source_attestation",
+      "title": "Strict metric quorum and source attestation",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-075",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-074_AGENT_METRIC_QUORUM_EVIDENCE.md",
+      "artifact_sha256": "92384928b80910a69147b65c34ab2349399a039a0918131a567b62301a1649cc",
+      "artifact_state": "present",
+      "ctest": "agent_metric_quorum_source_attestation_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.metric_quorum.v1",
+      "proof_kind": "metric_quorum_source_attestation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_metric_runtime.hpp",
+          "search_key": "ARHC_STRICT_METRIC_SNAPSHOT_INTEGRATION",
+          "surface": "strict metric snapshot inputs",
+          "sha256": "f97fbb6fafd250af22e8a59af9031f9e99ae7cb3b3bceda3959c58129a5e803b"
+        },
+        {
+          "path": "project/src/core/agents/agent_metric_runtime.cpp",
+          "search_key": "EvaluateAgentObservedMetricSnapshots",
+          "surface": "observed metric quorum evaluator",
+          "sha256": "f00f7361739acbb0abaef1e3190b743482571997b61aafd734f304f04fd46758"
+        }
+      ],
+      "evidence_contract_hash": "sha256:de0cb86e5f82775e975b532bf3d8e651cb71b7dd8e383facb75bc3c01d92a81e",
+      "evidence_digest": "sha256:55837bbb8d1f27ff718d21ea7c40624d66d56065b91f191dd8c309a96e0fdb14",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "quorum_sources_minimum": 2,
+      "source_attestation_required": true,
+      "descriptor_only_metrics_admitted": false
+    },
+    {
+      "slice_id": "CEIC-075",
+      "component_id": "action_safety_rollout",
+      "title": "Action safety envelopes and rollout profiles",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-076",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-075_AGENT_ACTION_SAFETY_ROLLOUT_EVIDENCE.md",
+      "artifact_sha256": "ee3701ce2afa0226e54e0eee4a02a6df2c4a801a2b9fa99e3288b6c1c3668587",
+      "artifact_state": "present",
+      "ctest": "agent_action_safety_rollout_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.action_safety_rollout.v1",
+      "proof_kind": "action_safety_rollout_validation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_action_safety.hpp",
+          "search_key": "CEIC_075_AGENT_ACTION_SAFETY_ENVELOPE",
+          "surface": "action safety envelope",
+          "sha256": "e3dc9d5bb25a84aa81149793369576244da2978543e99a6b4180f670e7328a47"
+        },
+        {
+          "path": "project/src/core/agents/agent_rollout_profile.hpp",
+          "search_key": "CEIC_075_AGENT_ROLLOUT_PROFILE",
+          "surface": "rollout profile schema",
+          "sha256": "1023820e4e10924c9ea9bd7e969666159e481dfd37bb8cf4597f46a27fa37e9d"
+        },
+        {
+          "path": "project/src/core/agents/agent_action_dispatch.cpp",
+          "search_key": "DispatchAgentAction",
+          "surface": "dispatch preflight integration",
+          "sha256": "df7da3677a6ed84f30949f38006c79940007ef07678b9ed1f39c4ce0ecf35e90"
+        }
+      ],
+      "evidence_contract_hash": "sha256:7d19c6068c2bcd0a51066e152e16f07c4c0a687b54e6acd3643f8c6917abe976",
+      "evidence_digest": "sha256:3b7213129fca5ca0cdb7132ab952f17b5d8228910acd111b2598932e9a55987f",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "rollout_modes": [
+        "disabled",
+        "shadow",
+        "observe",
+        "dry_run",
+        "canary",
+        "phased",
+        "live"
+      ],
+      "provider_safety_required": true,
+      "backup_checkpoint_required_for_live": true
+    },
+    {
+      "slice_id": "CEIC-076",
+      "component_id": "approval_break_glass",
+      "title": "Approval break-glass workflow",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-077",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-076_AGENT_APPROVAL_BREAK_GLASS_EVIDENCE.md",
+      "artifact_sha256": "523f1047b79abf170566458312a676f8e8576afd9ea2cc5f16243ebda78d70f2",
+      "artifact_state": "present",
+      "ctest": "agent_approval_break_glass_workflow_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.manual_approval.v1",
+      "proof_kind": "approval_break_glass_validation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_manual_approval.hpp",
+          "search_key": "CEIC_076_AGENT_MANUAL_APPROVAL_WORKFLOW",
+          "surface": "manual approval schema",
+          "sha256": "e349f76daa955416f03434135a29173b4d93040ce3457ff1d8813305ea0a4649"
+        },
+        {
+          "path": "project/src/core/agents/agent_manual_approval.cpp",
+          "search_key": "ValidateAgentManualApprovalWorkflow",
+          "surface": "manual approval validation",
+          "sha256": "a6626d64393e51c8838a6e127e485d028448a1717ec5373ad2beb80e2a25f893"
+        }
+      ],
+      "evidence_contract_hash": "sha256:76a4c414b6c2cbcc333f9b66bfaa09f7668e8a5da85786a03d2833546e8b6c8d",
+      "evidence_digest": "sha256:39af3e4382899796ab243980e74929feed179947cbb79049d29def778c930597",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "two_person_separation_required": true,
+      "break_glass_review_deadline_required": true,
+      "notification_escalation_required": true
+    },
+    {
+      "slice_id": "CEIC-077",
+      "component_id": "evidence_key_privacy_tamper_chain",
+      "title": "Evidence key privacy and tamper chain",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-078",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-077_AGENT_EVIDENCE_PRIVACY_TAMPER_EVIDENCE.md",
+      "artifact_sha256": "aa0b99ce382629b50db6b3e4191901d167dad36b71f4651bf96c40e8eb10abca",
+      "artifact_state": "present",
+      "ctest": "agent_evidence_key_privacy_tamper_chain_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.evidence_tamper_chain.v1",
+      "proof_kind": "privacy_key_tamper_chain_validation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_commercial_evidence.hpp",
+          "search_key": "ARHC_AGENT_EVIDENCE_REDACTION_RETENTION_TAMPER",
+          "surface": "evidence redaction retention tamper schema",
+          "sha256": "abf27c8d61c77921d15bde514eb5c916de4dc868cd0ff5dc43927ee3712b17a0"
+        },
+        {
+          "path": "project/src/core/agents/agent_commercial_evidence.cpp",
+          "search_key": "ValidateCommercialAgentEvidenceChain",
+          "surface": "evidence chain validation",
+          "sha256": "8e3d21bb794f50692b8164c7bae0b84c58be3d4bc0b5ebe6c1fbeead898b4be1"
+        }
+      ],
+      "evidence_contract_hash": "sha256:7610b879c811b2e4cb802bedb6db463fe70dbeee45f1e6360332f866ad2d038d",
+      "evidence_digest": "sha256:7ac6ada5a4090f46a969e452c18ce29852acaeb07c700e7e8d9fb228c2e888da",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "redaction_before_buffering": true,
+      "hmac_signature_required": true,
+      "protected_material_suppressed": true
+    },
+    {
+      "slice_id": "CEIC-078",
+      "component_id": "dependency_lifecycle",
+      "title": "Dependency lifecycle DR restore clone behavior",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-079",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-078_AGENT_DEPENDENCY_LIFECYCLE_EVIDENCE.md",
+      "artifact_sha256": "3eb1864a4fc92bbea560d1b151064163ac4f2d5311205cd67c8ff6f49ac6010a",
+      "artifact_state": "present",
+      "ctest": "agent_dependency_lifecycle_dr_restore_clone_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.dependency_lifecycle.v1",
+      "proof_kind": "dependency_lifecycle_validation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_dependency_lifecycle.hpp",
+          "search_key": "CEIC_078_AGENT_DEPENDENCY_LIFECYCLE",
+          "surface": "dependency lifecycle schema",
+          "sha256": "d7478ac13b9e923dd8a705179ca7451921adc40b902ce6703f33450462ff0f67"
+        },
+        {
+          "path": "project/src/core/agents/agent_dependency_lifecycle.cpp",
+          "search_key": "EvaluateAgentDependencyLifecycle",
+          "surface": "dependency lifecycle evaluator",
+          "sha256": "3cae396c206352179e42f6098ab95364da6e499f73eb0a227d80b101f8083516"
+        }
+      ],
+      "evidence_contract_hash": "sha256:77e374570d49b52f0b3ba0614e6ff0089d991f79a357dfbfcb9ae7ca4167aee9",
+      "evidence_digest": "sha256:099dd7464f94db331868f9bf4d9b2200ebea5dc88ecadbe8a2b12f28f8b78142",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "modes": [
+        "read_only",
+        "restricted_open",
+        "maintenance",
+        "repair",
+        "backup_restore",
+        "archive_hold",
+        "shutdown",
+        "crash_recovery",
+        "pitr",
+        "clone",
+        "role_change"
+      ],
+      "generation_gap_refusal_required": true
+    },
+    {
+      "slice_id": "CEIC-079",
+      "component_id": "tenant_coordination",
+      "title": "Tenant workload isolation and coordination",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-080",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-079_AGENT_TENANT_COORDINATION_EVIDENCE.md",
+      "artifact_sha256": "2ebac9e0c68181a7eaec716226606ceefb8dd746fd802def4bae6515a274ec1b",
+      "artifact_state": "present",
+      "ctest": "agent_tenant_coordination_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.tenant_coordination.v1",
+      "proof_kind": "tenant_coordination_validation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_tenant_coordination.hpp",
+          "search_key": "CEIC_079_AGENT_TENANT_COORDINATION",
+          "surface": "tenant coordination schema",
+          "sha256": "a804f0b68bf534922cf0b6339cbc6c385e72ebcff82170ae759106038c275ffa"
+        },
+        {
+          "path": "project/src/core/agents/agent_tenant_coordination.cpp",
+          "search_key": "EvaluateAgentTenantWorkloadCoordination",
+          "surface": "tenant coordination evaluator",
+          "sha256": "715a62e63dd422f1cd02e63b6bfe976a4d573bcac25e3a2365fdf71200fd1ed0"
+        }
+      ],
+      "evidence_contract_hash": "sha256:e666dd490d9c4c483bf7e54c8e49988b8dbc143c6f36676be28a223f5300a3fa",
+      "evidence_digest": "sha256:19006b382f2699d951f8db7efa50b006b2ec29df80067f817349a6861cac383b",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "tenant_budget_required": true,
+      "leader_follower_evidence_required": true,
+      "foreground_protection_required": true
+    },
+    {
+      "slice_id": "CEIC-080",
+      "component_id": "package_plugin_actuator_provenance",
+      "title": "Package plugin actuator provenance",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-081",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-080_AGENT_PACKAGE_PLUGIN_PROVENANCE_EVIDENCE.md",
+      "artifact_sha256": "aa7f3ed273acce7cb46edae5f350502d40c0607cf9c400215240415ace6dd376",
+      "artifact_state": "present",
+      "ctest": "agent_package_plugin_actuator_provenance_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.package_provenance.v1",
+      "proof_kind": "package_plugin_actuator_provenance",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_package_provenance.hpp",
+          "search_key": "CEIC_080_AGENT_PACKAGE_PLUGIN_ACTUATOR_PROVENANCE",
+          "surface": "package provenance schema",
+          "sha256": "715b3efe44088fb3aa0454dbacd475626c841d9f63ff9805af1aea3ce5377113"
+        },
+        {
+          "path": "project/src/core/agents/agent_package_provenance.cpp",
+          "search_key": "ValidateAgentPackageProvenanceBundle",
+          "surface": "package provenance validation",
+          "sha256": "cfe801fc9c5b9a5c234911d00ce71ac200054267287d9899699fbda0e6cad896"
+        }
+      ],
+      "evidence_contract_hash": "sha256:d2294357422d48483fb72425fdf002d20ffd6e23919427428fe1d431b9c942eb",
+      "evidence_digest": "sha256:7d94f993da60dcd52e37926ad54b513face524047662a9a87c4b38eb2755b928",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "subjects": [
+        "plugin",
+        "actuator_provider",
+        "agent_binary"
+      ],
+      "sbom_required": true,
+      "revocation_check_required": true
+    },
+    {
+      "slice_id": "CEIC-081",
+      "component_id": "replay_compensation_quarantine",
+      "title": "Replay compensation retry and quarantine",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-082",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-081_AGENT_REPLAY_QUARANTINE_EVIDENCE.md",
+      "artifact_sha256": "0b384603ae9d36916987c72ee41d7e7339a5ac9d3ab655e89e9737e536103af4",
+      "artifact_state": "present",
+      "ctest": "agent_replay_compensation_quarantine_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.replay_quarantine.v1",
+      "proof_kind": "replay_compensation_quarantine_validation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_replay_quarantine.hpp",
+          "search_key": "CEIC_081_AGENT_REPLAY_QUARANTINE",
+          "surface": "replay quarantine schema",
+          "sha256": "6f73ab359007a7a400b20c59da6ab94672a5d0cd7d818609d2a9b6e3a294a225"
+        },
+        {
+          "path": "project/src/core/agents/agent_replay_quarantine.cpp",
+          "search_key": "ApplyAgentReplayControl",
+          "surface": "replay control evaluator",
+          "sha256": "9bbe65d621044846f4530413cdad04d7fb0abcbdea5d5e3c9c6516ccc3ff2706"
+        }
+      ],
+      "evidence_contract_hash": "sha256:7f3061ee38cdf20098394e71599a24b304378e7e993c2d958f6eb979805d81af",
+      "evidence_digest": "sha256:a5e672a0f4d0dc88d4a4de98740518c080eccad1b216473597fc0e8ae8dc6859",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "digest_capture_inputs": [
+        "policy",
+        "metric",
+        "catalog",
+        "security",
+        "resource",
+        "binary_package",
+        "action",
+        "evidence_chain"
+      ],
+      "quarantine_release_review_required": true
+    },
+    {
+      "slice_id": "CEIC-082",
+      "component_id": "noncluster_surface_closure",
+      "title": "Noncluster surface closure",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-083",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-082_AGENT_NONCLUSTER_SURFACE_CLOSURE_EVIDENCE.md",
+      "artifact_sha256": "4167888033e727f534dc62cb4fb7d0405ff00dc11684ec5c978a88d96757a3ca",
+      "artifact_state": "present",
+      "ctest": "agent_production_exposure_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.noncluster_surface_closure.v1",
+      "proof_kind": "no_anchor_only_live_surface_validation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_production_classification.hpp",
+          "search_key": "ARHC_PER_AGENT_LIVE_RECOMMEND_DISABLED_CLASSIFICATION",
+          "surface": "production classification schema",
+          "sha256": "f471c32be4ea4b90b100df1ab2c288111f853f5f0824efa4439dfb1b79dababf"
+        },
+        {
+          "path": "project/src/core/agents/agent_production_classification.cpp",
+          "search_key": "ValidateAgentProductionExposureMatrix",
+          "surface": "production exposure validator",
+          "sha256": "eab326bd8ceb7b57bf869484685890e04da7f8eb32343f1a09a67dee6a93b670"
+        }
+      ],
+      "evidence_contract_hash": "sha256:1001161a99a981a4c364362c7a7b49285d405c604a623aebe328169bd0c3dbaf",
+      "evidence_digest": "sha256:1c5736f6af28bc9619e8225d3ce764ec7ae5dd8723253fac259888ac68918fdc",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "live_surface_classifications": [
+        "live_noncluster",
+        "workflow_only",
+        "recommendation_only",
+        "dry_run_only",
+        "disabled",
+        "external_provider_only_cluster"
+      ],
+      "anchor_only_live_surface_admitted": false
+    },
+    {
+      "slice_id": "CEIC-083",
+      "component_id": "memory_pressure_metric_integration",
+      "title": "Memory pressure and metric integration",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-084",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-083_AGENT_MEMORY_PRESSURE_METRIC_EVIDENCE.md",
+      "artifact_sha256": "76d1af81bc789c1c26d411b8e38da8ff7ada100a92b40df8bf7772735694a236",
+      "artifact_state": "present",
+      "ctest": "agent_memory_pressure_metric_integration_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.memory_pressure_metric_integration.v1",
+      "proof_kind": "memory_pressure_metric_integration",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_memory_coupling.hpp",
+          "search_key": "CEIC_083_AGENT_MEMORY_PRESSURE_METRIC_INTEGRATION",
+          "surface": "agent memory pressure schema",
+          "sha256": "c0ccfc6d56d858c70fb8f142a4c22f77b9d892acd69feba64df1e6912699b043"
+        },
+        {
+          "path": "project/src/core/agents/agent_memory_coupling.cpp",
+          "search_key": "EvaluateAgentMemoryPressureLaneIntegration",
+          "surface": "memory pressure lane evaluator",
+          "sha256": "101956cd1becf8eae143f7cfc232b36b22f88b6819a2927d0030a1a25b81b9c0"
+        }
+      ],
+      "evidence_contract_hash": "sha256:ca29b566f28dfdbdb4d16ac168f5ee210bd60ff625adb90605b260ee029cd14b",
+      "evidence_digest": "sha256:c774e75c9602072f840239122f6720d62a825ac2a1b6acf50d7142503b7cb7d3",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "required_coupling": [
+        "CEIC-017",
+        "CEIC-073",
+        "CEIC-074"
+      ],
+      "decisions": [
+        "allow",
+        "throttle",
+        "cancel",
+        "shed_defer",
+        "force_spill_cleanup"
+      ]
+    },
+    {
+      "slice_id": "CEIC-084",
+      "component_id": "index_optimizer_boundary",
+      "title": "Agent index and optimizer integration boundary",
+      "status": "complete",
+      "artifact_id": "CEIC-ART-085",
+      "artifact_path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-084_AGENT_INDEX_OPTIMIZER_BOUNDARY_EVIDENCE.md",
+      "artifact_sha256": "cf1ff339ee52e387b41e0eaa0d0e950b4ced00a5060c93c8aa4ce72ff00c4cce",
+      "artifact_state": "present",
+      "ctest": "agent_index_optimizer_boundary_gate",
+      "ctest_registered": true,
+      "schema_id": "sb.agent.index_optimizer_boundary.v1",
+      "proof_kind": "index_optimizer_boundary_validation",
+      "source_anchors": [
+        {
+          "path": "project/src/core/agents/agent_optimizer_recommendation.hpp",
+          "search_key": "CEIC_084_AGENT_INDEX_OPTIMIZER_BOUNDARY",
+          "surface": "agent optimizer recommendation schema",
+          "sha256": "ac7dd5d2178e36117d8581e34b11bb12adb678514b5272dd79c75097a7e6d930"
+        },
+        {
+          "path": "project/src/core/agents/agent_optimizer_recommendation.cpp",
+          "search_key": "EvaluateAgentIndexOptimizerBoundary",
+          "surface": "index optimizer boundary evaluator",
+          "sha256": "835617405e9ec1ddea5e83d9e794e92b1cd927272c7d65e8e907a67709446bd4"
+        },
+        {
+          "path": "project/src/engine/optimizer/agent_optimizer_recommendation_bridge.cpp",
+          "search_key": "CEIC_084_AGENT_INDEX_OPTIMIZER_BOUNDARY",
+          "surface": "optimizer bridge handoff",
+          "sha256": "ca387d284f306ee7bfef5afb349e9d44b1696180f5bdfab50a6abe49f1057843"
+        }
+      ],
+      "evidence_contract_hash": "sha256:0fb954685aa0dad020a9f99e14dae52a3ac7f103db1846f76027567ceed4f028",
+      "evidence_digest": "sha256:56c8c7403f870847908f285a3fd0ae5ee6618a89d5ea7bbfeebfebdb2c2fb390",
+      "static_only_readiness": false,
+      "descriptor_only_readiness": false,
+      "anchor_only_live_exposure": false,
+      "fixture_test_only_production_path": false,
+      "sidecar_only_evidence": false,
+      "generated_readiness_runtime_authority": false,
+      "production_live_claim": "component_evidence_only_no_enterprise_runtime_authority",
+      "cluster_mode": "compile_time_stubbed_external_provider_only",
+      "external_cluster_provider_proof_present": false,
+      "cluster_claim_blocked": true,
+      "cluster_production_claim": "fail_closed_missing_external_provider_proof",
+      "transaction_finality_authority_claimed": false,
+      "visibility_authority_claimed": false,
+      "authorization_security_authority_claimed": false,
+      "recovery_authority_claimed": false,
+      "parser_authority_claimed": false,
+      "reference_authority_claimed": false,
+      "wal_authority_claimed": false,
+      "benchmark_authority_claimed": false,
+      "optimizer_plan_authority_claimed": false,
+      "index_finality_authority_claimed": false,
+      "provider_finality_authority_claimed": false,
+      "memory_authority_claimed": false,
+      "cluster_authority_claimed": false,
+      "agent_action_authority_claimed": false,
+      "required_coupling": [
+        "CEIC-042",
+        "CEIC-062"
+      ],
+      "recommendation_only": true,
+      "optimizer_feedback_advisory_only": true
+    }
+  ],
+  "subsystem_coupling_manifests": [
+    {
+      "subsystem": "memory",
+      "artifact_id": "CEIC-ART-011",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
+      "sha256": "130286587f5e423b9d96a86bef67f2da304f01e4bba0b0a53a7ffde9bc39eeb5",
+      "coupling_status": "consumed_evidence_only"
+    },
+    {
+      "subsystem": "index",
+      "artifact_id": "CEIC-ART-012",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
+      "sha256": "bcc4a151a93c1c228a02a85ba059fb6e9151fc209ec0cb60ea8afe7e9d34ce84",
+      "coupling_status": "consumed_evidence_only"
+    },
+    {
+      "subsystem": "optimizer",
+      "artifact_id": "CEIC-ART-013",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml",
+      "sha256": "b414c18e030504765c6c297689b7771d07df30260a1069026fd8a4992b80c39f",
+      "coupling_status": "consumed_evidence_only"
+    }
+  ],
+  "artifact_evidence": [
+    {
+      "artifact_id": "CEIC-ART-071",
+      "slice_id": "CEIC-070",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-070_AGENT_SYSTEM_PROFILE_EVIDENCE.md",
+      "sha256": "00ccc7de9e07d6c71a327ae0c6f04c6144fd8ecb7ce57c308dac2fa654557900",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-072",
+      "slice_id": "CEIC-071",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-071_AGENT_POLICY_LIFECYCLE_EVIDENCE.md",
+      "sha256": "4893dfffc5d3067522f1a99b7c5d0defae6b0fa227c966f89777f9ad7f4306c6",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-073",
+      "slice_id": "CEIC-072",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-072_AGENT_POLICY_OVERRIDE_RESOLUTION_EVIDENCE.md",
+      "sha256": "2bce75f9928f278c7d4e33bb853549d99963a685773c93ff2ffd1005d9fecacb",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-074",
+      "slice_id": "CEIC-073",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-073_AGENT_EXECUTION_LANE_GOVERNANCE_EVIDENCE.md",
+      "sha256": "8251b84178a702f07784cc6b65ca707f79a1f68da3e23e42f34684723f2e3b09",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-075",
+      "slice_id": "CEIC-074",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-074_AGENT_METRIC_QUORUM_EVIDENCE.md",
+      "sha256": "92384928b80910a69147b65c34ab2349399a039a0918131a567b62301a1649cc",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-076",
+      "slice_id": "CEIC-075",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-075_AGENT_ACTION_SAFETY_ROLLOUT_EVIDENCE.md",
+      "sha256": "ee3701ce2afa0226e54e0eee4a02a6df2c4a801a2b9fa99e3288b6c1c3668587",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-077",
+      "slice_id": "CEIC-076",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-076_AGENT_APPROVAL_BREAK_GLASS_EVIDENCE.md",
+      "sha256": "523f1047b79abf170566458312a676f8e8576afd9ea2cc5f16243ebda78d70f2",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-078",
+      "slice_id": "CEIC-077",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-077_AGENT_EVIDENCE_PRIVACY_TAMPER_EVIDENCE.md",
+      "sha256": "aa0b99ce382629b50db6b3e4191901d167dad36b71f4651bf96c40e8eb10abca",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-079",
+      "slice_id": "CEIC-078",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-078_AGENT_DEPENDENCY_LIFECYCLE_EVIDENCE.md",
+      "sha256": "3eb1864a4fc92bbea560d1b151064163ac4f2d5311205cd67c8ff6f49ac6010a",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-080",
+      "slice_id": "CEIC-079",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-079_AGENT_TENANT_COORDINATION_EVIDENCE.md",
+      "sha256": "2ebac9e0c68181a7eaec716226606ceefb8dd746fd802def4bae6515a274ec1b",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-081",
+      "slice_id": "CEIC-080",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-080_AGENT_PACKAGE_PLUGIN_PROVENANCE_EVIDENCE.md",
+      "sha256": "aa7f3ed273acce7cb46edae5f350502d40c0607cf9c400215240415ace6dd376",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-082",
+      "slice_id": "CEIC-081",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-081_AGENT_REPLAY_QUARANTINE_EVIDENCE.md",
+      "sha256": "0b384603ae9d36916987c72ee41d7e7339a5ac9d3ab655e89e9737e536103af4",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-083",
+      "slice_id": "CEIC-082",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-082_AGENT_NONCLUSTER_SURFACE_CLOSURE_EVIDENCE.md",
+      "sha256": "4167888033e727f534dc62cb4fb7d0405ff00dc11684ec5c978a88d96757a3ca",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-084",
+      "slice_id": "CEIC-083",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-083_AGENT_MEMORY_PRESSURE_METRIC_EVIDENCE.md",
+      "sha256": "76d1af81bc789c1c26d411b8e38da8ff7ada100a92b40df8bf7772735694a236",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-085",
+      "slice_id": "CEIC-084",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-084_AGENT_INDEX_OPTIMIZER_BOUNDARY_EVIDENCE.md",
+      "sha256": "cf1ff339ee52e387b41e0eaa0d0e950b4ced00a5060c93c8aa4ce72ff00c4cce",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-086",
+      "slice_id": "CEIC-085",
+      "kind": "evidence",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST_EVIDENCE.md",
+      "sha256": "11335fff64aacbac3f357fdd58687318d38516050fee42b1bfb40e150ad81671",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-011",
+      "slice_id": "CEIC-024",
+      "kind": "manifest",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
+      "sha256": "130286587f5e423b9d96a86bef67f2da304f01e4bba0b0a53a7ffde9bc39eeb5",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-012",
+      "slice_id": "CEIC-030",
+      "kind": "manifest",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
+      "sha256": "bcc4a151a93c1c228a02a85ba059fb6e9151fc209ec0cb60ea8afe7e9d34ce84",
+      "status": "present"
+    },
+    {
+      "artifact_id": "CEIC-ART-013",
+      "slice_id": "CEIC-062",
+      "kind": "manifest",
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml",
+      "sha256": "b414c18e030504765c6c297689b7771d07df30260a1069026fd8a4992b80c39f",
+      "status": "present"
+    }
+  ],
+  "build": {
+    "cmake_file": "project/tests/consolidated_enterprise/CMakeLists.txt",
+    "focused_ctest": "ceic_085_agent_readiness_manifest_gate",
+    "focused_target": "ceic_085_agent_readiness_manifest_gate_check",
+    "component_ctests": [
+      "agent_system_profile_claim_gate",
+      "agent_policy_lifecycle_gate",
+      "agent_policy_override_resolution_gate",
+      "agent_execution_lane_governance_gate",
+      "agent_metric_quorum_source_attestation_gate",
+      "agent_action_safety_rollout_gate",
+      "agent_approval_break_glass_workflow_gate",
+      "agent_evidence_key_privacy_tamper_chain_gate",
+      "agent_dependency_lifecycle_dr_restore_clone_gate",
+      "agent_tenant_coordination_gate",
+      "agent_package_plugin_actuator_provenance_gate",
+      "agent_replay_compensation_quarantine_gate",
+      "agent_production_exposure_gate",
+      "agent_memory_pressure_metric_integration_gate",
+      "agent_index_optimizer_boundary_gate"
+    ],
+    "agent_nearby_ctests": [
+      "agent_security_crash_fixture_hardening_gate",
+      "agent_security_grant_matrix_gate",
+      "agent_zero_grey_output_contract_gate",
+      "agent_cluster_provider_boundary_gate"
+    ],
+    "state": "CMake-visible focused gates defined"
+  },
+  "input_records": [
+    {
+      "path": "project/src/core/agents/agent_action_dispatch.cpp",
+      "sha256": "df7da3677a6ed84f30949f38006c79940007ef07678b9ed1f39c4ce0ecf35e90",
+      "bytes": 41076
+    },
+    {
+      "path": "project/src/core/agents/agent_action_safety.hpp",
+      "sha256": "e3dc9d5bb25a84aa81149793369576244da2978543e99a6b4180f670e7328a47",
+      "bytes": 3312
+    },
+    {
+      "path": "project/src/core/agents/agent_commercial_evidence.cpp",
+      "sha256": "8e3d21bb794f50692b8164c7bae0b84c58be3d4bc0b5ebe6c1fbeead898b4be1",
+      "bytes": 31068
+    },
+    {
+      "path": "project/src/core/agents/agent_commercial_evidence.hpp",
+      "sha256": "abf27c8d61c77921d15bde514eb5c916de4dc868cd0ff5dc43927ee3712b17a0",
+      "bytes": 5287
+    },
+    {
+      "path": "project/src/core/agents/agent_dependency_lifecycle.cpp",
+      "sha256": "3cae396c206352179e42f6098ab95364da6e499f73eb0a227d80b101f8083516",
+      "bytes": 16114
+    },
+    {
+      "path": "project/src/core/agents/agent_dependency_lifecycle.hpp",
+      "sha256": "d7478ac13b9e923dd8a705179ca7451921adc40b902ce6703f33450462ff0f67",
+      "bytes": 4669
+    },
+    {
+      "path": "project/src/core/agents/agent_execution_lane_governance.cpp",
+      "sha256": "25dfbc9f183a806858826c655c0ed971408c5165963ac5434853e4fc60932800",
+      "bytes": 16159
+    },
+    {
+      "path": "project/src/core/agents/agent_execution_lane_governance.hpp",
+      "sha256": "181b93238c96bb12e6785d33796b9ed48fa16bd5ab7c6f04bc49bc8770676c28",
+      "bytes": 3440
+    },
+    {
+      "path": "project/src/core/agents/agent_manual_approval.cpp",
+      "sha256": "a6626d64393e51c8838a6e127e485d028448a1717ec5373ad2beb80e2a25f893",
+      "bytes": 20726
+    },
+    {
+      "path": "project/src/core/agents/agent_manual_approval.hpp",
+      "sha256": "e349f76daa955416f03434135a29173b4d93040ce3457ff1d8813305ea0a4649",
+      "bytes": 3832
+    },
+    {
+      "path": "project/src/core/agents/agent_memory_coupling.cpp",
+      "sha256": "101956cd1becf8eae143f7cfc232b36b22f88b6819a2927d0030a1a25b81b9c0",
+      "bytes": 47485
+    },
+    {
+      "path": "project/src/core/agents/agent_memory_coupling.hpp",
+      "sha256": "c0ccfc6d56d858c70fb8f142a4c22f77b9d892acd69feba64df1e6912699b043",
+      "bytes": 8955
+    },
+    {
+      "path": "project/src/core/agents/agent_metric_runtime.cpp",
+      "sha256": "f00f7361739acbb0abaef1e3190b743482571997b61aafd734f304f04fd46758",
+      "bytes": 32500
+    },
+    {
+      "path": "project/src/core/agents/agent_metric_runtime.hpp",
+      "sha256": "f97fbb6fafd250af22e8a59af9031f9e99ae7cb3b3bceda3959c58129a5e803b",
+      "bytes": 6502
+    },
+    {
+      "path": "project/src/core/agents/agent_optimizer_recommendation.cpp",
+      "sha256": "835617405e9ec1ddea5e83d9e794e92b1cd927272c7d65e8e907a67709446bd4",
+      "bytes": 22640
+    },
+    {
+      "path": "project/src/core/agents/agent_optimizer_recommendation.hpp",
+      "sha256": "ac7dd5d2178e36117d8581e34b11bb12adb678514b5272dd79c75097a7e6d930",
+      "bytes": 8202
+    },
+    {
+      "path": "project/src/core/agents/agent_package_provenance.cpp",
+      "sha256": "cfe801fc9c5b9a5c234911d00ce71ac200054267287d9899699fbda0e6cad896",
+      "bytes": 14792
+    },
+    {
+      "path": "project/src/core/agents/agent_package_provenance.hpp",
+      "sha256": "715b3efe44088fb3aa0454dbacd475626c841d9f63ff9805af1aea3ce5377113",
+      "bytes": 5064
+    },
+    {
+      "path": "project/src/core/agents/agent_policy_lifecycle.cpp",
+      "sha256": "19ef9c610d6d6014d31967845f83828d5a82b06b81ad34d7f47e64af126960f7",
+      "bytes": 31244
+    },
+    {
+      "path": "project/src/core/agents/agent_policy_lifecycle.hpp",
+      "sha256": "c973d21bf47a457654cb372c3b4b19577077d8682ddc135db8b5a1082254dcda",
+      "bytes": 4269
+    },
+    {
+      "path": "project/src/core/agents/agent_policy_override_resolution.cpp",
+      "sha256": "00bf9df0a52d8e499dc6db2ca1257329d25300ee416476b570ca2b6d729da147",
+      "bytes": 18598
+    },
+    {
+      "path": "project/src/core/agents/agent_policy_override_resolution.hpp",
+      "sha256": "edd264518a0e5feb4ec1f2ca83ba3a559dc105ce7379cda42ea042b821555122",
+      "bytes": 3406
+    },
+    {
+      "path": "project/src/core/agents/agent_policy_schema.hpp",
+      "sha256": "473f3e6be25a04e440a9b147842121364b9cd6b0b38ee460383438a0cdfabe33",
+      "bytes": 2165
+    },
+    {
+      "path": "project/src/core/agents/agent_production_classification.cpp",
+      "sha256": "eab326bd8ceb7b57bf869484685890e04da7f8eb32343f1a09a67dee6a93b670",
+      "bytes": 31554
+    },
+    {
+      "path": "project/src/core/agents/agent_production_classification.hpp",
+      "sha256": "f471c32be4ea4b90b100df1ab2c288111f853f5f0824efa4439dfb1b79dababf",
+      "bytes": 4721
+    },
+    {
+      "path": "project/src/core/agents/agent_replay_quarantine.cpp",
+      "sha256": "9bbe65d621044846f4530413cdad04d7fb0abcbdea5d5e3c9c6516ccc3ff2706",
+      "bytes": 29523
+    },
+    {
+      "path": "project/src/core/agents/agent_replay_quarantine.hpp",
+      "sha256": "6f73ab359007a7a400b20c59da6ab94672a5d0cd7d818609d2a9b6e3a294a225",
+      "bytes": 3812
+    },
+    {
+      "path": "project/src/core/agents/agent_rollout_profile.hpp",
+      "sha256": "1023820e4e10924c9ea9bd7e969666159e481dfd37bb8cf4597f46a27fa37e9d",
+      "bytes": 2319
+    },
+    {
+      "path": "project/src/core/agents/agent_system_profile.cpp",
+      "sha256": "a89a6ef35010842d84b1aa65e8f8b0cfd8d9c572c8790535d56eeeec699108c2",
+      "bytes": 20142
+    },
+    {
+      "path": "project/src/core/agents/agent_system_profile.hpp",
+      "sha256": "662bcfb2731f01a7a84f971b7bed952f750fdc98fe48f1235c744c5291cda1f6",
+      "bytes": 4948
+    },
+    {
+      "path": "project/src/core/agents/agent_tenant_coordination.cpp",
+      "sha256": "715a62e63dd422f1cd02e63b6bfe976a4d573bcac25e3a2365fdf71200fd1ed0",
+      "bytes": 25244
+    },
+    {
+      "path": "project/src/core/agents/agent_tenant_coordination.hpp",
+      "sha256": "a804f0b68bf534922cf0b6339cbc6c385e72ebcff82170ae759106038c275ffa",
+      "bytes": 6249
+    },
+    {
+      "path": "project/src/engine/optimizer/agent_optimizer_recommendation_bridge.cpp",
+      "sha256": "ca387d284f306ee7bfef5afb349e9d44b1696180f5bdfab50a6abe49f1057843",
+      "bytes": 8988
+    },
+    {
+      "path": "project/tests/agents/CMakeLists.txt",
+      "sha256": "3496f343d653943caa0fa91fd21f46b10cf44dd19b29f62f3b007773cb37c8fe",
+      "bytes": 37174
+    },
+    {
+      "path": "project/tests/agents/agent_action_safety_rollout_gate.cpp",
+      "sha256": "e47b90c9ab402132ee8a2d3d42ca82dc8dcbf0bfd62a7bdd0eb000cc9355d4c4",
+      "bytes": 21126
+    },
+    {
+      "path": "project/tests/agents/agent_approval_break_glass_workflow_gate.cpp",
+      "sha256": "7b8d0b46abeaca70946dff6bc42f544b65e4e4f66363092b16c6bae358d3caa2",
+      "bytes": 24489
+    },
+    {
+      "path": "project/tests/agents/agent_cluster_provider_boundary_gate.cpp",
+      "sha256": "0b768d2ad3ba252987afb601fc92fa5d9f82d0c9142824bd3ecd047bdfa94784",
+      "bytes": 10428
+    },
+    {
+      "path": "project/tests/agents/agent_dependency_lifecycle_dr_restore_clone_gate.cpp",
+      "sha256": "ac88cae01cd24600762380ccca940f044ae67a48c70230c84f8d519b38cd1c26",
+      "bytes": 18015
+    },
+    {
+      "path": "project/tests/agents/agent_evidence_key_privacy_tamper_chain_gate.cpp",
+      "sha256": "3499d372424703a1c0bdc1db098a22930a1a6c4cb4937b91eb85de7772117bef",
+      "bytes": 13915
+    },
+    {
+      "path": "project/tests/agents/agent_execution_lane_governance_gate.cpp",
+      "sha256": "7ac41055baa3f994d908508b39a37682eff52c653bbbbfaf5f0c5d38804baad6",
+      "bytes": 14934
+    },
+    {
+      "path": "project/tests/agents/agent_index_optimizer_boundary_gate.cpp",
+      "sha256": "764ff8f531e6b8e3db5a9403087443ae8fc2b92db393790cf55f7150736b2862",
+      "bytes": 13107
+    },
+    {
+      "path": "project/tests/agents/agent_memory_pressure_metric_integration_gate.cpp",
+      "sha256": "96a61f126e303058ff6b77930155a88ff045044e2f101bb54346b6684838d8e6",
+      "bytes": 20124
+    },
+    {
+      "path": "project/tests/agents/agent_metric_quorum_source_attestation_gate.cpp",
+      "sha256": "26d6f8e6835bf6e774e38f31305deb62ba92b7b1a159c10d330e0cc0798843da",
+      "bytes": 12050
+    },
+    {
+      "path": "project/tests/agents/agent_package_plugin_actuator_provenance_gate.cpp",
+      "sha256": "874d31bfdeecc1a25422d7ce05973cb5e1957443f1e6db2516a0cc77d6eefb22",
+      "bytes": 19529
+    },
+    {
+      "path": "project/tests/agents/agent_policy_lifecycle_gate.cpp",
+      "sha256": "a2c72c8ecfe584c4433a54ad70924bb7cb9c7112ebe875676f9ebf8155cff601",
+      "bytes": 16457
+    },
+    {
+      "path": "project/tests/agents/agent_policy_override_resolution_gate.cpp",
+      "sha256": "1c8ddf961e35f1946c28ebd4b09a85e2d175cdf0e1938823af5ca5bcdc67befe",
+      "bytes": 19986
+    },
+    {
+      "path": "project/tests/agents/agent_production_exposure_gate.cpp",
+      "sha256": "3b311c8f61b2a2dcfbf925fe00e0bb5f0c042de8c8363c2c71982e7f610a2764",
+      "bytes": 22338
+    },
+    {
+      "path": "project/tests/agents/agent_replay_compensation_quarantine_gate.cpp",
+      "sha256": "b7016935c2f54ab1be73b333cd007565cc9b9b94f17150d1675e2b80920a702a",
+      "bytes": 19895
+    },
+    {
+      "path": "project/tests/agents/agent_security_crash_fixture_hardening_gate.cpp",
+      "sha256": "5cad7e866aa8914dd5f01f1db4a6b03d182673b163ab5339f417a0c77e01c6e9",
+      "bytes": 35959
+    },
+    {
+      "path": "project/tests/agents/agent_security_grant_matrix_gate.cpp",
+      "sha256": "38a43e21e6193f4619023df1cba6598d4d6c5759a1da631028d7262bdf516044",
+      "bytes": 16616
+    },
+    {
+      "path": "project/tests/agents/agent_system_profile_claim_gate.cpp",
+      "sha256": "cdca5074029d59cbb8c9d18181ddbd304aca81a91dda2e1c119c3f857b319c5d",
+      "bytes": 15554
+    },
+    {
+      "path": "project/tests/agents/agent_tenant_coordination_gate.cpp",
+      "sha256": "cd132279aa7a12f6be1b5d553e1f813cf8381d69711f620479630013e3da10fd",
+      "bytes": 16619
+    },
+    {
+      "path": "project/tests/agents/agent_zero_grey_output_contract_gate.cpp",
+      "sha256": "9748780de3d1a9c90ab203fd9d99adcb4cb609dc0093a853e8f3de26e4c5121f",
+      "bytes": 25487
+    },
+    {
+      "path": "project/tests/consolidated_enterprise/CMakeLists.txt",
+      "sha256": "d453141a1e46454ec0920351e52ea48466a16de5b94aee8a0d367249d29d1fa4",
+      "bytes": 51048
+    },
+    {
+      "path": "project/tests/consolidated_enterprise/ceic_085_agent_readiness_manifest_gate_test.py",
+      "sha256": "5ff72c207f2530c4e2ee3e1e093cb34133dd7b1fb6afde1c50bfa95a2cb0b0d0",
+      "bytes": 12331
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/ARTIFACT_INDEX.csv",
+      "sha256": "3ed5cee541bd71ce506f891c2882a93cc3875f5c33ced9f0c2bdbda84900855f",
+      "bytes": 12926
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_ACCEPTANCE_MATRIX.csv",
+      "sha256": "3f347f008a047fb27c69226525d52239beac56c40214346d6b66dc45a85c95d1",
+      "bytes": 245
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_DEPENDENCY_MATRIX.csv",
+      "sha256": "bde25fdefe33f878b126d702c9d1aae8eb94da9c03facb198ebb41a53a024e69",
+      "bytes": 228
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_FINDING_TRACEABILITY_MATRIX.csv",
+      "sha256": "cc5a044c63cab44d85740427743575dc2dc6cb1abe02d9df3a679707a4203cb6",
+      "bytes": 447
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv",
+      "sha256": "04a6d4ed7a073e233347fe25363cb4c8839e41721be728d49f1a93798f93471b",
+      "bytes": 546
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CEIC_STATUS_MATRIX.csv",
+      "sha256": "a1b2d44da0222b6afdc9a05e340977fdec0e08ad23c5240635705244672874d1",
+      "bytes": 7066
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/CLAIM_BOUNDARY_MATRIX.csv",
+      "sha256": "18adbc50170fd43a6d17debcc189237fc3544403f5d675b0d6b000c9c62080e6",
+      "bytes": 883
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/EVIDENCE_MANIFEST_SCHEMA.md",
+      "sha256": "3c260f7572b00d847d4865f2e893a3af55494d13e896b7819ebd202b0cc64536",
+      "bytes": 183
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/INTERFACE_CONTRACTS.md",
+      "sha256": "7b16310ea861e445d2d570fef351b21b7f0ba56961e028e0f60ea97ddbbe62e8",
+      "bytes": 1216
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/METRICS_PRODUCER_COVERAGE_MATRIX.csv",
+      "sha256": "3f47eee8891525cbef49ada01071e0c6243b184e65003cce29f9de472fb059e8",
+      "bytes": 5875
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/README.md",
+      "sha256": "6341a681e39cc239f0a267d8ca5bf7a63c71994f8457d44f7fd4d801d68b6226",
+      "bytes": 714
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-024_MEMORY_READINESS_MANIFEST.yaml",
+      "sha256": "130286587f5e423b9d96a86bef67f2da304f01e4bba0b0a53a7ffde9bc39eeb5",
+      "bytes": 42562
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml",
+      "sha256": "bcc4a151a93c1c228a02a85ba059fb6e9151fc209ec0cb60ea8afe7e9d34ce84",
+      "bytes": 696154
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml",
+      "sha256": "b414c18e030504765c6c297689b7771d07df30260a1069026fd8a4992b80c39f",
+      "bytes": 58637
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-070_AGENT_SYSTEM_PROFILE_EVIDENCE.md",
+      "sha256": "00ccc7de9e07d6c71a327ae0c6f04c6144fd8ecb7ce57c308dac2fa654557900",
+      "bytes": 121
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-071_AGENT_POLICY_LIFECYCLE_EVIDENCE.md",
+      "sha256": "4893dfffc5d3067522f1a99b7c5d0defae6b0fa227c966f89777f9ad7f4306c6",
+      "bytes": 136
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-072_AGENT_POLICY_OVERRIDE_RESOLUTION_EVIDENCE.md",
+      "sha256": "2bce75f9928f278c7d4e33bb853549d99963a685773c93ff2ffd1005d9fecacb",
+      "bytes": 162
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-073_AGENT_EXECUTION_LANE_GOVERNANCE_EVIDENCE.md",
+      "sha256": "8251b84178a702f07784cc6b65ca707f79a1f68da3e23e42f34684723f2e3b09",
+      "bytes": 143
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-074_AGENT_METRIC_QUORUM_EVIDENCE.md",
+      "sha256": "92384928b80910a69147b65c34ab2349399a039a0918131a567b62301a1649cc",
+      "bytes": 130
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-075_AGENT_ACTION_SAFETY_ROLLOUT_EVIDENCE.md",
+      "sha256": "ee3701ce2afa0226e54e0eee4a02a6df2c4a801a2b9fa99e3288b6c1c3668587",
+      "bytes": 139
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-076_AGENT_APPROVAL_BREAK_GLASS_EVIDENCE.md",
+      "sha256": "523f1047b79abf170566458312a676f8e8576afd9ea2cc5f16243ebda78d70f2",
+      "bytes": 138
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-077_AGENT_EVIDENCE_PRIVACY_TAMPER_EVIDENCE.md",
+      "sha256": "aa0b99ce382629b50db6b3e4191901d167dad36b71f4651bf96c40e8eb10abca",
+      "bytes": 145
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-078_AGENT_DEPENDENCY_LIFECYCLE_EVIDENCE.md",
+      "sha256": "3eb1864a4fc92bbea560d1b151064163ac4f2d5311205cd67c8ff6f49ac6010a",
+      "bytes": 147
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-079_AGENT_TENANT_COORDINATION_EVIDENCE.md",
+      "sha256": "2ebac9e0c68181a7eaec716226606ceefb8dd746fd802def4bae6515a274ec1b",
+      "bytes": 135
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-080_AGENT_PACKAGE_PLUGIN_PROVENANCE_EVIDENCE.md",
+      "sha256": "aa7f3ed273acce7cb46edae5f350502d40c0607cf9c400215240415ace6dd376",
+      "bytes": 139
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-081_AGENT_REPLAY_QUARANTINE_EVIDENCE.md",
+      "sha256": "0b384603ae9d36916987c72ee41d7e7339a5ac9d3ab655e89e9737e536103af4",
+      "bytes": 133
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-082_AGENT_NONCLUSTER_SURFACE_CLOSURE_EVIDENCE.md",
+      "sha256": "4167888033e727f534dc62cb4fb7d0405ff00dc11684ec5c978a88d96757a3ca",
+      "bytes": 132
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-083_AGENT_MEMORY_PRESSURE_METRIC_EVIDENCE.md",
+      "sha256": "76d1af81bc789c1c26d411b8e38da8ff7ada100a92b40df8bf7772735694a236",
+      "bytes": 134
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-084_AGENT_INDEX_OPTIMIZER_BOUNDARY_EVIDENCE.md",
+      "sha256": "cf1ff339ee52e387b41e0eaa0d0e950b4ced00a5060c93c8aa4ce72ff00c4cce",
+      "bytes": 146
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-085_AGENT_READINESS_MANIFEST_EVIDENCE.md",
+      "sha256": "11335fff64aacbac3f357fdd58687318d38516050fee42b1bfb40e150ad81671",
+      "bytes": 510
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-090_METRICS_PRODUCER_COVERAGE_EVIDENCE.md",
+      "sha256": "0c22c94c9a75ee26785c4b8abfae4519f4b3685e9f1046e2829a0403d04eff21",
+      "bytes": 325
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-091_INTEGRATED_SUPPORT_BUNDLE_BOUNDARY_EVIDENCE.md",
+      "sha256": "de19ad3eb08993608f9c3e5cacac84d96d916c729a3b1e4a2af31aaed9e7b45d",
+      "bytes": 207
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-092_ROUTE_CHAIN_PROOF_EVIDENCE.md",
+      "sha256": "34ac8f481b185de90bfdde41ffdab568218f3138e35d7de00ce4709331aaa285",
+      "bytes": 271
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-093_INTEGRATED_RELIABILITY_BOUNDARY_EVIDENCE.md",
+      "sha256": "d74af43448ef5b42801ae3998ade51b1272104e7f0e6df3d3b943590b3a3b234",
+      "bytes": 205
+    },
+    {
+      "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-094_CROSS_PLATFORM_BOUNDARY_EVIDENCE.md",
+      "sha256": "c328f01c8a1126b4e600f0920c468f859718bbb2d5160c7d2cffb127e2de939f",
+      "bytes": 162
+    },
+    {
+      "path": "project/tools/ceic_agent_readiness_manifest.py",
+      "sha256": "d0f4e278dc82f1ff6b041c73ba7583d4df1d27171216289cad99cb7a5da0b84b",
+      "bytes": 62260
+    }
+  ]
+}

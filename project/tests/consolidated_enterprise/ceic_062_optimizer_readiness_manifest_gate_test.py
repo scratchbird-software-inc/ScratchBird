@@ -106,7 +106,7 @@ def main() -> int:
     tool = repo_root / "project/tools/ceic_optimizer_readiness_manifest.py"
     committed_manifest = (
         repo_root
-        / "docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure/artifacts/"
+        / "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/"
         / "CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml"
     )
 

@@ -1,0 +1,4 @@
+case_id,source_anchor,status,validation
+no_cluster,project/CMakeLists.txt,completed,noncluster public build does not claim cluster production readiness
+public_stub,project/CMakeLists.txt,completed,stub provider is blocked from production claims
+external_provider,project/CMakeLists.txt,completed,external provider mode is explicit

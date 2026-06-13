@@ -232,6 +232,7 @@ void CreateLifecycleSchemaAndTable(const std::filesystem::path& database_path) {
   create.context = BaseContext(database_path);
   create.option_envelopes.push_back(std::string("resource_seed_pack_root:") +
                                     SB_ORH121_SEED_PACK_ROOT);
+  create.option_envelopes.push_back("allow_minimal_resource_bootstrap:true");
   const auto created = api::EngineCreateLifecycle(create);
   Require(created.ok, "lifecycle create failed");
 

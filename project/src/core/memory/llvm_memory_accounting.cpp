@@ -570,8 +570,8 @@ LlvmMemoryAccountingAcquireResult AcquireLlvmMemoryAccountingReservation(
       std::make_shared<LlvmMemoryAccountingReservation::HandleState>();
   LlvmMemoryAccountingAcquireResult result;
   result.status = OkStatus();
-  result.reservation.reset(new LlvmMemoryAccountingReservation(
-      request, std::move(reservations), state));
+  result.reservation = std::make_unique<LlvmMemoryAccountingReservation>(
+      request, std::move(reservations), state);
   result.evidence = std::move(evidence);
   result.evidence.push_back("llvm_memory.reservation_created=true");
   result.evidence.push_back("llvm_memory.reservation_count=" +

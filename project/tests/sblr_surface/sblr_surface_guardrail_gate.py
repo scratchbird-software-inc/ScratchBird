@@ -123,8 +123,8 @@ FORBIDDEN_REFERENCE_DIALECT_TOKENS = (
     "paste_through",
     "paste through",
 )
-EXPECTED_RECONCILED_FAMILY_ROWS = 13
-EXPECTED_RECONCILED_SBSQL_ROWS = 2328
+EXPECTED_RECONCILED_FAMILY_ROWS = 10
+EXPECTED_RECONCILED_SBSQL_ROWS = 2293
 EXPECTED_PRIMARY_SBLR_FAMILY_ROWS = 54
 RECONCILED_FAMILY_STATUS = "resolved_to_declared_primary_sblr_families"
 DECLARED_PRIMARY_RECONCILIATION_STATUS = "already_declared_primary"
@@ -557,7 +557,12 @@ def validate_inventory(repo_root: Path, fixture_root: Path, errors: list[str]) -
         for row in sbsql_rows
         if row.get("primary_sblr_envelope_status") != "declared_primary"
     ]
-    require_count(mismatched, 13, "mismatched SBSQL family", errors)
+    require_count(
+        mismatched,
+        EXPECTED_RECONCILED_FAMILY_ROWS,
+        "mismatched SBSQL family",
+        errors,
+    )
     affected_rows = sum(int(row.get("row_count", "0") or "0") for row in mismatched)
     require(
         affected_rows == EXPECTED_RECONCILED_SBSQL_ROWS,

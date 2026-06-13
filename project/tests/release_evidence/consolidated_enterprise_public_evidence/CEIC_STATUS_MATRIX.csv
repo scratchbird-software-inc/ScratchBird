@@ -1,0 +1,69 @@
+slice_id,title,status,acceptance
+CEIC-010,Sharded memory accounting ledger,complete,focused CTest gate and source tokens present
+CEIC-011,Hierarchical memory budget ledger,complete,focused CTest gate and source tokens present
+CEIC-012,Query operator planner parser arenas,complete,focused CTest gate and source tokens present
+CEIC-013,Typed slab pools and size class allocators,complete,focused CTest gate and source tokens present
+CEIC-014,Thread local per-core cache,complete,focused CTest gate and source tokens present
+CEIC-015,Remote free queues and ownership reconciliation,complete,focused CTest gate and source tokens present
+CEIC-016,Foreign memory reservation coverage,complete,focused CTest gate and source tokens present
+CEIC-017,Memory pressure state machine,complete,focused CTest gate and source tokens present
+CEIC-018,Secure temp spill reservation,complete,focused CTest gate and source tokens present
+CEIC-019,Page-cache frame ownership,complete,focused CTest gate and source tokens present
+CEIC-020,Result cursor plan cache prepared memory governance,complete,focused CTest gate and source tokens present
+CEIC-021,Raw hot-path memory source gate,complete,focused CTest gate and source tokens present
+CEIC-022,Memory invariant and reservation model gates,complete,focused CTest gate and source tokens present
+CEIC-023,Memory support bundle low memory,complete,focused CTest gate and source tokens present
+CEIC-024,Memory readiness manifest,complete,generated public test fixture validates source-derived memory readiness manifest
+CEIC-025,Multi-tenant memory fairness,complete,focused CTest gate and source tokens present
+CEIC-026,Memory class policy leases,complete,focused CTest gate and source tokens present
+CEIC-027,Plugin native memory sandbox,complete,focused CTest gate and source tokens present
+CEIC-028,Fragmentation profiler diff,complete,focused CTest gate and source tokens present
+CEIC-029,Adaptive batch working-set locality,complete,focused CTest gate and source tokens present
+CEIC-030,Index readiness manifest,complete,generated public test fixture validates source-derived index readiness manifest
+CEIC-031,Index access method provider,complete,focused CTest gate and source tokens present
+CEIC-032,Index MGA recovery contract,complete,focused CTest gate and source tokens present
+CEIC-033,B-tree unique durable provider closure,complete,focused CTest gate and source tokens present
+CEIC-034,Unique reservation finality protocol,complete,focused CTest gate and source tokens present
+CEIC-035,Hash durable provider closure,complete,focused CTest gate and source tokens present
+CEIC-036,Canonical key ordering encoding fuzz,complete,focused CTest gate and source tokens present
+CEIC-037,Engine owned exact recheck,complete,focused CTest gate and source tokens present
+CEIC-038,Lossy pruning family classification,complete,focused CTest gate and source tokens present
+CEIC-039,Specialized persistent provider closure,complete,focused CTest gate and source tokens present
+CEIC-040,Index operation metrics support bundle,complete,focused CTest gate and source tokens present
+CEIC-041,Index crash concurrency cleanup corruption matrix,complete,focused CTest gate and source tokens present
+CEIC-042,Index readiness manifest drift gate,complete,focused CTest gate and source tokens present
+CEIC-050,Live-route benchmark artifact harness,complete,focused CTest gate and source tokens present
+CEIC-051,Persisted optimizer benchmark evidence schema,complete,focused CTest gate and source tokens present
+CEIC-052,Optimizer correctness oracle suite,complete,focused CTest gate and source tokens present
+CEIC-053,Optimizer crash reopen persistence,complete,focused CTest gate and source tokens present
+CEIC-054,Selectivity drift and plan-stability observability,complete,focused CTest gate and source tokens present
+CEIC-055,Optimizer transformation memo coverage,complete,focused CTest gate and source tokens present
+CEIC-056,Optimizer workload regression budget,complete,focused CTest gate and source tokens present
+CEIC-057,Driver-visible explain compatibility,complete,focused CTest gate and source tokens present
+CEIC-058,Live reference comparison artifacts,complete,focused CTest gate and source tokens present
+CEIC-059,Optimizer memory feedback governed ledger,complete,focused CTest gate and source tokens present
+CEIC-060,Index readiness plan admission,complete,focused CTest gate and source tokens present
+CEIC-061,LLVM memory accounting,complete,focused CTest gate and source tokens present
+CEIC-062,Optimizer readiness manifest,complete,generated public test fixture validates source-derived optimizer readiness manifest
+CEIC-070,Agent system profile claim levels,complete,focused CTest gate and source tokens present
+CEIC-071,Signed typed policy lifecycle,complete,focused CTest gate and source tokens present
+CEIC-072,Policy inheritance and override resolution,complete,focused CTest gate and source tokens present
+CEIC-073,Execution lane SLO and cost governance,complete,focused CTest gate and source tokens present
+CEIC-074,Strict metric quorum and source attestation,complete,focused CTest gate and source tokens present
+CEIC-075,Action safety envelopes and rollout profiles,complete,focused CTest gate and source tokens present
+CEIC-076,Approval break-glass workflow,complete,focused CTest gate and source tokens present
+CEIC-077,Evidence key privacy and tamper chain,complete,focused CTest gate and source tokens present
+CEIC-078,Dependency lifecycle DR restore clone behavior,complete,focused CTest gate and source tokens present
+CEIC-079,Tenant workload isolation and coordination,complete,focused CTest gate and source tokens present
+CEIC-080,Package plugin actuator provenance,complete,focused CTest gate and source tokens present
+CEIC-081,Replay compensation retry and quarantine,complete,focused CTest gate and source tokens present
+CEIC-082,Noncluster surface closure,complete,focused CTest gate and source tokens present
+CEIC-083,Memory pressure and metric integration,complete,focused CTest gate and source tokens present
+CEIC-084,Agent index and optimizer integration boundary,complete,focused CTest gate and source tokens present
+CEIC-085,Agent readiness manifest,complete,generated public test fixture validates source-derived agent readiness manifest
+CEIC-090,Integrated metrics producer coverage,complete,metrics producer coverage matrix is present and validated by CEIC-090
+CEIC-091,Integrated support bundle,complete,integrated support bundle proof is present and validates redaction authority and tamper boundary
+CEIC-092,Integrated route chain,complete,route-chain proof couples metrics support bundles and engine route evidence
+CEIC-093,Integrated reliability security suite,complete,reliability and security suite proof is present with predecessor coupling
+CEIC-094,Cross platform release proof,complete,cross-platform proof is present with platform evidence and predecessor coupling
+CEIC-095,Integrated final release boundary,complete,final enterprise manifest is generated from public release evidence

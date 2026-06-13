@@ -730,14 +730,20 @@ void TestDeferredIndexBulkPublishFailClosedSpoofAndFamilies() {
       NativeRequest(unique_fixture, unique_context, Rows("idx_unique", 1));
   AddDeferredIndexRouteOptions(&unique_request);
   const auto unique = api::EngineExecuteNativeBulkIngest(unique_request);
-  RequireDiagnostic(
-      unique,
-      "SB_ORH_DEFERRED_INDEX_BULK_PUBLISH.UNIQUE_RESERVATION_PROOF_REQUIRED",
-      "ORH-211 unique deferred behavior was accepted without reservation proof");
+  RequireOk(unique,
+            "ORH-211 unique deferred behavior did not use engine reservation proof");
   Require(HasEvidence(unique.evidence,
                       "orh_deferred_index_bulk_publish_unique_deferred_gated",
-                      "reservation_ledger_required"),
-          "ORH-211 unique reservation blocker evidence missing");
+                      "reservation_ledger_validated"),
+          "ORH-211 unique reservation validation evidence missing");
+  Require(HasEvidence(unique.evidence,
+                      "sorted_bulk_unique_proof_reservation_ledger_used",
+                      "true"),
+          "ORH-211 unique reservation ledger evidence missing");
+  Require(HasEvidence(unique.evidence,
+                      "sorted_bulk_unique_proof_reservation_validation_passed",
+                      "true"),
+          "ORH-211 unique reservation validation success evidence missing");
   Rollback(unique_context);
 }
 

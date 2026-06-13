@@ -24,7 +24,7 @@ from collections.abc import Callable
 
 
 MATRIX = pathlib.Path(
-    "docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure/"
+    "project/tests/release_evidence/consolidated_enterprise_public_evidence/"
     "METRICS_PRODUCER_COVERAGE_MATRIX.csv"
 )
 

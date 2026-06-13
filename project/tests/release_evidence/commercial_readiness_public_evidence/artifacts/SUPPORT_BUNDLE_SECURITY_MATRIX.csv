@@ -1,0 +1,4 @@
+case_id,source_anchor,status,validation
+redaction,project/src/server/server_observability.cpp,completed,support bundle redaction evidence fixture row
+tamper_chain,project/src/server/server_observability.cpp,completed,support bundle tamper chain evidence fixture row
+disclosure_policy,project/src/server/server_observability.cpp,completed,support bundle disclosure policy evidence fixture row

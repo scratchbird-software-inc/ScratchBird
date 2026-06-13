@@ -18,8 +18,8 @@ import re
 import sys
 
 
-AGENT_SPEC_REL = Path("public_contract_snapshot")
-METRIC_SPEC_REL = Path("public_contract_snapshot")
+AGENT_SPEC_REL = Path("project/tests/agents/fixtures/public_contract_snapshot")
+METRIC_SPEC_REL = Path("project/tests/agents/fixtures/public_contract_snapshot")
 AGENT_RUNTIME_CPP_REL = Path("project/src/core/agents/agent_runtime.cpp")
 AGENT_RUNTIME_HPP_REL = Path("project/src/core/agents/agent_runtime.hpp")
 AGENT_RUNTIME_MANIFEST_CPP_REL = Path("project/src/core/agents/agent_runtime_manifest.cpp")
@@ -47,9 +47,9 @@ AGENT_ENTERPRISE_EVIDENCE_CPP_REL = Path("project/src/core/agents/agent_enterpri
 AGENT_ENTERPRISE_DECISION_STORE_CPP_REL = Path("project/src/engine/internal_api/agents/agent_enterprise_decision_store_api.cpp")
 AGENT_RUNTIME_SERVICE_CPP_REL = Path("project/src/core/agents/agent_runtime_service.cpp")
 SERVER_AGENT_RUNTIME_CPP_REL = Path("project/src/server/server_agent_runtime.cpp")
-AEIC_SCOPE_MATRIX_REL = Path("docs" "/execution-plans/agent-enterprise-runtime-implementation-closure/artifacts/AGENT_SCOPE_MATRIX.md")
-AEIC_TRACKER_REL = Path("docs" "/execution-plans/agent-enterprise-runtime-implementation-closure/TRACKER.csv")
-AEIC_AUDIT_MATRIX_REL = Path("docs" "/execution-plans/agent-enterprise-runtime-implementation-closure/SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv")
+AEIC_SCOPE_MATRIX_REL = Path("project/tests/agents/fixtures/agent_runtime_public_evidence/artifacts/AGENT_RUNTIME_SCOPE_MATRIX.md")
+AEIC_STATUS_MATRIX_REL = Path("project/tests/agents/fixtures/agent_runtime_public_evidence/AGENT_RUNTIME_SCOPE_STATUS_MATRIX.csv")
+AEIC_TRACEABILITY_MATRIX_REL = Path("project/tests/agents/fixtures/agent_runtime_public_evidence/AGENT_RUNTIME_SCOPE_TRACEABILITY_MATRIX.csv")
 AEIC_EXECUTION_PLAN_NAME = "agent-enterprise-runtime-implementation-closure"
 AGENTS_CMAKE_REL = Path("project/src/core/agents/CMakeLists.txt")
 AGENT_TESTS_CMAKE_REL = Path("project/tests/agents/CMakeLists.txt")
@@ -1865,8 +1865,8 @@ def gate_manifest_drift(repo_root: Path) -> list[str]:
         AGENTS_CMAKE_REL,
         AGENT_TESTS_CMAKE_REL,
         AEIC_SCOPE_MATRIX_REL,
-        AEIC_TRACKER_REL,
-        AEIC_AUDIT_MATRIX_REL,
+        AEIC_STATUS_MATRIX_REL,
+        AEIC_TRACEABILITY_MATRIX_REL,
     )
     for rel_path in rel_inputs:
         if not (repo_root / resolve_repo_rel(repo_root, rel_path)).exists():
@@ -1943,10 +1943,10 @@ def gate_manifest_drift(repo_root: Path) -> list[str]:
         errors.append("agent_manifest_drift_gate is not registered in agent test CMake")
     if "AEIC-051" not in tests_cmake:
         errors.append("agent test CMake lacks AEIC-051 drift-gate label")
-    if "AEIC-051" not in read_text(repo_root, AEIC_TRACKER_REL):
-        errors.append("AEIC tracker lacks AEIC-051 row")
-    if "AEIC-AUDIT-051" not in read_text(repo_root, AEIC_AUDIT_MATRIX_REL):
-        errors.append("AEIC audit matrix lacks AEIC-AUDIT-051 row")
+    if "AEIC-051" not in read_text(repo_root, AEIC_STATUS_MATRIX_REL):
+        errors.append("AEIC status matrix lacks AEIC-051 row")
+    if "AEIC-AUDIT-051" not in read_text(repo_root, AEIC_TRACEABILITY_MATRIX_REL):
+        errors.append("AEIC traceability matrix lacks AEIC-AUDIT-051 row")
 
     return errors
 

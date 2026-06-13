@@ -1,0 +1,4 @@
+slice_id,title,status,validation
+CRP-001,Commercial readiness manifest fixture,completed,read-only commercial readiness evidence fixture
+CRP-020,Release provenance fixture,completed,read-only release provenance evidence fixture
+CRP-900,Final commercial readiness audit fixture,completed,read-only final audit evidence fixture

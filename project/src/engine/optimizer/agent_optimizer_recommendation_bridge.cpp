@@ -65,6 +65,15 @@ OptimizerAgentRecommendationResult Refuse(
 
 OptimizerAgentRecommendationResult EvaluateOptimizerAgentRecommendation(
     const OptimizerAgentRecommendationRequest& request) {
+  auto agent_validation =
+      scratchbird::core::agents::ValidateAgentOptimizerRecommendationEvidence(
+          request.agent_evidence);
+  if (!agent_validation.status.ok) {
+    return Refuse(request,
+                  agent_validation.status.diagnostic_code,
+                  agent_validation);
+  }
+
   scratchbird::core::agents::AgentIndexOptimizerBoundaryRequest boundary_request;
   boundary_request.agent_evidence = request.agent_evidence;
   boundary_request.index_readiness = request.index_readiness;

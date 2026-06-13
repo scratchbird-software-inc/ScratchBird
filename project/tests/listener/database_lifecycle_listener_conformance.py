@@ -29,13 +29,16 @@ def main(argv: list[str]) -> int:
         print("usage: database_lifecycle_listener_conformance.py PROJECT_SOURCE_DIR", file=sys.stderr)
         return 2
     project = pathlib.Path(argv[0])
-    private_root = project.parent
 
     cmake = read(project / "tests" / "listener" / "CMakeLists.txt")
     runtime = read(project / "src" / "listener" / "listener_runtime.cpp")
     pool = read(project / "src" / "listener" / "parser_pool.cpp")
     restart_smoke = read(project / "tests" / "listener" / "server_restart_killed_listener_smoke.cpp")
-    listener_packet = read(private_root / "docs" / "contracts" / "implementation_inputs" / "listener.md")
+    authority_generator = read(project / "tools" / "generate_spec_authority_from_artifacts.py")
+    lifecycle_closure = read(
+        project / "tests" / "database_lifecycle" / "fixtures" / "full_database_lifecycle_closure" /
+        "ACCEPTANCE_GATES.csv"
+    )
 
     required_tests = [
         "sb_listener_runtime_handoff_smoke",
@@ -64,8 +67,12 @@ def main(argv: list[str]) -> int:
     require("LISTENER.HANDOFF_DRAINING" in pool, "listener handoff must fail closed while draining")
     require(".sb.local_password_auth" in restart_smoke and "kAliceVerifier" in restart_smoke,
             "server-management listener restart test must use engine-owned password-verifier auth")
-    require("database isolation" in listener_packet.lower() or "sb_database_selector" in listener_packet.lower(),
-            "listener packet must define database binding/isolation behavior")
+    require("SB_DATABASE_SELECTOR" in authority_generator and "SB_DATABASE_TOKEN" in authority_generator,
+            "public authority generator must define listener database selector/token binding")
+    require("database isolation" in authority_generator.lower(),
+            "public authority generator must define listener database isolation behavior")
+    require("DBLC_P13B_LISTENER_LIFECYCLE_COMPLETE" in lifecycle_closure,
+            "public lifecycle fixture must carry listener lifecycle closure proof")
 
     print("database_lifecycle_listener_conformance=passed")
     return 0

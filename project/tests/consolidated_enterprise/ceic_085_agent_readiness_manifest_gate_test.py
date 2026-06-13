@@ -100,10 +100,11 @@ def assert_shape(data: dict) -> None:
     readiness = data.get("readiness_state", {})
     for slice_id in [f"CEIC-{value:03d}" for value in range(90, 96)]:
         if not any(
-            row.get("slice_id") == slice_id and row.get("status") == "pending"
-            for row in readiness.get("pending_integrated_proof", [])
+            row.get("slice_id") == slice_id
+            and row.get("status") in {"complete", "completed", "done", "closed", "complete_move_ready"}
+            for row in readiness.get("integrated_release_proof", [])
         ):
-            raise AssertionError(f"{slice_id} must remain pending integrated proof")
+            raise AssertionError(f"{slice_id} integrated proof must be complete")
 
     cluster = data.get("cluster_boundary", {})
     if cluster.get("cluster_agent_code_state") != "compile_time_stubbed_external_provider_only":
@@ -115,8 +116,8 @@ def assert_shape(data: dict) -> None:
 
     if data.get("readiness_proofs", {}).get("index_optimizer_coupling_proof", {}).get("recommendation_only") is not True:
         raise AssertionError("index/optimizer coupling must remain recommendation-only")
-    if data.get("readiness_proofs", {}).get("support_bundle_readiness", {}).get("integrated_support_bundle_ready") is not False:
-        raise AssertionError("support-bundle readiness must not close CEIC-091")
+    if data.get("readiness_proofs", {}).get("support_bundle_readiness", {}).get("integrated_support_bundle_ready") is not True:
+        raise AssertionError("support-bundle readiness must close CEIC-091 integrated proof")
 
     for component in data.get("components", []):
         if component.get("static_only_readiness") is not False:
@@ -140,7 +141,7 @@ def main() -> int:
     tool = repo_root / "project/tools/ceic_agent_readiness_manifest.py"
     committed_manifest = (
         repo_root
-        / "docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure/artifacts/"
+        / "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/"
         / "CEIC-085_AGENT_READINESS_MANIFEST.yaml"
     )
 
@@ -267,14 +268,14 @@ def main() -> int:
         )
 
         integrated_overclaim = load(generated)
-        for row in integrated_overclaim["readiness_state"]["pending_integrated_proof"]:
+        for row in integrated_overclaim["readiness_state"]["integrated_release_proof"]:
             if row["slice_id"] == "CEIC-090":
-                row["status"] = "complete"
+                row["status"] = "pending"
         integrated_path = temp_dir / "integrated_overclaim.yaml"
         write(integrated_path, integrated_overclaim)
         expect_failure_contains(
             [sys.executable, str(tool), "--repo-root", str(repo_root), "--manifest", str(integrated_path)],
-            "CEIC-090 must remain pending integrated proof",
+            "CEIC-090 integrated proof must be complete",
         )
 
     print("ceic_085_agent_readiness_manifest_gate_test=pass")

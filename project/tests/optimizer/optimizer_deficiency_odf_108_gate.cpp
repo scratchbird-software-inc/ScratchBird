@@ -93,6 +93,30 @@ api::EngineRequestContext Context() {
       "right:OBS_INDEX_PROFILE_READ",
       "right:MGA_CLEANUP_INSPECT",
       "optimizer_deficiency_odf_108_gate"};
+  context.authorization_context.present = true;
+  context.authorization_context.authority_uuid.canonical =
+      Id(platform::UuidKind::object, 7);
+  context.authorization_context.principal_uuid = context.principal_uuid;
+  context.authorization_context.security_epoch = context.security_epoch;
+  context.authorization_context.policy_epoch = context.security_epoch;
+  context.authorization_context.catalog_generation_id =
+      context.catalog_generation_id;
+  context.authorization_context.effective_subjects.push_back(
+      {context.principal_uuid, "principal"});
+  const std::vector<std::string> rights = {
+      "OBS_MANAGEMENT_INSPECT",
+      "OBS_INDEX_PROFILE_READ",
+      "MGA_CLEANUP_INSPECT"};
+  for (std::size_t index = 0; index < rights.size(); ++index) {
+    api::EngineMaterializedAuthorizationGrant grant;
+    grant.grant_uuid.canonical =
+        Id(platform::UuidKind::object, 8 + index);
+    grant.subject_uuid = context.principal_uuid;
+    grant.subject_kind = "principal";
+    grant.right = rights[index];
+    grant.security_epoch = context.security_epoch;
+    context.authorization_context.grants.push_back(std::move(grant));
+  }
   return context;
 }
 
@@ -398,7 +422,10 @@ void TestManagementRowsAndJson() {
   request.snapshot_present = true;
 
   const auto result = api::EngineInspectPerformanceOptimizationSurface(request);
-  Require(result.ok, "ODF-108 management surface refused rich snapshot");
+  Require(result.ok,
+          "ODF-108 management surface refused rich snapshot: " +
+              (result.diagnostics.empty() ? std::string("no diagnostic")
+                                          : result.diagnostics.front().detail));
   Require(result.management_api_ready && result.support_bundle_ready &&
               result.sys_view_contract_ready,
           "ODF-108 readiness flags incomplete");

@@ -231,7 +231,8 @@ std::uint64_t EstimatedJoinRows(std::uint64_t left_rows, std::uint64_t right_row
 
 std::uint64_t DeterministicDpBudget(std::uint64_t memory_budget_bytes) {
   if (memory_budget_bytes == 0) return 256;
-  return std::clamp<std::uint64_t>(memory_budget_bytes / 4096, 64, 4096);
+  return std::clamp<std::uint64_t>(
+      std::max<std::uint64_t>(1, memory_budget_bytes / 4096), 1, 4096);
 }
 
 std::size_t PopCount(std::uint64_t value) {
@@ -934,11 +935,24 @@ JoinOrderPlan EnumerateDpJoinOrder(const JoinGraph& graph, const JoinSearchPolic
 
   auto& final_frontier = frontiers[static_cast<std::size_t>(full_mask)];
   if (final_frontier.empty()) {
-    plan = InputOrderPlan(graph,
-                          indexed_edges,
-                          policy.memory_budget_bytes,
-                          policy.strategy,
-                          "SB_OPT_JOIN_DP_GRAPH_DISCONNECTED_INPUT_ORDER");
+    auto fallback = InputOrderPlan(
+        graph,
+        indexed_edges,
+        policy.memory_budget_bytes,
+        policy.strategy,
+        "SB_OPT_JOIN_DP_GRAPH_DISCONNECTED_INPUT_ORDER");
+    fallback.bounded_enumeration_applied = plan.bounded_enumeration_applied;
+    fallback.pruned_alternatives =
+        std::max(fallback.pruned_alternatives, plan.pruned_alternatives);
+    fallback.pruning_applied = plan.pruning_applied ||
+                               fallback.pruned_alternatives != 0;
+    fallback.enumerated_subsets = plan.enumerated_subsets;
+    fallback.transitions_considered = plan.transitions_considered;
+    fallback.max_frontier_width = plan.max_frontier_width;
+    fallback.diagnostics.insert(fallback.diagnostics.end(),
+                                plan.diagnostics.begin(),
+                                plan.diagnostics.end());
+    plan = std::move(fallback);
     plan.diagnostics.push_back("SB_OPT_JOIN_DP_GRAPH_DISCONNECTED_INPUT_ORDER");
     return plan;
   }

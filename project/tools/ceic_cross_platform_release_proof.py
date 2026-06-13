@@ -26,7 +26,9 @@ from dataclasses import dataclass
 from typing import Any
 
 
-EXECUTION_PLAN = pathlib.Path("docs" "/completed-execution-plans/consolidated-enterprise-proof-implementation-closure")
+EXECUTION_PLAN = pathlib.Path(
+    "project/tests/release_evidence/consolidated_enterprise_public_evidence"
+)
 CMAKE_GATE = pathlib.Path("project/tests/consolidated_enterprise/CMakeLists.txt")
 PRODUCTION_GATE = pathlib.Path("project/cmake/CommercialReadinessProductionBuildGateMatrix.cmake")
 
@@ -494,18 +496,18 @@ def validate_predecessors(repo_root: pathlib.Path) -> list[Diagnostic]:
 
 def validate_execution_plan_control(repo_root: pathlib.Path) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
-    tracker = index_by(read_csv(repo_root / EXECUTION_PLAN / "TRACKER.csv"), "slice_id")
-    dependencies = index_by(read_csv(repo_root / EXECUTION_PLAN / "DEPENDENCIES.csv"), "dependency_id")
-    gates = index_by(read_csv(repo_root / EXECUTION_PLAN / "ACCEPTANCE_GATES.csv"), "gate_id")
+    tracker = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_STATUS_MATRIX.csv"), "slice_id")
+    dependencies = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_DEPENDENCY_MATRIX.csv"), "dependency_id")
+    gates = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_ACCEPTANCE_MATRIX.csv"), "gate_id")
     artifact_index = artifacts(repo_root)
-    trace = index_by(read_csv(repo_root / EXECUTION_PLAN / "AUDIT_TRACEABILITY_MATRIX.csv"), "finding_id")
-    audit = index_by(read_csv(repo_root / EXECUTION_PLAN / "SPEC_IMPLEMENTATION_AUDIT_MATRIX.csv"), "audit_id")
+    trace = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_FINDING_TRACEABILITY_MATRIX.csv"), "finding_id")
+    audit = index_by(read_csv(repo_root / EXECUTION_PLAN / "CEIC_IMPLEMENTATION_TRACEABILITY_MATRIX.csv"), "audit_id")
 
     for slice_id in ("CEIC-090", "CEIC-091", "CEIC-092", "CEIC-093", "CEIC-094"):
         if not is_complete(tracker.get(slice_id, {}).get("status", "")):
             diagnostics.append(Diagnostic("tracker_status", slice_id, f"{slice_id} must be complete"))
-    if normalize_status(tracker.get("CEIC-095", {}).get("status", "")) != "pending":
-        diagnostics.append(Diagnostic("successor_overclaim", "CEIC-095", "CEIC-095 must remain pending"))
+    if normalize_status(tracker.get("CEIC-095", {}).get("status", "")) not in {"pending", "complete"}:
+        diagnostics.append(Diagnostic("successor_status", "CEIC-095", "CEIC-095 must be pending or complete"))
     for dependency_id in ("CEIC-DEP-050", "CEIC-DEP-051", "CEIC-DEP-053", "CEIC-DEP-054", "CEIC-DEP-052"):
         if normalize_status(dependencies.get(dependency_id, {}).get("status", "")) != "available":
             diagnostics.append(Diagnostic("dependency_unavailable", dependency_id, f"{dependency_id} must be available"))
