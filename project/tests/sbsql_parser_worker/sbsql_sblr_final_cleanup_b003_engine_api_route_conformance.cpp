@@ -63,22 +63,22 @@ constexpr std::array<B003Row, 43> kRows{{
     {"AUDIT-0393", "ENGINE IMPORT CHECKPOINT MODEL NORMALIZE", "dml.normalize_import_checkpoint_model", "SBLR_DML_IMPORT_CHECKPOINT_MODEL", "sblr.dml.operation.v3", "result.shape.import_checkpoint_model", "EngineNormalizeImportCheckpointModel", "authority.engine.dml_import_api_required", true, true},
     {"AUDIT-0394", "ENGINE IMPORT REJECT MODEL NORMALIZE", "dml.normalize_import_reject_model", "SBLR_DML_IMPORT_REJECT_MODEL", "sblr.dml.operation.v3", "result.shape.import_reject_model", "EngineNormalizeImportRejectModel", "authority.engine.dml_import_api_required", true, true},
     {"AUDIT-0395", "ENGINE DDL CREATE DATABASE", "ddl.create_database", "SBLR_DDL_CREATE_DATABASE", "sblr.catalog.mutation.v3", "result.shape.catalog_mutation_status", "EngineCreateDatabase", "authority.engine.catalog_api_required", false, true},
-    {"AUDIT-0396", "ENGINE QUERY BIND EXPRESSION", "query.bind_expression", "SBLR_QUERY_BIND_EXPRESSION", "sblr.expression.runtime.v3", "result.shape.query_binding", "EngineBindExpression", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0397", "ENGINE QUERY BIND PREDICATE", "query.bind_predicate", "SBLR_QUERY_BIND_PREDICATE", "sblr.expression.runtime.v3", "result.shape.query_binding", "EngineBindPredicate", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0398", "ENGINE QUERY BIND PROJECTION", "query.bind_projection", "SBLR_QUERY_BIND_PROJECTION", "sblr.expression.runtime.v3", "result.shape.query_binding", "EngineBindProjection", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0396", "ENGINE QUERY BIND EXPRESSION", "query.bind_expression", "SBLR_QUERY_BIND_EXPRESSION", "sblr.query.relational.v3", "result.shape.query_binding", "EngineBindExpression", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0397", "ENGINE QUERY BIND PREDICATE", "query.bind_predicate", "SBLR_QUERY_BIND_PREDICATE", "sblr.query.relational.v3", "result.shape.query_binding", "EngineBindPredicate", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0398", "ENGINE QUERY BIND PROJECTION", "query.bind_projection", "SBLR_QUERY_BIND_PROJECTION", "sblr.query.relational.v3", "result.shape.query_binding", "EngineBindProjection", "authority.engine.query_runtime_api_required", false, true},
     {"AUDIT-0399", "PREPARE TRANSACTION", "transaction.prepare", "SBLR_TRANSACTION_PREPARE", "sblr.transaction.control.v3", "result.shape.transaction_status", "EnginePrepareTransaction", "authority.engine.transaction_control_api_required", true, true},
     {"AUDIT-0400", "ENGINE CATALOG RESOLVE NAME", "catalog.resolve_name", "SBLR_CATALOG_RESOLVE_NAME", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineResolveName", "authority.engine.catalog_api_required", false, true},
     {"AUDIT-0401", "ENGINE CATALOG MAP UUID TO NAME", "catalog.map_uuid_to_name", "SBLR_CATALOG_MAP_UUID_TO_NAME", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineMapUuidToName", "authority.engine.catalog_api_required", false, true},
     {"AUDIT-0402", "ENGINE CATALOG LOOKUP OBJECT", "catalog.lookup_object", "SBLR_CATALOG_LOOKUP_OBJECT", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineLookupObject", "authority.engine.catalog_api_required", false, true},
     {"AUDIT-0403", "ENGINE CATALOG LIST CHILDREN", "catalog.list_children", "SBLR_CATALOG_LIST_CHILDREN", "sblr.catalog.mutation.v3", "result.shape.catalog_children", "EngineListCatalogChildren", "authority.engine.catalog_api_required", false, true},
     {"AUDIT-0404", "ENGINE CATALOG GET DEPENDENCIES", "catalog.get_dependencies", "SBLR_CATALOG_GET_DEPENDENCIES", "sblr.catalog.mutation.v3", "result.shape.catalog_dependencies", "EngineGetDependencies", "authority.engine.catalog_api_required", false, true},
-    {"AUDIT-0405", "ENGINE SECURITY CREATE IDENTITY", "security.create_identity", "SBLR_SECURITY_CREATE_IDENTITY", "sblr.security.mutation_or_inspect.v3", "result.shape.security_status", "EngineCreateIdentity", "authority.engine.security_mutation_api_required", true, true},
-    {"AUDIT-0406", "ENGINE SECURITY ALTER IDENTITY", "security.alter_identity", "SBLR_SECURITY_ALTER_IDENTITY", "sblr.security.mutation_or_inspect.v3", "result.shape.security_status", "EngineAlterIdentity", "authority.engine.security_mutation_api_required", true, true},
-    {"AUDIT-0407", "ENGINE SECURITY GRANT RIGHT", "security.grant_right", "SBLR_SECURITY_GRANT_RIGHT", "sblr.security.mutation_or_inspect.v3", "result.shape.security_grant", "EngineGrantRight", "authority.engine.security_mutation_api_required", true, true},
-    {"AUDIT-0408", "ENGINE SECURITY REVOKE RIGHT", "security.revoke_right", "SBLR_SECURITY_REVOKE_RIGHT", "sblr.security.mutation_or_inspect.v3", "result.shape.security_grant", "EngineRevokeRight", "authority.engine.security_mutation_api_required", true, true},
-    {"AUDIT-0409", "ENGINE SECURITY EVALUATE VISIBILITY", "security.evaluate_visibility", "SBLR_SECURITY_EVALUATE_VISIBILITY", "sblr.security.mutation_or_inspect.v3", "result.shape.security_decision", "EngineEvaluateVisibility", "authority.engine.security_inspection_api_required", false, true},
-    {"AUDIT-0410", "ENGINE SECURITY EVALUATE POLICY", "security.evaluate_policy", "SBLR_SECURITY_EVALUATE_POLICY", "sblr.security.mutation_or_inspect.v3", "result.shape.security_decision", "EngineEvaluatePolicy", "authority.engine.security_inspection_api_required", false, true},
-    {"AUDIT-0411", "ENGINE SECURITY EVALUATE DEEP ENFORCEMENT", "security.evaluate_deep_enforcement", "SBLR_SECURITY_EVALUATE_DEEP_ENFORCEMENT", "sblr.security.mutation_or_inspect.v3", "result.shape.security_decision", "EngineEvaluateDeepSecurity", "authority.engine.security_inspection_api_required", false, true},
+    {"AUDIT-0405", "ENGINE SECURITY CREATE IDENTITY", "security.create_identity", "SBLR_SECURITY_CREATE_IDENTITY", "sblr.security.mutation.v3", "result.shape.security_status", "EngineCreateIdentity", "authority.engine.security_mutation_api_required", true, true},
+    {"AUDIT-0406", "ENGINE SECURITY ALTER IDENTITY", "security.alter_identity", "SBLR_SECURITY_ALTER_IDENTITY", "sblr.security.mutation.v3", "result.shape.security_status", "EngineAlterIdentity", "authority.engine.security_mutation_api_required", true, true},
+    {"AUDIT-0407", "ENGINE SECURITY GRANT RIGHT", "security.grant_right", "SBLR_SECURITY_GRANT_RIGHT", "sblr.security.mutation.v3", "result.shape.security_grant", "EngineGrantRight", "authority.engine.security_mutation_api_required", true, true},
+    {"AUDIT-0408", "ENGINE SECURITY REVOKE RIGHT", "security.revoke_right", "SBLR_SECURITY_REVOKE_RIGHT", "sblr.security.mutation.v3", "result.shape.security_grant", "EngineRevokeRight", "authority.engine.security_mutation_api_required", true, true},
+    {"AUDIT-0409", "ENGINE SECURITY EVALUATE VISIBILITY", "security.evaluate_visibility", "SBLR_SECURITY_EVALUATE_VISIBILITY", "sblr.policy.operation.v3", "result.shape.security_decision", "EngineEvaluateVisibility", "authority.engine.security_inspection_api_required", false, true},
+    {"AUDIT-0410", "ENGINE SECURITY EVALUATE POLICY", "security.evaluate_policy", "SBLR_SECURITY_EVALUATE_POLICY", "sblr.policy.operation.v3", "result.shape.security_decision", "EngineEvaluatePolicy", "authority.engine.security_inspection_api_required", false, true},
+    {"AUDIT-0411", "ENGINE SECURITY EVALUATE DEEP ENFORCEMENT", "security.evaluate_deep_enforcement", "SBLR_SECURITY_EVALUATE_DEEP_ENFORCEMENT", "sblr.policy.operation.v3", "result.shape.security_decision", "EngineEvaluateDeepSecurity", "authority.engine.security_inspection_api_required", false, true},
     {"AUDIT-0412", "ENGINE MANAGEMENT INSPECT CONFIG", "management.inspect_config", "SBLR_MANAGEMENT_INSPECT_CONFIG", "sblr.management.runtime_operation.v3", "result.shape.management_config", "EngineInspectConfig", "authority.engine.management_runtime_api_required", false, true},
     {"AUDIT-0413", "ENGINE MANAGEMENT SET CONFIG", "management.set_config", "SBLR_MANAGEMENT_SET_CONFIG", "sblr.management.runtime_operation.v3", "result.shape.management_config_status", "EngineSetConfig", "authority.engine.management_runtime_api_required", false, true},
     {"AUDIT-0414", "ENGINE MANAGEMENT RESET CONFIG", "management.reset_config", "SBLR_MANAGEMENT_RESET_CONFIG", "sblr.management.runtime_operation.v3", "result.shape.management_config_status", "EngineResetConfig", "authority.engine.management_runtime_api_required", false, true},
@@ -86,14 +86,14 @@ constexpr std::array<B003Row, 43> kRows{{
     {"AUDIT-0416", "ALTER DATABASE ENTER RESTRICTED OPEN", "lifecycle.enter_restricted_open", "SBLR_LIFECYCLE_ENTER_RESTRICTED_OPEN", "sblr.management.runtime_operation.v3", "result.shape.lifecycle_status", "EngineEnterRestrictedOpenLifecycle", "authority.engine.lifecycle_api_required", false, false},
     {"AUDIT-0417", "ALTER DATABASE EXIT RESTRICTED OPEN", "lifecycle.exit_restricted_open", "SBLR_LIFECYCLE_EXIT_RESTRICTED_OPEN", "sblr.management.runtime_operation.v3", "result.shape.lifecycle_status", "EngineExitRestrictedOpenLifecycle", "authority.engine.lifecycle_api_required", false, false},
     {"AUDIT-0425", "REGISTER PARSER PACKAGE", "extensibility.register_parser_package", "SBLR_EXTENSIBILITY_REGISTER_PARSER_PACKAGE", "sblr.udr.operation.v3", "result.shape.parser_package_status", "EngineRegisterParserPackage", "authority.engine.parser_package_api_required", true, true},
-    {"AUDIT-0426", "ENGINE QUERY EXTRACT VALUE", "query.extract_value", "SBLR_QUERY_EXTRACT_VALUE", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineExtractValue", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0427", "ENGINE QUERY SET OPERATION", "query.set_operation", "SBLR_QUERY_SET_OPERATION", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineSetOperation", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0428", "ENGINE QUERY APPLY NUMERIC OPERATION", "query.apply_numeric_operation", "SBLR_QUERY_APPLY_NUMERIC_OPERATION", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineApplyNumericOperation", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0429", "ENGINE QUERY CANONICALIZE DOCUMENT VALUE", "query.canonicalize_document_value", "SBLR_QUERY_CANONICALIZE_DOCUMENT_VALUE", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineCanonicalizeDocumentValue", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0430", "ENGINE QUERY EVALUATE ADVANCED DATATYPE FAMILY", "query.evaluate_advanced_datatype_family", "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY", "sblr.expression.runtime.v3", "result.shape.datatype_family_evaluation", "EngineEvaluateAdvancedDatatypeFamily", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0431", "ENGINE QUERY VALIDATE DOMAIN VALUE", "query.validate_domain_value", "SBLR_QUERY_VALIDATE_DOMAIN_VALUE", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineValidateDomainValue", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0432", "ENGINE QUERY INVOKE DOMAIN METHOD", "query.invoke_domain_method", "SBLR_QUERY_INVOKE_DOMAIN_METHOD", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineInvokeDomainMethod", "authority.engine.query_runtime_api_required", false, true},
-    {"AUDIT-0433", "UNLISTEN ALL NOTIFICATIONS", "session.notification.unlisten_all", "SBLR_EVENT_CHANNEL_UNLISTEN_ALL", "sblr.general.operation.v3", "result.shape.event_subscription_status", "EngineUnlistenSessionNotifications", "authority.engine.event_notification_api_required", false, true},
+    {"AUDIT-0426", "ENGINE QUERY EXTRACT VALUE", "query.extract_value", "SBLR_QUERY_EXTRACT_VALUE", "sblr.query.relational.v3", "result.shape.typed_value", "EngineExtractValue", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0427", "ENGINE QUERY SET OPERATION", "query.set_operation", "SBLR_QUERY_SET_OPERATION", "sblr.query.relational.v3", "result.shape.typed_value", "EngineSetOperation", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0428", "ENGINE QUERY APPLY NUMERIC OPERATION", "query.apply_numeric_operation", "SBLR_QUERY_APPLY_NUMERIC_OPERATION", "sblr.query.relational.v3", "result.shape.typed_value", "EngineApplyNumericOperation", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0429", "ENGINE QUERY CANONICALIZE DOCUMENT VALUE", "query.canonicalize_document_value", "SBLR_QUERY_CANONICALIZE_DOCUMENT_VALUE", "sblr.query.document.v3", "result.shape.typed_value", "EngineCanonicalizeDocumentValue", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0430", "ENGINE QUERY EVALUATE ADVANCED DATATYPE FAMILY", "query.evaluate_advanced_datatype_family", "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY", "sblr.query.relational.v3", "result.shape.datatype_family_evaluation", "EngineEvaluateAdvancedDatatypeFamily", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0431", "ENGINE QUERY VALIDATE DOMAIN VALUE", "query.validate_domain_value", "SBLR_QUERY_VALIDATE_DOMAIN_VALUE", "sblr.query.relational.v3", "result.shape.typed_value", "EngineValidateDomainValue", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0432", "ENGINE QUERY INVOKE DOMAIN METHOD", "query.invoke_domain_method", "SBLR_QUERY_INVOKE_DOMAIN_METHOD", "sblr.query.relational.v3", "result.shape.typed_value", "EngineInvokeDomainMethod", "authority.engine.query_runtime_api_required", false, true},
+    {"AUDIT-0433", "UNLISTEN ALL NOTIFICATIONS", "session.notification.unlisten_all", "SBLR_EVENT_CHANNEL_UNLISTEN_ALL", "sblr.event.channel.v3", "result.shape.event_subscription_status", "EngineUnlistenSessionNotifications", "authority.engine.event_notification_api_required", false, true},
 }};
 
 void Require(bool condition, std::string_view message) {
@@ -109,6 +109,23 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 
 bool StartsWith(std::string_view value, std::string_view prefix) {
   return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
+}
+
+std::string_view ExpectedServerAdmissionFamily(const B003Row& row) {
+  if (StartsWith(row.operation_id, "agents.")) return "sblr.management.control.v3";
+  if (row.operation_id == "management.inspect_config") return "sblr.management.report.v3";
+  if (row.operation_id == "management.set_config" ||
+      row.operation_id == "management.reset_config" ||
+      row.operation_id == "management.prepare_support_bundle") {
+    return "sblr.management.control.v3";
+  }
+  if (StartsWith(row.operation_id, "lifecycle.")) return "sblr.database.management.v3";
+  if (row.operation_id == "dml.execute_import_rows" ||
+      row.operation_id == "dml.normalize_import_checkpoint_model" ||
+      row.operation_id == "dml.normalize_import_reject_model") {
+    return "sblr.bulk.import.v3";
+  }
+  return row.family;
 }
 
 bool HasValue(const std::vector<std::string>& values, std::string_view expected) {
@@ -457,7 +474,7 @@ void RequireLowering(const B003Row& row) {
           EvidenceMessage(row, "server_admission", "public ABI dispatch not required"));
   Require(admission.operation_id == row.operation_id,
           EvidenceMessage(row, "server_admission", "operation id mismatch"));
-  Require(admission.operation_family == row.family,
+  Require(admission.operation_family == ExpectedServerAdmissionFamily(row),
           EvidenceMessage(row, "server_admission", "operation family mismatch"));
 }
 

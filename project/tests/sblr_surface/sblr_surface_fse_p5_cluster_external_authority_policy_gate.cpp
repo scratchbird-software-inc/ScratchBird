@@ -24,6 +24,7 @@ namespace api = scratchbird::engine::internal_api;
 namespace cluster_provider = scratchbird::engine::cluster_provider;
 
 using Row = std::map<std::string, std::string>;
+constexpr int kSkipReturnCode = 77;
 
 std::string ResolveSblrExpansionRoot(const std::string& input) {
   if (input.find("final-sblr-sbsql-sblr-expansion-closure") != std::string::npos) {
@@ -39,6 +40,17 @@ std::string ResolveSblrExpansionRoot(const std::string& input) {
 
 void Require(bool condition, const std::string& message) {
   if (!condition) Fail(message);
+}
+
+bool FileExists(const std::string& path) {
+  std::ifstream input(path);
+  return input.good();
+}
+
+int SkipMissingExecutionPlan(const std::string& path) {
+  std::cout << "SKIP: public execution-plan CSV is not present in this checkout: "
+            << path << '\n';
+  return kSkipReturnCode;
 }
 
 bool Contains(std::string_view haystack, std::string_view needle) {
@@ -508,8 +520,11 @@ int main(int argc, char** argv) {
   const std::string first_arg = argv[1];
   const std::string execution_plan_dir = ResolveSblrExpansionRoot(first_arg);
   const std::string repo_root = argc == 3 ? argv[2] : first_arg;
+  const std::string register_path =
+      execution_plan_dir + "/SBLR_OPERATION_EXPANSION_REGISTER.csv";
+  if (!FileExists(register_path)) return SkipMissingExecutionPlan(register_path);
   const auto register_rows =
-      LoadCsv(execution_plan_dir + "/SBLR_OPERATION_EXPANSION_REGISTER.csv");
+      LoadCsv(register_path);
   const auto binary_rows =
       LoadCsv(execution_plan_dir + "/SBLR_BINARY_FORMAT_EXTENSION_MATRIX.csv");
   const auto route_rows =

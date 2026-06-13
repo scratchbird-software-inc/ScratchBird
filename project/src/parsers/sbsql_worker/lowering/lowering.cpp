@@ -756,7 +756,7 @@ struct Sbsfc081DescriptorExpressionResidualRouteInfo {
   bool valid{false};
   std::string surface_id;
   std::string canonical_name;
-  std::string route_family{"sblr.query.values.v3"};
+  std::string route_family{"sblr.query.relational.v3"};
   std::string operation_id{"query.plan_operation"};
   std::string opcode{"SBLR_QUERY_PLAN_OPERATION"};
   std::string engine_api_function{"EnginePlanOperation"};
@@ -773,7 +773,7 @@ struct Sbsfc082SurfaceDescriptorRouteInfo {
   bool valid{false};
   std::string surface_id;
   std::string canonical_name;
-  std::string route_family{"sblr.query.values.v3"};
+  std::string route_family{"sblr.query.relational.v3"};
   std::string operation_id{"query.plan_operation"};
   std::string opcode{"SBLR_QUERY_PLAN_OPERATION"};
   std::string engine_api_function{"EnginePlanOperation"};
@@ -791,7 +791,7 @@ struct Sbsfc083GrammarSurfaceRouteInfo {
   bool valid{false};
   std::string surface_id;
   std::string canonical_name;
-  std::string route_family{"sblr.query.values.v3"};
+  std::string route_family{"sblr.query.relational.v3"};
   std::string operation_id{"query.plan_operation"};
   std::string opcode{"SBLR_QUERY_PLAN_OPERATION"};
   std::string engine_api_function{"EnginePlanOperation"};
@@ -809,7 +809,7 @@ struct Sbsfc084GrammarSurfaceRouteInfo {
   bool valid{false};
   std::string surface_id;
   std::string canonical_name;
-  std::string route_family{"sblr.query.values.v3"};
+  std::string route_family{"sblr.query.relational.v3"};
   std::string operation_id{"query.plan_operation"};
   std::string opcode{"SBLR_QUERY_PLAN_OPERATION"};
   std::string engine_api_function{"EnginePlanOperation"};
@@ -827,7 +827,7 @@ struct Sbsfc085GrammarSurfaceRouteInfo {
   bool valid{false};
   std::string surface_id;
   std::string canonical_name;
-  std::string route_family{"sblr.query.values.v3"};
+  std::string route_family{"sblr.query.relational.v3"};
   std::string operation_id{"query.plan_operation"};
   std::string opcode{"SBLR_QUERY_PLAN_OPERATION"};
   std::string engine_api_function{"EnginePlanOperation"};
@@ -1456,12 +1456,12 @@ constexpr std::array<PublicExactCommandSpec, 187> kPublicExactCommandSpecs{{
     {"memory.rate_limit.set", "MEMORY RATE LIMIT SET", "MEMORY RATE LIMIT SET", "memory.rate_limit.set", "SBLR_MEMORY_RATE_LIMIT_SET", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_rate_limit_policy", "", true},
     {"memory.policy_upgrade.plan", "MEMORY POLICY UPGRADE PLAN", "MEMORY POLICY UPGRADE PLAN", "memory.policy_upgrade.plan", "SBLR_MEMORY_POLICY_UPGRADE_PLAN", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_inspect", "sys.memory_upgrade_state", "", false},
     {"memory.policy_migration.plan", "MEMORY POLICY MIGRATE PLAN", "MEMORY POLICY MIGRATE PLAN", "memory.policy_migration.plan", "SBLR_MEMORY_POLICY_MIGRATION_PLAN", "sblr.management.runtime_operation.v3", "rs.memory.management.descriptor_plan.v1", "EnginePlanMemoryManagementOperation", "memory_control", "sys.memory_upgrade_state", "", true},
-    {"storage_tier.inspect", "STORAGE TIER INSPECT", "STORAGE TIER INSPECT", "storage_tier.inspect", "SBLR_STORAGE_TIER_INSPECT", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_inspect", "sys.storage_tier_policy", "", false},
-    {"storage_tier.validate", "STORAGE TIER VALIDATE", "STORAGE TIER VALIDATE", "storage_tier.validate", "SBLR_STORAGE_TIER_VALIDATE", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_inspect", "sys.storage_tier_policy", "", false},
-    {"storage_tier.plan_migration", "STORAGE TIER PLAN MIGRATION", "STORAGE TIER PLAN MIGRATION", "storage_tier.plan_migration", "SBLR_STORAGE_TIER_PLAN_MIGRATION", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_inspect", "sys.storage_tier_policy", "", false},
-    {"storage_tier.stage_migration", "STORAGE TIER STAGE MIGRATION", "STORAGE TIER STAGE MIGRATION", "storage_tier.stage_migration", "SBLR_STORAGE_TIER_STAGE_MIGRATION", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_control", "sys.storage_tier_policy", "", true},
-    {"storage_tier.commit_migration", "STORAGE TIER COMMIT MIGRATION", "STORAGE TIER COMMIT MIGRATION", "storage_tier.commit_migration", "SBLR_STORAGE_TIER_COMMIT_MIGRATION", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_control", "sys.storage_tier_policy", "", true},
-    {"storage_tier.rollback_migration", "STORAGE TIER ROLLBACK MIGRATION", "STORAGE TIER ROLLBACK MIGRATION", "storage_tier.rollback_migration", "SBLR_STORAGE_TIER_ROLLBACK_MIGRATION", "sblr.storage.management_operation.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_control", "sys.storage_tier_policy", "", true},
+    {"storage_tier.inspect", "STORAGE TIER INSPECT", "STORAGE TIER INSPECT", "storage_tier.inspect", "SBLR_STORAGE_TIER_INSPECT", "sblr.filespace.management.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_inspect", "sys.storage_tier_policy", "", false},
+    {"storage_tier.validate", "STORAGE TIER VALIDATE", "STORAGE TIER VALIDATE", "storage_tier.validate", "SBLR_STORAGE_TIER_VALIDATE", "sblr.filespace.management.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_inspect", "sys.storage_tier_policy", "", false},
+    {"storage_tier.plan_migration", "STORAGE TIER PLAN MIGRATION", "STORAGE TIER PLAN MIGRATION", "storage_tier.plan_migration", "SBLR_STORAGE_TIER_PLAN_MIGRATION", "sblr.filespace.management.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_inspect", "sys.storage_tier_policy", "", false},
+    {"storage_tier.stage_migration", "STORAGE TIER STAGE MIGRATION", "STORAGE TIER STAGE MIGRATION", "storage_tier.stage_migration", "SBLR_STORAGE_TIER_STAGE_MIGRATION", "sblr.filespace.management.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_control", "sys.storage_tier_policy", "", true},
+    {"storage_tier.commit_migration", "STORAGE TIER COMMIT MIGRATION", "STORAGE TIER COMMIT MIGRATION", "storage_tier.commit_migration", "SBLR_STORAGE_TIER_COMMIT_MIGRATION", "sblr.filespace.management.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_control", "sys.storage_tier_policy", "", true},
+    {"storage_tier.rollback_migration", "STORAGE TIER ROLLBACK MIGRATION", "STORAGE TIER ROLLBACK MIGRATION", "storage_tier.rollback_migration", "SBLR_STORAGE_TIER_ROLLBACK_MIGRATION", "sblr.filespace.management.v3", "rs.storage_tier.descriptor_plan.v1", "EnginePlanStorageTierMigrationOperation", "storage_tier_control", "sys.storage_tier_policy", "", true},
     {"filespace.discovery.scan", "DISCOVER FILESPACE ANOMALIES", "DISCOVER FILESPACE ANOMALIES", "filespace.discovery.scan", "SBLR_FILESPACE_DISCOVERY_SCAN", "sblr.filespace.management.v3", "rs.filespace.discovery_report.v1", "EngineDiscoverFilespaceAnomalies", "filespace_discovery_inspect", "sys.storage.filespace_discovery", "", false},
     {"filespace.discovery.orphan_scan", "DISCOVER ORPHAN FILESPACES", "DISCOVER ORPHAN FILESPACES", "filespace.discovery.orphan_scan", "SBLR_FILESPACE_DISCOVERY_ORPHAN_SCAN", "sblr.filespace.management.v3", "rs.filespace.discovery_report.v1", "EngineDiscoverFilespaceAnomalies", "filespace_discovery_inspect", "sys.storage.filespace_discovery", "", false},
     {"filespace.discovery.stale_scan", "DISCOVER STALE FILESPACES", "DISCOVER STALE FILESPACES", "filespace.discovery.stale_scan", "SBLR_FILESPACE_DISCOVERY_STALE_SCAN", "sblr.filespace.management.v3", "rs.filespace.discovery_report.v1", "EngineDiscoverFilespaceAnomalies", "filespace_discovery_inspect", "sys.storage.filespace_discovery", "", false},
@@ -1470,37 +1470,37 @@ constexpr std::array<PublicExactCommandSpec, 187> kPublicExactCommandSpecs{{
     {"filespace.package.import_to_quarantine", "IMPORT FILESPACE PACKAGE", "IMPORT FILESPACE PACKAGE", "filespace.package.import_to_quarantine", "SBLR_FILESPACE_PACKAGE_IMPORT_TO_QUARANTINE", "sblr.filespace.management.v3", "rs.filespace.package_report.v1", "EngineFilespacePackageOperation", "filespace_package_control", "sys.storage.filespace_package", "", true},
     {"filespace.package.admit", "ADMIT FILESPACE PACKAGE", "ADMIT FILESPACE PACKAGE", "filespace.package.admit", "SBLR_FILESPACE_PACKAGE_ADMIT", "sblr.filespace.management.v3", "rs.filespace.package_report.v1", "EngineFilespacePackageOperation", "filespace_package_control", "sys.storage.filespace_package", "", true},
     {"filespace.package.reject", "REJECT FILESPACE PACKAGE", "REJECT FILESPACE PACKAGE", "filespace.package.reject", "SBLR_FILESPACE_PACKAGE_REJECT", "sblr.filespace.management.v3", "rs.filespace.package_report.v1", "EngineFilespacePackageOperation", "filespace_package_control", "sys.storage.filespace_package", "", true},
-    {"shard_placement.create", "SHARD PLACEMENT CREATE", "SHARD PLACEMENT CREATE", "shard_placement.create", "SBLR_SHARD_PLACEMENT_CREATE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"shard_placement.verify", "SHARD PLACEMENT VERIFY", "SHARD PLACEMENT VERIFY", "shard_placement.verify", "SBLR_SHARD_PLACEMENT_VERIFY", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_inspect", "sys.storage.shard_placement", "", false},
-    {"shard_placement.move", "SHARD PLACEMENT MOVE", "SHARD PLACEMENT MOVE", "shard_placement.move", "SBLR_SHARD_PLACEMENT_MOVE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"shard_placement.split", "SHARD PLACEMENT SPLIT", "SHARD PLACEMENT SPLIT", "shard_placement.split", "SBLR_SHARD_PLACEMENT_SPLIT", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"shard_placement.merge", "SHARD PLACEMENT MERGE", "SHARD PLACEMENT MERGE", "shard_placement.merge", "SBLR_SHARD_PLACEMENT_MERGE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"shard_placement.rebalance", "SHARD PLACEMENT REBALANCE", "SHARD PLACEMENT REBALANCE", "shard_placement.rebalance", "SBLR_SHARD_PLACEMENT_REBALANCE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"shard_placement.freeze", "SHARD PLACEMENT FREEZE", "SHARD PLACEMENT FREEZE", "shard_placement.freeze", "SBLR_SHARD_PLACEMENT_FREEZE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"shard_placement.archive", "SHARD PLACEMENT ARCHIVE", "SHARD PLACEMENT ARCHIVE", "shard_placement.archive", "SBLR_SHARD_PLACEMENT_ARCHIVE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"shard_placement.reattach", "SHARD PLACEMENT REATTACH", "SHARD PLACEMENT REATTACH", "shard_placement.reattach", "SBLR_SHARD_PLACEMENT_REATTACH", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"shard_placement.quarantine", "SHARD PLACEMENT QUARANTINE", "SHARD PLACEMENT QUARANTINE", "shard_placement.quarantine", "SBLR_SHARD_PLACEMENT_QUARANTINE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"shard_placement.reconcile", "SHARD PLACEMENT RECONCILE", "SHARD PLACEMENT RECONCILE", "shard_placement.reconcile", "SBLR_SHARD_PLACEMENT_RECONCILE", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"shard_placement.drop", "SHARD PLACEMENT DROP", "SHARD PLACEMENT DROP", "shard_placement.drop", "SBLR_SHARD_PLACEMENT_DROP", "sblr.storage.management_operation.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
-    {"security.encryption_key.admit", "ADMIT ENCRYPTION KEY", "ADMIT ENCRYPTION KEY", "security.encryption_key.admit", "SBLR_SECURITY_ENCRYPTION_KEY_ADMIT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineAdmitEncryptionKey", "encryption_key_control", "sys.security.protected_material_cache", "", true},
-    {"security.encryption_key.rotate", "REKEY FILESPACE", "REKEY FILESPACE", "security.encryption_key.rotate", "SBLR_SECURITY_ENCRYPTION_KEY_ROTATE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineRotateEncryptionKey", "encryption_key_control", "sys.security.protected_material_catalog", "", true},
-    {"security.encryption_profile.change", "ALTER FILESPACE ENCRYPTION PROFILE", "ALTER FILESPACE ENCRYPTION PROFILE", "security.encryption_key.rotate", "SBLR_SECURITY_ENCRYPTION_KEY_ROTATE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineRotateEncryptionKey", "encryption_key_control", "sys.security.encryption_profile", "", true},
-    {"security.protected_material_cache.inspect", "SHOW PROTECTED MATERIAL CACHE", "SHOW PROTECTED MATERIAL CACHE", "security.protected_material_cache.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CACHE_INSPECT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineInspectProtectedMaterialCache", "encryption_key_inspect", "sys.security.protected_material_cache", "", false},
-    {"security.protected_material_cache.purge", "PURGE PROTECTED MATERIAL CACHE", "PURGE PROTECTED MATERIAL CACHE", "security.protected_material_cache.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_CACHE_PURGE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EnginePurgeProtectedMaterial", "encryption_key_control", "sys.security.protected_material_cache", "", true},
-    {"security.protected_material_cache.shutdown", "SHUTDOWN PROTECTED MATERIAL CACHE", "SHUTDOWN PROTECTED MATERIAL CACHE", "security.protected_material_cache.shutdown", "SBLR_SECURITY_PROTECTED_MATERIAL_CACHE_SHUTDOWN", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineShutdownProtectedMaterial", "encryption_key_control", "sys.security.protected_material_cache", "", true},
-    {"security.encrypted_filespace.open", "OPEN ENCRYPTED FILESPACE", "OPEN ENCRYPTED FILESPACE", "security.encrypted_filespace.open", "SBLR_SECURITY_ENCRYPTED_FILESPACE_OPEN", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineOpenEncryptedFilespace", "encryption_key_inspect", "sys.storage.filespace", "", false},
-    {"security.request_protected_material", "REQUEST KEY RELEASE", "REQUEST KEY RELEASE", "security.request_protected_material", "SBLR_SECURITY_REQUEST_PROTECTED_MATERIAL", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineRequestProtectedMaterial", "encryption_key_inspect", "sys.security.protected_material_catalog", "", false},
-    {"security.protected_material.version.purge", "CRYPTOGRAPHIC ERASE FILESPACE", "CRYPTOGRAPHIC ERASE FILESPACE", "security.protected_material.version.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_PURGE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EnginePurgeProtectedMaterialVersion", "encryption_key_control", "sys.security.protected_material_catalog", "", true},
-    {"security.protected_material.create", "CREATE PROTECTED MATERIAL", "CREATE PROTECTED MATERIAL", "security.protected_material.create", "SBLR_SECURITY_PROTECTED_MATERIAL_CREATE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineCreateProtectedMaterial", "protected_material_control", "sys.security.protected_material_catalog", "", true},
-    {"security.protected_material.version.add", "ADD PROTECTED MATERIAL VERSION", "ADD PROTECTED MATERIAL VERSION", "security.protected_material.version.add", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_ADD", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineAddProtectedMaterialVersion", "protected_material_control", "sys.security.protected_material_catalog", "", true},
-    {"security.protected_material.rotate", "ROTATE PROTECTED MATERIAL", "ROTATE PROTECTED MATERIAL", "security.protected_material.version.add", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_ADD", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineAddProtectedMaterialVersion", "protected_material_control", "sys.security.protected_material_catalog", "", true},
-    {"security.protected_material.resolve", "RESOLVE PROTECTED MATERIAL", "RESOLVE PROTECTED MATERIAL", "security.protected_material.resolve", "SBLR_SECURITY_PROTECTED_MATERIAL_RESOLVE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineResolveProtectedMaterial", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
-    {"security.protected_material.release", "RELEASE PROTECTED MATERIAL", "RELEASE PROTECTED MATERIAL", "security.protected_material.release", "SBLR_SECURITY_PROTECTED_MATERIAL_RELEASE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineReleaseProtectedMaterial", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
-    {"security.protected_material.version.purge.command", "PURGE PROTECTED MATERIAL VERSION", "PURGE PROTECTED MATERIAL VERSION", "security.protected_material.version.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_PURGE", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EnginePurgeProtectedMaterialVersion", "protected_material_control", "sys.security.protected_material_catalog", "", true},
-    {"security.protected_material.catalog.inspect", "SHOW PROTECTED MATERIAL CATALOG", "SHOW PROTECTED MATERIAL CATALOG", "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineInspectProtectedMaterialCatalog", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
-    {"security.protected_material.audit.inspect", "SHOW PROTECTED MATERIAL AUDIT", "SHOW PROTECTED MATERIAL AUDIT", "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineInspectProtectedMaterialCatalog", "protected_material_inspect", "sys.security.protected_material_audit", "", false},
-    {"security.protected_material.package.export", "EXPORT PROTECTED MATERIAL PACKAGE", "EXPORT PROTECTED MATERIAL PACKAGE", "security.protected_material.package.export", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_EXPORT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineExportProtectedMaterialPackage", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
-    {"security.protected_material.package.import", "IMPORT PROTECTED MATERIAL PACKAGE", "IMPORT PROTECTED MATERIAL PACKAGE", "security.protected_material.package.import", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_IMPORT", "sblr.security.mutation_or_inspect.v3", "rs.security.protected_material.v1", "EngineImportProtectedMaterialPackage", "protected_material_control", "sys.security.protected_material_catalog", "", true},
+    {"shard_placement.create", "SHARD PLACEMENT CREATE", "SHARD PLACEMENT CREATE", "shard_placement.create", "SBLR_SHARD_PLACEMENT_CREATE", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.verify", "SHARD PLACEMENT VERIFY", "SHARD PLACEMENT VERIFY", "shard_placement.verify", "SBLR_SHARD_PLACEMENT_VERIFY", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_inspect", "sys.storage.shard_placement", "", false},
+    {"shard_placement.move", "SHARD PLACEMENT MOVE", "SHARD PLACEMENT MOVE", "shard_placement.move", "SBLR_SHARD_PLACEMENT_MOVE", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.split", "SHARD PLACEMENT SPLIT", "SHARD PLACEMENT SPLIT", "shard_placement.split", "SBLR_SHARD_PLACEMENT_SPLIT", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.merge", "SHARD PLACEMENT MERGE", "SHARD PLACEMENT MERGE", "shard_placement.merge", "SBLR_SHARD_PLACEMENT_MERGE", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.rebalance", "SHARD PLACEMENT REBALANCE", "SHARD PLACEMENT REBALANCE", "shard_placement.rebalance", "SBLR_SHARD_PLACEMENT_REBALANCE", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.freeze", "SHARD PLACEMENT FREEZE", "SHARD PLACEMENT FREEZE", "shard_placement.freeze", "SBLR_SHARD_PLACEMENT_FREEZE", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.archive", "SHARD PLACEMENT ARCHIVE", "SHARD PLACEMENT ARCHIVE", "shard_placement.archive", "SBLR_SHARD_PLACEMENT_ARCHIVE", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.reattach", "SHARD PLACEMENT REATTACH", "SHARD PLACEMENT REATTACH", "shard_placement.reattach", "SBLR_SHARD_PLACEMENT_REATTACH", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.quarantine", "SHARD PLACEMENT QUARANTINE", "SHARD PLACEMENT QUARANTINE", "shard_placement.quarantine", "SBLR_SHARD_PLACEMENT_QUARANTINE", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.reconcile", "SHARD PLACEMENT RECONCILE", "SHARD PLACEMENT RECONCILE", "shard_placement.reconcile", "SBLR_SHARD_PLACEMENT_RECONCILE", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"shard_placement.drop", "SHARD PLACEMENT DROP", "SHARD PLACEMENT DROP", "shard_placement.drop", "SBLR_SHARD_PLACEMENT_DROP", "sblr.filespace.management.v3", "rs.shard_placement.descriptor_plan.v1", "EnginePlanShardPlacementOperation", "shard_placement_descriptor_control", "sys.storage.shard_placement", "", true},
+    {"security.encryption_key.admit", "ADMIT ENCRYPTION KEY", "ADMIT ENCRYPTION KEY", "security.encryption_key.admit", "SBLR_SECURITY_ENCRYPTION_KEY_ADMIT", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineAdmitEncryptionKey", "encryption_key_control", "sys.security.protected_material_cache", "", true},
+    {"security.encryption_key.rotate", "REKEY FILESPACE", "REKEY FILESPACE", "security.encryption_key.rotate", "SBLR_SECURITY_ENCRYPTION_KEY_ROTATE", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineRotateEncryptionKey", "encryption_key_control", "sys.security.protected_material_catalog", "", true},
+    {"security.encryption_profile.change", "ALTER FILESPACE ENCRYPTION PROFILE", "ALTER FILESPACE ENCRYPTION PROFILE", "security.encryption_key.rotate", "SBLR_SECURITY_ENCRYPTION_KEY_ROTATE", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineRotateEncryptionKey", "encryption_key_control", "sys.security.encryption_profile", "", true},
+    {"security.protected_material_cache.inspect", "SHOW PROTECTED MATERIAL CACHE", "SHOW PROTECTED MATERIAL CACHE", "security.protected_material_cache.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CACHE_INSPECT", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineInspectProtectedMaterialCache", "encryption_key_inspect", "sys.security.protected_material_cache", "", false},
+    {"security.protected_material_cache.purge", "PURGE PROTECTED MATERIAL CACHE", "PURGE PROTECTED MATERIAL CACHE", "security.protected_material_cache.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_CACHE_PURGE", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EnginePurgeProtectedMaterial", "encryption_key_control", "sys.security.protected_material_cache", "", true},
+    {"security.protected_material_cache.shutdown", "SHUTDOWN PROTECTED MATERIAL CACHE", "SHUTDOWN PROTECTED MATERIAL CACHE", "security.protected_material_cache.shutdown", "SBLR_SECURITY_PROTECTED_MATERIAL_CACHE_SHUTDOWN", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineShutdownProtectedMaterial", "encryption_key_control", "sys.security.protected_material_cache", "", true},
+    {"security.encrypted_filespace.open", "OPEN ENCRYPTED FILESPACE", "OPEN ENCRYPTED FILESPACE", "security.encrypted_filespace.open", "SBLR_SECURITY_ENCRYPTED_FILESPACE_OPEN", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineOpenEncryptedFilespace", "encryption_key_inspect", "sys.storage.filespace", "", false},
+    {"security.request_protected_material", "REQUEST KEY RELEASE", "REQUEST KEY RELEASE", "security.request_protected_material", "SBLR_SECURITY_REQUEST_PROTECTED_MATERIAL", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineRequestProtectedMaterial", "encryption_key_inspect", "sys.security.protected_material_catalog", "", false},
+    {"security.protected_material.version.purge", "CRYPTOGRAPHIC ERASE FILESPACE", "CRYPTOGRAPHIC ERASE FILESPACE", "security.protected_material.version.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_PURGE", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EnginePurgeProtectedMaterialVersion", "encryption_key_control", "sys.security.protected_material_catalog", "", true},
+    {"security.protected_material.create", "CREATE PROTECTED MATERIAL", "CREATE PROTECTED MATERIAL", "security.protected_material.create", "SBLR_SECURITY_PROTECTED_MATERIAL_CREATE", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineCreateProtectedMaterial", "protected_material_control", "sys.security.protected_material_catalog", "", true},
+    {"security.protected_material.version.add", "ADD PROTECTED MATERIAL VERSION", "ADD PROTECTED MATERIAL VERSION", "security.protected_material.version.add", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_ADD", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineAddProtectedMaterialVersion", "protected_material_control", "sys.security.protected_material_catalog", "", true},
+    {"security.protected_material.rotate", "ROTATE PROTECTED MATERIAL", "ROTATE PROTECTED MATERIAL", "security.protected_material.version.add", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_ADD", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineAddProtectedMaterialVersion", "protected_material_control", "sys.security.protected_material_catalog", "", true},
+    {"security.protected_material.resolve", "RESOLVE PROTECTED MATERIAL", "RESOLVE PROTECTED MATERIAL", "security.protected_material.resolve", "SBLR_SECURITY_PROTECTED_MATERIAL_RESOLVE", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineResolveProtectedMaterial", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
+    {"security.protected_material.release", "RELEASE PROTECTED MATERIAL", "RELEASE PROTECTED MATERIAL", "security.protected_material.release", "SBLR_SECURITY_PROTECTED_MATERIAL_RELEASE", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineReleaseProtectedMaterial", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
+    {"security.protected_material.version.purge.command", "PURGE PROTECTED MATERIAL VERSION", "PURGE PROTECTED MATERIAL VERSION", "security.protected_material.version.purge", "SBLR_SECURITY_PROTECTED_MATERIAL_VERSION_PURGE", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EnginePurgeProtectedMaterialVersion", "protected_material_control", "sys.security.protected_material_catalog", "", true},
+    {"security.protected_material.catalog.inspect", "SHOW PROTECTED MATERIAL CATALOG", "SHOW PROTECTED MATERIAL CATALOG", "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineInspectProtectedMaterialCatalog", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
+    {"security.protected_material.audit.inspect", "SHOW PROTECTED MATERIAL AUDIT", "SHOW PROTECTED MATERIAL AUDIT", "security.protected_material.catalog.inspect", "SBLR_SECURITY_PROTECTED_MATERIAL_CATALOG_INSPECT", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineInspectProtectedMaterialCatalog", "protected_material_inspect", "sys.security.protected_material_audit", "", false},
+    {"security.protected_material.package.export", "EXPORT PROTECTED MATERIAL PACKAGE", "EXPORT PROTECTED MATERIAL PACKAGE", "security.protected_material.package.export", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_EXPORT", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineExportProtectedMaterialPackage", "protected_material_inspect", "sys.security.protected_material_catalog", "", false},
+    {"security.protected_material.package.import", "IMPORT PROTECTED MATERIAL PACKAGE", "IMPORT PROTECTED MATERIAL PACKAGE", "security.protected_material.package.import", "SBLR_SECURITY_PROTECTED_MATERIAL_PACKAGE_IMPORT", "sblr.security.mutation.v3", "rs.security.protected_material.v1", "EngineImportProtectedMaterialPackage", "protected_material_control", "sys.security.protected_material_catalog", "", true},
     {"migrate.from_reference", "MIGRATE FROM REFERENCE <reference_profile> WITH PACKAGE <package_ref>", "MIGRATE FROM REFERENCE", "op.migration.begin_from_reference", "SBLR_MIGRATION_BEGIN_FROM_REFERENCE", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineBeginMigration", "migration_control", "sys.migration.context", "reference_profile", true},
     {"alter.migration", "ALTER MIGRATION <migration_ref> START|PAUSE|RESUME|ABORT|FINALIZE", "ALTER MIGRATION", "op.migration.alter", "SBLR_MIGRATION_ALTER", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineAlterMigration", "migration_control", "sys.migration.context", "migration", true},
     {"show.migration", "SHOW MIGRATION <migration_ref>", "SHOW MIGRATION", "op.show.migration", "SBLR_SHOW_MIGRATION", "sblr.migration.operation.v3", "rs.migration.status.v1", "EngineShowMigration", "migration_inspect", "sys.migration.context", "migration", false},
@@ -1511,7 +1511,7 @@ constexpr std::array<PublicExactCommandSpec, 187> kPublicExactCommandSpecs{{
     {"alter.cluster.recovery_resolution", "ALTER CLUSTER RECOVERY RESOLVE <decision_ref>", "ALTER CLUSTER RECOVERY RESOLVE", "op.cluster.recovery_resolution", "SBLR_OP_CLUSTER_RECOVERY_RESOLUTION", "sblr.cluster.private_operation.v3", "rs.acceleration.control.v1", "EngineClusterProviderRoute", "cluster_control", "sys.cluster.recovery", "decision", true, true},
     {"alter.cluster.route_publish", "ALTER CLUSTER ROUTE PUBLISH <route_ref>", "ALTER CLUSTER ROUTE PUBLISH", "op.cluster.route_publish", "SBLR_OP_CLUSTER_ROUTE_PUBLISH", "sblr.cluster.private_operation.v3", "rs.acceleration.control.v1", "EngineClusterProviderRoute", "cluster_control", "sys.cluster.routing", "route", true, true},
     {"show.aot_artifacts", "SHOW AOT ARTIFACTS", "SHOW AOT ARTIFACTS", "op.show.aot_artifacts", "SBLR_OP_SHOW_AOT_ARTIFACTS", "sblr.acceleration.llvm.v3", "rs.show.native_compile.v1", "EngineInspectNativeCompile", "native_compile_inspect", "sys.native_compile.artifacts", "", false},
-    {"show.audit", "SHOW AUDIT", "SHOW AUDIT", "op.show.audit", "SBLR_OP_SHOW_AUDIT", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.audit", "", false},
+    {"show.audit", "SHOW AUDIT", "SHOW AUDIT", "op.show.audit", "SBLR_OP_SHOW_AUDIT", "sblr.catalog.introspect.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.audit", "", false},
     {"show.buffer_pool", "SHOW BUFFER POOL", "SHOW BUFFER POOL", "op.show.buffer_pool", "SBLR_OP_SHOW_BUFFER_POOL", "sblr.observability.inspect.v3", "rs.show.buffer_pool.v1", "EngineInspectShowOperation", "observability_inspect", "sys.storage.buffer_pool", "", false},
     {"show.cache", "SHOW CACHE", "SHOW CACHE", "op.show.cache", "SBLR_OP_SHOW_CACHE", "sblr.observability.inspect.v3", "rs.show.cache.v1", "EngineInspectShowOperation", "observability_inspect", "sys.runtime.cache", "", false},
     {"show.capabilities", "SHOW CAPABILITIES", "SHOW CAPABILITIES", "op.show.capabilities", "SBLR_OP_SHOW_CAPABILITIES", "sblr.observability.inspect.v3", "rs.show.capabilities.v1", "EngineInspectShowOperation", "observability_inspect", "sys.runtime.capabilities", "", false},
@@ -1536,16 +1536,16 @@ constexpr std::array<PublicExactCommandSpec, 187> kPublicExactCommandSpecs{{
     {"show.cluster_gpu_placement", "SHOW CLUSTER GPU PLACEMENT", "SHOW CLUSTER GPU PLACEMENT", "op.show.cluster_gpu_placement", "SBLR_OP_SHOW_CLUSTER_GPU_PLACEMENT", "sblr.cluster.private_operation.v3", "rs.show.cluster_gpu_placement.v1", "EngineClusterProviderRoute", "cluster_inspect", "sys.cluster.gpu_placement", "", false, true},
     {"show.context", "SHOW CONTEXT", "SHOW CONTEXT", "op.show.context", "SBLR_OP_SHOW_CONTEXT", "sblr.observability.inspect.v3", "rs.show.context.v1", "EngineInspectShowOperation", "observability_inspect", "sys.session.context", "", false},
     {"show.dialect", "SHOW DIALECT", "SHOW DIALECT", "op.show.dialect", "SBLR_OP_SHOW_DIALECT", "sblr.observability.inspect.v3", "rs.show.context.v1", "EngineInspectShowOperation", "observability_inspect", "sys.session.dialect", "", false},
-    {"show.discovery_rights", "SHOW DISCOVERY RIGHTS [FOR <principal_ref>]", "SHOW DISCOVERY RIGHTS", "op.show.discovery_rights", "SBLR_OP_SHOW_DISCOVERY_RIGHTS", "sblr.security.mutation_or_inspect.v3", "rs.security.grant.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.discovery_rights", "principal", false},
+    {"show.discovery_rights", "SHOW DISCOVERY RIGHTS [FOR <principal_ref>]", "SHOW DISCOVERY RIGHTS", "op.show.discovery_rights", "SBLR_OP_SHOW_DISCOVERY_RIGHTS", "sblr.catalog.introspect.v3", "rs.security.grant.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.discovery_rights", "principal", false},
     {"show.gpu", "SHOW GPU", "SHOW GPU", "op.show.gpu", "SBLR_OP_SHOW_GPU", "sblr.acceleration.gpu.v3", "rs.show.gpu.v1", "EngineInspectGpuAcceleration", "acceleration_inspect", "sys.acceleration.gpu_runtime", "", false},
     {"show.gpu_artifacts", "SHOW GPU ARTIFACTS", "SHOW GPU ARTIFACTS", "op.show.gpu_artifacts", "SBLR_OP_SHOW_GPU_ARTIFACTS", "sblr.acceleration.gpu.v3", "rs.show.native_compile.v1", "EngineInspectGpuAcceleration", "acceleration_inspect", "sys.acceleration.gpu_artifacts", "", false},
     {"show.gpu_capability", "SHOW GPU CAPABILITY", "SHOW GPU CAPABILITY", "op.show.gpu_capability", "SBLR_OP_SHOW_GPU_CAPABILITY", "sblr.acceleration.gpu.v3", "rs.show.gpu.v1", "EngineInspectGpuAcceleration", "acceleration_inspect", "sys.acceleration.gpu_capability", "", false},
     {"show.gpu_devices", "SHOW GPU DEVICES", "SHOW GPU DEVICES", "op.show.gpu_devices", "SBLR_OP_SHOW_GPU_DEVICES", "sblr.acceleration.gpu.v3", "rs.show.gpu.v1", "EngineInspectGpuAcceleration", "acceleration_inspect", "sys.acceleration.gpu_devices", "", false},
     {"show.gpu_kernels", "SHOW GPU KERNELS", "SHOW GPU KERNELS", "op.show.gpu_kernels", "SBLR_OP_SHOW_GPU_KERNELS", "sblr.acceleration.gpu.v3", "rs.show.native_compile.v1", "EngineInspectGpuAcceleration", "acceleration_inspect", "sys.acceleration.gpu_kernels", "", false},
     {"show.gpu_memory", "SHOW GPU MEMORY", "SHOW GPU MEMORY", "op.show.gpu_memory", "SBLR_OP_SHOW_GPU_MEMORY", "sblr.acceleration.gpu.v3", "rs.show.gpu.v1", "EngineInspectGpuAcceleration", "acceleration_inspect", "sys.acceleration.gpu_memory", "", false},
-    {"show.grants", "SHOW GRANTS [FOR <principal_ref>]", "SHOW GRANTS", "op.show.grants", "SBLR_OP_SHOW_GRANTS", "sblr.security.mutation_or_inspect.v3", "rs.security.grant.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.grants", "principal", false},
-    {"show.groups", "SHOW GROUPS", "SHOW GROUPS", "op.show.groups", "SBLR_OP_SHOW_GROUPS", "sblr.security.mutation_or_inspect.v3", "rs.security.principal.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.principals", "", false},
-    {"show.identity_providers", "SHOW IDENTITY PROVIDERS", "SHOW IDENTITY PROVIDERS", "op.show.identity_providers", "SBLR_OP_SHOW_IDENTITY_PROVIDERS", "sblr.security.mutation_or_inspect.v3", "rs.security.principal.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.identity_providers", "", false},
+    {"show.grants", "SHOW GRANTS [FOR <principal_ref>]", "SHOW GRANTS", "op.show.grants", "SBLR_OP_SHOW_GRANTS", "sblr.catalog.introspect.v3", "rs.security.grant.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.grants", "principal", false},
+    {"show.groups", "SHOW GROUPS", "SHOW GROUPS", "op.show.groups", "SBLR_OP_SHOW_GROUPS", "sblr.catalog.introspect.v3", "rs.security.principal.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.principals", "", false},
+    {"show.identity_providers", "SHOW IDENTITY PROVIDERS", "SHOW IDENTITY PROVIDERS", "op.show.identity_providers", "SBLR_OP_SHOW_IDENTITY_PROVIDERS", "sblr.catalog.introspect.v3", "rs.security.principal.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.identity_providers", "", false},
     {"show.index_health", "SHOW INDEX HEALTH [FOR <index_ref>]", "SHOW INDEX HEALTH", "op.show.index_health", "SBLR_OP_SHOW_INDEX_HEALTH", "sblr.observability.inspect.v3", "rs.show.index_health.v1", "EngineInspectShowOperation", "observability_inspect", "sys.index.health", "index", false},
     {"show.io", "SHOW IO", "SHOW IO", "op.show.io", "SBLR_OP_SHOW_IO", "sblr.observability.inspect.v3", "rs.show.io.v1", "EngineInspectShowOperation", "observability_inspect", "sys.storage.io", "", false},
     {"show.job", "SHOW JOB <job_ref>", "SHOW JOB", "op.show.job", "SBLR_OP_SHOW_JOB", "sblr.observability.inspect.v3", "rs.show.jobs.v1", "EngineInspectShowOperation", "observability_inspect", "sys.jobs.scheduler", "job", false},
@@ -1566,21 +1566,21 @@ constexpr std::array<PublicExactCommandSpec, 187> kPublicExactCommandSpecs{{
     {"show.management.servers", "SHOW MANAGEMENT SERVERS", "SHOW MANAGEMENT SERVERS", "op.show.management.servers", "SBLR_OP_SHOW_MANAGEMENT_SERVERS", "sblr.management.runtime_operation.v3", "rs.management.server.v1", "EngineInspectManagementRuntime", "management_inspect", "sys.management.servers", "", false},
     {"show.management.support_bundle_safety", "SHOW MANAGEMENT SUPPORT BUNDLE SAFETY", "SHOW MANAGEMENT SUPPORT BUNDLE SAFETY", "op.show.management.support_bundle_safety", "SBLR_OP_SHOW_MANAGEMENT_SUPPORT_BUNDLE_SAFETY", "sblr.management.runtime_operation.v3", "rs.management.readiness.v1", "EngineInspectManagementRuntime", "management_inspect", "sys.management.support_bundle_safety", "", false},
     {"show.management.support_bundles", "SHOW MANAGEMENT SUPPORT BUNDLES", "SHOW MANAGEMENT SUPPORT BUNDLES", "op.show.management.support_bundles", "SBLR_OP_SHOW_MANAGEMENT_SUPPORT_BUNDLES", "sblr.management.runtime_operation.v3", "rs.management.instruction.v1", "EngineInspectManagementRuntime", "management_inspect", "sys.management.support_bundles", "", false},
-    {"show.masks", "SHOW MASKS", "SHOW MASKS", "op.show.masks", "SBLR_OP_SHOW_MASKS", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.masks", "", false},
+    {"show.masks", "SHOW MASKS", "SHOW MASKS", "op.show.masks", "SBLR_OP_SHOW_MASKS", "sblr.policy.operation.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.masks", "", false},
     {"show.metrics", "SHOW METRICS", "SHOW METRICS", "observability.show_metrics", "SBLR_OBSERVABILITY_SHOW_METRICS", "sblr.observability.inspect.v3", "rs.show.metrics.v1", "EngineInspectShowOperation", "observability_inspect", "sys.metrics.registry", "", false},
     {"show.metrics_family", "SHOW METRICS FAMILY <family>", "SHOW METRICS FAMILY", "op.show.metrics_family", "SBLR_OP_SHOW_METRICS_FAMILY", "sblr.observability.inspect.v3", "rs.show.metrics.v1", "EngineInspectShowOperation", "observability_inspect", "sys.metrics.registry.family", "metrics_family", false},
     {"show.native_compile", "SHOW NATIVE COMPILE", "SHOW NATIVE COMPILE", "op.show.native_compile", "SBLR_OP_SHOW_NATIVE_COMPILE", "sblr.acceleration.llvm.v3", "rs.show.native_compile.v1", "EngineInspectNativeCompile", "native_compile_inspect", "sys.native_compile.runtime", "", false},
     {"show.native_compile_cache", "SHOW NATIVE COMPILE CACHE", "SHOW NATIVE COMPILE CACHE", "op.show.native_compile_cache", "SBLR_OP_SHOW_NATIVE_COMPILE_CACHE", "sblr.acceleration.llvm.v3", "rs.show.native_compile.v1", "EngineInspectNativeCompile", "native_compile_inspect", "sys.native_compile.cache", "", false},
-    {"show.object_visibility", "SHOW OBJECT VISIBILITY [FOR <object_ref>]", "SHOW OBJECT VISIBILITY", "op.show.object_visibility", "SBLR_OP_SHOW_OBJECT_VISIBILITY", "sblr.security.mutation_or_inspect.v3", "rs.security.grant.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.object_visibility", "object", false},
+    {"show.object_visibility", "SHOW OBJECT VISIBILITY [FOR <object_ref>]", "SHOW OBJECT VISIBILITY", "op.show.object_visibility", "SBLR_OP_SHOW_OBJECT_VISIBILITY", "sblr.catalog.introspect.v3", "rs.security.grant.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.object_visibility", "object", false},
     {"show.performance", "SHOW PERFORMANCE", "SHOW PERFORMANCE", "op.show.performance", "SBLR_OP_SHOW_PERFORMANCE", "sblr.observability.inspect.v3", "rs.show.performance.v1", "EngineInspectShowOperation", "observability_inspect", "sys.performance", "", false},
-    {"show.policies", "SHOW POLICIES", "SHOW POLICIES", "op.show.policies", "SBLR_OP_SHOW_POLICIES", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.policies", "", false},
+    {"show.policies", "SHOW POLICIES", "SHOW POLICIES", "op.show.policies", "SBLR_OP_SHOW_POLICIES", "sblr.policy.operation.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.policies", "", false},
     {"show.query_store", "SHOW QUERY STORE", "SHOW QUERY STORE", "op.show.query_store", "SBLR_OP_SHOW_QUERY_STORE", "sblr.observability.inspect.v3", "rs.show.performance.v1", "EngineInspectShowOperation", "observability_inspect", "sys.query_store", "", false},
-    {"show.rls", "SHOW RLS", "SHOW RLS", "op.show.rls", "SBLR_OP_SHOW_RLS", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.rls", "", false},
-    {"show.roles", "SHOW ROLES", "SHOW ROLES", "op.show.roles", "SBLR_OP_SHOW_ROLES", "sblr.security.mutation_or_inspect.v3", "rs.security.principal.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.roles", "", false},
+    {"show.rls", "SHOW RLS", "SHOW RLS", "op.show.rls", "SBLR_OP_SHOW_RLS", "sblr.policy.operation.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.rls", "", false},
+    {"show.roles", "SHOW ROLES", "SHOW ROLES", "op.show.roles", "SBLR_OP_SHOW_ROLES", "sblr.catalog.introspect.v3", "rs.security.principal.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.roles", "", false},
     {"show.schema_path", "SHOW SCHEMA PATH", "SHOW SCHEMA PATH", "op.show.schema_path", "SBLR_OP_SHOW_SCHEMA_PATH", "sblr.observability.inspect.v3", "rs.show.path.v1", "EngineInspectShowOperation", "observability_inspect", "sys.session.schema_path", "", false},
     {"show.search_path", "SHOW SEARCH PATH", "SHOW SEARCH PATH", "op.show.search_path", "SBLR_OP_SHOW_SEARCH_PATH", "sblr.observability.inspect.v3", "rs.show.path.v1", "EngineInspectShowOperation", "observability_inspect", "sys.session.search_path", "", false},
-    {"show.security_events", "SHOW SECURITY EVENTS", "SHOW SECURITY EVENTS", "op.show.security_events", "SBLR_OP_SHOW_SECURITY_EVENTS", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.events", "", false},
-    {"show.security_profiles", "SHOW SECURITY PROFILES", "SHOW SECURITY PROFILES", "op.show.security_profiles", "SBLR_OP_SHOW_SECURITY_PROFILES", "sblr.security.mutation_or_inspect.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.profiles", "", false},
+    {"show.security_events", "SHOW SECURITY EVENTS", "SHOW SECURITY EVENTS", "op.show.security_events", "SBLR_OP_SHOW_SECURITY_EVENTS", "sblr.catalog.introspect.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.events", "", false},
+    {"show.security_profiles", "SHOW SECURITY PROFILES", "SHOW SECURITY PROFILES", "op.show.security_profiles", "SBLR_OP_SHOW_SECURITY_PROFILES", "sblr.catalog.introspect.v3", "rs.security.policy.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.profiles", "", false},
     {"show.sessions", "SHOW SESSIONS", "SHOW SESSIONS", "observability.show_sessions", "SBLR_OBSERVABILITY_SHOW_SESSIONS", "sblr.observability.inspect.v3", "rs.show.sessions.v1", "EngineInspectShowOperation", "observability_inspect", "sys.sessions", "", false},
     {"show.statement_cache", "SHOW STATEMENT CACHE", "SHOW STATEMENT CACHE", "op.show.statement_cache", "SBLR_OP_SHOW_STATEMENT_CACHE", "sblr.observability.inspect.v3", "rs.show.statement_cache.v1", "EngineInspectShowOperation", "observability_inspect", "sys.session.statement_cache", "", false},
     {"show.statements", "SHOW STATEMENTS", "SHOW STATEMENTS", "observability.show_statements", "SBLR_OBSERVABILITY_SHOW_STATEMENTS", "sblr.observability.inspect.v3", "rs.show.statements.v1", "EngineInspectShowOperation", "observability_inspect", "sys.statements", "", false},
@@ -1588,7 +1588,7 @@ constexpr std::array<PublicExactCommandSpec, 187> kPublicExactCommandSpecs{{
     {"show.transaction", "SHOW TRANSACTION", "SHOW TRANSACTION", "op.show.transaction", "SBLR_OP_SHOW_TRANSACTION", "sblr.observability.inspect.v3", "rs.show.transaction.v1", "EngineInspectShowOperation", "observability_inspect", "sys.session.transaction", "", false},
     {"show.transaction_isolation", "SHOW TRANSACTION ISOLATION", "SHOW TRANSACTION ISOLATION", "op.show.transaction_isolation", "SBLR_OP_SHOW_TRANSACTION_ISOLATION", "sblr.observability.inspect.v3", "rs.show.transaction.v1", "EngineInspectShowOperation", "observability_inspect", "sys.session.transaction_isolation", "", false},
     {"show.transactions", "SHOW TRANSACTIONS", "SHOW TRANSACTIONS", "observability.show_transactions", "SBLR_OBSERVABILITY_SHOW_TRANSACTIONS", "sblr.observability.inspect.v3", "rs.show.transactions.v1", "EngineInspectShowOperation", "observability_inspect", "sys.transactions", "", false},
-    {"show.users", "SHOW USERS", "SHOW USERS", "op.show.users", "SBLR_OP_SHOW_USERS", "sblr.security.mutation_or_inspect.v3", "rs.security.principal.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.users", "", false},
+    {"show.users", "SHOW USERS", "SHOW USERS", "op.show.users", "SBLR_OP_SHOW_USERS", "sblr.catalog.introspect.v3", "rs.security.principal.v1", "EngineSecurityInspectOperation", "security_inspect", "sys.security.users", "", false},
     {"show.version", "SHOW VERSION", "SHOW VERSION", "observability.show_version", "SBLR_OBSERVABILITY_SHOW_VERSION", "sblr.observability.inspect.v3", "rs.show.version.v1", "EngineInspectShowOperation", "observability_inspect", "sys.engine.version", "", false},
     {"show.wait_events", "SHOW WAIT EVENTS", "SHOW WAIT EVENTS", "op.show.wait_events", "SBLR_OP_SHOW_WAIT_EVENTS", "sblr.observability.inspect.v3", "rs.show.wait_events.v1", "EngineInspectShowOperation", "observability_inspect", "sys.wait_events", "", false},
 }};
@@ -1713,22 +1713,22 @@ constexpr std::array<EngineApiCommandSpec, 51> kEngineApiCommandSpecs{{
     {"engine.import.normalize_checkpoint_model", "ENGINE IMPORT CHECKPOINT MODEL NORMALIZE", "ENGINE IMPORT CHECKPOINT MODEL NORMALIZE", "dml.normalize_import_checkpoint_model", "SBLR_DML_IMPORT_CHECKPOINT_MODEL", "sblr.dml.operation.v3", "result.shape.import_checkpoint_model", "EngineNormalizeImportCheckpointModel", "dml_import_checkpoint_model", "sys.import.checkpoint_policy", "right.write", false, true},
     {"engine.import.normalize_reject_model", "ENGINE IMPORT REJECT MODEL NORMALIZE", "ENGINE IMPORT REJECT MODEL NORMALIZE", "dml.normalize_import_reject_model", "SBLR_DML_IMPORT_REJECT_MODEL", "sblr.dml.operation.v3", "result.shape.import_reject_model", "EngineNormalizeImportRejectModel", "dml_import_reject_model", "sys.import.reject_policy", "right.write", false, true},
     {"engine.ddl.create_database", "ENGINE DDL CREATE DATABASE", "ENGINE DDL CREATE DATABASE", "ddl.create_database", "SBLR_DDL_CREATE_DATABASE", "sblr.catalog.mutation.v3", "result.shape.catalog_mutation_status", "EngineCreateDatabase", "ddl_database_create", "sys.catalog.database_descriptor", "right.catalog_mutate", true, false},
-    {"engine.query.bind_expression", "ENGINE QUERY BIND EXPRESSION", "ENGINE QUERY BIND EXPRESSION", "query.bind_expression", "SBLR_QUERY_BIND_EXPRESSION", "sblr.expression.runtime.v3", "result.shape.query_binding", "EngineBindExpression", "query_binding", "sys.query.expression_descriptor", "right.query_execute", false, false},
-    {"engine.query.bind_predicate", "ENGINE QUERY BIND PREDICATE", "ENGINE QUERY BIND PREDICATE", "query.bind_predicate", "SBLR_QUERY_BIND_PREDICATE", "sblr.expression.runtime.v3", "result.shape.query_binding", "EngineBindPredicate", "query_binding", "sys.query.predicate_descriptor", "right.query_execute", false, false},
-    {"engine.query.bind_projection", "ENGINE QUERY BIND PROJECTION", "ENGINE QUERY BIND PROJECTION", "query.bind_projection", "SBLR_QUERY_BIND_PROJECTION", "sblr.expression.runtime.v3", "result.shape.query_binding", "EngineBindProjection", "query_binding", "sys.query.projection_descriptor", "right.query_execute", false, false},
+    {"engine.query.bind_expression", "ENGINE QUERY BIND EXPRESSION", "ENGINE QUERY BIND EXPRESSION", "query.bind_expression", "SBLR_QUERY_BIND_EXPRESSION", "sblr.query.relational.v3", "result.shape.query_binding", "EngineBindExpression", "query_binding", "sys.query.expression_descriptor", "right.query_execute", false, false},
+    {"engine.query.bind_predicate", "ENGINE QUERY BIND PREDICATE", "ENGINE QUERY BIND PREDICATE", "query.bind_predicate", "SBLR_QUERY_BIND_PREDICATE", "sblr.query.relational.v3", "result.shape.query_binding", "EngineBindPredicate", "query_binding", "sys.query.predicate_descriptor", "right.query_execute", false, false},
+    {"engine.query.bind_projection", "ENGINE QUERY BIND PROJECTION", "ENGINE QUERY BIND PROJECTION", "query.bind_projection", "SBLR_QUERY_BIND_PROJECTION", "sblr.query.relational.v3", "result.shape.query_binding", "EngineBindProjection", "query_binding", "sys.query.projection_descriptor", "right.query_execute", false, false},
     {"engine.transaction.prepare", "PREPARE TRANSACTION", "PREPARE TRANSACTION", "transaction.prepare", "SBLR_TRANSACTION_PREPARE", "sblr.transaction.control.v3", "result.shape.transaction_status", "EnginePrepareTransaction", "transaction_prepare", "sys.transaction.inventory", "right.transaction_control", true, true},
     {"engine.catalog.resolve_name", "ENGINE CATALOG RESOLVE NAME", "ENGINE CATALOG RESOLVE NAME", "catalog.resolve_name", "SBLR_CATALOG_RESOLVE_NAME", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineResolveName", "catalog_lookup", "sys.name_registry", "right.catalog_read", false, false},
     {"engine.catalog.map_uuid_to_name", "ENGINE CATALOG MAP UUID TO NAME", "ENGINE CATALOG MAP UUID TO NAME", "catalog.map_uuid_to_name", "SBLR_CATALOG_MAP_UUID_TO_NAME", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineMapUuidToName", "catalog_lookup", "sys.name_registry", "right.catalog_read", false, false},
     {"engine.catalog.lookup_object", "ENGINE CATALOG LOOKUP OBJECT", "ENGINE CATALOG LOOKUP OBJECT", "catalog.lookup_object", "SBLR_CATALOG_LOOKUP_OBJECT", "sblr.catalog.mutation.v3", "result.shape.catalog_lookup", "EngineLookupObject", "catalog_lookup", "sys.catalog.object_descriptor", "right.catalog_read", false, false},
     {"engine.catalog.list_children", "ENGINE CATALOG LIST CHILDREN", "ENGINE CATALOG LIST CHILDREN", "catalog.list_children", "SBLR_CATALOG_LIST_CHILDREN", "sblr.catalog.mutation.v3", "result.shape.catalog_children", "EngineListCatalogChildren", "catalog_lookup", "sys.catalog.object_descriptor", "right.catalog_read", false, false},
     {"engine.catalog.get_dependencies", "ENGINE CATALOG GET DEPENDENCIES", "ENGINE CATALOG GET DEPENDENCIES", "catalog.get_dependencies", "SBLR_CATALOG_GET_DEPENDENCIES", "sblr.catalog.mutation.v3", "result.shape.catalog_dependencies", "EngineGetDependencies", "catalog_lookup", "sys.catalog.dependency_graph", "right.catalog_read", false, false},
-    {"engine.security.create_identity", "ENGINE SECURITY CREATE IDENTITY", "ENGINE SECURITY CREATE IDENTITY", "security.create_identity", "SBLR_SECURITY_CREATE_IDENTITY", "sblr.security.mutation_or_inspect.v3", "result.shape.security_status", "EngineCreateIdentity", "security_identity", "sys.security.identity", "right.security_admin", true, true},
-    {"engine.security.alter_identity", "ENGINE SECURITY ALTER IDENTITY", "ENGINE SECURITY ALTER IDENTITY", "security.alter_identity", "SBLR_SECURITY_ALTER_IDENTITY", "sblr.security.mutation_or_inspect.v3", "result.shape.security_status", "EngineAlterIdentity", "security_identity", "sys.security.identity", "right.security_admin", true, true},
-    {"engine.security.grant_right", "ENGINE SECURITY GRANT RIGHT", "ENGINE SECURITY GRANT RIGHT", "security.grant_right", "SBLR_SECURITY_GRANT_RIGHT", "sblr.security.mutation_or_inspect.v3", "result.shape.security_grant", "EngineGrantRight", "security_grant", "sys.security.grants", "right.security_admin", true, true},
-    {"engine.security.revoke_right", "ENGINE SECURITY REVOKE RIGHT", "ENGINE SECURITY REVOKE RIGHT", "security.revoke_right", "SBLR_SECURITY_REVOKE_RIGHT", "sblr.security.mutation_or_inspect.v3", "result.shape.security_grant", "EngineRevokeRight", "security_grant", "sys.security.grants", "right.security_admin", true, true},
-    {"engine.security.evaluate_visibility", "ENGINE SECURITY EVALUATE VISIBILITY", "ENGINE SECURITY EVALUATE VISIBILITY", "security.evaluate_visibility", "SBLR_SECURITY_EVALUATE_VISIBILITY", "sblr.security.mutation_or_inspect.v3", "result.shape.security_decision", "EngineEvaluateVisibility", "security_evaluation", "sys.security.visibility_policy", "right.security_inspect", false, false},
-    {"engine.security.evaluate_policy", "ENGINE SECURITY EVALUATE POLICY", "ENGINE SECURITY EVALUATE POLICY", "security.evaluate_policy", "SBLR_SECURITY_EVALUATE_POLICY", "sblr.security.mutation_or_inspect.v3", "result.shape.security_decision", "EngineEvaluatePolicy", "security_evaluation", "sys.security.policy", "right.security_inspect", false, false},
-    {"engine.security.evaluate_deep_enforcement", "ENGINE SECURITY EVALUATE DEEP ENFORCEMENT", "ENGINE SECURITY EVALUATE DEEP ENFORCEMENT", "security.evaluate_deep_enforcement", "SBLR_SECURITY_EVALUATE_DEEP_ENFORCEMENT", "sblr.security.mutation_or_inspect.v3", "result.shape.security_decision", "EngineEvaluateDeepSecurity", "security_evaluation", "sys.security.deep_enforcement", "right.security_inspect", false, false},
+    {"engine.security.create_identity", "ENGINE SECURITY CREATE IDENTITY", "ENGINE SECURITY CREATE IDENTITY", "security.create_identity", "SBLR_SECURITY_CREATE_IDENTITY", "sblr.security.mutation.v3", "result.shape.security_status", "EngineCreateIdentity", "security_identity", "sys.security.identity", "right.security_admin", true, true},
+    {"engine.security.alter_identity", "ENGINE SECURITY ALTER IDENTITY", "ENGINE SECURITY ALTER IDENTITY", "security.alter_identity", "SBLR_SECURITY_ALTER_IDENTITY", "sblr.security.mutation.v3", "result.shape.security_status", "EngineAlterIdentity", "security_identity", "sys.security.identity", "right.security_admin", true, true},
+    {"engine.security.grant_right", "ENGINE SECURITY GRANT RIGHT", "ENGINE SECURITY GRANT RIGHT", "security.grant_right", "SBLR_SECURITY_GRANT_RIGHT", "sblr.security.mutation.v3", "result.shape.security_grant", "EngineGrantRight", "security_grant", "sys.security.grants", "right.security_admin", true, true},
+    {"engine.security.revoke_right", "ENGINE SECURITY REVOKE RIGHT", "ENGINE SECURITY REVOKE RIGHT", "security.revoke_right", "SBLR_SECURITY_REVOKE_RIGHT", "sblr.security.mutation.v3", "result.shape.security_grant", "EngineRevokeRight", "security_grant", "sys.security.grants", "right.security_admin", true, true},
+    {"engine.security.evaluate_visibility", "ENGINE SECURITY EVALUATE VISIBILITY", "ENGINE SECURITY EVALUATE VISIBILITY", "security.evaluate_visibility", "SBLR_SECURITY_EVALUATE_VISIBILITY", "sblr.policy.operation.v3", "result.shape.security_decision", "EngineEvaluateVisibility", "security_evaluation", "sys.security.visibility_policy", "right.security_inspect", false, false},
+    {"engine.security.evaluate_policy", "ENGINE SECURITY EVALUATE POLICY", "ENGINE SECURITY EVALUATE POLICY", "security.evaluate_policy", "SBLR_SECURITY_EVALUATE_POLICY", "sblr.policy.operation.v3", "result.shape.security_decision", "EngineEvaluatePolicy", "security_evaluation", "sys.security.policy", "right.security_inspect", false, false},
+    {"engine.security.evaluate_deep_enforcement", "ENGINE SECURITY EVALUATE DEEP ENFORCEMENT", "ENGINE SECURITY EVALUATE DEEP ENFORCEMENT", "security.evaluate_deep_enforcement", "SBLR_SECURITY_EVALUATE_DEEP_ENFORCEMENT", "sblr.policy.operation.v3", "result.shape.security_decision", "EngineEvaluateDeepSecurity", "security_evaluation", "sys.security.deep_enforcement", "right.security_inspect", false, false},
     {"engine.management.inspect_config", "ENGINE MANAGEMENT INSPECT CONFIG", "ENGINE MANAGEMENT INSPECT CONFIG", "management.inspect_config", "SBLR_MANAGEMENT_INSPECT_CONFIG", "sblr.management.runtime_operation.v3", "result.shape.management_config", "EngineInspectConfig", "management_config", "sys.management.config", "right.management_runtime_read", false, false},
     {"engine.management.set_config", "ENGINE MANAGEMENT SET CONFIG", "ENGINE MANAGEMENT SET CONFIG", "management.set_config", "SBLR_MANAGEMENT_SET_CONFIG", "sblr.management.runtime_operation.v3", "result.shape.management_config_status", "EngineSetConfig", "management_config", "sys.management.config", "right.management_runtime_control", true, false},
     {"engine.management.reset_config", "ENGINE MANAGEMENT RESET CONFIG", "ENGINE MANAGEMENT RESET CONFIG", "management.reset_config", "SBLR_MANAGEMENT_RESET_CONFIG", "sblr.management.runtime_operation.v3", "result.shape.management_config_status", "EngineResetConfig", "management_config", "sys.management.config", "right.management_runtime_control", true, false},
@@ -1736,14 +1736,14 @@ constexpr std::array<EngineApiCommandSpec, 51> kEngineApiCommandSpecs{{
     {"engine.lifecycle.enter_restricted_open", "ALTER DATABASE ENTER RESTRICTED OPEN", "ALTER DATABASE ENTER RESTRICTED OPEN", "lifecycle.enter_restricted_open", "SBLR_LIFECYCLE_ENTER_RESTRICTED_OPEN", "sblr.management.runtime_operation.v3", "result.shape.lifecycle_state", "EngineEnterRestrictedOpenLifecycle", "lifecycle_control", "sys.database.lifecycle", "right.lifecycle_control", true, false},
     {"engine.lifecycle.exit_restricted_open", "ALTER DATABASE EXIT RESTRICTED OPEN", "ALTER DATABASE EXIT RESTRICTED OPEN", "lifecycle.exit_restricted_open", "SBLR_LIFECYCLE_EXIT_RESTRICTED_OPEN", "sblr.management.runtime_operation.v3", "result.shape.lifecycle_state", "EngineExitRestrictedOpenLifecycle", "lifecycle_control", "sys.database.lifecycle", "right.lifecycle_control", true, false},
     {"engine.extensibility.register_parser_package", "REGISTER PARSER PACKAGE", "REGISTER PARSER PACKAGE", "extensibility.register_parser_package", "SBLR_EXTENSIBILITY_REGISTER_PARSER_PACKAGE", "sblr.udr.operation.v3", "result.shape.parser_package_status", "EngineRegisterParserPackage", "parser_package", "sys.parser_package_registry", "right.parser_package_manage", true, true},
-    {"engine.query.extract_value", "ENGINE QUERY EXTRACT VALUE", "ENGINE QUERY EXTRACT VALUE", "query.extract_value", "SBLR_QUERY_EXTRACT_VALUE", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineExtractValue", "query_value_helper", "sys.query.value_descriptor", "right.query_execute", false, false},
-    {"engine.query.set_operation", "ENGINE QUERY SET OPERATION", "ENGINE QUERY SET OPERATION", "query.set_operation", "SBLR_QUERY_SET_OPERATION", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineSetOperation", "query_value_helper", "sys.query.value_descriptor", "right.query_execute", false, false},
-    {"engine.query.apply_numeric_operation", "ENGINE QUERY APPLY NUMERIC OPERATION", "ENGINE QUERY APPLY NUMERIC OPERATION", "query.apply_numeric_operation", "SBLR_QUERY_APPLY_NUMERIC_OPERATION", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineApplyNumericOperation", "query_value_helper", "sys.query.value_descriptor", "right.query_execute", false, false},
-    {"engine.query.canonicalize_document_value", "ENGINE QUERY CANONICALIZE DOCUMENT VALUE", "ENGINE QUERY CANONICALIZE DOCUMENT VALUE", "query.canonicalize_document_value", "SBLR_QUERY_CANONICALIZE_DOCUMENT_VALUE", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineCanonicalizeDocumentValue", "query_value_helper", "sys.query.document_descriptor", "right.query_execute", false, false},
-    {"engine.query.evaluate_advanced_datatype_family", "ENGINE QUERY EVALUATE ADVANCED DATATYPE FAMILY", "ENGINE QUERY EVALUATE ADVANCED DATATYPE FAMILY", "query.evaluate_advanced_datatype_family", "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY", "sblr.expression.runtime.v3", "result.shape.datatype_family_evaluation", "EngineEvaluateAdvancedDatatypeFamily", "query_value_helper", "sys.query.datatype_family_descriptor", "right.query_execute", false, false},
-    {"engine.query.validate_domain_value", "ENGINE QUERY VALIDATE DOMAIN VALUE", "ENGINE QUERY VALIDATE DOMAIN VALUE", "query.validate_domain_value", "SBLR_QUERY_VALIDATE_DOMAIN_VALUE", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineValidateDomainValue", "query_value_helper", "sys.query.domain_descriptor", "right.query_execute", false, false},
-    {"engine.query.invoke_domain_method", "ENGINE QUERY INVOKE DOMAIN METHOD", "ENGINE QUERY INVOKE DOMAIN METHOD", "query.invoke_domain_method", "SBLR_QUERY_INVOKE_DOMAIN_METHOD", "sblr.expression.runtime.v3", "result.shape.typed_value", "EngineInvokeDomainMethod", "query_value_helper", "sys.query.domain_descriptor", "right.query_execute", false, false},
-    {"engine.notification.unlisten_all", "UNLISTEN ALL NOTIFICATIONS", "UNLISTEN ALL NOTIFICATIONS", "session.notification.unlisten_all", "SBLR_EVENT_CHANNEL_UNLISTEN_ALL", "sblr.general.operation.v3", "result.shape.event_subscription_status", "EngineUnlistenSessionNotifications", "event_notification", "sys.event.notification_subscription", "right.event_subscribe", true, false},
+    {"engine.query.extract_value", "ENGINE QUERY EXTRACT VALUE", "ENGINE QUERY EXTRACT VALUE", "query.extract_value", "SBLR_QUERY_EXTRACT_VALUE", "sblr.query.relational.v3", "result.shape.typed_value", "EngineExtractValue", "query_value_helper", "sys.query.value_descriptor", "right.query_execute", false, false},
+    {"engine.query.set_operation", "ENGINE QUERY SET OPERATION", "ENGINE QUERY SET OPERATION", "query.set_operation", "SBLR_QUERY_SET_OPERATION", "sblr.query.relational.v3", "result.shape.typed_value", "EngineSetOperation", "query_value_helper", "sys.query.value_descriptor", "right.query_execute", false, false},
+    {"engine.query.apply_numeric_operation", "ENGINE QUERY APPLY NUMERIC OPERATION", "ENGINE QUERY APPLY NUMERIC OPERATION", "query.apply_numeric_operation", "SBLR_QUERY_APPLY_NUMERIC_OPERATION", "sblr.query.relational.v3", "result.shape.typed_value", "EngineApplyNumericOperation", "query_value_helper", "sys.query.value_descriptor", "right.query_execute", false, false},
+    {"engine.query.canonicalize_document_value", "ENGINE QUERY CANONICALIZE DOCUMENT VALUE", "ENGINE QUERY CANONICALIZE DOCUMENT VALUE", "query.canonicalize_document_value", "SBLR_QUERY_CANONICALIZE_DOCUMENT_VALUE", "sblr.query.document.v3", "result.shape.typed_value", "EngineCanonicalizeDocumentValue", "query_value_helper", "sys.query.document_descriptor", "right.query_execute", false, false},
+    {"engine.query.evaluate_advanced_datatype_family", "ENGINE QUERY EVALUATE ADVANCED DATATYPE FAMILY", "ENGINE QUERY EVALUATE ADVANCED DATATYPE FAMILY", "query.evaluate_advanced_datatype_family", "SBLR_QUERY_EVALUATE_ADVANCED_DATATYPE_FAMILY", "sblr.query.relational.v3", "result.shape.datatype_family_evaluation", "EngineEvaluateAdvancedDatatypeFamily", "query_value_helper", "sys.query.datatype_family_descriptor", "right.query_execute", false, false},
+    {"engine.query.validate_domain_value", "ENGINE QUERY VALIDATE DOMAIN VALUE", "ENGINE QUERY VALIDATE DOMAIN VALUE", "query.validate_domain_value", "SBLR_QUERY_VALIDATE_DOMAIN_VALUE", "sblr.query.relational.v3", "result.shape.typed_value", "EngineValidateDomainValue", "query_value_helper", "sys.query.domain_descriptor", "right.query_execute", false, false},
+    {"engine.query.invoke_domain_method", "ENGINE QUERY INVOKE DOMAIN METHOD", "ENGINE QUERY INVOKE DOMAIN METHOD", "query.invoke_domain_method", "SBLR_QUERY_INVOKE_DOMAIN_METHOD", "sblr.query.relational.v3", "result.shape.typed_value", "EngineInvokeDomainMethod", "query_value_helper", "sys.query.domain_descriptor", "right.query_execute", false, false},
+    {"engine.notification.unlisten_all", "UNLISTEN ALL NOTIFICATIONS", "UNLISTEN ALL NOTIFICATIONS", "session.notification.unlisten_all", "SBLR_EVENT_CHANNEL_UNLISTEN_ALL", "sblr.event.channel.v3", "result.shape.event_subscription_status", "EngineUnlistenSessionNotifications", "event_notification", "sys.event.notification_subscription", "right.event_subscribe", true, false},
     {"engine.cluster.sys_agents", "ENGINE CLUSTER SYS AGENTS", "ENGINE CLUSTER SYS AGENTS", "cluster.sys.agents", "SBLR_CLUSTER_SYS_AGENTS", "sblr.cluster.private_operation.v3", "cluster.provider.stub.v1", "EngineClusterProviderRoute", "cluster_provider_route", "sys.cluster.agents", "right.cluster_inspect", false, false, true},
     {"engine.cluster.inspect_state", "ENGINE CLUSTER INSPECT STATE", "ENGINE CLUSTER INSPECT STATE", "cluster.inspect_state", "SBLR_CLUSTER_INSPECT_STATE", "sblr.cluster.private_operation.v3", "cluster.provider.stub.v1", "EngineClusterProviderRoute", "cluster_provider_route", "sys.cluster.state", "right.cluster_inspect", false, false, true},
     {"engine.cluster.inspect_routing_plan", "ENGINE CLUSTER INSPECT ROUTING PLAN", "ENGINE CLUSTER INSPECT ROUTING PLAN", "cluster.inspect_routing_plan", "SBLR_CLUSTER_INSPECT_ROUTING_PLAN", "sblr.cluster.private_operation.v3", "cluster.provider.stub.v1", "EngineClusterProviderRoute", "cluster_provider_route", "sys.cluster.routing", "right.cluster_inspect", false, false, true},
@@ -3839,7 +3839,7 @@ Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077StorageRoute(
   const std::string runtime_evidence_id = canonical_name;
   return MakeSbsfc077Route(std::move(surface_id),
                            std::move(canonical_name),
-                           "sblr.storage.management_operation.v3",
+                           "sblr.filespace.management.v3",
                            "storage.manage_operation",
                            StorageOpcodeForOperation("storage.manage_operation"),
                            "EngineStorageManagementOperation",
@@ -3857,7 +3857,7 @@ Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077FilespaceLifecycleRoute(
   const std::string opcode = StorageOpcodeForOperation(operation_id);
   auto info = MakeSbsfc077Route(std::move(surface_id),
                                 std::move(canonical_name),
-                                "sblr.storage.management_operation.v3",
+                                "sblr.filespace.management.v3",
                                 operation_id,
                                 opcode,
                                 "EngineFilespaceLifecycleOperation",
@@ -3876,7 +3876,7 @@ Sbsfc077NonGeneralResidualRouteInfo MakeSbsfc077FilespacePreallocateRoute(
     std::string route_kind) {
   auto info = MakeSbsfc077Route(std::move(surface_id),
                                 std::move(canonical_name),
-                                "sblr.storage.management_operation.v3",
+                                "sblr.filespace.management.v3",
                                 "filespace.preallocate",
                                 StorageOpcodeForOperation("filespace.preallocate"),
                                 "EngineFilespacePreallocate",
@@ -4069,17 +4069,37 @@ std::string Sbsfc080OpcodeForOperation(std::string_view operation_id) {
 }
 
 std::string Sbsfc080RouteFamilyForOperation(std::string_view operation_id) {
+  if (operation_id == "observability.show_diagnostics" ||
+      operation_id == "observability.show_diagnostics_extended") {
+    return "sblr.diagnostic.control.v3";
+  }
+  if (operation_id == "observability.show_metrics") {
+    return "sblr.metrics.read.v3";
+  }
+  if (operation_id == "observability.show_transactions") {
+    return "sblr.mga.report.v3";
+  }
+  if (operation_id == "observability.show_catalog") {
+    return "sblr.catalog.introspect.v3";
+  }
+  if (operation_id == "observability.show_filespace_extended") {
+    return "sblr.filespace.management.v3";
+  }
   if (operation_id.rfind("observability.", 0) == 0) {
-    return "sblr.observability.inspect.v3";
+    return "sblr.management.report.v3";
+  }
+  if (operation_id == "management.inspect_runtime" ||
+      operation_id == "management.inspect_config") {
+    return "sblr.management.report.v3";
   }
   if (operation_id.rfind("management.", 0) == 0) {
-    return "sblr.management.runtime_operation.v3";
+    return "sblr.management.control.v3";
   }
   if (operation_id.rfind("transaction.", 0) == 0) {
     return "sblr.transaction.control.v3";
   }
   if (operation_id.rfind("storage.", 0) == 0) {
-    return "sblr.storage.management_operation.v3";
+    return "sblr.filespace.management.v3";
   }
   if (operation_id.rfind("cluster.", 0) == 0) {
     return "sblr.cluster.private_operation.v3";
@@ -18545,8 +18565,13 @@ void PopulateSecurityPolicyRouteAuthority(SblrEnvelope* envelope,
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = info.opcode;
   envelope->engine_api_operation_id = info.operation_id;
-  envelope->operation_family = "sblr.security.mutation_or_inspect.v3";
-  envelope->sblr_operation_key = "sblr.security.mutation_or_inspect.v3";
+  const bool security_mutation_route =
+      info.operation_id == "security.session.set_role" ||
+      info.operation_id == "security.principal.create" ||
+      info.operation_id == "security.principal.alter";
+  envelope->operation_family = security_mutation_route ? "sblr.security.mutation.v3"
+                                                       : "sblr.policy.operation.v3";
+  envelope->sblr_operation_key = envelope->operation_family;
   envelope->descriptor_refs.clear();
   envelope->policy_refs.clear();
   envelope->required_authority_steps.clear();
@@ -18691,7 +18716,9 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
       spec.route_kind == "protected_material_control" ||
       spec.route_kind == "protected_material_inspect") {
     envelope->resource_contract_key = "resource.contract.protected_material";
-  } else if (spec.operation_family == "sblr.security.mutation_or_inspect.v3") {
+  } else if (spec.operation_family == "sblr.catalog.introspect.v3" ||
+             spec.operation_family == "sblr.policy.operation.v3" ||
+             spec.operation_family == "sblr.security.mutation.v3") {
     envelope->resource_contract_key = "resource.contract.security_inspect";
   } else if (spec.requires_cluster_authority) {
     envelope->resource_contract_key = "resource.contract.cluster_provider.route";
@@ -18701,18 +18728,14 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
   } else if (spec.operation_family == "sblr.migration.operation.v3") {
     envelope->resource_contract_key = spec.mutation ? "resource.contract.migration_control"
                                                     : "resource.contract.migration_report";
-  } else if (spec.operation_family == "sblr.storage.management_operation.v3") {
+  } else if (spec.operation_family == "sblr.filespace.management.v3") {
     if (spec.route_kind == "storage_tier_control" ||
         spec.route_kind == "storage_tier_inspect") {
       envelope->resource_contract_key = "resource.contract.storage_tier_descriptor";
     } else if (spec.route_kind == "shard_placement_descriptor_control" ||
                spec.route_kind == "shard_placement_descriptor_inspect") {
       envelope->resource_contract_key = "resource.contract.shard_placement_descriptor";
-    } else {
-      envelope->resource_contract_key = "resource.contract.management_report";
-    }
-  } else if (spec.operation_family == "sblr.filespace.management.v3") {
-    if (spec.route_kind == "filespace_discovery_inspect") {
+    } else if (spec.route_kind == "filespace_discovery_inspect") {
       envelope->resource_contract_key = "resource.contract.filespace_discovery_report";
     } else if (spec.route_kind == "filespace_package_control" ||
                spec.route_kind == "filespace_package_inspect") {
@@ -18782,8 +18805,12 @@ void PopulatePublicExactCommandAuthority(SblrEnvelope* envelope,
     AppendIfMissing(&envelope->policy_refs,
                     spec.mutation ? "protected_material_control_policy"
                                   : "protected_material_release_policy");
-  } else if (spec.operation_family == "sblr.security.mutation_or_inspect.v3") {
+  } else if (spec.operation_family == "sblr.policy.operation.v3") {
+    AppendIfMissing(&envelope->policy_refs, "security_policy_operation_authorization_policy");
+  } else if (spec.operation_family == "sblr.catalog.introspect.v3") {
     AppendIfMissing(&envelope->policy_refs, "security_inspection_authorization_policy");
+  } else if (spec.operation_family == "sblr.security.mutation.v3") {
+    AppendIfMissing(&envelope->policy_refs, "security_mutation_authorization_policy");
   } else if (spec.route_kind == "storage_tier_control" ||
              spec.route_kind == "storage_tier_inspect") {
     AppendIfMissing(&envelope->policy_refs,
@@ -19189,8 +19216,8 @@ void PopulateValuesRowsetAuthority(SblrEnvelope* envelope, const ValuesRowsetInf
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
-  envelope->operation_family = "sblr.query.values.v3";
-  envelope->sblr_operation_key = "sblr.query.values.v3";
+  envelope->operation_family = "sblr.query.relational.v3";
+  envelope->sblr_operation_key = "sblr.query.relational.v3";
   AppendIfMissing(&envelope->required_authority_steps, "authority.parser.syntax_evidence_only");
   AppendIfMissing(&envelope->required_authority_steps, "authority.server.security_policy_context_required");
   AppendIfMissing(&envelope->required_authority_steps, "authority.engine.query_plan_api_required");
@@ -22634,6 +22661,10 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
       sbsfc078_residual.active && sbsfc078_residual.valid) {
     return sbsfc078_residual.operation_id;
   }
+  if (LifecycleCommandStartsWith(cst.source, "PSQL SELECT") ||
+      LifecycleCommandStartsWith(cst.source, "FOR SELECT")) {
+    return "query.plan_operation";
+  }
   if (const auto sbsfc077_residual = AnalyzeSbsfc077NonGeneralResidualRoute(cst);
       sbsfc077_residual.active && sbsfc077_residual.valid) {
     return sbsfc077_residual.operation_id;
@@ -23283,8 +23314,21 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     envelope.payload = out.str();
     return envelope;
   }
-  const auto sbsfc077_residual = AnalyzeSbsfc077NonGeneralResidualRoute(cst);
-  if (!exact_command_route.active && sbsfc077_residual.active && sbsfc077_residual.valid) {
+  auto sbsfc077_residual = AnalyzeSbsfc077NonGeneralResidualRoute(cst);
+  if (!sbsfc077_residual.active && LifecycleCommandStartsWith(cst.source, "PSQL SELECT")) {
+    sbsfc077_residual =
+        MakeSbsfc077QueryPlanRoute("SBSQL-61FABBFAE0A2",
+                                   "psql_select_into",
+                                   "psql_select_into_plan");
+  } else if (!sbsfc077_residual.active &&
+             LifecycleCommandStartsWith(cst.source, "FOR SELECT")) {
+    sbsfc077_residual =
+        MakeSbsfc077QueryPlanRoute("SBSQL-F86E82852A27",
+                                   "for_select_form",
+                                   "for_select_descriptor_plan");
+  }
+  if (!(exact_command_route.active && exact_command_route.valid) &&
+      sbsfc077_residual.active && sbsfc077_residual.valid) {
     PopulateSbsfc077NonGeneralResidualAuthority(&envelope, sbsfc077_residual);
     if (!bound.bound || envelope.messages.has_errors()) return envelope;
 
@@ -24527,8 +24571,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "SBSQL.SBLR.SBSFC081_OPCODE_INVALID",
                        "SBSFC-081 exact routes must lower to their query plan validation opcode");
     }
-    if (envelope.operation_family != "sblr.query.values.v3" ||
-        envelope.sblr_operation_key != "sblr.query.values.v3" ||
+    if (envelope.operation_family != "sblr.query.relational.v3" ||
+        envelope.sblr_operation_key != "sblr.query.relational.v3" ||
         envelope.operation_id != "query.plan_operation" ||
         envelope.payload.find("\"row_surface_id\":\"SBSQL-") == std::string::npos ||
         envelope.payload.find("\"canonical_route_family\":\"sblr.general.operation.v3\"") == std::string::npos ||
@@ -24571,8 +24615,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "SBSQL.SBLR.SBSFC082_OPCODE_INVALID",
                        "SBSFC-082 exact routes must lower to their query plan validation opcode");
     }
-    if (envelope.operation_family != "sblr.query.values.v3" ||
-        envelope.sblr_operation_key != "sblr.query.values.v3" ||
+    if (envelope.operation_family != "sblr.query.relational.v3" ||
+        envelope.sblr_operation_key != "sblr.query.relational.v3" ||
         envelope.operation_id != "query.plan_operation" ||
         envelope.payload.find("\"row_surface_id\":\"SBSQL-") == std::string::npos ||
         envelope.payload.find("\"canonical_route_family\":\"sblr.general.operation.v3\"") == std::string::npos ||
@@ -24615,8 +24659,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "SBSQL.SBLR.SBSFC083_OPCODE_INVALID",
                        "SBSFC-083 exact routes must lower to their query plan validation opcode");
     }
-    if (envelope.operation_family != "sblr.query.values.v3" ||
-        envelope.sblr_operation_key != "sblr.query.values.v3" ||
+    if (envelope.operation_family != "sblr.query.relational.v3" ||
+        envelope.sblr_operation_key != "sblr.query.relational.v3" ||
         envelope.operation_id != "query.plan_operation" ||
         envelope.payload.find("\"row_surface_id\":\"SBSQL-") == std::string::npos ||
         envelope.payload.find("\"canonical_route_family\":\"sblr.general.operation.v3\"") == std::string::npos ||
@@ -24659,8 +24703,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "SBSQL.SBLR.SBSFC084_OPCODE_INVALID",
                        "SBSFC-084 exact routes must lower to their query plan validation opcode");
     }
-    if (envelope.operation_family != "sblr.query.values.v3" ||
-        envelope.sblr_operation_key != "sblr.query.values.v3" ||
+    if (envelope.operation_family != "sblr.query.relational.v3" ||
+        envelope.sblr_operation_key != "sblr.query.relational.v3" ||
         envelope.operation_id != "query.plan_operation" ||
         envelope.payload.find("\"row_surface_id\":\"SBSQL-") == std::string::npos ||
         envelope.payload.find("\"canonical_route_family\":\"sblr.general.operation.v3\"") == std::string::npos ||
@@ -24703,8 +24747,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "SBSQL.SBLR.SBSFC085_OPCODE_INVALID",
                        "SBSFC-085 exact routes must lower to their query plan validation opcode");
     }
-    if (envelope.operation_family != "sblr.query.values.v3" ||
-        envelope.sblr_operation_key != "sblr.query.values.v3" ||
+    if (envelope.operation_family != "sblr.query.relational.v3" ||
+        envelope.sblr_operation_key != "sblr.query.relational.v3" ||
         envelope.operation_id != "query.plan_operation" ||
         envelope.payload.find("\"row_surface_id\":\"SBSQL-") == std::string::npos ||
         envelope.payload.find("\"canonical_route_family\":\"sblr.general.operation.v3\"") == std::string::npos ||
@@ -25206,8 +25250,14 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.MANAGEMENT_OPCODE_MISMATCH",
                        "management runtime SBLR operation id and opcode do not match");
     }
-    if (envelope.operation_family != "sblr.management.runtime_operation.v3" ||
-        envelope.sblr_operation_key != "sblr.management.runtime_operation.v3" ||
+    const bool sbsfc080_route =
+        envelope.payload.find("\"sbsfc080_operational_general_residual\":true") !=
+        std::string::npos;
+    const std::string expected_management_family =
+        sbsfc080_route ? Sbsfc080RouteFamilyForOperation(envelope.operation_id)
+                       : "sblr.management.runtime_operation.v3";
+    if (envelope.operation_family != expected_management_family ||
+        envelope.sblr_operation_key != expected_management_family ||
         !HasValue(envelope.required_authority_steps,
                   "authority.engine.management_runtime_api_required") ||
         !HasValue(envelope.required_authority_steps,
@@ -25217,11 +25267,12 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps,
                   "authority.parser.no_listener_or_parser_process_control") ||
         !HasValue(envelope.descriptor_refs, "sys.management.runtime") ||
-        envelope.payload.find("\"management_envelope_kind\":\"parser_listener_runtime\"") ==
-            std::string::npos ||
-        envelope.payload.find("\"runtime_component\"") == std::string::npos ||
-        envelope.payload.find("\"parser_controls_listener_or_parser_process\":false") ==
-            std::string::npos ||
+        (!sbsfc080_route &&
+         (envelope.payload.find("\"management_envelope_kind\":\"parser_listener_runtime\"") ==
+              std::string::npos ||
+          envelope.payload.find("\"runtime_component\"") == std::string::npos ||
+          envelope.payload.find("\"parser_controls_listener_or_parser_process\":false") ==
+              std::string::npos)) ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.MANAGEMENT_RUNTIME_AUTHORITY_INVALID",
                        "management runtime SBLR must route through engine management runtime authority without parser process control");
@@ -25666,8 +25717,14 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.OBSERVABILITY_OPCODE_MISMATCH",
                        "observability SBLR operation id and opcode do not match");
     }
-    if (envelope.operation_family != "sblr.observability.inspect.v3" ||
-        envelope.sblr_operation_key != "sblr.observability.inspect.v3" ||
+    const bool sbsfc080_route =
+        envelope.payload.find("\"sbsfc080_operational_general_residual\":true") !=
+        std::string::npos;
+    const std::string expected_observability_family =
+        sbsfc080_route ? Sbsfc080RouteFamilyForOperation(envelope.operation_id)
+                       : "sblr.observability.inspect.v3";
+    if (envelope.operation_family != expected_observability_family ||
+        envelope.sblr_operation_key != expected_observability_family ||
         !HasValue(envelope.required_authority_steps, "authority.engine.observability_api_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.OBSERVABILITY_AUTHORITY_INVALID",
@@ -25785,8 +25842,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_OPCODE_MISMATCH",
                        "security privilege SBLR operation id and opcode do not match");
     }
-    if (envelope.operation_family != "sblr.security.mutation_or_inspect.v3" ||
-        envelope.sblr_operation_key != "sblr.security.mutation_or_inspect.v3" ||
+    if (envelope.operation_family != "sblr.security.mutation.v3" ||
+        envelope.sblr_operation_key != "sblr.security.mutation.v3" ||
         !HasValue(envelope.required_authority_steps, "authority.engine.security_privilege_api_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
@@ -25815,8 +25872,14 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_POLICY_OPCODE_MISMATCH",
                        "security policy/role SBLR operation id and opcode do not match");
     }
-    if (envelope.operation_family != "sblr.security.mutation_or_inspect.v3" ||
-        envelope.sblr_operation_key != "sblr.security.mutation_or_inspect.v3" ||
+    const std::string expected_security_family =
+        (envelope.operation_id == "security.session.set_role" ||
+         envelope.operation_id == "security.principal.create" ||
+         envelope.operation_id == "security.principal.alter")
+            ? "sblr.security.mutation.v3"
+            : "sblr.policy.operation.v3";
+    if (envelope.operation_family != expected_security_family ||
+        envelope.sblr_operation_key != expected_security_family ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_sql_text_execution") ||
@@ -25896,8 +25959,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
   if (envelope.operation_id == "query.plan_operation" &&
       envelope.payload.find("\"query_envelope_kind\":\"values_rowset\"") != std::string::npos) {
     if (envelope.sblr_opcode != "SBLR_QUERY_PLAN_OPERATION" ||
-        envelope.operation_family != "sblr.query.values.v3" ||
-        envelope.sblr_operation_key != "sblr.query.values.v3" ||
+        envelope.operation_family != "sblr.query.relational.v3" ||
+        envelope.sblr_operation_key != "sblr.query.relational.v3" ||
         !HasValue(envelope.required_authority_steps, "authority.engine.query_plan_api_required") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_security_authorization") ||
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||

@@ -101,7 +101,7 @@ def main() -> int:
                 "docs" "/execution-plans",
                 "docs" "/findings",
                 "public_audit_summary",
-                "public_release_evidence",
+                "local_release_contract_snapshot",
                 "docs/references",
             ],
         },

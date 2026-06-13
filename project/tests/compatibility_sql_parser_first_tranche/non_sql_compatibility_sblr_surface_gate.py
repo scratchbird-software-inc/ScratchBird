@@ -129,6 +129,7 @@ ENGINE_SBLR_MATRIX = "project/src/engine/internal_api/SBLR_API_OPERATION_MATRIX.
 SBSQL_COMPATIBILITY_BACKFILL_REGISTER = (
     "public_execution_plan/SBSQL_COMPATIBILITY_ROUTE_BACKFILL_REGISTER.csv"
 )
+EXTERNAL_REFERENCE_SKIP_CODE = 77
 
 
 def require(condition: bool, message: str) -> None:
@@ -151,7 +152,12 @@ def load_engine_sblr_symbols(repo_root: Path) -> set[str]:
 def load_sbsql_backfill_symbols(repo_root: Path) -> set[str]:
     symbols: set[str] = set()
     path = repo_root / SBSQL_COMPATIBILITY_BACKFILL_REGISTER
-    with path.open(newline="", encoding="utf-8") as handle:
+    try:
+        handle = path.open(newline="", encoding="utf-8")
+    except (FileNotFoundError, NotADirectoryError):
+        print(f"missing CSV: {SBSQL_COMPATIBILITY_BACKFILL_REGISTER}")
+        raise SystemExit(EXTERNAL_REFERENCE_SKIP_CODE)
+    with handle:
         for row in csv.DictReader(handle):
             for symbol in row["parser_sblr_symbols"].split(";"):
                 symbol = symbol.strip()

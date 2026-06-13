@@ -216,7 +216,7 @@ void RequireRejectionPathsPreserved() {
   const auto duplicate_json = Admit(
       "{\"envelope\":\"SBLRExecutionEnvelope.v3\","
       "\"operation_family\":\"sblr.query.relational.v3\","
-      "\"operation_family\":\"sblr.query.values.v3\","
+      "\"operation_family\":\"sblr.query.relational.v3\","
       "\"operation_id\":\"query.plan_operation\","
       "\"result_shape\":\"result.shape.family_admission\","
       "\"diagnostic_shape\":\"diagnostic.canonical_message_vector\"}");

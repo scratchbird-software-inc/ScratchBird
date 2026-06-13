@@ -9,9 +9,9 @@
 
 """Verify beta driver validation-plan controller consistency.
 
-This gate is intentionally read-only. It checks that the private validation
-runbook references runnable command rows, gate rows, and proof-ledger rows
-instead of creating or mutating evidence.
+This gate is intentionally read-only. It checks that the selected validation
+controller references runnable command rows, gate rows, and verification rows
+instead of creating or mutating release evidence.
 """
 
 from __future__ import annotations

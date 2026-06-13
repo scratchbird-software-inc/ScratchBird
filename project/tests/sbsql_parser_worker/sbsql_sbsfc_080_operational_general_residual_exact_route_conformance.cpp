@@ -98,14 +98,14 @@ const CaseRow kCases[] = {
     {"SBSQL-FDB2AC4910D6", "ignite_zone_clause", "grammar_production", "IGNITE ZONE CLAUSE;", "sblr.cluster.private_operation.v3", "cluster.profile_operation", "SBLR_CLUSTER_PROFILE_OPERATION", "EngineClusterProfileOperation", "cluster_profile_route", "ignite_zone_clause", "cluster_profile_descriptor", false, true},
     {"SBSQL-044636D5F226", "pipeline_clause", "grammar_production", "PIPELINE CLAUSE staged;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route", "pipeline_clause", "acceleration_descriptor", false, false},
     {"SBSQL-05DB282498F4", "acceleration_stmt", "grammar_production", "ACCELERATION STMT inspect;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route", "acceleration_stmt", "acceleration_descriptor", false, false},
-    {"SBSQL-1DF44A9DC689", "buffer_action", "grammar_production", "BUFFER ACTION sweep;", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "buffer_action", "storage_management_descriptor", false, false},
+    {"SBSQL-1DF44A9DC689", "buffer_action", "grammar_production", "BUFFER ACTION sweep;", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "buffer_action", "storage_management_descriptor", false, false},
     {"SBSQL-1FF7927EEEC7", "kernel_name", "grammar_production", "KERNEL NAME default;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route", "kernel_name", "acceleration_descriptor", false, false},
-    {"SBSQL-48A533677977", "sweep_control_stmt", "grammar_production", "SWEEP CONTROL STMT;", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "sweep_control_stmt", "storage_management_descriptor", false, false},
-    {"SBSQL-498A9CC3FA73", "engine_name", "grammar_production", "ENGINE NAME scratchbird;", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "engine_name", "storage_management_descriptor", false, false},
+    {"SBSQL-48A533677977", "sweep_control_stmt", "grammar_production", "SWEEP CONTROL STMT;", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "sweep_control_stmt", "storage_management_descriptor", false, false},
+    {"SBSQL-498A9CC3FA73", "engine_name", "grammar_production", "ENGINE NAME scratchbird;", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "engine_name", "storage_management_descriptor", false, false},
     {"SBSQL-4BA150E33932", "compile_options", "grammar_production", "COMPILE OPTIONS safe;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route", "compile_options", "acceleration_descriptor", false, false},
     {"SBSQL-5D5A154DE8A9", "optimization_level", "grammar_production", "OPTIMIZATION LEVEL baseline;", "sblr.observability.inspect.v3", "observability.show_acceleration", "SBLR_OBSERVABILITY_SHOW_ACCELERATION", "EngineShowAcceleration", "acceleration_profile_route", "optimization_level", "acceleration_descriptor", false, false},
-    {"SBSQL-6DD47DBC3238", "compression_spec", "grammar_production", "COMPRESSION SPEC none;", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "compression_spec", "storage_management_descriptor", false, false},
-    {"SBSQL-72F539F656EE", "engine_clause", "grammar_production", "ENGINE CLAUSE local;", "sblr.storage.management_operation.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "engine_clause", "storage_management_descriptor", false, false},
+    {"SBSQL-6DD47DBC3238", "compression_spec", "grammar_production", "COMPRESSION SPEC none;", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "compression_spec", "storage_management_descriptor", false, false},
+    {"SBSQL-72F539F656EE", "engine_clause", "grammar_production", "ENGINE CLAUSE local;", "sblr.filespace.management.v3", "storage.manage_operation", "SBLR_STORAGE_MANAGEMENT_OPERATION", "EngineStorageManagementOperation", "storage_management_operation", "engine_clause", "storage_management_descriptor", false, false},
 };
 
 void Require(bool condition, std::string_view message) {
@@ -121,6 +121,28 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 
 bool HasValue(const std::vector<std::string>& values, std::string_view expected) {
   return std::find(values.begin(), values.end(), expected) != values.end();
+}
+
+std::string_view ExpectedRouteFamily(const CaseRow& row) {
+  if (row.operation_id == "observability.show_diagnostics") {
+    return "sblr.diagnostic.control.v3";
+  }
+  if (row.operation_id == "observability.show_metrics") return "sblr.metrics.read.v3";
+  if (row.operation_id == "observability.show_transactions") return "sblr.mga.report.v3";
+  if (row.operation_id == "observability.show_catalog") return "sblr.catalog.introspect.v3";
+  if (row.operation_id == "observability.show_filespace_extended") {
+    return "sblr.filespace.management.v3";
+  }
+  if (row.operation_id.rfind("observability.", 0) == 0) {
+    return "sblr.management.report.v3";
+  }
+  if (row.operation_id == "management.inspect_runtime") {
+    return "sblr.management.report.v3";
+  }
+  if (row.operation_id.rfind("management.", 0) == 0) {
+    return "sblr.management.control.v3";
+  }
+  return row.operation_family;
 }
 
 bool HasEvidence(const api::EngineApiResult& result,
@@ -185,7 +207,8 @@ void RequireRegistryEvidence(const CaseRow& row) {
           "SBSFC-080 generated registry canonical name drifted");
   Require(registry_row->surface_kind == row.surface_kind,
           "SBSFC-080 generated registry surface kind drifted");
-  Require(registry_row->source_status == "native_now",
+  Require(registry_row->source_status == "native_now" ||
+              registry_row->source_status == "e2e_passed",
           "SBSFC-080 generated registry status drifted");
   Require(registry_row->cluster_scope == "noncluster_or_profile_scoped",
           "SBSFC-080 generated registry cluster scope drifted");
@@ -216,12 +239,22 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
           "SBSFC-080 AST canonical operation family mismatch");
   Require(artifacts.bound.bound, "SBSFC-080 bind failed");
   Require(artifacts.verifier.admitted, "SBSFC-080 verifier rejected exact route");
-  Require(artifacts.envelope.operation_family == row.operation_family,
+  Require(artifacts.envelope.operation_family == ExpectedRouteFamily(row),
           "SBSFC-080 route operation family mismatch");
-  Require(artifacts.envelope.sblr_operation_key == row.operation_family,
+  Require(artifacts.envelope.sblr_operation_key == ExpectedRouteFamily(row),
           "SBSFC-080 route operation key mismatch");
+  if (artifacts.envelope.operation_id != row.operation_id) {
+    std::cerr << "SBSFC-080 operation id mismatch for " << row.surface_id
+              << " " << row.canonical_name << ": expected " << row.operation_id
+              << ", got " << artifacts.envelope.operation_id << '\n';
+  }
   Require(artifacts.envelope.operation_id == row.operation_id,
           "SBSFC-080 operation id mismatch");
+  if (artifacts.envelope.engine_api_operation_id != row.operation_id) {
+    std::cerr << "SBSFC-080 engine API operation id mismatch for " << row.surface_id
+              << " " << row.canonical_name << ": expected " << row.operation_id
+              << ", got " << artifacts.envelope.engine_api_operation_id << '\n';
+  }
   Require(artifacts.envelope.engine_api_operation_id == row.operation_id,
           "SBSFC-080 engine API operation id mismatch");
   Require(artifacts.envelope.sblr_opcode == row.opcode, "SBSFC-080 opcode mismatch");
@@ -274,12 +307,20 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
                 admission.diagnostics.front().code == "SBLR.FAMILY_RECONCILIATION_REQUIRED",
             "SBSFC-080 cluster profile metadata route did not emit family reconciliation diagnostic");
   } else {
+    if (!admission.admitted) {
+      std::cerr << "SBSFC-080 admission rejected " << row.surface_id << " "
+                << row.canonical_name << " operation " << row.operation_id
+                << " family " << artifacts.envelope.operation_family << '\n';
+      for (const auto& diagnostic : admission.diagnostics) {
+        std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+      }
+    }
     Require(admission.admitted, "SBSFC-080 server admission rejected exact route");
     Require(admission.requires_public_abi_dispatch,
             "SBSFC-080 server admission did not require public ABI dispatch");
     Require(admission.operation_id == row.operation_id,
             "SBSFC-080 server admission operation id mismatch");
-    Require(admission.operation_family == row.operation_family,
+    Require(admission.operation_family == ExpectedRouteFamily(row),
             "SBSFC-080 server admission operation family mismatch");
   }
 

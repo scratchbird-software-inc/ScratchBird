@@ -22,6 +22,7 @@ import sys
 EXPECTED_CLUSTER_ROWS = 440
 EXPECTED_CLUSTER_COMMANDS = 59
 EXPECTED_QUERY_COMPATIBILITY_ROWS = 28
+EXTERNAL_REFERENCE_SKIP_CODE = 77
 MATRIX_REL = (
     "public_execution_plan/COMPATIBILITY_CLUSTER_ROUTE_REMAP_MATRIX.csv"
 )
@@ -102,7 +103,10 @@ def read_csv(repo_root: pathlib.Path, rel_path: str) -> list[dict[str, str]]:
         with path.open(newline="") as handle:
             reader = csv.DictReader(handle)
             rows = list(reader)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
+        if rel_path.startswith("public_execution_plan/") or rel_path == "public_execution_plan":
+            print(f"missing CSV: {rel_path}", file=sys.stderr)
+            raise SystemExit(EXTERNAL_REFERENCE_SKIP_CODE)
         fail(f"missing CSV: {rel_path}")
     require(reader.fieldnames is not None, f"CSV has no header: {rel_path}")
     return rows

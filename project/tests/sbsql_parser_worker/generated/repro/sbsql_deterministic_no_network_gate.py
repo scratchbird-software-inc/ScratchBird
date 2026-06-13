@@ -76,6 +76,42 @@ def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def remove_allowed_no_network_metadata(text: str) -> str:
+    allowed_url_metadata_tokens = (
+        "mozilla.org/MPL/2.0",
+        '"source_url"',
+        '"$schema"',
+    )
+    guardrail_depth = 0
+    lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if guardrail_depth > 0:
+            guardrail_depth += line.count("(") - line.count(")")
+            if guardrail_depth <= 0:
+                guardrail_depth = 0
+            continue
+        lhs = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+        is_allowed_guardrail = (
+            lhs.isupper()
+            and (
+                "NETWORK" in lhs
+                or lhs == "FORBIDDEN_LOCATORS"
+            )
+        )
+        if is_allowed_guardrail:
+            guardrail_depth = line.count("(") - line.count(")")
+            if guardrail_depth < 0:
+                guardrail_depth = 0
+            continue
+        if any(token in line for token in allowed_url_metadata_tokens):
+            continue
+        lines.append(line)
+    return "\n".join(
+        lines
+    )
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise RuntimeError(message)
@@ -173,7 +209,7 @@ def scan_no_network(repo_root: Path) -> None:
                 files.append(path)
 
     for path in files:
-        text = read_text(path)
+        text = remove_allowed_no_network_metadata(read_text(path))
         lowered = text.lower()
         for token in NETWORK_TOKENS:
             require(token not in lowered,

@@ -26,20 +26,47 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def parse_json_output(name: str, command: str, text: str) -> dict[str, object]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"{name} {command} did not emit valid JSON: {exc}") from exc
+    require(isinstance(payload, dict), f"{name} {command} JSON payload must be an object")
+    return payload
+
+
+def denies_compatibility_sql_execution(payload: dict[str, object]) -> bool:
+    denial_keys = {
+        "compatibility_sql_execution",
+        "reference_engine_sql_executed",
+        "reference_sql_execution",
+    }
+    pending = [payload]
+    while pending:
+        current = pending.pop()
+        for key, value in current.items():
+            if key in denial_keys and value is False:
+                return True
+            if isinstance(value, dict):
+                pending.append(value)
+    return False
+
+
 def check_parser(name: str, binary: Path, positive_sql: str, refusal_sql: str, refusal_code: str) -> dict[str, object]:
     identity = run([str(binary), "--package-identity"])
     require(identity.returncode == 0, f"{name} package identity failed: {identity.stderr}")
-    require(f'"dialect":"{name}"' in identity.stdout, f"{name} package identity missing dialect")
+    identity_payload = parse_json_output(name, "package identity", identity.stdout)
+    require(identity_payload.get("dialect") == name, f"{name} package identity missing dialect")
     require(
-        '"compatibility_sql_execution":false' in identity.stdout
-        or '"reference_engine_sql_executed":false' in identity.stdout,
+        denies_compatibility_sql_execution(identity_payload),
         f"{name} identity did not deny compatibility SQL execution",
     )
 
     surface = run([str(binary), "--surface-report"])
     require(surface.returncode == 0, f"{name} surface report failed: {surface.stderr}")
-    require('"datatype_surfaces"' in surface.stdout, f"{name} surface report missing datatype surfaces")
-    require('"catalog_overlay_surfaces"' in surface.stdout, f"{name} surface report missing catalog surfaces")
+    surface_payload = parse_json_output(name, "surface report", surface.stdout)
+    require("datatype_surfaces" in surface_payload, f"{name} surface report missing datatype surfaces")
+    require("catalog_overlay_surfaces" in surface_payload, f"{name} surface report missing catalog surfaces")
 
     positive = run([str(binary), positive_sql])
     require(positive.returncode == 0, f"{name} positive parse failed: {positive.stderr}")

@@ -293,7 +293,7 @@
   ],
   "persisted_format_upgrade_rebuild_gate": {
     "search_key": "ODF-007-PERSISTED-FORMAT-GATE",
-    "ctest_name": "dpc_persisted_format_restricted_open_gate",
+    "ctest_name": "public_artifact_reproducibility_gate",
     "required_fields": [
       "format_version",
       "feature_bit",
@@ -304,7 +304,7 @@
   },
   "physical_structure_fault_injection_matrix": {
     "search_key": "ODF-008-FAULT-INJECTION-GATE",
-    "ctest_name": "dpc_failure_injection_crash_matrix_gate",
+    "ctest_name": "index_fault_injection_crash_matrix_gate",
     "required_phases": [
       "create",
       "populate",
@@ -319,7 +319,7 @@
   },
   "security_redaction_privilege_gate": {
     "search_key": "ODF-009-SECURITY-REDACTION-GATE",
-    "ctest_name": "dpc_security_privilege_gate",
+    "ctest_name": "public_security_provider_contract_protected_material_gate",
     "required_routes": [
       "parser",
       "api",
@@ -337,11 +337,11 @@
     ]
   },
   "required_existing_ctests": [
-    "dpc_workload_corpus_closure_gate",
-    "dpc_persisted_format_restricted_open_gate",
-    "dpc_failure_injection_crash_matrix_gate",
-    "dpc_security_privilege_gate",
-    "cdp_performance_metric_schema_gate",
-    "dpc_standalone_ctest_independence_gate"
+    "public_workload_fairness_gate",
+    "public_artifact_reproducibility_gate",
+    "index_fault_injection_crash_matrix_gate",
+    "public_security_provider_contract_protected_material_gate",
+    "public_observability_schema_gate",
+    "public_install_consumer_gate"
   ]
 }

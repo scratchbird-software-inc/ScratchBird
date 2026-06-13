@@ -492,9 +492,9 @@ SurfaceCoverageSummary CheckSurfaceReplayCoverage(
       "sblr.observability.inspect.v3",
       "sblr.query.multimodel_or_ddl.v3",
       "sblr.query.relational.v3",
-      "sblr.query.values.v3",
-      "sblr.security.mutation_or_inspect.v3",
-      "sblr.storage.management_operation.v3",
+      "sblr.query.relational.v3",
+      "sblr.security.mutation.v3",
+      "sblr.filespace.management.v3",
       "sblr.transaction.control.v3",
   };
   harness->Check(summary.operation_families == expected_families,

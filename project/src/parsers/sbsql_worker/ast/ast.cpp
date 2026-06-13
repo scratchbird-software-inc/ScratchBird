@@ -171,6 +171,17 @@ std::vector<std::string> MeaningfulTokenWords(const CstDocument& cst) {
   return words;
 }
 
+std::vector<std::string> RawMeaningfulTokenWords(const CstDocument& cst) {
+  std::vector<std::string> words;
+  for (const auto& token : cst.tokens) {
+    if (token.kind == TokenKind::kEnd) break;
+    if (IsTriviaToken(token)) continue;
+    words.push_back(CanonicalWordForToken(token));
+    if (words.size() >= 4) break;
+  }
+  return words;
+}
+
 bool IsParenthesizedCallInvocation(const CstDocument& cst) {
   const auto words = AllMeaningfulTokenWords(cst);
   if (words.empty() || words.front() != "CALL") return false;
@@ -1295,10 +1306,12 @@ AstDocument BuildAst(const CstDocument& cst) {
     return ast;
   }
   const auto words = MeaningfulTokenWords(cst);
+  const auto raw_words = RawMeaningfulTokenWords(cst);
   const auto keyword = words.empty() ? CanonicalWordForToken(*first) : words[0];
   const auto second = words.size() > 1 ? std::string_view(words[1]) : std::string_view();
   const auto third = words.size() > 2 ? std::string_view(words[2]) : std::string_view();
   const auto fourth = words.size() > 3 ? std::string_view(words[3]) : std::string_view();
+  const auto raw_keyword = raw_words.empty() ? CanonicalWordForToken(*first) : raw_words[0];
   const bool language_control_surface =
       (keyword == "SET" && second == "LANGUAGE") ||
       (keyword == "RESET" && second == "LANGUAGE") ||
@@ -1616,7 +1629,7 @@ AstDocument BuildAst(const CstDocument& cst) {
       case EngineApiCommandAstDomain::kSecurity:
         ast.family = StatementFamily::kSecurity;
         ast.registry_family = "sbsql.security.v3";
-        ast.operation_family = "sblr.security.mutation_or_inspect.v3";
+        ast.operation_family = "sblr.security.mutation.v3";
         break;
       case EngineApiCommandAstDomain::kParserPackage:
         ast.family = StatementFamily::kRuntimeManagement;
@@ -1713,7 +1726,7 @@ AstDocument BuildAst(const CstDocument& cst) {
   } else if (IsPublicExactSecurityInspectStatement(cst)) {
     ast.family = StatementFamily::kSecurity;
     ast.registry_family = "sbsql.security.v3";
-    ast.operation_family = "sblr.security.mutation_or_inspect.v3";
+    ast.operation_family = "sblr.catalog.introspect.v3";
     ast.requires_name_resolution = false;
     ast.produces_sblr = true;
   } else if (IsPublicExactObservabilityInspectStatement(cst)) {
@@ -1767,6 +1780,12 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.operation_family = "sblr.general.operation.v3";
     ast.requires_name_resolution = false;
     ast.produces_sblr = true;
+  } else if (raw_keyword == "GRANT" || raw_keyword == "REVOKE") {
+    ast.family = StatementFamily::kSecurity;
+    ast.registry_family = "sbsql.security.v3";
+    ast.operation_family = "sblr.security.mutation.v3";
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
   } else if (keyword == "SELECT" || keyword == "WITH") {
     ast.family = StatementFamily::kQuery;
     ast.registry_family = "sbsql.query.relational.v3";
@@ -1784,7 +1803,7 @@ AstDocument BuildAst(const CstDocument& cst) {
   } else if (keyword == "VALUES") {
     ast.family = StatementFamily::kValues;
     ast.registry_family = "sbsql.query.values.v3";
-    ast.operation_family = "sblr.query.values.v3";
+    ast.operation_family = "sblr.query.relational.v3";
     ast.produces_sblr = true;
   } else if (keyword == "SEARCH") {
     ast.family = StatementFamily::kQuery;
@@ -1862,7 +1881,7 @@ AstDocument BuildAst(const CstDocument& cst) {
              (keyword == "ALTER" && second == "SHADOW")) {
     ast.family = StatementFamily::kStorageManagement;
     ast.registry_family = "sbsql.storage.management_operation.v3";
-    ast.operation_family = "sblr.storage.management_operation.v3";
+    ast.operation_family = "sblr.filespace.management.v3";
     ast.produces_sblr = true;
   } else if ((keyword == "CREATE" && second == "PROTECTED" && third == "MATERIAL") ||
              (keyword == "ADD" && second == "PROTECTED" && third == "MATERIAL") ||
@@ -1876,7 +1895,7 @@ AstDocument BuildAst(const CstDocument& cst) {
               (fourth == "CATALOG" || fourth == "AUDIT"))) {
     ast.family = StatementFamily::kSecurity;
     ast.registry_family = "sbsql.security.v3";
-    ast.operation_family = "sblr.security.mutation_or_inspect.v3";
+    ast.operation_family = "sblr.security.mutation.v3";
     ast.requires_name_resolution = false;
     ast.produces_sblr = true;
   } else if ((keyword == "ADMIT" && second == "ENCRYPTION" && third == "KEY") ||
@@ -1890,7 +1909,7 @@ AstDocument BuildAst(const CstDocument& cst) {
              (keyword == "CRYPTOGRAPHIC" && second == "ERASE" && third == "FILESPACE")) {
     ast.family = StatementFamily::kSecurity;
     ast.registry_family = "sbsql.security.v3";
-    ast.operation_family = "sblr.security.mutation_or_inspect.v3";
+    ast.operation_family = "sblr.security.mutation.v3";
     ast.produces_sblr = true;
   } else if ((keyword == "CYPHER" &&
               (second == "DELETE" || second == "MERGE" || second == "LOAD")) ||
@@ -1963,7 +1982,9 @@ AstDocument BuildAst(const CstDocument& cst) {
              (keyword == "SHOW" && second == "SECURITY" && third == "POLICY")) {
     ast.family = StatementFamily::kSecurity;
     ast.registry_family = "sbsql.security.v3";
-    ast.operation_family = "sblr.security.mutation_or_inspect.v3";
+    ast.operation_family =
+        second == "PRINCIPAL" ? "sblr.security.mutation.v3"
+                              : "sblr.policy.operation.v3";
     ast.requires_name_resolution = true;
     ast.produces_sblr = true;
   } else if (IsDatabaseLifecycleStatement(cst)) {
@@ -2065,7 +2086,7 @@ AstDocument BuildAst(const CstDocument& cst) {
   } else if (keyword == "CHECKPOINT") {
     ast.family = StatementFamily::kStorageManagement;
     ast.registry_family = "sbsql.storage.management_operation.v3";
-    ast.operation_family = "sblr.storage.management_operation.v3";
+    ast.operation_family = "sblr.filespace.management.v3";
     ast.produces_sblr = true;
   } else if ((keyword == "RUN" || keyword == "PAUSE" ||
               keyword == "RESUME" || keyword == "CANCEL") &&
@@ -2137,7 +2158,10 @@ AstDocument BuildAst(const CstDocument& cst) {
         "SBSQL.PARSER.STATEMENT_FAMILY_UNKNOWN", "ERROR", "statement family is not recognized by the vertical-slice parser",
         "sbp_sbsql.ast", {{"first_token", first->text}}));
   }
-  ApplyStatementDescriptorMetadata(&ast, DescriptorForStatementTokens(cst, keyword));
+  ApplyStatementDescriptorMetadata(
+      &ast,
+      DescriptorForStatementTokens(
+          cst, (raw_keyword == "GRANT" || raw_keyword == "REVOKE") ? raw_keyword : keyword));
   if (ast.family == StatementFamily::kMigration) {
     ast.statement_parser_category = "migration";
     ast.registry_family = "sbsql.migration.operation.v3";

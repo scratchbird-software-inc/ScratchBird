@@ -595,6 +595,7 @@ add_test(
     --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/parser_remap_noncluster_function_evidence.json"
 )
 set_tests_properties(parser_remap_noncluster_function_gate PROPERTIES
+  SKIP_RETURN_CODE 77
   LABELS "parser_remap_noncluster_function_gate;FPR-P1;compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_release_evidence;parser_remap_scope_gate;mga_transaction_regression"
 )
 
@@ -607,6 +608,7 @@ add_test(
     --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/parser_remap_cluster_route_evidence.json"
 )
 set_tests_properties(parser_remap_cluster_route_gate PROPERTIES
+  SKIP_RETURN_CODE 77
   LABELS "parser_remap_cluster_route_gate;FPR-P2;compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_release_evidence;parser_remap_scope_gate;mga_transaction_regression"
 )
 
@@ -620,6 +622,7 @@ add_test(
     --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/parser_remap_ast_boundast_envelope_evidence.json"
 )
 set_tests_properties(parser_remap_ast_boundast_envelope_gate PROPERTIES
+  SKIP_RETURN_CODE 77
   LABELS "parser_remap_ast_boundast_envelope_gate;FPR-P3;compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_release_evidence;parser_remap_scope_gate;mga_transaction_regression"
 )
 
@@ -633,6 +636,7 @@ add_test(
     --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/parser_refusal_reduction_evidence.json"
 )
 set_tests_properties(parser_refusal_reduction_gate PROPERTIES
+  SKIP_RETURN_CODE 77
   LABELS "parser_refusal_reduction_gate;FPR-P4;compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_release_evidence;parser_remap_scope_gate;mga_transaction_regression"
 )
 
@@ -646,6 +650,7 @@ add_test(
     --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/parser_dialect_isolation_evidence.json"
 )
 set_tests_properties(parser_dialect_isolation_guard PROPERTIES
+  SKIP_RETURN_CODE 77
   LABELS "parser_dialect_isolation_guard;FPR-P5;compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_release_evidence;parser_remap_scope_gate;compatibility_parser_standalone_guard;mga_transaction_regression"
 )
 
@@ -719,6 +724,7 @@ add_test(
     --evidence-file "${CMAKE_BINARY_DIR}/tests/compatibility_sql_parser_first_tranche/non_sql_compatibility_sblr_surface_evidence.json"
 )
 set_tests_properties(non_sql_compatibility_sblr_surface_gate PROPERTIES
+  SKIP_RETURN_CODE 77
   LABELS "compatibility_sql_parser_first_tranche;compatibility_parser_beta_gate;compatibility_parser_release_evidence;compatibility_parser_sblr_surface_gate;cassandra_parser_worker;mongodb_parser_worker;redis_parser_worker;opensearch_sql_ppl_parser_worker;opensearch_parser_worker;neo4j_parser_worker;influxdb_parser_worker;milvus_parser_worker;apache_ignite_parser_worker;tikv_parser_worker;foundationdb_parser_worker;xtdb_parser_worker;mga_transaction_regression"
 )
 

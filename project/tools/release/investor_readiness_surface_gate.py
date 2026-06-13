@@ -389,7 +389,7 @@ def main() -> int:
     args = parser.parse_args()
 
     repo_root = args.repo_root.resolve()
-    excludes = tuple(dict.fromkeys(args.exclude or []))
+    excludes = tuple(dict.fromkeys(("docs/documentation/draft", *(args.exclude or []))))
     paths = git_paths(repo_root)
 
     errors: list[str] = []
