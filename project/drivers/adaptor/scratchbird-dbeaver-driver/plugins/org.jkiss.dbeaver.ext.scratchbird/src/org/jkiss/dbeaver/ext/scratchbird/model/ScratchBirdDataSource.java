@@ -34,6 +34,9 @@ import org.jkiss.dbeaver.model.sql.SQLDialect;
 
 public class ScratchBirdDataSource extends GenericDataSource {
 
+    @NotNull
+    private final ScratchBirdSessionScope sessionScope;
+
     public ScratchBirdDataSource(
         @NotNull DBRProgressMonitor monitor,
         @NotNull DBPDataSourceContainer container,
@@ -41,5 +44,11 @@ public class ScratchBirdDataSource extends GenericDataSource {
         @NotNull SQLDialect dialect
     ) throws DBException {
         super(monitor, container, metaModel, dialect);
+        this.sessionScope = ScratchBirdSessionScope.forConnection(container.getId());
+    }
+
+    @NotNull
+    public ScratchBirdSessionScope getScratchBirdSessionScope() {
+        return sessionScope;
     }
 }

@@ -1,0 +1,190 @@
+{
+  "schema_id": "scratchbird.dbeaver_management.install_lifecycle_fixture.v1",
+  "component_id": "adaptor:scratchbird-dbeaver-driver",
+  "lifecycle_cases": [
+    {
+      "case_id": "DBEAVER-MGMT-023-p2-update-site",
+      "phase": "p2_update_site_build",
+      "script_path": "project/drivers/adaptor/scratchbird-dbeaver-driver/scripts/build-p2-update-site.sh",
+      "required_script_tokens": [
+        "scratchbird-jdbc.jar",
+        "repository/target/repository",
+        "scratchbird-dbeaver-update-site-"
+      ],
+      "expected_outcome": "fresh p2 repository zip is generated from staged source and bundled JDBC jar",
+      "proof_policy": "script_contract_and_release_artifact_mode",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json"
+    },
+    {
+      "case_id": "DBEAVER-MGMT-023-stock-test-bundle",
+      "phase": "stock_bundle_build",
+      "script_path": "project/drivers/adaptor/scratchbird-dbeaver-driver/scripts/build-stock-test-bundle.sh",
+      "required_script_tokens": [
+        "install-into-stock-dbeaver.sh",
+        "uninstall-from-stock-dbeaver.sh",
+        "install-into-stock-dbeaver.bat",
+        "SHA256SUMS.txt",
+        "THIRD-PARTY-NOTICES.txt"
+      ],
+      "expected_outcome": "stock test bundle contains install and uninstall helpers plus checksums",
+      "proof_policy": "script_contract_and_release_artifact_mode",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json"
+    },
+    {
+      "case_id": "DBEAVER-MGMT-023-source-checkout-install",
+      "phase": "source_checkout_install",
+      "script_path": "project/drivers/adaptor/scratchbird-dbeaver-driver/scripts/install-into-dbeaver.sh",
+      "required_script_tokens": [
+        "plugins/org.jkiss.dbeaver.ext.scratchbird",
+        "plugins/org.jkiss.dbeaver.ext.scratchbird.ui",
+        "test/org.jkiss.dbeaver.ext.scratchbird.test",
+        "scratchbird-jdbc.jar"
+      ],
+      "expected_outcome": "source checkout install copies plugin, UI plugin, test plugin, and JDBC jar",
+      "proof_policy": "script_contract",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json"
+    },
+    {
+      "case_id": "DBEAVER-MGMT-027-stock-install",
+      "phase": "stock_install",
+      "script_path": "project/drivers/adaptor/scratchbird-dbeaver-driver/scripts/install-into-stock-dbeaver.sh",
+      "required_script_tokens": [
+        "org.eclipse.equinox.p2.director",
+        "-repository \"jar:file:${ZIP_PATH}!/\"",
+        "-installIU org.jkiss.dbeaver.ext.scratchbird.feature.feature.group",
+        "-listInstalledRoots"
+      ],
+      "expected_outcome": "stock install uses local p2 archive and confirms installed root",
+      "proof_policy": "script_contract_and_gui_copy_install_log",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json"
+    },
+    {
+      "case_id": "DBEAVER-MGMT-027-upgrade-replace-existing",
+      "phase": "upgrade_replace_existing",
+      "script_path": "project/drivers/adaptor/scratchbird-dbeaver-driver/scripts/install-into-stock-dbeaver.sh",
+      "required_script_tokens": [
+        "-uninstallIU org.jkiss.dbeaver.ext.scratchbird.feature.feature.group",
+        "-purgeHistory",
+        "-installIU org.jkiss.dbeaver.ext.scratchbird.feature.feature.group"
+      ],
+      "expected_outcome": "existing ScratchBird feature is removed before installing the candidate archive",
+      "proof_policy": "script_contract_and_gui_copy_install_log",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json"
+    },
+    {
+      "case_id": "unsupported-dbeaver-version",
+      "phase": "downgrade_refusal",
+      "requires_external_proof": true,
+      "expected_outcome": "unsupported DBeaver CE versions and downgrade attempts must be refused before release promotion",
+      "proof_policy": "requires_copied_stock_install_log",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json",
+      "refusal_vector": "unsupported_dbeaver_version_or_candidate_version"
+    },
+    {
+      "case_id": "DBEAVER-MGMT-027-stock-uninstall",
+      "phase": "stock_uninstall",
+      "script_path": "project/drivers/adaptor/scratchbird-dbeaver-driver/scripts/uninstall-from-stock-dbeaver.sh",
+      "required_script_tokens": [
+        "org.eclipse.equinox.p2.director",
+        "-uninstallIU \"${FEATURE_IU}\"",
+        "-purgeHistory",
+        "-listInstalledRoots"
+      ],
+      "expected_outcome": "stock uninstall removes the feature IU and confirms it is absent",
+      "proof_policy": "script_contract_and_gui_copy_install_log",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json"
+    },
+    {
+      "case_id": "DBEAVER-MGMT-027-stock-reinstall",
+      "phase": "stock_reinstall",
+      "script_path": "project/drivers/adaptor/scratchbird-dbeaver-driver/scripts/install-into-stock-dbeaver.sh",
+      "required_script_tokens": [
+        "ScratchBird install completed successfully",
+        "Installed root confirmed",
+        "org.jkiss.dbeaver.ext.scratchbird.feature.feature.group"
+      ],
+      "expected_outcome": "after uninstall, reinstall returns the same feature IU to installed roots",
+      "proof_policy": "script_contract_and_gui_copy_install_log",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json"
+    },
+    {
+      "case_id": "DBEAVER-MGMT-027-workspace-profile-cleanup",
+      "phase": "workspace_profile_cleanup",
+      "requires_external_proof": true,
+      "expected_outcome": "workspace profiles, connection exports, and local history contain no stale ScratchBird secrets after uninstall",
+      "proof_policy": "requires_workspace_redaction_log",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json"
+    },
+    {
+      "case_id": "DBEAVER-MGMT-027-driver-cache-cleanup",
+      "phase": "driver_cache_cleanup",
+      "requires_external_proof": true,
+      "expected_outcome": "DBeaver driver cache has no stale scratchbird-jdbc.jar after uninstall cleanup proof",
+      "proof_policy": "requires_workspace_redaction_log",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json"
+    },
+    {
+      "case_id": "DBEAVER-MGMT-027-secret-cleanup",
+      "phase": "secret_cleanup",
+      "requires_external_proof": true,
+      "expected_outcome": "secure storage and exported connection profiles do not reveal auth tokens, passwords, or assertions",
+      "proof_policy": "requires_secure_storage_redaction_log",
+      "proof_status": "passed",
+      "proof_artifact": "scratchbird-dbeaver-lifecycle-proof-latest.json"
+    }
+  ],
+  "migration_fixtures": [
+    {
+      "fixture_id": "DBEAVER-MGMT-043-old-plugin-id",
+      "case_type": "old_plugin_id",
+      "input_shape": "workspace metadata references legacy plugin id org.jkiss.dbeaver.ext.scratchbird.driver",
+      "expected_outcome": "candidate maps or removes legacy plugin id without retaining stale enabled state",
+      "redaction_policy": "no_plaintext_secret_output"
+    },
+    {
+      "fixture_id": "DBEAVER-MGMT-043-old-preference-key",
+      "case_type": "old_preference_key",
+      "input_shape": "workspace preferences contain legacy ScratchBird metadata expansion keys",
+      "expected_outcome": "candidate normalizes supported keys and drops obsolete keys",
+      "redaction_policy": "no_plaintext_secret_output"
+    },
+    {
+      "fixture_id": "DBEAVER-MGMT-043-backup-restore",
+      "case_type": "backup_restore",
+      "input_shape": "workspace backup is restored before reinstalling the candidate feature",
+      "expected_outcome": "reinstall recovers deterministic ScratchBird plugin state",
+      "redaction_policy": "no_plaintext_secret_output"
+    },
+    {
+      "fixture_id": "DBEAVER-MGMT-043-corrupted-preferences",
+      "case_type": "corrupted_preferences",
+      "input_shape": "workspace preference file has truncated ScratchBird preference entry",
+      "expected_outcome": "candidate refuses or repairs corrupted state without leaking connection material",
+      "redaction_policy": "no_plaintext_secret_output"
+    },
+    {
+      "fixture_id": "DBEAVER-MGMT-043-reinstall-recovery",
+      "case_type": "reinstall_recovery",
+      "input_shape": "feature is uninstalled and reinstalled over a workspace that previously used ScratchBird",
+      "expected_outcome": "candidate reloads feature metadata and does not duplicate driver definitions",
+      "redaction_policy": "no_plaintext_secret_output"
+    },
+    {
+      "fixture_id": "DBEAVER-MGMT-043-redaction-safe-cleanup",
+      "case_type": "redaction_safe_cleanup",
+      "input_shape": "workspace contains representative token-shaped placeholders marked redacted",
+      "expected_outcome": "migration output and cleanup logs preserve redaction and avoid plaintext secret material",
+      "redaction_policy": "no_plaintext_secret_output"
+    }
+  ]
+}

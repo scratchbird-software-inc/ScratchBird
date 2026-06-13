@@ -110,7 +110,7 @@ public final class ScratchBirdLiveProbe {
         @NotNull
         public List<String> previewLines() {
             List<String> lines = new ArrayList<>();
-            lines.add("Command: " + command);
+            lines.add("Command: " + ScratchBirdSecurityRedactor.redactEvidenceText(command));
             lines.add("Result set: " + resultSet);
             if (resultSet) {
                 lines.add("Columns: " + (columns.isEmpty() ? "-" : String.join(", ", columns)));
@@ -138,7 +138,7 @@ public final class ScratchBirdLiveProbe {
         public List<String> summaryLines() {
             return List.of(
                 "Status: " + status.kind(),
-                "Message: " + status.message(),
+                "Message: " + status.redactedMessage(),
                 "Statements executed: " + statementResults.size(),
                 "Probe label: " + plan.label(),
                 "Surrogate: " + plan.surrogate());
@@ -239,6 +239,67 @@ public final class ScratchBirdLiveProbe {
                 classifyFailure(e),
                 List.copyOf(results));
         }
+    }
+
+    @NotNull
+    public static ScratchBirdRefusalModel mutationAdmissionStatus(
+        @Nullable ProbeResult result,
+        @NotNull String expectedPreviewHash,
+        @NotNull String expectedCommandHash
+    ) {
+        if (result == null) {
+            return ScratchBirdRefusalModel.serverAdmissionRequired(
+                "No server permission probe has been executed for this mutation preview.",
+                "sys.security.permission_probe");
+        }
+        if (result.status().isDeterministicRefusal()) {
+            return result.status();
+        }
+
+        boolean sawPermissionProbe = false;
+        boolean sawProbeRow = false;
+        for (StatementResult statementResult : result.statementResults()) {
+            if (!statementResult.command().toLowerCase(Locale.ENGLISH).contains("sys.security.permission_probe")) {
+                continue;
+            }
+            sawPermissionProbe = true;
+            int admittedIndex = columnIndex(statementResult.columns(), "admitted");
+            int refusalCodeIndex = columnIndex(statementResult.columns(), "refusal_code");
+            int refusalMessageIndex = columnIndex(statementResult.columns(), "refusal_message");
+            int previewHashIndex = columnIndex(statementResult.columns(), "preview_hash");
+            int commandHashIndex = columnIndex(statementResult.columns(), "command_hash");
+            for (List<String> row : statementResult.sampleRows()) {
+                sawProbeRow = true;
+                if (previewHashIndex >= 0 && !matchesColumn(row, previewHashIndex, expectedPreviewHash)) {
+                    return ScratchBirdRefusalModel.permissionDenied(
+                        "Server permission probe returned a preview hash that does not match the dialog preview.");
+                }
+                if (commandHashIndex >= 0 && !matchesColumn(row, commandHashIndex, expectedCommandHash)) {
+                    return ScratchBirdRefusalModel.permissionDenied(
+                        "Server permission probe returned a command hash that does not match the dialog command.");
+                }
+                if (admittedIndex >= 0 && isTruthy(rowValue(row, admittedIndex))) {
+                    return ScratchBirdRefusalModel.admitted(
+                        "Server permission probe admitted this exact preview and command hash.");
+                }
+                String refusalCode = refusalCodeIndex >= 0 ? rowValue(row, refusalCodeIndex) : "SERVER.PERMISSION_PROBE_REFUSED";
+                String refusalMessage = refusalMessageIndex >= 0 ? rowValue(row, refusalMessageIndex) : "Server permission probe did not admit this mutation.";
+                return ScratchBirdRefusalModel.permissionDenied(refusalCode + ": " + refusalMessage);
+            }
+        }
+        if (!sawPermissionProbe) {
+            return ScratchBirdRefusalModel.serverAdmissionRequired(
+                "The server authz result did not include sys.security.permission_probe evidence.",
+                "sys.security.permission_probe");
+        }
+        if (!sawProbeRow) {
+            return ScratchBirdRefusalModel.serverAdmissionRequired(
+                "The server permission probe returned no admission row for this preview and command hash.",
+                "sys.security.permission_probe");
+        }
+        return ScratchBirdRefusalModel.serverAdmissionRequired(
+            "The server permission probe did not produce an admission decision.",
+            "sys.security.permission_probe");
     }
 
     @NotNull
@@ -433,12 +494,44 @@ public final class ScratchBirdLiveProbe {
         }
     }
 
+    private static int columnIndex(@NotNull List<String> columns, @NotNull String expectedName) {
+        for (int i = 0; i < columns.size(); i++) {
+            if (expectedName.equalsIgnoreCase(columns.get(i))) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static boolean matchesColumn(@NotNull List<String> row, int index, @NotNull String expected) {
+        return expected.equals(rowValue(row, index));
+    }
+
+    @NotNull
+    private static String rowValue(@NotNull List<String> row, int index) {
+        if (index < 0 || index >= row.size()) {
+            return "";
+        }
+        return row.get(index);
+    }
+
+    private static boolean isTruthy(@NotNull String value) {
+        String normalized = value.trim().toLowerCase(Locale.ENGLISH);
+        return normalized.equals("true") ||
+            normalized.equals("t") ||
+            normalized.equals("1") ||
+            normalized.equals("yes") ||
+            normalized.equals("y") ||
+            normalized.equals("admitted");
+    }
+
     @NotNull
     private static String renderValue(@Nullable Object value) {
         if (value == null) {
             return "NULL";
         }
-        String text = String.valueOf(value).replace('\n', ' ').replace('\r', ' ');
+        String text = ScratchBirdSecurityRedactor.redactEvidenceText(
+            String.valueOf(value).replace('\n', ' ').replace('\r', ' '));
         if (text.length() <= MAX_CELL_LENGTH) {
             return text;
         }
@@ -456,11 +549,11 @@ public final class ScratchBirdLiveProbe {
             lowered.contains("not allowed") ||
             lowered.contains("superuser") ||
             lowered.contains("authorization")) {
-            return ScratchBirdRefusalModel.permissionDenied("Server denied the live probe: " + message);
+            return ScratchBirdRefusalModel.permissionDenied("Server denied the live probe: " + ScratchBirdSecurityRedactor.redactEvidenceText(message));
         }
         if (lowered.contains("unsupported") || lowered.contains("not supported")) {
-            return ScratchBirdRefusalModel.unsupported("Server rejected the live probe surface: " + message);
+            return ScratchBirdRefusalModel.unsupported("Server rejected the live probe surface: " + ScratchBirdSecurityRedactor.redactEvidenceText(message));
         }
-        return ScratchBirdRefusalModel.serverRefused("Server refused the live probe: " + message, "live-server-probe");
+        return ScratchBirdRefusalModel.serverRefused("Server refused the live probe: " + ScratchBirdSecurityRedactor.redactEvidenceText(message), "live-server-probe");
     }
 }

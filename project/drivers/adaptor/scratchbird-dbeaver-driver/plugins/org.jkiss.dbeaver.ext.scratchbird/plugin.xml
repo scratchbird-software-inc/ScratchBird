@@ -252,26 +252,26 @@
                         <property id="search_path" label="Search Path" type="string"/>
                         <property id="role" label="Role" type="string"/>
                         <property id="front_door_mode" label="Ingress Mode" type="string"/>
-                        <property id="manager_auth_token" label="Manager Auth Token" type="string"/>
+                        <property id="manager_auth_token" label="Manager Auth Token" type="string" features="secured,password"/>
                         <property id="manager_username" label="Manager Username" type="string"/>
                         <property id="manager_database" label="Manager Database" type="string"/>
                         <property id="manager_connection_profile" label="Manager Connection Profile" type="string"/>
                         <property id="manager_client_intent" label="Manager Client Intent" type="string"/>
                         <property id="manager_client_flags" label="Manager Client Flags" type="string"/>
                         <property id="manager_auth_fast_path" label="Manager Auth Fast Path" type="boolean" defaultValue="false"/>
-                        <property id="auth_token" label="Auth Token" type="string"/>
+                        <property id="auth_token" label="Auth Token" type="string" features="secured,password"/>
                         <property id="auth_method_id" label="Auth Method Id" type="string"/>
-                        <property id="auth_method_payload" label="Auth Method Payload" type="string"/>
-                        <property id="auth_payload_json" label="Auth Payload JSON" type="string"/>
-                        <property id="auth_payload_b64" label="Auth Payload Base64" type="string"/>
+                        <property id="auth_method_payload" label="Auth Method Payload" type="string" features="secured,password"/>
+                        <property id="auth_payload_json" label="Auth Payload JSON" type="string" features="secured,password"/>
+                        <property id="auth_payload_b64" label="Auth Payload Base64" type="string" features="secured,password"/>
                         <property id="auth_provider_profile" label="Auth Provider Profile" type="string"/>
                         <property id="auth_required_methods" label="Required Auth Methods" type="string"/>
                         <property id="auth_forbidden_methods" label="Forbidden Auth Methods" type="string"/>
                         <property id="auth_require_channel_binding" label="Require Channel Binding" type="boolean" defaultValue="false"/>
-                        <property id="workload_identity_token" label="Workload Identity Token" type="string"/>
-                        <property id="proxy_principal_assertion" label="Proxy Principal Assertion" type="string"/>
+                        <property id="workload_identity_token" label="Workload Identity Token" type="string" features="secured,password"/>
+                        <property id="proxy_principal_assertion" label="Proxy Principal Assertion" type="string" features="secured,password"/>
                         <property id="dormant_id" label="Dormant Id" type="string"/>
-                        <property id="dormant_reattach_token" label="Dormant Reattach Token" type="string"/>
+                        <property id="dormant_reattach_token" label="Dormant Reattach Token" type="string" features="secured,password"/>
                         <property id="metadataExpandSchemaParents" label="Expand Parent Schema Rows" type="boolean" defaultValue="false"/>
                     </propertyGroup>
                     <propertyGroup label="ScratchBird Driver Tuning">

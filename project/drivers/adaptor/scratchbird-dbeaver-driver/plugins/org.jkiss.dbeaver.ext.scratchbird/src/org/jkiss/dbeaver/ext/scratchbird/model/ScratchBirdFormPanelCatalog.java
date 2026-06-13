@@ -110,7 +110,8 @@ public final class ScratchBirdFormPanelCatalog {
         List<Entry> entries = new ArrayList<>();
         entries.add(entry("Target scope", targetPath));
         entries.add(entry("Preview authority", plan.authority()));
-        entries.add(entry("Default preview", plan.commandText()));
+        entries.add(entry("Admission decision", plan.admissionMetadata().decision() + " - " + plan.admissionMetadata().diagnosticCode()));
+        entries.add(entry("Default preview", plan.redactedCommandText()));
         entries.add(entry("Task catalog size", Integer.toString(taskDefinitions.size())));
         if (!taskDefinitions.isEmpty()) {
             ScratchBirdTaskDefinition primaryTask = taskDefinitions.get(0);
@@ -142,9 +143,10 @@ public final class ScratchBirdFormPanelCatalog {
         entries.add(entry("Active mode", mode.name()));
         entries.add(entry("Namespace profile", profile.id() + " - " + profile.label()));
         entries.add(entry("Preview authority", plan.authority()));
+        entries.add(entry("Admission decision", plan.admissionMetadata().decision() + " - " + plan.admissionMetadata().diagnosticCode()));
         entries.add(entry("Executable preview", Boolean.toString(plan.executable())));
         entries.add(entry("Destructive preview", Boolean.toString(plan.destructive())));
-        entries.add(entry("Default preview", plan.commandText()));
+        entries.add(entry("Default preview", plan.redactedCommandText()));
         entries.add(entry("Child forms", childFormSummary(form)));
         if (hasChildForm(form, "SBDV-FRM-015")) {
             entries.add(entry("Validation attachment", "SBDV-FRM-015 - Validation, Lint, And Parser Diagnostics Panel"));

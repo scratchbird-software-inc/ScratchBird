@@ -178,14 +178,28 @@ public class ScratchBirdCatalog extends GenericCatalog {
                 if (CommonUtils.isEmpty(databaseUuid)) {
                     databaseUuid = JDBCUtils.safeGetString(resultSet, "database_id");
                 }
-                references.add(ScratchBirdCatalogObjectReference.schema(
+                ScratchBirdCatalogObjectReference reference = ScratchBirdCatalogObjectReference.schema(
                     databaseUuid,
                     JDBCUtils.safeGetString(resultSet, "object_id"),
                     JDBCUtils.safeGetString(resultSet, "parent_object_id"),
                     fullPath,
-                    CommonUtils.isEmpty(objectName) ? leafName(fullPath) : objectName));
+                    CommonUtils.isEmpty(objectName) ? leafName(fullPath) : objectName);
+                references.add(reference);
+                cacheAuthorizedReference(reference);
             }
         }
+    }
+
+    private void cacheAuthorizedReference(@NotNull ScratchBirdCatalogObjectReference reference) {
+        if (!(getDataSource() instanceof ScratchBirdDataSource scratchBirdDataSource)) {
+            return;
+        }
+        ScratchBirdSessionScope sessionScope = scratchBirdDataSource.getScratchBirdSessionScope();
+        sessionScope.resolverCache().putAuthorizedReference(
+            sessionScope.authorizationContext(),
+            reference,
+            CommonUtils.notEmpty(reference.parentUuid()),
+            "server_filtered");
     }
 
     @NotNull

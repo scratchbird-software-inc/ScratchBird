@@ -149,7 +149,7 @@ stage_jdbc_driver
 
 ${MAVEN} -f "${BUILD_INTEGRATION_DIR}/pom.xml" \
   -Dmaven.repo.local="${MAVEN_REPO_LOCAL}" \
-  clean verify -DskipTests
+  clean verify
 
 REPOSITORY_DIR="${BUILD_INTEGRATION_DIR}/repository/target/repository"
 if [[ ! -f "${REPOSITORY_DIR}/content.jar" && ! -f "${REPOSITORY_DIR}/content.xml" ]]; then

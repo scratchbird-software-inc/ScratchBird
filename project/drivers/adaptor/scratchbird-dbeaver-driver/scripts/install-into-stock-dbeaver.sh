@@ -41,6 +41,7 @@ if [[ $# -gt 2 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MIN_DBEAVER_VERSION="${SCRATCHBIRD_DBEAVER_MIN_VERSION:-26.0.2}"
 
 find_bundled_zip() {
   find "${SCRIPT_DIR}" -maxdepth 1 -type f -name 'scratchbird-dbeaver-update-site-*.zip' \
@@ -168,6 +169,42 @@ auto_detect_install_dir() {
   return 1
 }
 
+read_dbeaver_version() {
+  local install_dir="$1"
+  local product_file="${install_dir}/.eclipseproduct"
+  if [[ ! -f "${product_file}" ]]; then
+    return 1
+  fi
+  awk -F= '$1 == "version" {print $2; exit}' "${product_file}"
+}
+
+version_ge() {
+  local actual="$1"
+  local minimum="$2"
+  local first=""
+  if ! command -v sort >/dev/null 2>&1; then
+    [[ "${actual}" == "${minimum}" ]]
+    return $?
+  fi
+  first="$(printf '%s\n%s\n' "${minimum}" "${actual}" | sort -V | head -n 1)"
+  [[ "${first}" == "${minimum}" ]]
+}
+
+require_supported_dbeaver_version() {
+  local install_dir="$1"
+  local actual=""
+  actual="$(read_dbeaver_version "${install_dir}" || true)"
+  if [[ -z "${actual}" ]]; then
+    echo "Unsupported DBeaver version: missing ${install_dir}/.eclipseproduct version metadata." >&2
+    exit 1
+  fi
+  if ! version_ge "${actual}" "${MIN_DBEAVER_VERSION}"; then
+    echo "Unsupported DBeaver version ${actual}; ScratchBird requires DBeaver ${MIN_DBEAVER_VERSION} or newer." >&2
+    exit 1
+  fi
+  echo "DBeaver version accepted: ${actual} (minimum ${MIN_DBEAVER_VERSION})"
+}
+
 INSTALL_HINT="${1:-}"
 ZIP_PATH="${2:-}"
 
@@ -190,6 +227,8 @@ if [[ -z "${ZIP_PATH}" || ! -f "${ZIP_PATH}" ]]; then
   echo "ScratchBird update-site zip not found. Pass it explicitly or place it next to this script." >&2
   exit 1
 fi
+
+require_supported_dbeaver_version "${INSTALL_DIR}"
 
 LAUNCHER="$(resolve_launcher "${INSTALL_DIR}" || true)"
 if [[ -z "${LAUNCHER}" ]]; then

@@ -1,0 +1,203 @@
+{
+  "schema_id": "scratchbird.dbeaver_management.release_contract.v1",
+  "component_id": "adaptor:scratchbird-dbeaver-driver",
+  "contract_scope": "DBeaver management static/release preflight contract. This contract does not by itself prove live-server, stock-GUI, manual-QA, or management mutation apply/verify closure.",
+  "expected_build": {
+    "adapter_version_prefix": "1.0.1",
+    "java_execution_environment": "JavaSE-21",
+    "eclipse_release": "2025-12",
+    "tycho_version": "4.0.8"
+  },
+  "supported_version_matrix": [
+    {
+      "target_id": "dbeaver-ce-26.0.2-linux-x86_64-static",
+      "dbeaver_ce_version": "26.0.2",
+      "java_execution_environment": "JavaSE-21",
+      "eclipse_release": "2025-12",
+      "tycho_version": "4.0.8",
+      "os": "linux",
+      "arch": "x86_64",
+      "support_status": "supported_static_contract",
+      "expected_outcome": "static preflight validates version, API drift, install lifecycle fixtures, license/IP, network policy, and optional release artifacts; live server and stock GUI proof remain required before release closure",
+      "proof_anchor": "project/tools/release/dbeaver_management_platform_gate.py#check_version_matrix",
+      "proof_scope": "static_contract_only_not_live_gui_or_live_server"
+    },
+    {
+      "target_id": "dbeaver-ce-26.0.2-windows-x86_64",
+      "dbeaver_ce_version": "26.0.2",
+      "java_execution_environment": "JavaSE-21",
+      "eclipse_release": "2025-12",
+      "tycho_version": "4.0.8",
+      "os": "windows",
+      "arch": "x86_64",
+      "support_status": "supported_packaged_offhost",
+      "expected_outcome": "Windows stock installer is packaged for off-host validation",
+      "proof_anchor": "project/drivers/adaptor/scratchbird-dbeaver-driver/scripts/install-into-stock-dbeaver.bat",
+      "proof_scope": "packaged_offhost_not_executed_on_linux_host"
+    },
+    {
+      "target_id": "dbeaver-ce-25.x-unsupported",
+      "dbeaver_ce_version": "<26.0.2",
+      "java_execution_environment": "JavaSE-21",
+      "eclipse_release": "2025-12",
+      "tycho_version": "4.0.8",
+      "os": "all",
+      "arch": "all",
+      "support_status": "unsupported_refusal",
+      "expected_outcome": "deterministic refusal before release promotion",
+      "refusal_reason": "unsupported_dbeaver_version",
+      "proof_anchor": "project/tests/release/dbeaver_management_install_lifecycle_fixture.json#unsupported-dbeaver-version"
+    },
+    {
+      "target_id": "java17-unsupported",
+      "dbeaver_ce_version": "26.0.2",
+      "java_execution_environment": "JavaSE-21",
+      "eclipse_release": "2025-12",
+      "tycho_version": "4.0.8",
+      "os": "all",
+      "arch": "all",
+      "support_status": "unsupported_refusal",
+      "expected_outcome": "deterministic refusal before release promotion",
+      "refusal_reason": "unsupported_java_version",
+      "proof_anchor": "project/drivers/adaptor/scratchbird-dbeaver-driver/plugins/org.jkiss.dbeaver.ext.scratchbird/META-INF/MANIFEST.MF#Bundle-RequiredExecutionEnvironment"
+    }
+  ],
+  "proof_boundaries": {
+    "static_gate": "project/tools/release/dbeaver_management_platform_gate.py validates contract inputs and optional release artifacts only.",
+    "does_not_prove": [
+      "live ScratchBird server management corpus",
+      "stock DBeaver GUI automation",
+      "DBeaver source-checkout execution",
+      "manual QA signoff",
+      "management mutation apply/verify",
+      "workspace secure-storage cleanup/redaction"
+    ],
+    "required_before_final_closure": [
+      "project/tests/conformance/drivers/fixtures/dbeaver_management_platform/manifest.json#requires_live_server_before_closure",
+      "project/tests/gui/dbeaver_management_manual_qa.md#DBEAVER-MGMT-035-MANUAL-QA-CHECKLIST"
+    ]
+  },
+  "api_drift": {
+    "feature_id": "org.jkiss.dbeaver.ext.scratchbird.feature",
+    "plugin_ids": [
+      "org.jkiss.dbeaver.ext.scratchbird",
+      "org.jkiss.dbeaver.ext.scratchbird.ui"
+    ],
+    "driver_class": "com.scratchbird.jdbc.SBDriver",
+    "default_port": "3092",
+    "core_extension_points": [
+      "org.jkiss.dbeaver.objectManager",
+      "org.jkiss.dbeaver.dataTypeProvider",
+      "org.jkiss.dbeaver.generic.meta",
+      "org.jkiss.dbeaver.dataSourceProvider",
+      "org.jkiss.dbeaver.dashboard"
+    ],
+    "ui_extension_points": [
+      "org.eclipse.core.expressions.propertyTesters",
+      "org.eclipse.ui.editors.annotationTypes",
+      "org.eclipse.ui.editors.markerAnnotationContract",
+      "org.jkiss.dbeaver.sql.editorAddIns",
+      "org.jkiss.dbeaver.sql.quickFixProcessors",
+      "org.eclipse.ui.commands",
+      "org.eclipse.ui.handlers",
+      "org.eclipse.ui.menus"
+    ],
+    "core_require_bundles": [
+      "org.jkiss.dbeaver.model",
+      "org.jkiss.dbeaver.model.jdbc",
+      "org.jkiss.dbeaver.model.sql",
+      "org.jkiss.dbeaver.ext.generic"
+    ],
+    "ui_require_bundles": [
+      "org.eclipse.core.expressions",
+      "org.eclipse.jface",
+      "org.eclipse.jface.text",
+      "org.eclipse.swt",
+      "org.eclipse.ui",
+      "org.jkiss.dbeaver.ext.generic",
+      "org.jkiss.dbeaver.ext.scratchbird",
+      "org.jkiss.dbeaver.model",
+      "org.jkiss.dbeaver.ui",
+      "org.jkiss.dbeaver.ui.editors.sql",
+      "org.jkiss.dbeaver.ui.navigator"
+    ],
+    "core_export_packages": [
+      "org.jkiss.dbeaver.ext.scratchbird.model",
+      "org.jkiss.dbeaver.ext.scratchbird.parser.v3"
+    ],
+    "ui_command_ids": [
+      "org.jkiss.dbeaver.ext.scratchbird.ui.open",
+      "org.jkiss.dbeaver.ext.scratchbird.ui.new",
+      "org.jkiss.dbeaver.ext.scratchbird.ui.alter",
+      "org.jkiss.dbeaver.ext.scratchbird.ui.delete",
+      "org.jkiss.dbeaver.ext.scratchbird.ui.tasks",
+      "org.jkiss.dbeaver.ext.scratchbird.ui.reports",
+      "org.jkiss.dbeaver.ext.scratchbird.ui.sourceStatus",
+      "org.jkiss.dbeaver.ext.scratchbird.ui.validateSql"
+    ]
+  },
+  "secure_properties": {
+    "sensitive_provider_properties": [
+      "manager_auth_token",
+      "auth_token",
+      "auth_method_payload",
+      "auth_payload_json",
+      "auth_payload_b64",
+      "workload_identity_token",
+      "proxy_principal_assertion",
+      "dormant_reattach_token"
+    ],
+    "required_features": [
+      "secured",
+      "password"
+    ],
+    "default_value_policy": "forbidden"
+  },
+  "license_ip": {
+    "third_party_notice_components": [
+      {
+        "component": "DBeaver",
+        "license": "Apache-2.0",
+        "boundary": "extension API and notice-bearing adapter source"
+      },
+      {
+        "component": "Eclipse Platform",
+        "license": "EPL-2.0",
+        "boundary": "target platform dependency"
+      },
+      {
+        "component": "Tycho",
+        "license": "EPL-2.0",
+        "boundary": "build-time packaging dependency"
+      },
+      {
+        "component": "SWT",
+        "license": "EPL-2.0",
+        "boundary": "DBeaver UI dependency"
+      },
+      {
+        "component": "JFace",
+        "license": "EPL-2.0",
+        "boundary": "DBeaver UI dependency"
+      },
+      {
+        "component": "ScratchBird JDBC",
+        "license": "MPL-2.0",
+        "boundary": "bundled at build time as scratchbird-jdbc.jar"
+      }
+    ]
+  },
+  "network_egress_policy": {
+    "allowed_runtime_urls": [
+      "https://scratchbird.com/"
+    ],
+    "allowed_build_time_urls": [
+      "http://maven.apache.org/POM/4.0.0",
+      "http://maven.apache.org/xsd/maven-4.0.0.xsd",
+      "http://www.w3.org/2001/XMLSchema-instance",
+      "https://download.eclipse.org/releases/${eclipse.version}/",
+      "https://dbeaver.io/update/latest/"
+    ],
+    "runtime_egress_policy": "plugin runtime egress is limited to JDBC connections selected by the user; no telemetry, marketplace, update-check, or diagnostic upload endpoints are declared by the ScratchBird plugin"
+  }
+}

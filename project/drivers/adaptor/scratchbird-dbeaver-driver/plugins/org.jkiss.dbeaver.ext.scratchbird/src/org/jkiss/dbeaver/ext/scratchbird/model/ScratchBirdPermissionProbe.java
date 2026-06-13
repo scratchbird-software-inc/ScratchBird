@@ -94,8 +94,10 @@ public final class ScratchBirdPermissionProbe {
             return ScratchBirdRefusalModel.clientGated(
                 "No predefined ScratchBird task catalog exists for this target yet; use the object editor or report flow instead.");
         }
-        return ScratchBirdRefusalModel.admitted(
-            "Branch profile " + profile.id() + " (" + profile.label() + ") admits " + mode + " mode for this target.");
+        return ScratchBirdRefusalModel.serverAdmissionRequired(
+            "Branch profile " + profile.id() + " (" + profile.label() + ") allows " + mode +
+                " preview locally, but execution requires server-side admission for the connected session.",
+            "sys.security.permission_probe");
     }
 
     @NotNull
@@ -108,7 +110,7 @@ public final class ScratchBirdPermissionProbe {
         ScratchBirdDestructivePlan destructivePlan
     ) {
         ScratchBirdRefusalModel staticProbe = probe(form, mode, targetPath);
-        if (!staticProbe.isAdmitted()) {
+        if (!staticProbe.allowsServerProbe()) {
             return new ScratchBirdLiveProbe.ProbePlan(
                 "Server authz probe unavailable",
                 "Static client posture blocks server authz probing for this form and mode.",
@@ -125,7 +127,7 @@ public final class ScratchBirdPermissionProbe {
             taskDefinitions,
             destructivePlan);
         boolean mutationMode = isMutationMode(mode);
-        List<String> commands = serverAuthorizationCommands(form, mode, targetPath, representativePlan.commands());
+        List<String> commands = serverAuthorizationCommands(form, mode, targetPath, executionPlan, representativePlan.commands());
         String summary = !mutationMode ?
             "Execute capability inventory plus branch-specific read-only commands against the connected ScratchBird server." :
             "Execute capability inventory, server mutation-admission read probe, and branch-specific read-only surrogate commands against the connected ScratchBird server.";
@@ -146,6 +148,7 @@ public final class ScratchBirdPermissionProbe {
             inspectForm,
             ScratchBirdFormMode.INSPECT,
             targetPath,
+            ScratchBirdAdminExecutor.plan(inspectForm, ScratchBirdFormMode.INSPECT, targetPath),
             inspectRepresentativeCommands(targetPath));
         if (commands.isEmpty()) {
             return capabilityInventoryCommand() + ";";
@@ -167,12 +170,13 @@ public final class ScratchBirdPermissionProbe {
         @NotNull ScratchBirdFormDefinition form,
         @NotNull ScratchBirdFormMode mode,
         @NotNull String targetPath,
+        @NotNull ScratchBirdAdminExecutor.ExecutionPlan executionPlan,
         @NotNull List<String> representativeCommands
     ) {
         LinkedHashSet<String> commands = new LinkedHashSet<>();
         commands.add(capabilityInventoryCommand());
         if (isMutationMode(mode)) {
-            commands.add(mutationPermissionProbeCommand(form, mode, targetPath));
+            commands.add(mutationPermissionProbeCommand(form, mode, targetPath, executionPlan));
         }
         commands.addAll(representativeCommands);
         return List.copyOf(commands);
@@ -189,12 +193,17 @@ public final class ScratchBirdPermissionProbe {
     private static String mutationPermissionProbeCommand(
         @NotNull ScratchBirdFormDefinition form,
         @NotNull ScratchBirdFormMode mode,
-        @NotNull String targetPath
+        @NotNull String targetPath,
+        @NotNull ScratchBirdAdminExecutor.ExecutionPlan executionPlan
     ) {
+        String previewHash = ScratchBirdManagementActionEnvelope.previewHashFor(form, mode, targetPath, executionPlan);
+        String commandHash = ScratchBirdManagementActionEnvelope.commandHashFor(executionPlan);
         return "SELECT admitted, refusal_code, refusal_message FROM sys.security.permission_probe " +
             "WHERE target_path = " + literal(targetPath) +
             " AND form_id = " + literal(form.id()) +
-            " AND form_mode = " + literal(mode.name());
+            " AND form_mode = " + literal(mode.name()) +
+            " AND preview_hash = " + literal(previewHash) +
+            " AND command_hash = " + literal(commandHash);
     }
 
     @NotNull
