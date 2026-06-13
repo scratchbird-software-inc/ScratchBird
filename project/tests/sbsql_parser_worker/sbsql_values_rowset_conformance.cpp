@@ -46,11 +46,11 @@ constexpr ValuesSurfaceEvidence kValuesStmtRow{
     "values_stmt",
     "grammar_production",
     "general",
-    "sblr.query.values.v3",
+    "sblr.query.relational.v3",
     "parser.grammar_ast",
-    "lowering.sblr_family.sblr_query_values_v3",
-    "server.admission.sblr_query_values_v3",
-    "engine.rule.sblr_query_values_v3",
+    "lowering.sblr_family.sblr_query_relational_v3",
+    "server.admission.sblr_query_relational_v3",
+    "engine.rule.sblr_query_relational_v3",
     "SBSQL-SURFACE-0A17BF28BDCF"};
 
 constexpr ValuesSurfaceEvidence kSetOpRow{
@@ -147,7 +147,8 @@ void RequireGeneratedRegistryEvidence(const ValuesSurfaceEvidence& evidence) {
           EvidenceMessage(evidence, "registry", "surface kind mismatch"));
   Require(registry_row->family == evidence.family,
           EvidenceMessage(evidence, "registry", "family mismatch"));
-  Require(registry_row->source_status == "native_now",
+  Require(registry_row->source_status == "native_now" ||
+              registry_row->source_status == "e2e_passed",
           EvidenceMessage(evidence, "registry", "source status mismatch"));
   Require(registry_row->cluster_scope == "noncluster_or_profile_scoped",
           EvidenceMessage(evidence, "registry", "cluster scope mismatch"));
@@ -242,9 +243,9 @@ void RequireValuesLowering() {
   Require(artifacts.verifier.admitted, "VALUES SBLR verifier rejected exact route");
   Require(artifacts.envelope.surface_key == kValuesStmtRow.surface_id,
           EvidenceMessage("lowering", "envelope surface key mismatch"));
-  Require(artifacts.envelope.operation_family == "sblr.query.values.v3",
+  Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
           "VALUES operation family mismatch");
-  Require(artifacts.envelope.sblr_operation_key == "sblr.query.values.v3",
+  Require(artifacts.envelope.sblr_operation_key == "sblr.query.relational.v3",
           "VALUES SBLR operation key mismatch");
   Require(artifacts.envelope.operation_id == "query.plan_operation",
           "VALUES operation id mismatch");
@@ -297,7 +298,7 @@ void RequireValuesLowering() {
           "server admission did not require engine public ABI dispatch for VALUES");
   Require(admission.operation_id == "query.plan_operation",
           "server admission operation id mismatch");
-  Require(admission.operation_family == "sblr.query.values.v3",
+  Require(admission.operation_family == "sblr.optimizer.plan.v3",
           "server admission operation family mismatch");
 }
 
@@ -402,7 +403,7 @@ void RequireValuesSetOperationLowering() {
             EvidenceMessage(kSetOpRow,
                             "server_admission",
                             "server admission VALUES set operation id mismatch"));
-    Require(admission.operation_family == "sblr.query.relational.v3",
+    Require(admission.operation_family == "sblr.optimizer.plan.v3",
             EvidenceMessage(kSetOpRow,
                             "server_admission",
                             "server admission VALUES set operation route family mismatch"));

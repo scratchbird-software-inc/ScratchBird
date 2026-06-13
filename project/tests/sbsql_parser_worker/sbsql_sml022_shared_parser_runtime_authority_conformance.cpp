@@ -196,7 +196,7 @@ std::string TextOperationEnvelope(bool names_resolved_to_uuids,
   std::string out;
   out += "envelope=SBLRExecutionEnvelope.v3\n";
   out += "operation_id=security.authorize\n";
-  out += "sblr_operation_family=sblr.security.mutation_or_inspect.v3\n";
+  out += "sblr_operation_family=sblr.policy.operation.v3\n";
   if (include_result_shape) out += "result_shape=result.sml022.security_authority.v1\n";
   if (include_diagnostic_shape) {
     out += "diagnostic_shape=diagnostic.sml022.message_vector.v1\n";
@@ -327,7 +327,7 @@ void VerifyServerSblrAdmissionCannotBeBypassed() {
   const auto security = server::AdmitServerSblrEnvelope(
       server::ServerSblrAdmissionRequest{TextOperationEnvelope(true), false});
   Require(security.admitted &&
-              security.operation_family == "sblr.security.mutation_or_inspect.v3" &&
+              security.operation_family == "sblr.policy.operation.v3" &&
               security.operation_id == "security.authorize",
           "server did not reclassify security authorization through SBLR authority");
 }

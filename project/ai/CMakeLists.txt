@@ -23,7 +23,7 @@ endfunction()
 sb_ai_add_gate(ai_source_inventory_gate
   COMMAND "${Python3_EXECUTABLE}"
     -B
-    "${SB_AI_ROOT}/scripts/ai_execution plan_gate.py"
+    "${SB_AI_ROOT}/scripts/ai_workplan_gate.py"
     --repo-root "${SB_AI_ROOT}"
     --artifact-root "${SB_AI_ARTIFACT_ROOT}"
     --output-dir "${SB_AI_GATE_ROOT}/inventory"
@@ -32,7 +32,7 @@ sb_ai_add_gate(ai_source_inventory_gate
 sb_ai_add_gate(ai_old_path_gate
   COMMAND "${Python3_EXECUTABLE}"
     -B
-    "${SB_AI_ROOT}/scripts/ai_execution plan_gate.py"
+    "${SB_AI_ROOT}/scripts/ai_workplan_gate.py"
     --repo-root "${SB_AI_ROOT}"
     --artifact-root "${SB_AI_ARTIFACT_ROOT}"
     --output-dir "${SB_AI_GATE_ROOT}/old_paths"
@@ -41,7 +41,7 @@ sb_ai_add_gate(ai_old_path_gate
 sb_ai_add_gate(ai_build_artifact_isolation_gate
   COMMAND "${Python3_EXECUTABLE}"
     -B
-    "${SB_AI_ROOT}/scripts/ai_execution plan_gate.py"
+    "${SB_AI_ROOT}/scripts/ai_workplan_gate.py"
     --repo-root "${SB_AI_ROOT}"
     --artifact-root "${SB_AI_ARTIFACT_ROOT}"
     --output-dir "${SB_AI_GATE_ROOT}/artifact_isolation"
@@ -122,7 +122,7 @@ sb_ai_add_gate(ai_live_native_conformance_gate
 sb_ai_add_gate(ai_final_import_gate
   COMMAND "${Python3_EXECUTABLE}"
     -B
-    "${SB_AI_ROOT}/scripts/ai_execution plan_gate.py"
+    "${SB_AI_ROOT}/scripts/ai_workplan_gate.py"
     --repo-root "${SB_AI_ROOT}"
     --artifact-root "${SB_AI_ARTIFACT_ROOT}"
     --output-dir "${SB_AI_GATE_ROOT}/final"

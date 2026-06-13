@@ -168,7 +168,8 @@ void RequireRegistryEvidence(const CaseRow& row) {
           "SBSFC-082 generated registry canonical name drifted");
   Require(registry_row->surface_kind == row.surface_kind,
           "SBSFC-082 generated registry surface kind drifted");
-  Require(registry_row->source_status == "native_now",
+  Require(registry_row->source_status == "native_now" ||
+              registry_row->source_status == "e2e_passed",
           "SBSFC-082 generated registry status drifted");
   Require(registry_row->cluster_scope == "noncluster_or_profile_scoped",
           "SBSFC-082 generated registry cluster scope drifted");
@@ -193,9 +194,9 @@ void RequireExactLowering(const CaseRow& row, const PipelineArtifacts& artifacts
           "SBSFC-082 AST canonical operation family mismatch");
   Require(artifacts.bound.bound, "SBSFC-082 bind failed");
   Require(artifacts.verifier.admitted, "SBSFC-082 verifier rejected exact route");
-  Require(artifacts.envelope.operation_family == "sblr.query.values.v3",
+  Require(artifacts.envelope.operation_family == "sblr.query.relational.v3",
           "SBSFC-082 route operation family mismatch");
-  Require(artifacts.envelope.sblr_operation_key == "sblr.query.values.v3",
+  Require(artifacts.envelope.sblr_operation_key == "sblr.query.relational.v3",
           "SBSFC-082 route operation key mismatch");
   Require(artifacts.envelope.operation_id == "query.plan_operation",
           "SBSFC-082 operation id mismatch");

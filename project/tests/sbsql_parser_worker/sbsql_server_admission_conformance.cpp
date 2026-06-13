@@ -581,11 +581,11 @@ constexpr std::array<ClusterProfileGateExpectedRow, 27> kSbsfc025rClusterProfile
      "reconcile-options cluster reconciliation or private profile execution"},
     {"SBSQL-D873CD6AEFCF",
      "member_role",
-     "sblr.security.mutation_or_inspect.v3",
+     "sblr.security.mutation.v3",
      "member-role security cluster profile execution"},
     {"SBSQL-F704A29FE1C8",
      "policy_ref",
-     "sblr.security.mutation_or_inspect.v3",
+     "sblr.policy.operation.v3",
      "policy-ref security cluster profile execution"},
     {"SBSQL-E47D4A865961",
      "cluster_node_uuid",
@@ -887,9 +887,6 @@ int main() {
       "sblr.management.runtime_operation.v3",
       "sblr.observability.inspect.v3",
       "sblr.query.multimodel_or_ddl.v3",
-      "sblr.query.values.v3",
-      "sblr.security.mutation_or_inspect.v3",
-      "sblr.storage.management_operation.v3",
   };
   for (const auto& family : rejected_non_primary_families) {
     auto frame = ExecuteFrame(session_uuid, {}, ParserJsonEnvelope(

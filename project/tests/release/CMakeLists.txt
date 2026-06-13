@@ -2304,7 +2304,7 @@ if(NOT SB_PUBLIC_RELEASE_EXPORT_NESTED)
             --ctest ${CMAKE_CTEST_COMMAND}
             --c-compiler ${CMAKE_C_COMPILER}
             --cxx-compiler ${CMAKE_CXX_COMPILER}
-            --parallel 4
+            --parallel 1
   )
   # PUBLIC_RELEASE_CLEANUP_GATE
   set_tests_properties(public_project_export_gate PROPERTIES

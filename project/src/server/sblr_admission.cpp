@@ -27,7 +27,7 @@ struct FamilyRule {
   bool cluster_private = false;
 };
 
-constexpr std::array<FamilyRule, 57> kServerSblrFamilies{{
+constexpr std::array<FamilyRule, 54> kServerSblrFamilies{{
     {"sblr.acceleration.gpu.v3", "acceleration.gpu.operation", false},
     {"sblr.acceleration.llvm.v3", "extensibility.compile_llvm_module", false},
     {"sblr.archive.operation.v3", "archive.operation", false},
@@ -71,17 +71,14 @@ constexpr std::array<FamilyRule, 57> kServerSblrFamilies{{
     {"sblr.query.relational.v3", "dml.select", false},
     {"sblr.query.search.v3", "nosql.search_query", false},
     {"sblr.query.timeseries.v3", "nosql.time_series_append", false},
-    {"sblr.query.values.v3", "query.plan_operation", false},
     {"sblr.query.vector.v3", "nosql.vector_search", false},
     {"sblr.replication.consumer.v3", "cluster.inspect_replication", true},
     {"sblr.replication.operation.v3", "replication.operation", false},
     {"sblr.routine.define.v3", "routine.define", false},
     {"sblr.routine.execute.v3", "extensibility.invoke_udr_package", false},
     {"sblr.security.mutation.v3", "security.grant_right", false},
-    {"sblr.security.mutation_or_inspect.v3", "security.authorize", false},
     {"sblr.session.management.v3", "session.prepare_statement", false},
     {"sblr.statement.management.v3", "session.prepare_statement", false},
-    {"sblr.storage.management_operation.v3", "storage.manage_operation", false},
     {"sblr.transaction.control.v3", "transaction.control", false},
     {"sblr.udr.operation.v3", "extensibility.invoke_udr_package", false},
     {"sblr.vector.execution.v3", "nosql.vector_search", false},
@@ -412,7 +409,7 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
                                                    : "sblr.management.report.v3";
   }
   if (IsStorageTierMigrationOperationId(operation_id)) {
-    return "sblr.storage.management_operation.v3";
+    return "sblr.filespace.management.v3";
   }
   if (IsFilespaceDiscoveryOperationId(operation_id)) {
     return "sblr.filespace.management.v3";
@@ -424,13 +421,13 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
     return "sblr.filespace.management.v3";
   }
   if (IsShardPlacementDescriptorOperationId(operation_id)) {
-    return "sblr.storage.management_operation.v3";
+    return "sblr.filespace.management.v3";
   }
   if (IsEncryptionMaintenanceOperationId(operation_id)) {
-    return "sblr.security.mutation_or_inspect.v3";
+    return "sblr.security.mutation.v3";
   }
   if (IsProtectedMaterialOperationId(operation_id)) {
-    return "sblr.security.mutation_or_inspect.v3";
+    return "sblr.security.mutation.v3";
   }
   if (operation_id == "management.inspect_runtime" ||
       operation_id == "op.show.management.config" ||
@@ -994,9 +991,7 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
       operation_id.starts_with("filespace.") ||
       operation_id.starts_with("storage.filespace.") ||
       operation_id.starts_with("storage.file_space.")) {
-    return IsStorageTierMigrationOperationId(operation_id)
-               ? "sblr.storage.management_operation.v3"
-               : "sblr.filespace.management.v3";
+    return "sblr.filespace.management.v3";
   }
   if (operation_id.starts_with("storage.index.")) return "sblr.index.maintenance.v3";
   if (operation_id.starts_with("storage.database.")) return "sblr.database.management.v3";
@@ -1039,7 +1034,7 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
                                                    : "sblr.management.report.v3";
   }
   if (operation_id.starts_with("storage_tier.")) {
-    return "sblr.storage.management_operation.v3";
+    return "sblr.filespace.management.v3";
   }
   if (operation_id.starts_with("general.")) {
     return "sblr.management.control.v3";

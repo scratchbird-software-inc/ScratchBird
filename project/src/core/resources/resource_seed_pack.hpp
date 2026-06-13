@@ -37,6 +37,9 @@ enum class ResourceSeedFamily : u16 {
   timezone_tables,
   timezone_leaps,
   timezone_archives,
+  sbsql_language_resource_pack,
+  sbsql_language_resource_pack_artifacts,
+  sbsql_language_resource_pack_provenance,
   unknown
 };
 

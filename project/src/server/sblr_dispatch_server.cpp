@@ -1967,11 +1967,9 @@ scratchbird::engine::SblrOperationFamily PublicAbiFamilyForServerFamily(std::str
   if (family == "sblr.bulk.import.v3") return SblrOperationFamily::bulk_import;
   if (family == "sblr.bulk.export.v3") return SblrOperationFamily::bulk_export;
   if (family == "sblr.catalog.mutation.v3") return SblrOperationFamily::catalog_mutation;
-  if (family == "sblr.security.mutation.v3" ||
-      family == "sblr.security.mutation_or_inspect.v3") {
-    return SblrOperationFamily::security_mutation;
-  }
+  if (family == "sblr.security.mutation.v3") return SblrOperationFamily::security_mutation;
   if (family == "sblr.policy.operation.v3") return SblrOperationFamily::security_mutation;
+  if (family == "sblr.language.resource_control.v3") return SblrOperationFamily::management_control;
   if (family == "sblr.management.control.v3") return SblrOperationFamily::management_control;
   if (family == "sblr.management.report.v3") return SblrOperationFamily::management_inspect;
   if (family == "sblr.metrics.read.v3") return SblrOperationFamily::metrics_inspect;

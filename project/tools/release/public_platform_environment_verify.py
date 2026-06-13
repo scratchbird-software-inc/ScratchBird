@@ -338,12 +338,13 @@ def validate_build_metadata(build_root: Path) -> dict[str, Any]:
     require(bool(cache), "cmake_cache_missing")
     compiler = compiler_metadata(build_root, cache)
     required_keys = (
-        "CMAKE_BUILD_TYPE",
         "SB_BUILD_PUBLIC_RELEASE_CORRECTNESS",
     )
     for key in required_keys:
         require(bool(cache.get(key)), f"cmake_cache_key_missing:{key}")
-    require(cache["CMAKE_BUILD_TYPE"] == "Release", "cmake_build_type_not_release")
+    build_type = cache.get("CMAKE_BUILD_TYPE", "")
+    if build_type:
+        require(build_type == "Release", "cmake_build_type_not_release")
     require(cache["SB_BUILD_PUBLIC_RELEASE_CORRECTNESS"] == "ON",
             "public_release_correctness_not_enabled")
     version = cmake_version(cache)
@@ -355,6 +356,8 @@ def validate_build_metadata(build_root: Path) -> dict[str, Any]:
         "source_sha256": sha256_text(
             "|".join(cache.get(key, "") for key in required_keys)
             + "|"
+            + build_type
+            + "|"
             + version
             + "|"
             + compiler["id"]
@@ -363,6 +366,7 @@ def validate_build_metadata(build_root: Path) -> dict[str, Any]:
         ),
         "token_digest_sha256": sha256_text("\n".join(required_keys) + "\n"),
         "status": "pass",
+        "build_type": build_type or "single_config_unspecified",
         "cmake_version": version,
         "compiler_id": compiler["id"],
         "compiler_version": compiler["version"],

@@ -39,9 +39,9 @@
       "sblr.observability.inspect.v3": 41,
       "sblr.query.multimodel_or_ddl.v3": 70,
       "sblr.query.relational.v3": 44,
-      "sblr.query.values.v3": 1,
-      "sblr.security.mutation_or_inspect.v3": 23,
-      "sblr.storage.management_operation.v3": 11,
+      "sblr.query.relational.v3": 1,
+      "sblr.security.mutation.v3": 23,
+      "sblr.filespace.management.v3": 11,
       "sblr.transaction.control.v3": 26
     },
     "surface_count": 2617,

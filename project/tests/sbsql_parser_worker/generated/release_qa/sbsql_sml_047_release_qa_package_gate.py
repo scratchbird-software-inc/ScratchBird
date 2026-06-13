@@ -72,7 +72,7 @@ FORBIDDEN_PATH_PARTS = {
     "/docs/" + "audit/",
     "/docs/" + "reports/",
     "/docs/documentation/draft/",
-    "/local" + "_work/",
+    "/" + "local" + "_work/",
     "/ScratchBird-" + "Private/",
     "/reference/project_clones/",
 }
