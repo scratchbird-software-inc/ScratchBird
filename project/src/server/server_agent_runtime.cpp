@@ -55,8 +55,9 @@ std::uint64_t CurrentMonotonicNs() {
 constexpr auto kInitialAgentSchedulerDelay = std::chrono::milliseconds(750);
 constexpr auto kWarmAgentSchedulerInterval = std::chrono::seconds(1);
 constexpr auto kIdleAgentSchedulerInterval = std::chrono::seconds(5);
+constexpr std::uint32_t kIdleResidentAgentSlots = 5;
 constexpr std::uint64_t kWorkerLeaseDurationMicroseconds = 300000000;
-constexpr std::uint64_t kHeartbeatEveryGenerations = 10;
+constexpr std::uint64_t kHeartbeatEveryGenerations = 48;
 constexpr std::uint64_t kActionEveryWorkerTicks = 20;
 
 bool WorkerRunsGeneration(std::size_t worker_index,
@@ -544,7 +545,8 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
   const std::uint32_t worker_count =
       std::max<std::uint32_t>(1,
                               std::min(planned_worker_count,
-                                       assignment_worker_count));
+                                       std::min(assignment_worker_count,
+                                                kIdleResidentAgentSlots)));
   const std::uint32_t bounded_worker_count = std::min<std::uint32_t>(worker_count, 31);
 
   {
@@ -1249,8 +1251,8 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
   const bool heartbeat_due =
       !durable_lease_acquired ||
       last_lease_heartbeat_generation == 0 ||
-      generation <= last_lease_heartbeat_generation ||
-      generation - last_lease_heartbeat_generation >= kHeartbeatEveryGenerations;
+      (generation > last_lease_heartbeat_generation &&
+       generation - last_lease_heartbeat_generation >= kHeartbeatEveryGenerations);
   if (heartbeat_due) {
     lease.now_microseconds = CurrentUnixMillis() * 1000;
     lease.evidence_uuid = ServerAgentRuntimeUuid(
