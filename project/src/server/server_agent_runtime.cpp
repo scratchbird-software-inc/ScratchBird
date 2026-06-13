@@ -56,8 +56,8 @@ constexpr auto kInitialAgentSchedulerDelay = std::chrono::milliseconds(750);
 constexpr auto kWarmAgentSchedulerInterval = std::chrono::seconds(1);
 constexpr auto kIdleAgentSchedulerInterval = std::chrono::seconds(5);
 constexpr std::uint32_t kIdleResidentAgentSlots = 5;
-constexpr std::uint64_t kWorkerLeaseDurationMicroseconds = 300000000;
-constexpr std::uint64_t kHeartbeatEveryGenerations = 48;
+constexpr std::uint64_t kWorkerLeaseDurationMicroseconds = 7200000000;
+constexpr std::uint64_t kHeartbeatEveryGenerations = 600;
 constexpr std::uint64_t kActionEveryWorkerTicks = 20;
 
 bool WorkerRunsGeneration(std::size_t worker_index,
