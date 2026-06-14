@@ -161,6 +161,32 @@ public class ScratchBirdCatalog extends GenericCatalog {
         try {
             executeCatalogObjectQuery(
                 monitor,
+                "WITH RECURSIVE schema_tree AS ( " +
+                    "SELECT r.database_id, r.object_id, r.parent_object_id, r.object_type, r.schema_path, r.full_path, r.object_name, 0 AS depth " +
+                    "FROM sys.catalog.object_resolver r " +
+                    "WHERE r.object_type = 'SCHEMA' " +
+                    "AND (r.parent_object_id IS NULL OR NOT EXISTS ( " +
+                    "SELECT 1 FROM sys.catalog.object_resolver p " +
+                    "WHERE p.object_id = r.parent_object_id AND p.object_type = 'SCHEMA')) " +
+                    "UNION ALL " +
+                    "SELECT c.database_id, c.object_id, c.parent_object_id, c.object_type, c.schema_path, c.full_path, c.object_name, schema_tree.depth + 1 AS depth " +
+                    "FROM sys.catalog.object_resolver c " +
+                    "JOIN schema_tree ON c.parent_object_id = schema_tree.object_id " +
+                    "WHERE c.object_type = 'SCHEMA' " +
+                    ") " +
+                    "SELECT database_id, object_id, parent_object_id, object_type, schema_path, full_path, object_name " +
+                    "FROM schema_tree " +
+                    "ORDER BY depth, full_path",
+                references);
+            return references;
+        } catch (SQLException | DBException e) {
+            log.debug("ScratchBird recursive object resolver tree is not available yet", e);
+        }
+
+        references.clear();
+        try {
+            executeCatalogObjectQuery(
+                monitor,
                 "SELECT database_id, object_id, parent_object_id, object_type, schema_path, full_path, object_name " +
                     "FROM sys.catalog.object_resolver " +
                     "WHERE object_type = 'SCHEMA' " +

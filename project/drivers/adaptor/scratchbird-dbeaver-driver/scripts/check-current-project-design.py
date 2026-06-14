@@ -35,6 +35,32 @@ SCHEMA_NODE_SOURCE = (
     / "model"
     / "ScratchBirdSchemaNode.java"
 )
+DATA_SOURCE_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdDataSource.java"
+)
+CATALOG_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdCatalog.java"
+)
 
 REQUIRED_DRIVER_PROPERTIES = {
     "connect_timeout",
@@ -201,6 +227,9 @@ def require_plugin_surface() -> int:
 def require_schema_node_metadata_fallback() -> int:
     source = SCHEMA_NODE_SOURCE.read_text(encoding="utf-8")
     required_tokens = (
+        "return super.getTables(monitor);",
+        "return super.getTable(monitor, name);",
+        "getTableCache().setCache(tables);",
         "session.getMetaData().getTables(null, fullPath, \"%\", PHYSICAL_TABLE_TYPES)",
         "session.getMetaData().getTables(null, fullPath, \"%\", VIEW_TYPES)",
         "new ScratchBirdTable(this, tableName",
@@ -214,8 +243,40 @@ def require_schema_node_metadata_fallback() -> int:
     return 0
 
 
+def require_collapsed_catalog_schema_tree() -> int:
+    source = DATA_SOURCE_SOURCE.read_text(encoding="utf-8")
+    required_tokens = (
+        "public synchronized Collection<ScratchBirdSchemaNode> getSchemaTree",
+        "getOrCreateSyntheticRootCatalog()",
+        "syntheticRootCatalog = null;",
+    )
+    for token in required_tokens:
+        if token not in source:
+            return fail(f"data-source schema tree fallback missing {token!r}")
+    return 0
+
+
+def require_recursive_catalog_tree_query() -> int:
+    source = CATALOG_SOURCE.read_text(encoding="utf-8")
+    required_tokens = (
+        "WITH RECURSIVE schema_tree AS",
+        "JOIN schema_tree ON c.parent_object_id = schema_tree.object_id",
+        "ORDER BY depth, full_path",
+    )
+    for token in required_tokens:
+        if token not in source:
+            return fail(f"catalog recursive schema tree query missing {token!r}")
+    return 0
+
+
 def main() -> int:
-    for check in (require_no_stale_paths, require_plugin_surface, require_schema_node_metadata_fallback):
+    for check in (
+        require_no_stale_paths,
+        require_plugin_surface,
+        require_schema_node_metadata_fallback,
+        require_collapsed_catalog_schema_tree,
+        require_recursive_catalog_tree_query,
+    ):
         result = check()
         if result != 0:
             return result

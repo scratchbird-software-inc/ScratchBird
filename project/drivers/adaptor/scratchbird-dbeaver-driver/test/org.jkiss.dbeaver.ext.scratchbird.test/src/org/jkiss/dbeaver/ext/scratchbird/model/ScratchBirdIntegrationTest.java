@@ -221,12 +221,13 @@ public class ScratchBirdIntegrationTest {
 
         String schemaNodeSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSchemaNode.java");
         Assert.assertTrue(schemaNodeSource.contains("return ownerCatalog;"));
+        Assert.assertTrue(schemaNodeSource.contains("return super.getTables(monitor);"));
+        Assert.assertTrue(schemaNodeSource.contains("return super.getTable(monitor, name);"));
+        Assert.assertTrue(schemaNodeSource.contains("getTableCache().setCache(tables);"));
         Assert.assertTrue(schemaNodeSource.contains("session.getMetaData().getTables(null, fullPath, \"%\", PHYSICAL_TABLE_TYPES)"));
         Assert.assertTrue(schemaNodeSource.contains("session.getMetaData().getTables(null, fullPath, \"%\", VIEW_TYPES)"));
         Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdTable(this, tableName"));
         Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdView(this, viewName"));
-        Assert.assertTrue(schemaNodeSource.contains("return tables.isEmpty() ? loadMetadataPhysicalTables(monitor) : tables;"));
-        Assert.assertTrue(schemaNodeSource.contains("return views.isEmpty() ? loadMetadataViews(monitor) : views;"));
         Assert.assertTrue(schemaNodeSource.contains("return querySchema.getDataTypes(monitor);"));
         Assert.assertTrue(schemaNodeSource.contains("return getConstraintKeysCache().getObjects(monitor, this, null);"));
         Assert.assertTrue(schemaNodeSource.contains("isTableFoldersVisible()"));
@@ -236,6 +237,16 @@ public class ScratchBirdIntegrationTest {
         String metaModelSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdMetaModel.java");
         Assert.assertTrue(metaModelSource.contains("public boolean supportsSequences"));
         Assert.assertTrue(metaModelSource.contains("FROM information_schema.sequences"));
+
+        String dataSourceSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdDataSource.java");
+        Assert.assertTrue(dataSourceSource.contains("public synchronized Collection<ScratchBirdSchemaNode> getSchemaTree"));
+        Assert.assertTrue(dataSourceSource.contains("getOrCreateSyntheticRootCatalog()"));
+        Assert.assertTrue(dataSourceSource.contains("syntheticRootCatalog = null;"));
+
+        String catalogSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdCatalog.java");
+        Assert.assertTrue(catalogSource.contains("WITH RECURSIVE schema_tree AS"));
+        Assert.assertTrue(catalogSource.contains("JOIN schema_tree ON c.parent_object_id = schema_tree.object_id"));
+        Assert.assertTrue(catalogSource.contains("ORDER BY depth, full_path"));
     }
 
     @Test

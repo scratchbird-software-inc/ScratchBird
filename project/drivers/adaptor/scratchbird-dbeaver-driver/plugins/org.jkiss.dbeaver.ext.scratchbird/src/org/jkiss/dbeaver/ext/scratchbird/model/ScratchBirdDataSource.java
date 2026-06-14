@@ -29,13 +29,19 @@ import org.jkiss.dbeaver.DBException;
 import org.jkiss.dbeaver.ext.generic.model.GenericDataSource;
 import org.jkiss.dbeaver.ext.generic.model.meta.GenericMetaModel;
 import org.jkiss.dbeaver.model.DBPDataSourceContainer;
+import org.jkiss.dbeaver.model.meta.Association;
 import org.jkiss.dbeaver.model.runtime.DBRProgressMonitor;
 import org.jkiss.dbeaver.model.sql.SQLDialect;
+import org.jkiss.dbeaver.model.struct.DBSObject;
+
+import java.util.Collection;
+import java.util.Collections;
 
 public class ScratchBirdDataSource extends GenericDataSource {
 
     @NotNull
     private final ScratchBirdSessionScope sessionScope;
+    private ScratchBirdCatalog syntheticRootCatalog;
 
     public ScratchBirdDataSource(
         @NotNull DBRProgressMonitor monitor,
@@ -50,5 +56,26 @@ public class ScratchBirdDataSource extends GenericDataSource {
     @NotNull
     public ScratchBirdSessionScope getScratchBirdSessionScope() {
         return sessionScope;
+    }
+
+    @Association
+    public synchronized Collection<ScratchBirdSchemaNode> getSchemaTree(@NotNull DBRProgressMonitor monitor) throws DBException {
+        ScratchBirdCatalog rootCatalog = getOrCreateSyntheticRootCatalog();
+        Collection<ScratchBirdSchemaNode> schemaTree = rootCatalog.getSchemaTree(monitor);
+        return schemaTree == null ? Collections.emptyList() : schemaTree;
+    }
+
+    @Override
+    public DBSObject refreshObject(@NotNull DBRProgressMonitor monitor) throws DBException {
+        syntheticRootCatalog = null;
+        return super.refreshObject(monitor);
+    }
+
+    @NotNull
+    private ScratchBirdCatalog getOrCreateSyntheticRootCatalog() {
+        if (syntheticRootCatalog == null) {
+            syntheticRootCatalog = new ScratchBirdCatalog(this, getContainer().getActualConnectionConfiguration().getDatabaseName());
+        }
+        return syntheticRootCatalog;
     }
 }
