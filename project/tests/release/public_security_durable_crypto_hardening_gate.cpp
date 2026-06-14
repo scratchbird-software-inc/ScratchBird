@@ -175,6 +175,25 @@ void AlterPrincipalCredential(const Fixture& fixture,
           "failed to alter durable principal credential state");
 }
 
+void WriteGlobalGrantEvent(const Fixture& fixture,
+                           const api::EngineUuid& principal_uuid,
+                           std::string_view privilege,
+                           std::uint64_t generation) {
+  std::ofstream events(fixture.database_path.string() + ".sb.security_principal_events",
+                       std::ios::app);
+  events << api::kSecurityPrincipalLifecycleEventMagic
+         << "\tGRANT\t0\t"
+         << MakeUuid(UuidKind::object, generation + 500).canonical
+         << '\t' << principal_uuid.canonical
+         << "\tprincipal\t\t\t"
+         << privilege
+         << '\t' << principal_uuid.canonical
+         << "\tallow\t"
+         << generation
+         << "\t0\n";
+  Require(static_cast<bool>(events), "failed to write durable global grant event");
+}
+
 std::string LocalPasswordEvidence(std::string_view principal,
                                   const api::EngineUuid& principal_uuid,
                                   std::string_view verifier,
@@ -306,6 +325,7 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
                             "alice",
                             LocalPasswordFingerprint(kVerifier),
                             91);
+  WriteGlobalGrantEvent(fixture, fixture.principal, "CONNECT", 92);
 
   const auto mismatch = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,
@@ -322,7 +342,7 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
       LocalPasswordEvidence("alice",
                             fixture.principal,
                             kVerifier,
-                            "group:APP,right:CONNECT")));
+                            "group:APP,right:OBS_MANAGEMENT_CONTROL")));
   Require(good.ok && good.authenticated,
           "durable local-password verifier was rejected");
   Require(good.connection_security_context.effective_user_uuid.canonical ==
@@ -330,10 +350,12 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
           "authenticated context did not use durable principal UUID");
   Require(HasEvidence(good, "security_state_authority", "durable_security_catalog"),
           "durable security authority evidence missing");
-  Require(HasEvidence(good, "authorized_group", "APP"),
-          "explicit durable authorization tag was not materialized");
+  Require(!HasEvidence(good, "authorized_group", "APP"),
+          "client-supplied authorization group was trusted");
+  Require(!HasAuthorizationTag(good, "right:OBS_MANAGEMENT_CONTROL"),
+          "client-supplied management right was trusted");
   Require(HasAuthorizationTag(good, "right:CONNECT"),
-          "explicit durable right tag was not preserved");
+          "server-side durable CONNECT grant was not materialized");
 
   AlterPrincipalCredential(fixture,
                            fixture.principal,

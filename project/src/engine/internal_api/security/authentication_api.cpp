@@ -158,6 +158,47 @@ std::vector<std::string> SplitCsv(std::string_view value) {
   return out;
 }
 
+void AddUniqueAuthorizationTag(std::vector<std::string>* tags, std::string tag) {
+  if (tags == nullptr || tag.empty()) { return; }
+  if (std::find(tags->begin(), tags->end(), tag) == tags->end()) {
+    tags->push_back(std::move(tag));
+  }
+}
+
+std::vector<std::string> DurableAuthorizationTagsForPrincipal(
+    const EngineAuthenticateRequest& request,
+    const std::string& principal_uuid,
+    bool include_connect_fallback) {
+  std::vector<std::string> tags;
+  if (include_connect_fallback) {
+    AddUniqueAuthorizationTag(&tags, "right:CONNECT");
+  }
+  if (!IsDurablePrincipalUuid(principal_uuid)) { return tags; }
+  const auto loaded = LoadSecurityPrincipalLifecycleState(request.context);
+  if (!loaded.ok) { return tags; }
+  for (const auto& grant : loaded.state.grants) {
+    if (grant.grantee_kind != "principal" ||
+        grant.grantee_uuid != principal_uuid ||
+        !grant.target_object_uuid.empty() ||
+        grant.grant_effect == "deny" ||
+        !IsKnownSecurityRight(grant.privilege)) {
+      continue;
+    }
+    AddUniqueAuthorizationTag(&tags, "right:" + grant.privilege);
+  }
+  return tags;
+}
+
+std::string JoinCsv(const std::vector<std::string>& values) {
+  std::string out;
+  for (const auto& value : values) {
+    if (value.empty()) { continue; }
+    if (!out.empty()) { out += ","; }
+    out += value;
+  }
+  return out;
+}
+
 std::vector<std::string> AuthorizationTraceTagsForDurableSecurityState(
     const EngineAuthenticateRequest& request,
     const std::map<std::string, std::string>& fields) {
@@ -496,8 +537,15 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
       credential_fields.emplace("principal_uuid", resolved_principal_uuid);
       credential_fields.emplace("storage_authority", "mga_security_principal_lifecycle");
     }
+    const std::string authorization_tags = JoinCsv(
+        DurableAuthorizationTagsForPrincipal(request,
+                                             resolved_principal_uuid,
+                                             server_derived_connect_right));
+    credential_fields.erase("authorization_tags");
+    if (!authorization_tags.empty()) {
+      credential_fields.emplace("authorization_tags", authorization_tags);
+    }
     if (server_derived_connect_right) {
-      credential_fields.emplace("authorization_tags", "right:CONNECT");
       provider_request.option_envelopes.push_back("credential_password_transport:raw");
     }
     provider_request.option_envelopes.push_back("credential_verifier_match:true");
