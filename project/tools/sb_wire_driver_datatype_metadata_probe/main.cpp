@@ -10,7 +10,10 @@
 #include "catalog/wire_driver_metadata_api.hpp"
 #include "datatype_exchange.hpp"
 #include "ddl/create_api.hpp"
+#include "database_lifecycle.hpp"
+#include "memory.hpp"
 #include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -24,6 +27,7 @@ namespace {
 
 struct Args {
   std::string path;
+  std::string seed_pack_root;
   std::uint64_t creation_millis = 0;
   bool overwrite = false;
 };
@@ -35,10 +39,11 @@ bool ParseArgs(int argc, char** argv, Args* args) {
     if (i + 1 >= argc) { return false; }
     const std::string value = argv[++i];
     if (key == "--path") { args->path = value; }
+    else if (key == "--seed-pack-root") { args->seed_pack_root = value; }
     else if (key == "--creation-ms") { args->creation_millis = static_cast<std::uint64_t>(std::stoull(value)); }
     else { return false; }
   }
-  return !args->path.empty() && args->creation_millis != 0;
+  return !args->path.empty() && !args->seed_pack_root.empty() && args->creation_millis != 0;
 }
 
 EngineRequestContext BaseContext(const Args& args) {
@@ -47,12 +52,74 @@ EngineRequestContext BaseContext(const Args& args) {
   context.security_context_present = true;
   context.request_id = "wire-driver-datatype-metadata-probe";
   context.database_path = args.path;
+  const auto database_uuid =
+      scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::database,
+                                                        args.creation_millis + 10);
+  const auto principal_uuid =
+      scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::principal,
+                                                        args.creation_millis + 12);
+  if (database_uuid.ok()) {
+    context.database_uuid.canonical = scratchbird::core::uuid::UuidToString(database_uuid.value.value);
+  }
+  if (principal_uuid.ok()) {
+    context.principal_uuid.canonical = scratchbird::core::uuid::UuidToString(principal_uuid.value.value);
+  }
+  context.session_uuid.canonical = "018f0000-0000-7000-8000-00000000d7a7";
+  context.catalog_generation_id = 1;
+  context.security_epoch = 1;
+  context.resource_epoch = 1;
+  context.name_resolution_epoch = 1;
   return context;
+}
+
+bool CreateProbeDatabase(const Args& args) {
+  if (args.overwrite) {
+    std::filesystem::remove(args.path + ".sb.mga_row_versions");
+    std::filesystem::remove(args.path + ".sb.mga_relation_metadata");
+    std::filesystem::remove(args.path + ".sb.mga_index_entries");
+    std::filesystem::remove(args.path + ".sb.mga_large_values");
+    std::filesystem::remove(args.path + ".sb.mga_savepoints");
+    std::filesystem::remove(args.path + ".sb.mga_relation_descriptors");
+  }
+  const auto database_uuid =
+      scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::database,
+                                                        args.creation_millis + 10);
+  const auto filespace_uuid =
+      scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::filespace,
+                                                        args.creation_millis + 11);
+  if (!database_uuid.ok()) {
+    std::cerr << database_uuid.diagnostic.diagnostic_code << ":"
+              << database_uuid.diagnostic.message_key << "\n";
+    return false;
+  }
+  if (!filespace_uuid.ok()) {
+    std::cerr << filespace_uuid.diagnostic.diagnostic_code << ":"
+              << filespace_uuid.diagnostic.message_key << "\n";
+    return false;
+  }
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  create.path = args.path;
+  create.database_uuid = database_uuid.value;
+  create.filespace_uuid = filespace_uuid.value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = args.creation_millis;
+  create.resource_seed_pack_root = args.seed_pack_root;
+  create.require_resource_seed_pack = true;
+  create.allow_overwrite = args.overwrite;
+  const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    std::cerr << created.diagnostic.diagnostic_code << ":"
+              << created.diagnostic.message_key << "\n";
+    return false;
+  }
+  return true;
 }
 
 EngineRequestContext TxContext(EngineRequestContext base, const EngineBeginTransactionResult& tx) {
   base.local_transaction_id = tx.local_transaction_id;
   base.transaction_uuid = tx.transaction_uuid;
+  base.transaction_isolation_level = tx.isolation_level;
+  base.snapshot_visible_through_local_transaction_id = tx.snapshot_visible_through_local_transaction_id;
   return base;
 }
 
@@ -105,11 +172,20 @@ void PrintBool(const std::string& name, bool value, bool comma) {
 int main(int argc, char** argv) {
   Args args;
   if (!ParseArgs(argc, argv, &args)) {
-    std::cerr << "usage: sb_wire_driver_datatype_metadata_probe --path PATH --creation-ms MILLIS [--overwrite]\n";
+    std::cerr << "usage: sb_wire_driver_datatype_metadata_probe --path PATH --seed-pack-root PATH --creation-ms MILLIS [--overwrite]\n";
     return 2;
   }
-  if (args.overwrite) { std::filesystem::remove(args.path); }
-  { std::ofstream bootstrap(args.path, std::ios::binary | std::ios::app); }
+  auto memory_policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  memory_policy.policy_name = "sb_wire_driver_datatype_metadata_probe";
+  const auto memory_configured =
+      scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+          memory_policy, "sb_wire_driver_datatype_metadata_probe");
+  if (!memory_configured.ok()) {
+    std::cerr << memory_configured.diagnostic.diagnostic_code << ":"
+              << memory_configured.diagnostic.message_key << "\n";
+    return 1;
+  }
+  if (!CreateProbeDatabase(args)) return 1;
 
   const auto native_metadata = RenderWireDriverMetadata(ScalarDescriptor("int32"));
   const bool native_distinguished = native_metadata.native_descriptor && !native_metadata.domain_descriptor &&
