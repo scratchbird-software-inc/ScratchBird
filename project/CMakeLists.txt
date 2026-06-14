@@ -3620,6 +3620,28 @@ if(SB_BUILD_DRIVER_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/drivers/CMakeLi
   add_subdirectory(drivers)
 endif()
 
+option(SB_BUILD_GUI_PROOF_GATES
+  "Build GUI proof CTest gates"
+  OFF)
+if(SB_BUILD_TESTS OR SB_BUILD_DRIVER_GATES OR SB_BUILD_PUBLIC_RELEASE_CORRECTNESS)
+  set(SB_BUILD_GUI_PROOF_GATES ON CACHE BOOL
+    "Build GUI proof CTest gates" FORCE)
+endif()
+if(SB_BUILD_GUI_PROOF_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/gui/CMakeLists.txt")
+  add_subdirectory(tests/gui)
+endif()
+
+option(SB_BUILD_SECURITY_STATIC_GATES
+  "Build security static CTest gates"
+  OFF)
+if(SB_BUILD_TESTS OR SB_BUILD_DRIVER_GATES OR SB_BUILD_PUBLIC_RELEASE_CORRECTNESS)
+  set(SB_BUILD_SECURITY_STATIC_GATES ON CACHE BOOL
+    "Build security static CTest gates" FORCE)
+endif()
+if(SB_BUILD_SECURITY_STATIC_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/security/CMakeLists.txt")
+  add_subdirectory(tests/security)
+endif()
+
 option(SB_BUILD_AI_GATES
   "Build ScratchBird AI current-repo integration CTest gates"
   OFF)

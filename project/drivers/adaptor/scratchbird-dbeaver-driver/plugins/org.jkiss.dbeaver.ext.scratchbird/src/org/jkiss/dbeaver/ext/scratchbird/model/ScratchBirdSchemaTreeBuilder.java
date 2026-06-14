@@ -36,25 +36,6 @@ import java.util.Map;
 
 final class ScratchBirdSchemaTreeBuilder {
 
-    private static final List<String> CANONICAL_CATALOG_PATHS = List.of(
-        "sys",
-        "sys.catalog",
-        "sys.security",
-        "sys.monitoring",
-        "sys.jobs",
-        "sys.config",
-        "sys.structure",
-        "sys.emulation",
-        "sys.cluster",
-        "sys.internals",
-        "sys.domains",
-        "users",
-        "cluster",
-        "emulated",
-        "remote",
-        "data"
-    );
-
     private static final Comparator<Node> NODE_ORDER = (left, right) ->
         ScratchBirdNamespaceSemantics.comparePaths(left.getFullPath(), right.getFullPath());
 
@@ -63,27 +44,33 @@ final class ScratchBirdSchemaTreeBuilder {
 
     @NotNull
     static List<Node> build(@NotNull Collection<String> schemaPaths) {
+        return build(schemaPaths, false);
+    }
+
+    @NotNull
+    static List<Node> build(@NotNull Collection<String> schemaPaths, boolean includeClientReportBranches) {
         List<ScratchBirdCatalogObjectReference> references = new ArrayList<>();
         for (String fullPath : schemaPaths) {
             if (CommonUtils.isNotEmpty(fullPath)) {
                 references.add(ScratchBirdCatalogObjectReference.syntheticSchema(fullPath));
             }
         }
-        return buildFromCatalog(references);
+        return buildFromCatalog(references, includeClientReportBranches);
     }
 
     @NotNull
     static List<Node> buildFromCatalog(@NotNull Collection<ScratchBirdCatalogObjectReference> catalogObjects) {
+        return buildFromCatalog(catalogObjects, false);
+    }
+
+    @NotNull
+    static List<Node> buildFromCatalog(
+        @NotNull Collection<ScratchBirdCatalogObjectReference> catalogObjects,
+        boolean includeClientReportBranches
+    ) {
         Map<String, Node> nodesByPath = new LinkedHashMap<>();
         List<Node> roots = new ArrayList<>();
         Map<String, ScratchBirdCatalogObjectReference> resolvedCatalogObjects = inferMissingParentUuids(catalogObjects);
-
-        for (String canonicalPath : CANONICAL_CATALOG_PATHS) {
-            addPath(
-                nodesByPath,
-                roots,
-                resolvedCatalogObjects.getOrDefault(canonicalPath, ScratchBirdCatalogObjectReference.syntheticSchema(canonicalPath)));
-        }
 
         for (ScratchBirdCatalogObjectReference reference : resolvedCatalogObjects.values()) {
             if (ScratchBirdNamespaceSemantics.isMetricsPath(reference.fullPath())) {
@@ -92,8 +79,10 @@ final class ScratchBirdSchemaTreeBuilder {
             addPath(nodesByPath, roots, reference);
         }
 
-        for (String metricsPath : ScratchBirdReportCatalog.metricTreePaths()) {
-            addPath(nodesByPath, roots, ScratchBirdCatalogObjectReference.clientOnly(metricsPath, "REPORT"));
+        if (includeClientReportBranches) {
+            for (String metricsPath : ScratchBirdReportCatalog.metricTreePaths()) {
+                addPath(nodesByPath, roots, ScratchBirdCatalogObjectReference.clientOnly(metricsPath, "REPORT"));
+            }
         }
 
         roots.sort(NODE_ORDER);

@@ -110,7 +110,7 @@ public class ScratchBirdDataSourceProvider implements DBPDataSourceProvider {
                         ModelMessages.model_jdbc_driver_properties,
                         propName,
                         propName,
-                        null,
+                        ScratchBirdSecurityRedactor.sanitizeDescription(propName, null),
                         String.class,
                         false,
                         null,
@@ -163,11 +163,11 @@ public class ScratchBirdDataSourceProvider implements DBPDataSourceProvider {
                 ModelMessages.model_jdbc_driver_properties,
                 desc.name,
                 desc.name,
-                desc.description,
+                ScratchBirdSecurityRedactor.sanitizeDescription(desc.name, desc.description),
                 String.class,
                 desc.required,
-                desc.value,
-                desc.choices,
+                ScratchBirdSecurityRedactor.sanitizeDefaultValue(desc.name, desc.value),
+                ScratchBirdSecurityRedactor.isSensitiveProperty(desc.name) ? null : desc.choices,
                 true
             ));
         }

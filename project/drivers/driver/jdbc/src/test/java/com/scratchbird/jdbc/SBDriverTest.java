@@ -60,6 +60,24 @@ public class SBDriverTest {
     }
 
     @Test
+    public void defaultsEmptyPortSegmentFromDbeaverTemplate() throws SQLException {
+        SBConnectionProperties props =
+            SBDriver.parseURL("jdbc:scratchbird://127.0.0.1:/default?sslmode=require", null);
+        assertEquals("127.0.0.1", props.getHost());
+        assertEquals(3092, props.getPort());
+        assertEquals("default", props.getDatabase());
+    }
+
+    @Test
+    public void defaultsEmptyIpv6PortSegmentFromDbeaverTemplate() throws SQLException {
+        SBConnectionProperties props =
+            SBDriver.parseURL("jdbc:scratchbird://[::1]:/default?sslmode=require", null);
+        assertEquals("::1", props.getHost());
+        assertEquals(3092, props.getPort());
+        assertEquals("default", props.getDatabase());
+    }
+
+    @Test
     public void parsesCompressionAndRejectsUnsupportedAlgorithms() throws SQLException {
         SBConnectionProperties zstd = SBDriver.parseURL(
             "jdbc:scratchbird://localhost:3092/demo?compression=zstd", null);
@@ -117,6 +135,46 @@ public class SBDriverTest {
         assertEquals("manager-token", props.getProperty("manager_auth_token"));
         assertEquals("259", props.getProperty("manager_client_flags"));
         assertEquals("false", props.getProperty("manager_auth_fast_path"));
+    }
+
+    @Test
+    public void ignoresBlankOptionalPropertiesFromDbeaverForms() throws SQLException {
+        Properties info = new Properties();
+        info.setProperty("port", "");
+        info.setProperty("connect_timeout", "");
+        info.setProperty("socket_timeout", "");
+        info.setProperty("login_timeout", "");
+        info.setProperty("fetch_size", "");
+        info.setProperty("prepareThreshold", "");
+        info.setProperty("min_pool_size", "");
+        info.setProperty("max_pool_size", "");
+        info.setProperty("connection_lifetime", "");
+        info.setProperty("acquire_timeout", "");
+        info.setProperty("manager_client_flags", "");
+        info.setProperty("connect_client_flags", "");
+        info.setProperty("binary_transfer", "");
+        info.setProperty("pooling", "");
+        info.setProperty("metadataExpandSchemaParents", "");
+
+        SBConnectionProperties props = SBDriver.parseURL(
+            "jdbc:scratchbird://127.0.0.1:3092/default?sslmode=require",
+            info);
+
+        assertEquals(3092, props.getPort());
+        assertEquals("30", props.getProperty("connect_timeout"));
+        assertEquals("0", props.getProperty("socket_timeout"));
+        assertEquals("30", props.getProperty("login_timeout"));
+        assertEquals("0", props.getProperty("fetch_size"));
+        assertEquals("5", props.getProperty("prepareThreshold"));
+        assertEquals("0", props.getProperty("min_pool_size"));
+        assertEquals("10", props.getProperty("max_pool_size"));
+        assertEquals("30", props.getProperty("connection_lifetime"));
+        assertEquals("30", props.getProperty("acquire_timeout"));
+        assertEquals("0", props.getProperty("manager_client_flags"));
+        assertEquals("256", props.getProperty("connect_client_flags"));
+        assertEquals("true", props.getProperty("binary_transfer"));
+        assertEquals("true", props.getProperty("pooling"));
+        assertEquals("false", props.getProperty("metadataExpandSchemaParents"));
     }
 
     @Test

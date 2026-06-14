@@ -183,7 +183,7 @@ public class SBConnection implements Connection {
 
             // Preserve the server-derived current schema unless the caller explicitly overrides it.
             applySchemaSetting(schema);
-            protocol.execute("SET AUTOCOMMIT " + (autoCommit ? "ON" : "OFF"));
+            applyStartupAutocommitSetting();
             if (!autoCommit && !protocol.hasActiveTransaction()) {
                 beginManagedTransaction();
             }
@@ -1347,6 +1347,28 @@ public class SBConnection implements Connection {
         }
         protocol.execute(statement);
         this.schema = normalized;
+    }
+
+    private void applyStartupAutocommitSetting() throws SQLException {
+        try {
+            protocol.execute("SET AUTOCOMMIT " + (autoCommit ? "ON" : "OFF"));
+        } catch (SQLException ex) {
+            if (!autoCommit || !isStartupAutocommitUnsupported(ex)) {
+                throw ex;
+            }
+            appendWarning(new SQLWarning(
+                "server route refused startup SET AUTOCOMMIT ON; continuing with server default autocommit",
+                ex.getSQLState(),
+                ex
+            ));
+        }
+    }
+
+    private static boolean isStartupAutocommitUnsupported(SQLException ex) {
+        String message = ex.getMessage();
+        return message != null
+            && message.contains("PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED")
+            && message.contains("operation family");
     }
 
     private String discoverCurrentSchema() {

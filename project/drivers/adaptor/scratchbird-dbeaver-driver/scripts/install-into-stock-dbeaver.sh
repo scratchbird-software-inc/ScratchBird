@@ -41,6 +41,7 @@ if [[ $# -gt 2 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MIN_DBEAVER_VERSION="${SCRATCHBIRD_DBEAVER_MIN_VERSION:-26.0.2}"
 
 find_bundled_zip() {
   find "${SCRIPT_DIR}" -maxdepth 1 -type f -name 'scratchbird-dbeaver-update-site-*.zip' \
@@ -168,6 +169,121 @@ auto_detect_install_dir() {
   return 1
 }
 
+read_dbeaver_version() {
+  local install_dir="$1"
+  local product_file="${install_dir}/.eclipseproduct"
+  if [[ ! -f "${product_file}" ]]; then
+    return 1
+  fi
+  awk -F= '$1 == "version" {print $2; exit}' "${product_file}"
+}
+
+version_ge() {
+  local actual="$1"
+  local minimum="$2"
+  local first=""
+  if ! command -v sort >/dev/null 2>&1; then
+    [[ "${actual}" == "${minimum}" ]]
+    return $?
+  fi
+  first="$(printf '%s\n%s\n' "${minimum}" "${actual}" | sort -V | head -n 1)"
+  [[ "${first}" == "${minimum}" ]]
+}
+
+require_supported_dbeaver_version() {
+  local install_dir="$1"
+  local actual=""
+  actual="$(read_dbeaver_version "${install_dir}" || true)"
+  if [[ -z "${actual}" ]]; then
+    echo "Unsupported DBeaver version: missing ${install_dir}/.eclipseproduct version metadata." >&2
+    exit 1
+  fi
+  if ! version_ge "${actual}" "${MIN_DBEAVER_VERSION}"; then
+    echo "Unsupported DBeaver version ${actual}; ScratchBird requires DBeaver ${MIN_DBEAVER_VERSION} or newer." >&2
+    exit 1
+  fi
+  echo "DBeaver version accepted: ${actual} (minimum ${MIN_DBEAVER_VERSION})"
+}
+
+user_home_for() {
+  local user="$1"
+  if command -v getent >/dev/null 2>&1; then
+    getent passwd "${user}" | awk -F: '{print $6; exit}'
+    return 0
+  fi
+  return 1
+}
+
+dbeaver_data_roots() {
+  local roots=()
+  local sudo_home=""
+  if [[ -n "${XDG_DATA_HOME:-}" ]]; then
+    roots+=("${XDG_DATA_HOME}/DBeaverData")
+  fi
+  if [[ -n "${HOME:-}" ]]; then
+    roots+=("${HOME}/.local/share/DBeaverData")
+  fi
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    sudo_home="$(user_home_for "${SUDO_USER}" || true)"
+    if [[ -n "${sudo_home}" ]]; then
+      roots+=("${sudo_home}/.local/share/DBeaverData")
+    fi
+  fi
+  printf '%s\n' "${roots[@]}" | awk 'NF && !seen[$0]++'
+}
+
+refresh_extracted_jdbc_cache() {
+  local zip_path="$1"
+  local plugin_entry=""
+  local tmp_plugin=""
+  local tmp_jdbc=""
+  local root=""
+  local cache=""
+  local refreshed=0
+
+  if ! command -v unzip >/dev/null 2>&1; then
+    echo "Skipping DBeaverData JDBC cache refresh: unzip is not available."
+    return 0
+  fi
+
+  plugin_entry="$(
+    unzip -Z1 "${zip_path}" 2>/dev/null |
+      grep -E '^plugins/org\.jkiss\.dbeaver\.ext\.scratchbird_[^/]+\.jar$' |
+      sort |
+      tail -n 1
+  )"
+  if [[ -z "${plugin_entry}" ]]; then
+    echo "Skipping DBeaverData JDBC cache refresh: ScratchBird plugin jar was not found in update site."
+    return 0
+  fi
+
+  tmp_plugin="$(mktemp)"
+  tmp_jdbc="$(mktemp)"
+  if ! unzip -p "${zip_path}" "${plugin_entry}" > "${tmp_plugin}"; then
+    rm -f "${tmp_plugin}" "${tmp_jdbc}"
+    echo "Skipping DBeaverData JDBC cache refresh: failed to extract ${plugin_entry}."
+    return 0
+  fi
+  if ! unzip -p "${tmp_plugin}" drivers/scratchbird/scratchbird-jdbc.jar > "${tmp_jdbc}"; then
+    rm -f "${tmp_plugin}" "${tmp_jdbc}"
+    echo "Skipping DBeaverData JDBC cache refresh: plugin did not contain drivers/scratchbird/scratchbird-jdbc.jar."
+    return 0
+  fi
+
+  while IFS= read -r root; do
+    [[ -d "${root}/install-data" ]] || continue
+    while IFS= read -r cache; do
+      install -m 0644 "${tmp_jdbc}" "${cache}"
+      refreshed=$((refreshed + 1))
+    done < <(find "${root}/install-data" -path '*/drivers/scratchbird/scratchbird-jdbc.jar' -type f 2>/dev/null)
+  done < <(dbeaver_data_roots)
+
+  rm -f "${tmp_plugin}" "${tmp_jdbc}"
+  if [[ "${refreshed}" -gt 0 ]]; then
+    echo "Refreshed ${refreshed} extracted ScratchBird JDBC cache file(s) under DBeaverData."
+  fi
+}
+
 INSTALL_HINT="${1:-}"
 ZIP_PATH="${2:-}"
 
@@ -190,6 +306,8 @@ if [[ -z "${ZIP_PATH}" || ! -f "${ZIP_PATH}" ]]; then
   echo "ScratchBird update-site zip not found. Pass it explicitly or place it next to this script." >&2
   exit 1
 fi
+
+require_supported_dbeaver_version "${INSTALL_DIR}"
 
 LAUNCHER="$(resolve_launcher "${INSTALL_DIR}" || true)"
 if [[ -z "${LAUNCHER}" ]]; then
@@ -235,6 +353,8 @@ if ! grep -q 'org\.jkiss\.dbeaver\.ext\.scratchbird\.feature\.feature\.group' "$
   echo "ScratchBird feature was not found in the installed roots output." >&2
   exit 1
 fi
+
+refresh_extracted_jdbc_cache "${ZIP_PATH}"
 
 cat <<EOF
 ScratchBird install completed successfully.

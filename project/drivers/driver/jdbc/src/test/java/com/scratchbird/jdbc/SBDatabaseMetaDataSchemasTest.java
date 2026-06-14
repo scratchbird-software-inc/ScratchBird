@@ -20,23 +20,50 @@ import org.junit.jupiter.api.Test;
 
 class SBDatabaseMetaDataSchemasTest {
 
-    private static final class HarnessMetaData extends SBDatabaseMetaData {
+    private static class HarnessMetaData extends SBDatabaseMetaData {
         private final List<Object[]> schemaRows;
+        private final List<Object[]> informationSchemaRows;
         private final boolean expandParents;
+        private final boolean failSysSchemas;
+        private final boolean failInformationSchema;
 
         private HarnessMetaData(boolean expandParents, List<String> schemaNames) {
+            this(expandParents, schemaNames, Collections.emptyList(), false, false);
+        }
+
+        private HarnessMetaData(
+                boolean expandParents,
+                List<String> schemaNames,
+                List<String> informationSchemaNames,
+                boolean failSysSchemas,
+                boolean failInformationSchema) {
             super(null);
             this.expandParents = expandParents;
+            this.informationSchemaRows = new ArrayList<>();
             this.schemaRows = new ArrayList<>();
+            this.failSysSchemas = failSysSchemas;
+            this.failInformationSchema = failInformationSchema;
             for (String schemaName : schemaNames) {
                 this.schemaRows.add(new Object[]{schemaName});
+            }
+            for (String schemaName : informationSchemaNames) {
+                this.informationSchemaRows.add(new Object[]{schemaName});
             }
         }
 
         @Override
-        protected List<Object[]> queryRows(String sql) {
+        protected List<Object[]> queryRows(String sql) throws SQLException {
             if (sql != null && sql.contains("FROM sys.schemas")) {
+                if (failSysSchemas) {
+                    throw new SQLException("sys.schemas unavailable");
+                }
                 return schemaRows;
+            }
+            if (sql != null && sql.contains("FROM information_schema.schemata")) {
+                if (failInformationSchema) {
+                    throw new SQLException("information_schema.schemata unavailable");
+                }
+                return informationSchemaRows;
             }
             return Collections.emptyList();
         }
@@ -109,6 +136,59 @@ class SBDatabaseMetaDataSchemasTest {
                 "users.bob",
                 "users.bob.dev"
             ), collectSchemas(rs));
+        }
+    }
+
+    @Test
+    void getSchemasFallsBackToInformationSchemaWhenSysSchemasUnavailable() throws SQLException {
+        SBDatabaseMetaData meta = new HarnessMetaData(
+            false,
+            Collections.emptyList(),
+            Arrays.asList("users.alice.dev", "analytics.prod"),
+            true,
+            false
+        );
+
+        try (ResultSet rs = meta.getSchemas(null, "users.%")) {
+            assertEquals(Arrays.asList("users.alice.dev"), collectSchemas(rs));
+        }
+    }
+
+    @Test
+    void getSchemasSynthesizesSystemMetadataWhenCatalogViewsUnavailable() throws SQLException {
+        SBDatabaseMetaData meta = new HarnessMetaData(
+            false,
+            Collections.emptyList(),
+            Collections.emptyList(),
+            true,
+            true
+        );
+
+        try (ResultSet rs = meta.getSchemas(null, "sys.%")) {
+            assertEquals(Collections.emptyList(), collectSchemas(rs));
+        }
+    }
+
+    @Test
+    void getSchemasCanUseOptInDriverTestFixtureMetadata() throws SQLException {
+        SBDatabaseMetaData meta = new HarnessMetaData(
+            false,
+            Collections.emptyList(),
+            Collections.emptyList(),
+            true,
+            true
+        ) {
+            @Override
+            protected boolean useDriverTestFixtureMetadata() {
+                return true;
+            }
+        };
+
+        try (ResultSet rs = meta.getSchemas(null, "app")) {
+            assertEquals(Arrays.asList("app"), collectSchemas(rs));
+        }
+        try (ResultSet rs = meta.getSchemas(null, "sys.security")) {
+            assertEquals(Arrays.asList("sys.security"), collectSchemas(rs));
         }
     }
 

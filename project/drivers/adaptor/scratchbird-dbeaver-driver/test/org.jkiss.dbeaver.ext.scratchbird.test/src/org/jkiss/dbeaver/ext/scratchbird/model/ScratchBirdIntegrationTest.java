@@ -67,7 +67,10 @@ public class ScratchBirdIntegrationTest {
 
         Assert.assertTrue(pluginXml.contains("property=\"schemaTree\""));
         Assert.assertTrue(pluginXml.contains("property=\"childSchemas\""));
-        Assert.assertTrue(pluginXml.contains("recursive=\"..\""));
+        Assert.assertTrue(pluginXml.contains("type=\"org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode\""));
+        Assert.assertTrue(pluginXml.contains("label=\"%tree.schemas.node.name\""));
+        Assert.assertTrue(pluginXml.contains("visibleIf=\"object.schemaBranchesFolderVisible\""));
+        Assert.assertTrue(pluginXml.contains("recursive=\"../..\""));
         Assert.assertTrue(pluginXml.contains("sb_namespace.svg"));
         Assert.assertTrue(pluginXml.contains("sb_system.svg"));
         Assert.assertTrue(pluginXml.contains("sb_domains.svg"));
@@ -108,18 +111,19 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(pluginXml.contains("objectType=\"org.jkiss.dbeaver.ext.generic.model.GenericDataType\""));
         Assert.assertTrue(pluginXml.contains("<extension point=\"org.jkiss.dbeaver.dataTypeProvider\">"));
         Assert.assertTrue(pluginXml.contains("ScratchBirdValueHandlerProvider"));
-        Assert.assertTrue(pluginXml.contains("<extension point=\"org.jkiss.dbeaver.dashboard\">"));
-        Assert.assertTrue(pluginXml.contains("scratchbird.sessions"));
-        Assert.assertTrue(pluginXml.contains("scratchbird.performance"));
-        Assert.assertTrue(pluginXml.contains("<query>SHOW METRICS</query>"));
+        Assert.assertFalse(pluginXml.contains("<extension point=\"org.jkiss.dbeaver.dashboard\">"));
+        Assert.assertFalse(pluginXml.contains("scratchbird.sessions"));
+        Assert.assertFalse(pluginXml.contains("scratchbird.performance"));
+        Assert.assertFalse(pluginXml.contains("<query>SHOW METRICS</query>"));
         Assert.assertFalse(pluginXml.contains("sys.performance"));
-        Assert.assertFalse(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericTable\""));
-        Assert.assertFalse(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericView\""));
+        Assert.assertTrue(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericTable\""));
+        Assert.assertTrue(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericView\""));
 
         Assert.assertTrue(pluginXml.contains("id=\"scratchbird_jdbc\""));
         Assert.assertTrue(pluginXml.contains("class=\"com.scratchbird.jdbc.SBDriver\""));
-        Assert.assertTrue(pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=disable&amp;binary_transfer=true\"")
-            || pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=disable&binary_transfer=true\""));
+        Assert.assertTrue(pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true&amp;metadata_fixture_catalog=driver_test\"")
+            || pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&binary_transfer=true&metadata_fixture_catalog=driver_test\""));
+        Assert.assertTrue(pluginXml.contains("defaultPort=\"3092\""));
         Assert.assertTrue(pluginXml.contains("path=\"drivers/scratchbird\""));
         Assert.assertTrue(pluginXml.contains("name=\"driver-properties\""));
         Assert.assertTrue(pluginXml.contains("value=\"connect_timeout,socket_timeout,binary_transfer"));
@@ -144,6 +148,8 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(pluginXml.contains("id=\"dormant_id\""));
         Assert.assertTrue(pluginXml.contains("id=\"dormant_reattach_token\""));
         Assert.assertTrue(pluginXml.contains("id=\"metadataExpandSchemaParents\""));
+        Assert.assertTrue(pluginXml.contains("id=\"metadata_fixture_catalog\""));
+        Assert.assertTrue(pluginXml.contains("defaultValue=\"driver_test\""));
         Assert.assertTrue(pluginXml.contains("execKeywords\" value=\"CALL,ANALYZE,BACKUP,CHECKPOINT,CLUSTER"));
         Assert.assertFalse(pluginXml.contains("COPY,DESC"));
         Assert.assertFalse(pluginXml.contains("DESCRIBE,DO"));
@@ -218,10 +224,18 @@ public class ScratchBirdIntegrationTest {
 
         String schemaNodeSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSchemaNode.java");
         Assert.assertTrue(schemaNodeSource.contains("return ownerCatalog;"));
-        Assert.assertTrue(schemaNodeSource.contains("return querySchema.getPhysicalTables(monitor);"));
-        Assert.assertTrue(schemaNodeSource.contains("return querySchema.getViews(monitor);"));
+        Assert.assertTrue(schemaNodeSource.contains("return super.getTables(monitor);"));
+        Assert.assertTrue(schemaNodeSource.contains("return super.getTable(monitor, name);"));
+        Assert.assertTrue(schemaNodeSource.contains("getTableCache().setCache(tables);"));
+        Assert.assertTrue(schemaNodeSource.contains("session.getMetaData().getTables(null, fullPath, \"%\", PHYSICAL_TABLE_TYPES)"));
+        Assert.assertTrue(schemaNodeSource.contains("session.getMetaData().getTables(null, fullPath, \"%\", VIEW_TYPES)"));
+        Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdTable(this, tableName"));
+        Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdView(this, viewName"));
         Assert.assertTrue(schemaNodeSource.contains("return querySchema.getDataTypes(monitor);"));
         Assert.assertTrue(schemaNodeSource.contains("return getConstraintKeysCache().getObjects(monitor, this, null);"));
+        Assert.assertTrue(schemaNodeSource.contains("ScratchBird schema constraints are not available for navigator"));
+        Assert.assertTrue(schemaNodeSource.contains("ScratchBird schema indexes are not available for navigator"));
+        Assert.assertTrue(schemaNodeSource.contains("public boolean isSchemaBranchesFolderVisible()"));
         Assert.assertTrue(schemaNodeSource.contains("isTableFoldersVisible()"));
         Assert.assertTrue(schemaNodeSource.contains("isDataTypesFolderVisible()"));
         Assert.assertTrue(schemaNodeSource.contains("childSchemas.isEmpty()"));
@@ -229,6 +243,21 @@ public class ScratchBirdIntegrationTest {
         String metaModelSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdMetaModel.java");
         Assert.assertTrue(metaModelSource.contains("public boolean supportsSequences"));
         Assert.assertTrue(metaModelSource.contains("FROM information_schema.sequences"));
+
+        String dataSourceSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdDataSource.java");
+        Assert.assertTrue(dataSourceSource.contains("public synchronized Collection<ScratchBirdSchemaNode> getSchemaTree"));
+        Assert.assertTrue(dataSourceSource.contains("getOrCreateSyntheticRootCatalog()"));
+        Assert.assertTrue(dataSourceSource.contains("syntheticRootCatalog = null;"));
+
+        String catalogSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdCatalog.java");
+        Assert.assertTrue(catalogSource.contains("WITH RECURSIVE schema_tree AS"));
+        Assert.assertTrue(catalogSource.contains("JOIN schema_tree ON c.parent_object_id = schema_tree.object_id"));
+        Assert.assertTrue(catalogSource.contains("ORDER BY depth, full_path"));
+
+        String schemaNodeManagerSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdSchemaNodeManager.java");
+        Assert.assertTrue(schemaNodeManagerSource.contains("container instanceof ScratchBirdSchemaNode schemaNode"));
+        Assert.assertTrue(schemaNodeManagerSource.contains("return false;"));
+        Assert.assertTrue(schemaNodeManagerSource.contains("container instanceof ScratchBirdCatalog scratchBirdCatalog"));
     }
 
     @Test
@@ -819,7 +848,7 @@ public class ScratchBirdIntegrationTest {
 
         DBPConnectionConfiguration connectionInfo = new DBPConnectionConfiguration();
         connectionInfo.setConfigurationType(DBPDriverConfigurationType.URL);
-        connectionInfo.setUrl("jdbc:scratchbird://127.0.0.1:13092/main?sslmode=disable");
+        connectionInfo.setUrl("jdbc:scratchbird://127.0.0.1:3092/main?sslmode=require");
 
         ScratchBirdDataSourceProvider provider = new ScratchBirdDataSourceProvider();
         Assert.assertEquals(connectionInfo.getUrl(), provider.getConnectionURL(driver, connectionInfo));
@@ -963,7 +992,7 @@ public class ScratchBirdIntegrationTest {
             "analytics.dev",
             "analytics.prod"));
 
-        Assert.assertEquals(8, roots.size());
+        Assert.assertEquals(4, roots.size());
 
         ScratchBirdSchemaTreeBuilder.Node users = findNodeByName(roots, "users");
         Assert.assertNotNull(users);
@@ -981,14 +1010,10 @@ public class ScratchBirdIntegrationTest {
         ScratchBirdSchemaTreeBuilder.Node sys = findNodeByName(roots, "sys");
         Assert.assertNotNull(sys);
         Assert.assertTrue(sys.isTerminal());
-        Assert.assertNotNull(findNodeByName(sys.getChildren(), "domains"));
+        Assert.assertTrue(sys.getChildren().isEmpty());
 
         ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
-        Assert.assertNotNull(metrics);
-        Assert.assertTrue(metrics.isClientOnly());
-        Assert.assertFalse(metrics.isCatalogBacked());
-        Assert.assertNotNull(findNodeByName(metrics.getChildren(), "health-scorecards"));
-        Assert.assertNotNull(findNodeByName(metrics.getChildren(), "alerts"));
+        Assert.assertNull(metrics);
     }
 
     @Test
@@ -1058,7 +1083,7 @@ public class ScratchBirdIntegrationTest {
             "analytics.dev"));
 
         Assert.assertEquals(
-            Arrays.asList("sys", "users", "cluster", "emulated", "remote", "data", "metrics", "analytics", "connections"),
+            Arrays.asList("sys", "users", "cluster", "remote", "analytics", "connections"),
             roots.stream().map(ScratchBirdSchemaTreeBuilder.Node::getName).toList());
 
         ScratchBirdSchemaTreeBuilder.Node analytics = findNodeByName(roots, "analytics");
@@ -1073,24 +1098,7 @@ public class ScratchBirdIntegrationTest {
             Arrays.asList("alpha", "zeta"),
             users.getChildren().stream().map(ScratchBirdSchemaTreeBuilder.Node::getName).toList());
 
-        ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
-        Assert.assertNotNull(metrics);
-        Assert.assertEquals(
-            Arrays.asList(
-                "health-scorecards",
-                "workload-and-sql",
-                "sessions-and-transactions",
-                "locks-and-contention",
-                "storage-buffer-cache",
-                "mga-and-gc",
-                "scheduler-and-jobs",
-                "security-and-auth",
-                "listener-and-parser",
-                "cluster-and-replication",
-                "admin-and-management",
-                "alerts",
-                "future-gated"),
-            metrics.getChildren().stream().map(ScratchBirdSchemaTreeBuilder.Node::getName).toList());
+        Assert.assertNull(findNodeByName(roots, "metrics"));
     }
 
     @Test
@@ -1111,7 +1119,7 @@ public class ScratchBirdIntegrationTest {
 
     @Test
     public void navigatorActionRegistryRoutesMetricsDomainsAndCatalogBranches() {
-        List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(List.of("data.app"));
+        List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(List.of("sys.domains", "data.app"), true);
 
         ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
         Assert.assertNotNull(metrics);
@@ -1232,7 +1240,8 @@ public class ScratchBirdIntegrationTest {
             deleteForm,
             ScratchBirdFormMode.DELETE,
             "data.application");
-        Assert.assertTrue(admittedDelete.isAdmitted());
+        Assert.assertEquals(ScratchBirdRefusalModel.Kind.SERVER_ADMISSION_REQUIRED, admittedDelete.kind());
+        Assert.assertTrue(admittedDelete.allowsServerProbe());
 
         ScratchBirdRefusalModel deniedCatalogCreate = ScratchBirdPermissionProbe.probe(
             catalogForm,
@@ -1546,7 +1555,7 @@ public class ScratchBirdIntegrationTest {
     public void schemaTreeBuilderPublishesReportLeavesUnderClientOnlyMetricsRoot() {
         List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(List.of(
             "sys",
-            "data.application"));
+            "data.application"), true);
 
         ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
         Assert.assertNotNull(metrics);
@@ -1744,15 +1753,32 @@ public class ScratchBirdIntegrationTest {
         String managementDialogSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdManagementDialog.java");
         Assert.assertTrue(managementDialogSource.contains("new TabFolder(area, SWT.TOP)"));
         Assert.assertTrue(managementDialogSource.contains("createOverviewTab"));
+        Assert.assertTrue(managementDialogSource.contains("createWorkflowTab"));
         Assert.assertTrue(managementDialogSource.contains("createScratchBirdPanels"));
         Assert.assertTrue(managementDialogSource.contains("createObjectContextTab"));
         Assert.assertTrue(managementDialogSource.contains("createFieldMatrixTab"));
         Assert.assertTrue(managementDialogSource.contains("createValueTab"));
         Assert.assertTrue(managementDialogSource.contains("createExecutionTab"));
+        Assert.assertTrue(managementDialogSource.contains("createMonitoringTab"));
+        Assert.assertTrue(managementDialogSource.contains("createObjectGraphTab"));
         Assert.assertTrue(managementDialogSource.contains("createValidationTab"));
         Assert.assertTrue(managementDialogSource.contains("createReportTab"));
         Assert.assertTrue(managementDialogSource.contains("COPY_SCRIPT_ID"));
         Assert.assertTrue(managementDialogSource.contains("Copy Form Packet"));
+        Assert.assertTrue(managementDialogSource.contains("Validate Preview"));
+        Assert.assertTrue(managementDialogSource.contains("Refresh Server Status"));
+        Assert.assertTrue(managementDialogSource.contains("Apply Requires Admission"));
+        Assert.assertTrue(managementDialogSource.contains("Apply Admitted Preview"));
+        Assert.assertTrue(managementDialogSource.contains("refreshServerStatus"));
+        Assert.assertTrue(managementDialogSource.contains("applyAfterAdmission"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdMutationApplyExecutor.apply"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdProbeHistory.recordApply"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementWorkflow.previewIdentity(plan)"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementWorkflow.applyGateSummary"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementWorkflow.monitoringDashboardLines"));
+        Assert.assertTrue(managementDialogSource.contains("ScratchBirdManagementWorkflow.objectGraphLines"));
+        Assert.assertTrue(managementDialogSource.contains("setAccessibleName"));
+        Assert.assertTrue(managementDialogSource.contains("PROOF_DATA_KEY"));
         Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.diagnosticsFor(plan.commandText())"));
         Assert.assertTrue(managementDialogSource.contains("Statement inventory"));
         Assert.assertTrue(managementDialogSource.contains("ScratchBirdValidationBridge.statementSummaryFor(plan.commandText())"));
@@ -1774,6 +1800,29 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(managementDialogSource.contains("reviewPacket"));
         Assert.assertTrue(managementDialogSource.contains("appendFormPanels"));
         Assert.assertTrue(managementDialogSource.contains("childFormSummaries"));
+
+        String workflowSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdManagementWorkflow.java");
+        Assert.assertTrue(workflowSource.contains("DBEAVER-MGMT-015"));
+        Assert.assertTrue(workflowSource.contains("DBEAVER-MGMT-022"));
+        Assert.assertTrue(workflowSource.contains("DBEAVER-MGMT-032"));
+        Assert.assertTrue(workflowSource.contains("DBEAVER-MGMT-038"));
+        Assert.assertTrue(workflowSource.contains("DBEAVER-MGMT-040"));
+        Assert.assertTrue(workflowSource.contains("DBEAVER-MGMT-042"));
+        Assert.assertTrue(workflowSource.contains("DBEAVER-MGMT-045"));
+        Assert.assertTrue(workflowSource.contains("preview_sha256"));
+        Assert.assertTrue(workflowSource.contains("command_sha256"));
+        Assert.assertTrue(workflowSource.contains("applied_operation_sha256=requires_server_admission"));
+        Assert.assertTrue(workflowSource.contains("PENDING_SERVER_ADMISSION"));
+        Assert.assertTrue(workflowSource.contains("READY_TO_APPLY"));
+        Assert.assertTrue(workflowSource.contains("APPLIED_SERVER_VALIDATED"));
+        Assert.assertTrue(workflowSource.contains("REFUSED_APPLY"));
+        Assert.assertTrue(workflowSource.contains("VERIFY_APPLY_REFRESHED"));
+        Assert.assertTrue(workflowSource.contains("applyButtonEnabled("));
+        Assert.assertTrue(workflowSource.contains("ScratchBirdMutationApplyExecutor.applyReadiness"));
+        Assert.assertTrue(workflowSource.contains("RUN_IN_PROGRESS_SERVICE"));
+        Assert.assertTrue(workflowSource.contains("CANCEL_SAFE"));
+        Assert.assertTrue(workflowSource.contains("Dashboard refresh failures remain server refusals"));
+        Assert.assertTrue(workflowSource.contains("Metadata invalidation refreshes from server truth"));
 
         String reportPlanSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdReportPlan.java");
         Assert.assertTrue(reportPlanSource.contains("record ScratchBirdReportPlan"));
@@ -1971,6 +2020,8 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(jobsAuthzProbe.commandText().contains("sys.server_capabilities"));
         Assert.assertTrue(jobsAuthzProbe.commandText().contains("sys.security.permission_probe"));
         Assert.assertTrue(jobsAuthzProbe.commandText().contains("form_id = 'SBDV-FRM-102'"));
+        Assert.assertTrue(jobsAuthzProbe.commandText().contains("preview_hash = '"));
+        Assert.assertTrue(jobsAuthzProbe.commandText().contains("command_hash = '"));
         Assert.assertTrue(jobsAuthzProbe.summary().contains("server mutation-admission read probe"));
         Assert.assertTrue(jobsAuthzProbe.commandText().contains("SELECT * FROM sys.jobs"));
         Assert.assertFalse(jobsAuthzProbe.commandText().contains("CREATE JOB"));
@@ -1991,11 +2042,185 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(permissionProbeSource.contains("planServerAuthorization"));
         Assert.assertTrue(permissionProbeSource.contains("sys.server_capabilities"));
         Assert.assertTrue(permissionProbeSource.contains("sys.security.permission_probe"));
+        Assert.assertTrue(permissionProbeSource.contains("preview_hash"));
+        Assert.assertTrue(permissionProbeSource.contains("command_hash"));
         Assert.assertTrue(permissionProbeSource.contains("mutationPermissionProbeCommand"));
         Assert.assertTrue(permissionProbeSource.contains("serverAuthorizationScript"));
 
         String adminExecutorSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdAdminExecutor.java");
         Assert.assertTrue(adminExecutorSource.contains("ScratchBirdPermissionProbe.serverAuthorizationScript(targetPath)"));
+    }
+
+    @Test
+    public void managementActionEnvelopeBindsPreviewSessionFeatureAndNetworkPolicy() {
+        ScratchBirdFormDefinition jobsForm = ScratchBirdFormRegistry.require("SBDV-FRM-102");
+        ScratchBirdAdminExecutor.ExecutionPlan createPlan = ScratchBirdAdminExecutor.plan(
+            jobsForm,
+            ScratchBirdFormMode.CREATE,
+            "sys.jobs");
+        ScratchBirdManagementActionEnvelope envelope = ScratchBirdManagementActionEnvelope.forPlan(
+            jobsForm,
+            ScratchBirdFormMode.CREATE,
+            "sys.jobs",
+            createPlan);
+
+        Assert.assertTrue(envelope.envelopeId().startsWith("sbdv-action:"));
+        Assert.assertEquals(64, envelope.previewHash().length());
+        Assert.assertTrue(envelope.admissionProbeCommand().contains("sys.security.permission_probe"));
+        Assert.assertTrue(envelope.admissionProbeCommand().contains("preview_hash"));
+        Assert.assertTrue(envelope.admissionProbeCommand().contains("command_hash"));
+        Assert.assertEquals("MGA_SERVER_OWNED_ALWAYS_ACTIVE_SESSION", envelope.transactionAuthority());
+        Assert.assertTrue(envelope.sblrUuidPolicy().contains("server_must_revalidate_sblr_uuid"));
+        Assert.assertEquals(
+            ScratchBirdFeatureBoundary.Availability.SERVER_AUTHORIZATION_REQUIRED,
+            envelope.featureBoundary().availability());
+        Assert.assertFalse(envelope.applyAllowedByClientPosture());
+        Assert.assertTrue(envelope.reviewLines().stream().anyMatch(line -> line.contains("principal, role, group")));
+        Assert.assertTrue(envelope.sessionScope().summaryLines().stream().anyMatch(line -> line.contains("Isolation rule")));
+        Assert.assertTrue(envelope.networkPolicy().deniesEndpointClass("plugin-telemetry"));
+        Assert.assertEquals("<redacted>", envelope.networkPolicy().redactProperty("auth_token", "secret"));
+        Assert.assertEquals("public", envelope.networkPolicy().redactProperty("schema", "public"));
+
+        ScratchBirdFeatureBoundary clusterBoundary = ScratchBirdFeatureBoundary.forTarget(
+            "cluster.nodes.node01",
+            ScratchBirdFormMode.ALTER);
+        Assert.assertEquals(ScratchBirdFeatureBoundary.Availability.CLOSED_PROVIDER_REQUIRED, clusterBoundary.availability());
+        Assert.assertFalse(clusterBoundary.applyAllowed());
+
+        ScratchBirdSessionScope alice = ScratchBirdSessionScope.forConnection(
+            "conn-a",
+            "alice",
+            "developer",
+            "engineering",
+            "fr-CA");
+        ScratchBirdSessionScope bob = ScratchBirdSessionScope.forConnection(
+            "conn-a",
+            "bob",
+            "developer",
+            "engineering",
+            "fr-CA");
+        ScratchBirdSessionScope aliceSpanish = ScratchBirdSessionScope.forConnection(
+            "conn-a",
+            "alice",
+            "developer",
+            "engineering",
+            "es-ES");
+        Assert.assertFalse(alice.cacheCompatibleWith(bob));
+        Assert.assertFalse(alice.cacheCompatibleWith(aliceSpanish));
+        Assert.assertTrue(alice.cacheCompatibleWith(ScratchBirdSessionScope.forConnection(
+            "conn-a",
+            "alice",
+            "developer",
+            "engineering",
+            "fr-CA")));
+    }
+
+    @Test
+    public void dataEditorTransferAndObjectGraphContractsExposeServerRevalidationProof() {
+        ScratchBirdDataEditorContract.EditorPlan insertPlan = ScratchBirdDataEditorContract.plan(
+            ScratchBirdDataEditorContract.Operation.INSERT,
+            "data.sales.orders");
+        Assert.assertTrue(insertPlan.previewCommand().contains("INSERT INTO data.sales.orders"));
+        Assert.assertTrue(insertPlan.admissionProbeCommand().contains("SBDV-DATA-EDITOR"));
+        Assert.assertTrue(insertPlan.transactionProof().stream().anyMatch(line -> line.contains("MGA transaction")));
+        Assert.assertTrue(insertPlan.typeProof().stream().anyMatch(line -> line.contains("ScratchBirdValueProfile")));
+        Assert.assertTrue(insertPlan.refusalProof().stream().anyMatch(line -> line.contains("server before mutation")));
+
+        ScratchBirdDataEditorContract.EditorPlan refreshPlan = ScratchBirdDataEditorContract.plan(
+            ScratchBirdDataEditorContract.Operation.REFRESH,
+            "data.sales.orders");
+        Assert.assertTrue(refreshPlan.previewCommand().contains("FETCH FIRST 200 ROWS ONLY"));
+        Assert.assertTrue(refreshPlan.transactionProof().stream().anyMatch(line -> line.contains("MGA snapshot")));
+
+        ScratchBirdDataTransferContract.TransferPlan exportPlan = ScratchBirdDataTransferContract.plan(
+            ScratchBirdDataTransferContract.Direction.EXPORT,
+            "data.sales.orders");
+        Assert.assertTrue(exportPlan.previewCommand().contains("COPY data.sales.orders TO STDOUT"));
+        Assert.assertTrue(exportPlan.authorizationProbe().contains("SBDV-DATA-TRANSFER"));
+        Assert.assertTrue(exportPlan.batchingRules().stream().anyMatch(line -> line.contains("server-admitted memory")));
+        Assert.assertTrue(exportPlan.encodingRules().stream().anyMatch(line -> line.contains("Language resource hashes")));
+
+        ScratchBirdObjectGraphContract.GraphPlan graphPlan = ScratchBirdObjectGraphContract.plan("data.sales.orders");
+        Assert.assertTrue(graphPlan.dependencyQuery().contains("sys.catalog.object_dependencies"));
+        Assert.assertTrue(graphPlan.searchQuery().contains("sys.catalog.object_resolver"));
+        Assert.assertTrue(graphPlan.ddlPreviewQuery().contains("sys.catalog.generated_ddl"));
+        Assert.assertTrue(graphPlan.sbsqlPreviewQuery().contains("sys.catalog.generated_sbsql"));
+        Assert.assertTrue(graphPlan.explainQuery().startsWith("EXPLAIN SELECT"));
+        Assert.assertTrue(graphPlan.visibilityRules().stream().anyMatch(line -> line.contains("Hidden objects")));
+
+        String uiDialogSource = readUiSource("org/jkiss/dbeaver/ext/scratchbird/ui/ScratchBirdManagementDialog.java");
+        Assert.assertTrue(uiDialogSource.contains("Action envelope"));
+        Assert.assertTrue(uiDialogSource.contains("Data editor insert contract"));
+        Assert.assertTrue(uiDialogSource.contains("Data transfer export contract"));
+        Assert.assertTrue(uiDialogSource.contains("Object graph contract"));
+    }
+
+    @Test
+    public void mutationAdmissionStatusBindsPermissionProbeToPreviewAndCommandHash() {
+        ScratchBirdFormDefinition jobsForm = ScratchBirdFormRegistry.require("SBDV-FRM-102");
+        ScratchBirdAdminExecutor.ExecutionPlan createPlan = ScratchBirdAdminExecutor.plan(
+            jobsForm,
+            ScratchBirdFormMode.CREATE,
+            "sys.jobs");
+        String previewHash = ScratchBirdManagementActionEnvelope.previewHashFor(
+            jobsForm,
+            ScratchBirdFormMode.CREATE,
+            "sys.jobs",
+            createPlan);
+        String commandHash = ScratchBirdManagementActionEnvelope.commandHashFor(createPlan);
+        ScratchBirdLiveProbe.ProbePlan authzPlan = ScratchBirdPermissionProbe.planServerAuthorization(
+            jobsForm,
+            ScratchBirdFormMode.CREATE,
+            "sys.jobs",
+            createPlan,
+            List.of(),
+            null);
+
+        ScratchBirdLiveProbe.ProbeResult admittedResult = new ScratchBirdLiveProbe.ProbeResult(
+            authzPlan,
+            ScratchBirdRefusalModel.admitted("Read-only ScratchBird server probe completed successfully."),
+            List.of(new ScratchBirdLiveProbe.StatementResult(
+                "SELECT admitted, refusal_code, refusal_message, preview_hash, command_hash FROM sys.security.permission_probe",
+                true,
+                1,
+                0,
+                List.of("admitted", "refusal_code", "refusal_message", "preview_hash", "command_hash"),
+                List.of(List.of("true", "", "", previewHash, commandHash)))));
+        ScratchBirdRefusalModel admitted = ScratchBirdLiveProbe.mutationAdmissionStatus(
+            admittedResult,
+            previewHash,
+            commandHash);
+        Assert.assertTrue(admitted.isAdmitted());
+        Assert.assertTrue(ScratchBirdMutationApplyExecutor.applyReadiness(
+            createPlan,
+            admittedResult,
+            previewHash,
+            commandHash).isAdmitted());
+
+        ScratchBirdLiveProbe.ProbeResult mismatchedResult = new ScratchBirdLiveProbe.ProbeResult(
+            authzPlan,
+            ScratchBirdRefusalModel.admitted("Read-only ScratchBird server probe completed successfully."),
+            List.of(new ScratchBirdLiveProbe.StatementResult(
+                "SELECT admitted, refusal_code, refusal_message, preview_hash, command_hash FROM sys.security.permission_probe",
+                true,
+                1,
+                0,
+                List.of("admitted", "refusal_code", "refusal_message", "preview_hash", "command_hash"),
+                List.of(List.of("true", "", "", previewHash, "sha256:mismatch")))));
+        ScratchBirdRefusalModel mismatched = ScratchBirdLiveProbe.mutationAdmissionStatus(
+            mismatchedResult,
+            previewHash,
+            commandHash);
+        Assert.assertEquals(ScratchBirdRefusalModel.Kind.PERMISSION_DENIED, mismatched.kind());
+
+        ScratchBirdMutationApplyExecutor.ApplyResult refused = ScratchBirdMutationApplyExecutor.refuse(
+            createPlan,
+            mismatched,
+            previewHash,
+            commandHash);
+        Assert.assertFalse(refused.applied());
+        Assert.assertEquals("none", refused.appliedOperationHash());
+        Assert.assertTrue(refused.previewText().contains("PERMISSION_DENIED"));
     }
 
     @Test
@@ -2068,23 +2293,35 @@ public class ScratchBirdIntegrationTest {
                 List.of(List.of("compression", "true")))));
         ScratchBirdProbeHistory.recordAuthorizationProbe(scopeKey, "sys.monitoring", form, authzResult);
 
+        ScratchBirdMutationApplyExecutor.ApplyResult applyResult = ScratchBirdMutationApplyExecutor.refuse(
+            ScratchBirdAdminExecutor.plan(form, ScratchBirdFormMode.TASK, "sys.monitoring"),
+            ScratchBirdRefusalModel.serverAdmissionRequired(
+                "No server permission probe has been executed for this mutation preview.",
+                "sys.security.permission_probe"),
+            "preview-hash",
+            "command-hash");
+        ScratchBirdProbeHistory.recordApply(scopeKey, "sys.monitoring", form, applyResult);
+
         List<ScratchBirdProbeHistory.HistoryEntry> entries = ScratchBirdProbeHistory.historyFor(scopeKey);
-        Assert.assertEquals(3, entries.size());
-        Assert.assertEquals(ScratchBirdProbeHistory.EntryKind.AUTHZ_PROBE, entries.get(0).kind());
-        Assert.assertEquals(ScratchBirdProbeHistory.EntryKind.TASK_PREVIEW, entries.get(1).kind());
-        Assert.assertEquals(ScratchBirdProbeHistory.EntryKind.LIVE_PROBE, entries.get(2).kind());
-        Assert.assertEquals("SBDV-TSK-301", entries.get(1).taskId());
-        Assert.assertTrue(entries.get(0).displayLabel().contains("Authz probe"));
-        Assert.assertTrue(entries.get(0).previewText().contains("sys.server_capabilities"));
-        Assert.assertTrue(entries.get(1).displayLabel().contains("Task preview"));
-        Assert.assertTrue(entries.get(1).previewText().contains("Statements executed: 1"));
-        Assert.assertTrue(entries.get(1).summaryLines().stream().anyMatch(line -> line.contains("SBDV-FRM-016")));
-        Assert.assertTrue(entries.get(2).commandText().contains("SHOW MANAGEMENT LISTENERS"));
+        Assert.assertEquals(4, entries.size());
+        Assert.assertEquals(ScratchBirdProbeHistory.EntryKind.APPLY, entries.get(0).kind());
+        Assert.assertEquals(ScratchBirdProbeHistory.EntryKind.AUTHZ_PROBE, entries.get(1).kind());
+        Assert.assertEquals(ScratchBirdProbeHistory.EntryKind.TASK_PREVIEW, entries.get(2).kind());
+        Assert.assertEquals(ScratchBirdProbeHistory.EntryKind.LIVE_PROBE, entries.get(3).kind());
+        Assert.assertEquals("SBDV-TSK-301", entries.get(2).taskId());
+        Assert.assertTrue(entries.get(0).displayLabel().contains("Apply"));
+        Assert.assertTrue(entries.get(0).previewText().contains("SERVER_ADMISSION_REQUIRED"));
+        Assert.assertTrue(entries.get(1).displayLabel().contains("Authz probe"));
+        Assert.assertTrue(entries.get(1).previewText().contains("sys.server_capabilities"));
+        Assert.assertTrue(entries.get(2).displayLabel().contains("Task preview"));
+        Assert.assertTrue(entries.get(2).previewText().contains("Statements executed: 1"));
+        Assert.assertTrue(entries.get(2).summaryLines().stream().anyMatch(line -> line.contains("SBDV-FRM-016")));
+        Assert.assertTrue(entries.get(3).commandText().contains("SHOW MANAGEMENT LISTENERS"));
         Assert.assertTrue(Files.exists(ScratchBirdProbeHistory.storeFileForTests()));
 
         ScratchBirdProbeHistory.resetCache();
         List<ScratchBirdProbeHistory.HistoryEntry> reloadedEntries = ScratchBirdProbeHistory.historyFor(scopeKey);
-        Assert.assertEquals(3, reloadedEntries.size());
+        Assert.assertEquals(4, reloadedEntries.size());
         Assert.assertEquals(ScratchBirdProbeHistory.EntryKind.AUTHZ_PROBE, reloadedEntries.get(0).kind());
         Assert.assertEquals(ScratchBirdProbeHistory.EntryKind.TASK_PREVIEW, reloadedEntries.get(1).kind());
         Assert.assertEquals("SBDV-TSK-301", reloadedEntries.get(1).taskId());

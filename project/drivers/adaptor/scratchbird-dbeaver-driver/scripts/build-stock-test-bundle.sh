@@ -62,6 +62,14 @@ find_update_site_zip() {
 
 rm -rf "${WORK_DIR}"
 mkdir -p "${OUTPUT_DIR}"
+rm -f \
+  "${OUTPUT_DIR}"/scratchbird-dbeaver-update-site-*.zip \
+  "${OUTPUT_DIR}"/scratchbird-dbeaver-stock-test-bundle-*.zip \
+  "${OUTPUT_DIR}"/scratchbird-dbeaver-source-checkout-proof-*.json \
+  "${OUTPUT_DIR}"/scratchbird-dbeaver-stock-install-proof-*.json \
+  "${OUTPUT_DIR}"/scratchbird-dbeaver-lifecycle-proof-*.json \
+  "${OUTPUT_DIR}"/scratchbird-dbeaver-lifecycle-proof-latest.json \
+  "${OUTPUT_DIR}"/SHA256SUMS.txt
 
 "${SCRIPT_DIR}/build-p2-update-site.sh" "${P2_OUTPUT_DIR}"
 
@@ -70,6 +78,8 @@ if [[ -z "${UPDATE_SITE_ZIP}" || ! -f "${UPDATE_SITE_ZIP}" ]]; then
   echo "Fresh ScratchBird update-site zip was not generated under ${P2_OUTPUT_DIR}" >&2
   exit 1
 fi
+UPDATE_SITE_DIST_ZIP="${OUTPUT_DIR}/$(basename "${UPDATE_SITE_ZIP}")"
+cp "${UPDATE_SITE_ZIP}" "${UPDATE_SITE_DIST_ZIP}"
 
 mkdir -p "${BUNDLE_DIR}"
 cp "${UPDATE_SITE_ZIP}" "${BUNDLE_DIR}/"
@@ -89,6 +99,7 @@ Files
 - install-into-stock-dbeaver.bat
 - uninstall-from-stock-dbeaver.sh
 - uninstall-from-stock-dbeaver.bat
+- THIRD-PARTY-NOTICES.txt
 
 Purpose
 -------
@@ -146,6 +157,34 @@ Notes
 - After install, restart DBeaver before testing.
 EOF
 
+cat > "${BUNDLE_DIR}/THIRD-PARTY-NOTICES.txt" <<'EOF'
+ScratchBird DBeaver Stock Test Bundle Third-Party Notices
+
+Component: DBeaver
+License: Apache-2.0
+Boundary: stock DBeaver application and extension API used by the adapter.
+
+Component: Eclipse Platform
+License: EPL-2.0
+Boundary: target platform dependencies used by DBeaver and Tycho packaging.
+
+Component: Tycho
+License: EPL-2.0
+Boundary: build-time Eclipse plugin packaging dependency.
+
+Component: SWT
+License: EPL-2.0
+Boundary: DBeaver UI dependency.
+
+Component: JFace
+License: EPL-2.0
+Boundary: DBeaver UI dependency.
+
+Component: ScratchBird JDBC
+License: MPL-2.0
+Boundary: bundled ScratchBird JDBC driver artifact staged as scratchbird-jdbc.jar.
+EOF
+
 if command -v sha256sum >/dev/null 2>&1; then
   (
     cd "${BUNDLE_DIR}"
@@ -159,11 +198,24 @@ BUNDLE_ZIP="$(cd "${OUTPUT_DIR}" && pwd)/${BUNDLE_DIR_NAME}.zip"
   zip -qr "${BUNDLE_ZIP}" "${BUNDLE_DIR_NAME}"
 )
 
+if command -v sha256sum >/dev/null 2>&1; then
+  (
+    cd "${OUTPUT_DIR}"
+    sha256sum "$(basename "${BUNDLE_ZIP}")" "$(basename "${UPDATE_SITE_DIST_ZIP}")" > SHA256SUMS.txt
+  )
+fi
+
 cat <<EOF
 ScratchBird stock test bundle built successfully.
 
 Bundle zip:
   ${BUNDLE_ZIP}
+
+Update-site zip:
+  ${UPDATE_SITE_DIST_ZIP}
+
+Checksum manifest:
+  ${OUTPUT_DIR}/SHA256SUMS.txt
 
 Bundle contents:
   ${BUNDLE_DIR_NAME}/README.txt
@@ -172,4 +224,5 @@ Bundle contents:
   ${BUNDLE_DIR_NAME}/install-into-stock-dbeaver.bat
   ${BUNDLE_DIR_NAME}/uninstall-from-stock-dbeaver.sh
   ${BUNDLE_DIR_NAME}/uninstall-from-stock-dbeaver.bat
+  ${BUNDLE_DIR_NAME}/THIRD-PARTY-NOTICES.txt
 EOF

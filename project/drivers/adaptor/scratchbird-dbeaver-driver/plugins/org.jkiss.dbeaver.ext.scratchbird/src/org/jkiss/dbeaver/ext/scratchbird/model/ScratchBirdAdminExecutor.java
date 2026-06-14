@@ -39,6 +39,20 @@ public final class ScratchBirdAdminExecutor {
         boolean destructive,
         @NotNull String authority
     ) {
+        @NotNull
+        public ScratchBirdActionAdmission admissionMetadata() {
+            return ScratchBirdActionAdmission.fromPlan(this);
+        }
+
+        @NotNull
+        public ScratchBirdFeatureBoundaryStatus featureBoundaryStatus() {
+            return admissionMetadata().featureBoundaryStatus();
+        }
+
+        @NotNull
+        public String redactedCommandText() {
+            return ScratchBirdSecurityRedactor.redactEvidenceText(commandText);
+        }
     }
 
     private ScratchBirdAdminExecutor() {
