@@ -41,7 +41,7 @@ fn parse_key_value() {
 #[test]
 fn parse_manager_proxy_params() {
     let cfg = Config::from_dsn(
-        "scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7",
+        "scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7",
     )
     .unwrap();
     assert_eq!(cfg.front_door_mode, "manager_proxy");

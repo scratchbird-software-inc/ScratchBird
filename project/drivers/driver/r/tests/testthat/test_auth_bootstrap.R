@@ -62,7 +62,7 @@ test_that("sb_probe_auth_surface reports manager TOKEN ingress", {
     .package = "scratchbird"
   )
 
-  probe <- sb_probe_auth_surface("scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&sslmode=disable")
+  probe <- sb_probe_auth_surface("scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&sslmode=require")
   expect_true(probe$reachable)
   expect_equal(probe$ingress_mode, "manager_proxy")
   expect_equal(probe$required_method, "TOKEN")

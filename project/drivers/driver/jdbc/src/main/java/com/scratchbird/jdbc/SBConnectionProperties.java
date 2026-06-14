@@ -132,7 +132,7 @@ public class SBConnectionProperties {
             case "port":
             case "portnumber":
             case "pgport":
-                this.port = Integer.parseInt(value);
+                this.port = parseOptionalInt(value, this.port);
                 break;
             case "front_door_mode":
             case "frontdoormode":
@@ -183,19 +183,19 @@ public class SBConnectionProperties {
                 break;
             case "connecttimeout":
             case "connect_timeout":
-                this.connectTimeout = Integer.parseInt(value);
+                this.connectTimeout = parseOptionalInt(value, this.connectTimeout);
                 break;
             case "sockettimeout":
             case "socket_timeout":
-                this.socketTimeout = Integer.parseInt(value);
+                this.socketTimeout = parseOptionalInt(value, this.socketTimeout);
                 break;
             case "logintimeout":
             case "login_timeout":
-                this.loginTimeout = Integer.parseInt(value);
+                this.loginTimeout = parseOptionalInt(value, this.loginTimeout);
                 break;
             case "tcpkeepalive":
             case "tcp_keep_alive":
-                this.tcpKeepAlive = Boolean.parseBoolean(value);
+                this.tcpKeepAlive = parseOptionalBoolean(value, this.tcpKeepAlive);
                 break;
             case "schema":
             case "currentschema":
@@ -209,7 +209,7 @@ public class SBConnectionProperties {
             case "expand_schema_parents":
             case "dbeaverexpandschemaparents":
             case "dbeaver_expand_schema_parents":
-                this.metadataExpandSchemaParents = Boolean.parseBoolean(value);
+                this.metadataExpandSchemaParents = parseOptionalBoolean(value, this.metadataExpandSchemaParents);
                 break;
             case "role":
                 this.role = value;
@@ -219,44 +219,44 @@ public class SBConnectionProperties {
                 this.applicationName = value;
                 break;
             case "readonly":
-                this.readOnly = Boolean.parseBoolean(value);
+                this.readOnly = parseOptionalBoolean(value, this.readOnly);
                 break;
             case "autocommit":
-                this.autoCommit = Boolean.parseBoolean(value);
+                this.autoCommit = parseOptionalBoolean(value, this.autoCommit);
                 break;
             case "defaultrowfetchsize":
             case "fetchsize":
             case "fetch_size":
             case "default_fetch_size":
-                this.defaultRowFetchSize = Integer.parseInt(value);
+                this.defaultRowFetchSize = parseOptionalInt(value, this.defaultRowFetchSize);
                 break;
             case "preparethreshold":
-                this.prepareThreshold = Integer.parseInt(value);
+                this.prepareThreshold = parseOptionalInt(value, this.prepareThreshold);
                 break;
             case "binarytransfer":
             case "binary_transfer":
-                this.binaryTransfer = Boolean.parseBoolean(value);
+                this.binaryTransfer = parseOptionalBoolean(value, this.binaryTransfer);
                 break;
             case "pooling":
-                this.pooling = Boolean.parseBoolean(value);
+                this.pooling = parseOptionalBoolean(value, this.pooling);
                 break;
             case "minpoolsize":
             case "min_pool_size":
-                this.minPoolSize = Integer.parseInt(value);
+                this.minPoolSize = parseOptionalInt(value, this.minPoolSize);
                 break;
             case "maxpoolsize":
             case "max_pool_size":
-                this.maxPoolSize = Integer.parseInt(value);
+                this.maxPoolSize = parseOptionalInt(value, this.maxPoolSize);
                 break;
             case "connectionlifetime":
             case "connection_lifetime":
             case "poolingconnectionlifetime":
-                this.connectionLifetime = Integer.parseInt(value);
+                this.connectionLifetime = parseOptionalInt(value, this.connectionLifetime);
                 break;
             case "acquiretimeout":
             case "acquire_timeout":
             case "poolingacquiretimeout":
-                this.acquireTimeout = Integer.parseInt(value);
+                this.acquireTimeout = parseOptionalInt(value, this.acquireTimeout);
                 break;
             case "compression":
                 this.compression = normalizeCompression(value);
@@ -289,7 +289,7 @@ public class SBConnectionProperties {
             case "manager_client_flags":
             case "managerclientflags":
             case "mcp_client_flags":
-                this.managerClientFlags = Integer.parseInt(value);
+                this.managerClientFlags = parseOptionalInt(value, this.managerClientFlags);
                 break;
             case "manager_auth_fast_path":
             case "managerauthfastpath":
@@ -302,7 +302,7 @@ public class SBConnectionProperties {
                 break;
             case "client_flags":
             case "connect_client_flags":
-                this.connectClientFlags = Integer.parseInt(value);
+                this.connectClientFlags = parseOptionalInt(value, this.connectClientFlags);
                 break;
             case "auth_token":
             case "authtoken":
@@ -361,7 +361,7 @@ public class SBConnectionProperties {
                 break;
             case "rewritebatchedinserts":
             case "rewrite_batched_inserts":
-                this.reWriteBatchedInserts = Boolean.parseBoolean(value);
+                this.reWriteBatchedInserts = parseOptionalBoolean(value, this.reWriteBatchedInserts);
                 break;
             case "loggerlevel":
             case "loglevel":
@@ -1160,5 +1160,15 @@ public class SBConnectionProperties {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static int parseOptionalInt(String value, int currentValue) {
+        String normalized = normalizeOptionalText(value);
+        return normalized == null ? currentValue : Integer.parseInt(normalized);
+    }
+
+    private static boolean parseOptionalBoolean(String value, boolean currentValue) {
+        String normalized = normalizeOptionalText(value);
+        return normalized == null ? currentValue : Boolean.parseBoolean(normalized);
     }
 }

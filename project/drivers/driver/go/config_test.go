@@ -62,7 +62,7 @@ func TestParseRejectsNonNativeProtocol(t *testing.T) {
 }
 
 func TestParseManagerProxyParams(t *testing.T) {
-	cfg, err := ParseConfig("scratchbird://user:pass@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_username=admin&manager_database=mydb&manager_connection_profile=SBsql&manager_client_intent=SBsql&manager_client_flags=7&manager_auth_fast_path=false")
+	cfg, err := ParseConfig("scratchbird://user:pass@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_username=admin&manager_database=mydb&manager_connection_profile=SBsql&manager_client_intent=SBsql&manager_client_flags=7&manager_auth_fast_path=false")
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}

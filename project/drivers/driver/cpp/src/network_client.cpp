@@ -1241,8 +1241,7 @@ core::Status NetworkClient::openSocket(bool require_identity,
         tls_config.key_file = config_.ssl_key;
         tls_config.ca_file = config_.ssl_root_cert;
         tls_config.verify_server = (config_.ssl_mode == network::SSLMode::VERIFY_CA ||
-                                    config_.ssl_mode == network::SSLMode::VERIFY_FULL ||
-                                    config_.ssl_mode == network::SSLMode::REQUIRE);
+                                    config_.ssl_mode == network::SSLMode::VERIFY_FULL);
 
         tls_ctx_ = security::TLSContext::createClient(tls_config, ctx);
         if (!tls_ctx_ || !tls_ctx_->isValid()) {

@@ -118,8 +118,9 @@ public class ScratchBirdIntegrationTest {
 
         Assert.assertTrue(pluginXml.contains("id=\"scratchbird_jdbc\""));
         Assert.assertTrue(pluginXml.contains("class=\"com.scratchbird.jdbc.SBDriver\""));
-        Assert.assertTrue(pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=disable&amp;binary_transfer=true\"")
-            || pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=disable&binary_transfer=true\""));
+        Assert.assertTrue(pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true\"")
+            || pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&binary_transfer=true\""));
+        Assert.assertTrue(pluginXml.contains("defaultPort=\"3092\""));
         Assert.assertTrue(pluginXml.contains("path=\"drivers/scratchbird\""));
         Assert.assertTrue(pluginXml.contains("name=\"driver-properties\""));
         Assert.assertTrue(pluginXml.contains("value=\"connect_timeout,socket_timeout,binary_transfer"));
@@ -819,7 +820,7 @@ public class ScratchBirdIntegrationTest {
 
         DBPConnectionConfiguration connectionInfo = new DBPConnectionConfiguration();
         connectionInfo.setConfigurationType(DBPDriverConfigurationType.URL);
-        connectionInfo.setUrl("jdbc:scratchbird://127.0.0.1:13092/main?sslmode=disable");
+        connectionInfo.setUrl("jdbc:scratchbird://127.0.0.1:3092/main?sslmode=require");
 
         ScratchBirdDataSourceProvider provider = new ScratchBirdDataSourceProvider();
         Assert.assertEquals(connectionInfo.getUrl(), provider.getConnectionURL(driver, connectionInfo));
