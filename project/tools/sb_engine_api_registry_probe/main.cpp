@@ -43,6 +43,27 @@ bool StartsWith(const std::string& value, const std::string& prefix) {
   return value.rfind(prefix, 0) == 0;
 }
 
+std::vector<std::string> SplitRegistryPaths(const std::string& value) {
+  std::vector<std::string> paths;
+  std::size_t start = 0;
+  while (start <= value.size()) {
+    const auto end = value.find(';', start);
+    paths.push_back(Trim(value.substr(start, end == std::string::npos ? end : end - start)));
+    if (end == std::string::npos) break;
+    start = end + 1;
+  }
+  return paths;
+}
+
+bool IsRegistryFile(const std::vector<std::filesystem::path>& roots,
+                    const std::string& value) {
+  if (value.empty()) return true;
+  for (const auto& root : roots) {
+    if (std::filesystem::is_regular_file(root / value)) return true;
+  }
+  return false;
+}
+
 std::string ValueAfterColon(const std::string& line) {
   const auto pos = line.find(':');
   if (pos == std::string::npos) {
@@ -70,6 +91,10 @@ int main(int argc, char** argv) {
     return 2;
   }
   const auto root = registry.parent_path();
+  std::vector<std::filesystem::path> registry_roots{root};
+  if (root.has_parent_path() && root.parent_path().has_parent_path()) {
+    registry_roots.push_back(root.parent_path().parent_path());
+  }
   std::vector<OperationSeen> operations;
   OperationSeen current;
   bool in_operation = false;
@@ -114,18 +139,22 @@ int main(int argc, char** argv) {
   std::size_t unknown_statuses = 0;
   const std::set<std::string> allowed_statuses = {
       "stubbed_fail_closed", "contract_defined", "vertical_slice_implemented", "current_stage_complete",
-      "cluster_placeholder_fail_closed", "deferred_by_architecture", "behavior_implemented"};
+      "cluster_placeholder_fail_closed", "deferred_by_architecture", "behavior_implemented",
+      "compile_gated_provider_boundary_fail_closed", "fail_closed_cluster_mapping_unavailable",
+      "physical_provider_implemented"};
   for (const auto& op : operations) {
     if (!(op.operation_id && op.function_name && op.request_type && op.result_type && op.header &&
           op.implementation && op.implementation_status)) {
       ++missing_fields;
     }
     if (!allowed_statuses.contains(op.status)) { ++unknown_statuses; }
-    if (!op.header_path.empty() && !std::filesystem::is_regular_file(root / op.header_path)) {
-      ++missing_files;
+    for (const auto& header_path : SplitRegistryPaths(op.header_path)) {
+      if (!IsRegistryFile(registry_roots, header_path)) ++missing_files;
     }
-    if (!op.implementation_path.empty() && !std::filesystem::is_regular_file(root / op.implementation_path)) {
-      ++missing_files;
+    for (const auto& implementation_path : SplitRegistryPaths(op.implementation_path)) {
+      if (!IsRegistryFile(registry_roots, implementation_path)) {
+        ++missing_files;
+      }
     }
   }
   const bool ok = !operations.empty() && missing_fields == 0 && missing_files == 0 && unknown_statuses == 0;

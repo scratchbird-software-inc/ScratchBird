@@ -2033,6 +2033,8 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.produces_sblr = true;
   } else if (keyword == "DESCRIBE" || keyword == "EXPLAIN") {
     ast.family = StatementFamily::kObservability;
+    ast.registry_family = "sbsql.observability.inspect.v3";
+    ast.operation_family = "sblr.observability.inspect.v3";
     ast.requires_name_resolution = keyword == "DESCRIBE";
     ast.produces_sblr = true;
   } else if (keyword == "SET") {

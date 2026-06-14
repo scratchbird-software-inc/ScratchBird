@@ -27,9 +27,10 @@ struct FamilyRule {
   bool cluster_private = false;
 };
 
-constexpr std::array<FamilyRule, 54> kServerSblrFamilies{{
+constexpr std::array<FamilyRule, 62> kServerSblrFamilies{{
     {"sblr.acceleration.gpu.v3", "acceleration.gpu.operation", false},
     {"sblr.acceleration.llvm.v3", "extensibility.compile_llvm_module", false},
+    {"sblr.archive_replication.operation.v3", "archive_replication.operation", false},
     {"sblr.archive.operation.v3", "archive.operation", false},
     {"sblr.backup.operation.v3", "backup.operation", false},
     {"sblr.bridge.operation.v3", "bridge.describe_capabilities", false},
@@ -43,6 +44,7 @@ constexpr std::array<FamilyRule, 54> kServerSblrFamilies{{
     {"sblr.database.management.v3", "lifecycle.inspect_database", false},
     {"sblr.diagnostic.control.v3", "diagnostic.control", false},
     {"sblr.diagnostic.refusal.v3", "diagnostic.refusal", false},
+    {"sblr.dml.operation.v3", "dml.operation", false},
     {"sblr.dml.delete.v3", "dml.delete_rows", false},
     {"sblr.dml.insert.v3", "dml.insert_rows", false},
     {"sblr.dml.merge.v3", "dml.merge_rows", false},
@@ -51,23 +53,29 @@ constexpr std::array<FamilyRule, 54> kServerSblrFamilies{{
     {"sblr.event.delivery.v3", "event.delivery.poll", false},
     {"sblr.event.publication.v3", "event.publication.operation", false},
     {"sblr.event.subscription.v3", "event.subscription.list", false},
+    {"sblr.expression.runtime.v3", "query.cast_value", false},
     {"sblr.filespace.management.v3", "storage.manage_operation", false},
     {"sblr.fulltext.execution.v3", "nosql.search_query", false},
+    {"sblr.general.operation.v3", "general.operation", false},
     {"sblr.graph.execution.v3", "nosql.graph_query", false},
     {"sblr.index.maintenance.v3", "index.maintenance", false},
+    {"sblr.jobs.operation.v3", "jobs.scheduler.operation", false},
     {"sblr.language.resource_control.v3", "language.session.show", false},
     {"sblr.management.control.v3", "management.control_runtime", false},
     {"sblr.management.report.v3", "management.inspect_runtime", false},
+    {"sblr.management.runtime_operation.v3", "management.inspect_runtime", false},
     {"sblr.migration.operation.v3", "op.show.migrations", false},
     {"sblr.metrics.read.v3", "observability.show_metrics", false},
     {"sblr.mga.control.v3", "transaction.set_characteristics", false},
     {"sblr.mga.report.v3", "observability.show_transactions", false},
+    {"sblr.observability.inspect.v3", "observability.show_version", false},
     {"sblr.optimizer.plan.v3", "query.plan_operation", false},
     {"sblr.parser.operation.v3", "extensibility.register_parser_package", false},
     {"sblr.policy.operation.v3", "security.policy.show", false},
     {"sblr.query.document.v3", "nosql.document_find", false},
     {"sblr.query.graph.v3", "nosql.graph_query", false},
     {"sblr.query.kv.v3", "nosql.key_value_get", false},
+    {"sblr.query.multimodel_or_ddl.v3", "query.multimodel_or_ddl", false},
     {"sblr.query.relational.v3", "dml.select", false},
     {"sblr.query.search.v3", "nosql.search_query", false},
     {"sblr.query.timeseries.v3", "nosql.time_series_append", false},
@@ -978,6 +986,10 @@ std::optional<std::string> FamilyForOperationId(std::string_view operation_id) {
   if (operation_id == "dml.copy_export") {
     return "sblr.bulk.export.v3";
   }
+  if (operation_id == "dml.multi_result" ||
+      operation_id == "dml.partial_result") {
+    return "sblr.dml.operation.v3";
+  }
   if (operation_id.starts_with("dml.")) return std::nullopt;
   if (operation_id.starts_with("transaction.")) return "sblr.transaction.control.v3";
   if (operation_id == "storage.manage_operation" ||
@@ -1132,6 +1144,7 @@ std::string ReconciledExplicitServerFamily(std::string family,
                                            std::string_view operation_id,
                                            bool prefer_primary_family,
                                            bool preserve_query_plan_route_family) {
+  (void)preserve_query_plan_route_family;
   if (family == "sblr.dml.operation.v3") {
     const auto resolved_family = FamilyForOperationId(operation_id);
     if (resolved_family.has_value()) return *resolved_family;
@@ -1160,9 +1173,7 @@ std::string ReconciledExplicitServerFamily(std::string family,
   if (operation_id == "query.plan_operation" &&
       (family == "sblr.query.relational.v3" ||
        family == "sblr.query.multimodel_or_ddl.v3")) {
-    if (preserve_query_plan_route_family) return family;
-    const auto resolved_family = FamilyForOperationId(operation_id);
-    if (resolved_family.has_value()) return *resolved_family;
+    return family;
   }
   if (prefer_primary_family &&
       (family == "sblr.management.runtime_operation.v3" ||

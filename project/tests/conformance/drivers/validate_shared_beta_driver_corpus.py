@@ -92,6 +92,10 @@ def as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def normalized_manifest_path(value: Any) -> str:
+    return str(value).replace("\\", "/")
+
+
 def coverage_from(items: list[dict[str, Any]]) -> set[str]:
     found: set[str] = set()
     for item in items:
@@ -154,7 +158,7 @@ def validate_manifest(
     if any(str(ref.get("path", "")).startswith(DBEAVER_PATH) for ref in as_list(manifest.get("corpora")) if isinstance(ref, dict)):
         errors.append("manifest corpus paths must not point at the DBeaver adapter tree")
 
-    if discovery.get("fixture_manifest") != str(MANIFEST_REL):
+    if normalized_manifest_path(discovery.get("fixture_manifest")) != MANIFEST_REL.as_posix():
         errors.append("driver fixture discovery manifest points at the wrong fixture manifest")
     if discovery.get("requires_live_driver") is not False:
         errors.append("driver fixture discovery manifest must be static only")

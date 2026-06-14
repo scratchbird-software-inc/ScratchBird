@@ -13,6 +13,7 @@
 #include "dml/select_api.hpp"
 #include "dml/update_api.hpp"
 #include "database_lifecycle.hpp"
+#include "memory.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -56,6 +57,23 @@ EngineRequestContext BaseContext(const Args& args) {
   context.security_context_present = true;
   context.request_id = "engine-api-crud-probe";
   context.database_path = args.path;
+  const auto database_uuid =
+      scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::database,
+                                                        args.creation_millis + 10);
+  const auto principal_uuid =
+      scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::principal,
+                                                        args.creation_millis + 12);
+  if (database_uuid.ok()) {
+    context.database_uuid.canonical = scratchbird::core::uuid::UuidToString(database_uuid.value.value);
+  }
+  if (principal_uuid.ok()) {
+    context.principal_uuid.canonical = scratchbird::core::uuid::UuidToString(principal_uuid.value.value);
+  }
+  context.session_uuid.canonical = "018f0000-0000-7000-8000-00000000c0de";
+  context.catalog_generation_id = 1;
+  context.security_epoch = 1;
+  context.resource_epoch = 1;
+  context.name_resolution_epoch = 1;
   return context;
 }
 
@@ -227,6 +245,18 @@ int main(int argc, char** argv) {
     std::cerr << "usage: sb_engine_api_crud_probe --path PATH --seed-pack-root PATH --creation-ms MILLIS [--overwrite]\n";
     return 2;
   }
+
+  auto memory_policy = scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();
+  memory_policy.policy_name = "sb_engine_api_crud_probe";
+  const auto memory_configured =
+      scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+          memory_policy, "sb_engine_api_crud_probe");
+  if (!memory_configured.ok()) {
+    std::cerr << memory_configured.diagnostic.diagnostic_code << ":"
+              << memory_configured.diagnostic.message_key << "\n";
+    return 1;
+  }
+
   if (!CreateProbeDatabase(args)) {
     return 1;
   }
@@ -296,10 +326,11 @@ int main(int argc, char** argv) {
   const bool delete_hides_row = HasNoRows(select_after_delete);
   const bool commit_final_read = Commit(final_read_context);
 
+  const std::string merge_row_uuid = "00000000-0000-7000-8000-000000000904";
   const auto merge_tx = Begin(base);
   const auto merge_context = TxContext(base, merge_tx);
   EngineRowValue merge_row = PersonRow("3", "Linus", "51");
-  merge_row.requested_row_uuid.canonical = "probe_merge_row_uuid";
+  merge_row.requested_row_uuid.canonical = merge_row_uuid;
   EngineMergeRowsRequest merge_insert;
   merge_insert.context = merge_context;
   merge_insert.target_table = create_result.table_object;
@@ -311,7 +342,7 @@ int main(int argc, char** argv) {
                                merge_insert_result.result_shape.rows.size() == 1 &&
                                FieldValue(merge_insert_result.result_shape.rows.front(), "name") == "Linus";
   EngineRowValue merge_update_row = PersonRow("3", "Margaret", "52");
-  merge_update_row.requested_row_uuid.canonical = "probe_merge_row_uuid";
+  merge_update_row.requested_row_uuid.canonical = merge_row_uuid;
   EngineMergeRowsRequest merge_update;
   merge_update.context = merge_context;
   merge_update.target_table = create_result.table_object;
@@ -327,7 +358,7 @@ int main(int argc, char** argv) {
   delete_merge_row.context = merge_context;
   delete_merge_row.target_table = create_result.table_object;
   delete_merge_row.delete_predicate.predicate_kind = "row_uuid_match";
-  delete_merge_row.delete_predicate.canonical_predicate_envelope = "probe_merge_row_uuid";
+  delete_merge_row.delete_predicate.canonical_predicate_envelope = merge_row_uuid;
   const auto delete_merge_result = EngineDeleteRows(delete_merge_row);
   const bool merge_cleanup_ok = delete_merge_result.ok && delete_merge_result.deleted_count == 1 && Commit(merge_context);
 

@@ -597,7 +597,7 @@ def main() -> int:
     ctx = Context(
         repo_root=args.repo_root.resolve(),
         project_root=args.project_root.resolve(),
-        build_root=args.build_root.resolve(),
+        build_root=args.build_root.absolute(),
         execution_plan_root=args.execution_plan_root.resolve(),
         allow_toolchain_waivers=not args.no_toolchain_waivers,
         require_all_toolchains=args.require_all_toolchains,

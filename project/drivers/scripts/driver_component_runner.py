@@ -819,7 +819,7 @@ def main() -> int:
     ctx = Context(
         repo_root=args.repo_root.resolve(),
         project_root=args.project_root.resolve(),
-        build_root=args.build_root.resolve(),
+        build_root=args.build_root.absolute(),
         component=args.component,
         allow_toolchain_waivers=args.allow_toolchain_waivers,
         require_all_toolchains=args.require_all_toolchains,

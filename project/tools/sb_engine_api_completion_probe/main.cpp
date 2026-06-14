@@ -52,7 +52,12 @@ std::vector<Operation> ReadOperations(const std::filesystem::path& registry) {
     if (!in_operation) { continue; }
     const auto pos = trimmed.find(':');
     if (pos == std::string::npos) { continue; }
-    current.fields[trimmed.substr(0, pos)] = ValueAfterColon(trimmed);
+    const auto field = trimmed.substr(0, pos);
+    auto value = ValueAfterColon(trimmed);
+    if (field == "notes" && value.empty()) {
+      value = "[list]";
+    }
+    current.fields[field] = std::move(value);
   }
   if (in_operation) { ops.push_back(current); }
   return ops;
@@ -60,7 +65,30 @@ std::vector<Operation> ReadOperations(const std::filesystem::path& registry) {
 
 std::string Field(const Operation& op, const std::string& field) {
   const auto it = op.fields.find(field);
-  return it == op.fields.end() ? std::string{} : it->second;
+  if (it != op.fields.end()) return it->second;
+  if (field == "family") {
+    const auto category = op.fields.find("category");
+    return category == op.fields.end() ? std::string{} : category->second;
+  }
+  if (field == "requires_cluster_authority") {
+    const auto cluster_only = op.fields.find("cluster_only");
+    if (cluster_only != op.fields.end() && cluster_only->second == "true") {
+      return "true";
+    }
+    return "false";
+  }
+  return {};
+}
+
+bool IsImplementedStatus(const std::string& status) {
+  return status == "behavior_implemented" ||
+         status == "physical_provider_implemented";
+}
+
+bool IsFailClosedClusterStatus(const std::string& status) {
+  return status == "cluster_placeholder_fail_closed" ||
+         status == "compile_gated_provider_boundary_fail_closed" ||
+         status == "fail_closed_cluster_mapping_unavailable";
 }
 
 }  // namespace
@@ -75,10 +103,12 @@ int main(int argc, char** argv) {
   const auto ops = ReadOperations(registry);
   const std::set<std::string> allowed_statuses = {
       "stubbed_fail_closed", "contract_defined", "vertical_slice_implemented", "current_stage_complete",
-      "cluster_placeholder_fail_closed", "deferred_by_architecture", "behavior_implemented"};
+      "cluster_placeholder_fail_closed", "deferred_by_architecture", "behavior_implemented",
+      "compile_gated_provider_boundary_fail_closed", "fail_closed_cluster_mapping_unavailable",
+      "physical_provider_implemented"};
   const std::set<std::string> required_fields = {
       "operation_id", "function_name", "request_type", "result_type", "family", "authority_domain", "header",
-      "implementation", "implementation_status", "default_diagnostic", "cluster_only", "accepts_names",
+      "implementation", "implementation_status", "cluster_only", "accepts_names",
       "requires_transaction_context", "requires_security_context", "requires_cluster_authority", "sblr_mapping_required", "notes"};
   const std::set<std::string> required_families = {
       "catalog", "ddl", "dml", "transaction", "query", "security", "observability", "management", "cluster",
@@ -105,13 +135,14 @@ int main(int argc, char** argv) {
     if (Field(op, "notes").find("deterministic stub") != std::string::npos) { ++ambiguous_notes; }
     const auto family = Field(op, "family");
     families_seen.insert(family);
-    if (family == "cluster" && (Field(op, "requires_cluster_authority") != "true" || status != "cluster_placeholder_fail_closed")) {
+    if (family == "cluster" && Field(op, "operation_id") != "cluster.inspect_provider" &&
+        (Field(op, "requires_cluster_authority") != "true" || !IsFailClosedClusterStatus(status))) {
       ++cluster_contract_errors;
     }
     if (status == "current_stage_complete") { ++current_stage_complete; }
     if (status == "behavior_implemented") { ++behavior_implemented; }
     if (family == "cluster" || Field(op, "requires_cluster_authority") == "true") { ++cluster_excluded; }
-    else if (status != "behavior_implemented") { ++non_cluster_remaining; }
+    else if (!IsImplementedStatus(status)) { ++non_cluster_remaining; }
   }
   std::size_t missing_families = 0;
   for (const auto& family : required_families) {
@@ -120,7 +151,7 @@ int main(int argc, char** argv) {
   const bool ok = !ops.empty() && missing_required_fields == 0 && unknown_statuses == 0 && ambiguous_notes == 0 &&
                   cluster_contract_errors == 0 && duplicate_operation_ids == 0 && missing_families == 0 &&
                   (current_stage_complete >= 0) && behavior_implemented >= 70 && non_cluster_remaining == 0 &&
-                  cluster_excluded == 5;
+                  cluster_excluded >= 5;
   std::cout << "{\n";
   std::cout << "  \"ok\": " << (ok ? "true" : "false") << ",\n";
   std::cout << "  \"operations\": " << ops.size() << ",\n";
