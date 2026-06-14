@@ -221,6 +221,18 @@ def require_plugin_surface() -> int:
 
     if "sys.performance" in plugin_text:
         return fail("plugin.xml still references removed sys.performance surface")
+
+    required_tree_tokens = (
+        '<folder type="org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode"',
+        'label="%tree.schemas.node.name"',
+        'visibleIf="object.schemaBranchesFolderVisible"',
+        'recursive="../.."',
+        '<folder type="org.jkiss.dbeaver.ext.generic.model.GenericTable"',
+        '<folder type="org.jkiss.dbeaver.ext.generic.model.GenericView"',
+    )
+    for token in required_tree_tokens:
+        if token not in plugin_text:
+            return fail(f"plugin.xml missing DBeaver navigator container token {token!r}")
     return 0
 
 
@@ -236,6 +248,9 @@ def require_schema_node_metadata_fallback() -> int:
         "new ScratchBirdView(this, viewName",
         "loadMetadataPhysicalTables(monitor)",
         "loadMetadataViews(monitor)",
+        "public boolean isSchemaBranchesFolderVisible()",
+        "ScratchBird schema constraints are not available for navigator",
+        "ScratchBird schema indexes are not available for navigator",
     )
     for token in required_tokens:
         if token not in source:
