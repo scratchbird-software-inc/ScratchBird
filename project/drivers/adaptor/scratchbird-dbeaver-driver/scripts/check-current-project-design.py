@@ -22,6 +22,19 @@ README = ROOT / "README.md"
 BUILD_P2 = ROOT / "scripts" / "build-p2-update-site.sh"
 BUILD_BUNDLE = ROOT / "scripts" / "build-stock-test-bundle.sh"
 INSTALL_SOURCE = ROOT / "scripts" / "install-into-dbeaver.sh"
+SCHEMA_NODE_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdSchemaNode.java"
+)
 
 REQUIRED_DRIVER_PROPERTIES = {
     "connect_timeout",
@@ -185,8 +198,24 @@ def require_plugin_surface() -> int:
     return 0
 
 
+def require_schema_node_metadata_fallback() -> int:
+    source = SCHEMA_NODE_SOURCE.read_text(encoding="utf-8")
+    required_tokens = (
+        "session.getMetaData().getTables(null, fullPath, \"%\", PHYSICAL_TABLE_TYPES)",
+        "session.getMetaData().getTables(null, fullPath, \"%\", VIEW_TYPES)",
+        "new ScratchBirdTable(this, tableName",
+        "new ScratchBirdView(this, viewName",
+        "loadMetadataPhysicalTables(monitor)",
+        "loadMetadataViews(monitor)",
+    )
+    for token in required_tokens:
+        if token not in source:
+            return fail(f"schema node metadata fallback missing {token!r}")
+    return 0
+
+
 def main() -> int:
-    for check in (require_no_stale_paths, require_plugin_surface):
+    for check in (require_no_stale_paths, require_plugin_surface, require_schema_node_metadata_fallback):
         result = check()
         if result != 0:
             return result
