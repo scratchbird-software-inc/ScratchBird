@@ -43,6 +43,7 @@ import org.jkiss.dbeaver.model.runtime.DBRProgressMonitor;
 import org.jkiss.dbeaver.model.struct.DBSObject;
 import org.jkiss.utils.CommonUtils;
 
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -96,6 +97,10 @@ public class ScratchBirdCatalog extends GenericCatalog {
             }
         }
 
+        if (schemaPaths.isEmpty()) {
+            loadMetadataSchemas(monitor, schemaPaths, schemasByPath);
+        }
+
         List<ScratchBirdCatalogObjectReference> catalogReferences = loadCatalogObjectReferences(monitor);
         if (catalogReferences.isEmpty()) {
             for (String schemaPath : schemaPaths) {
@@ -109,6 +114,29 @@ public class ScratchBirdCatalog extends GenericCatalog {
             roots.add(inflateTree(root, null, schemasByPath));
         }
         schemaTree = roots;
+    }
+
+    private void loadMetadataSchemas(
+        @NotNull DBRProgressMonitor monitor,
+        @NotNull List<String> schemaPaths,
+        @NotNull Map<String, ScratchBirdSchema> schemasByPath
+    ) {
+        try (JDBCSession session = DBUtils.openMetaSession(monitor, this, "Load ScratchBird JDBC metadata schemas");
+             ResultSet resultSet = session.getMetaData().getSchemas(null, "%")) {
+            while (resultSet.next()) {
+                String schemaPath = resultSet.getString("TABLE_SCHEM");
+                if (CommonUtils.isEmpty(schemaPath) || ScratchBirdNamespaceSemantics.isMetricsPath(schemaPath)) {
+                    continue;
+                }
+                if (schemasByPath.containsKey(schemaPath)) {
+                    continue;
+                }
+                schemaPaths.add(schemaPath);
+                schemasByPath.put(schemaPath, new ScratchBirdSchema(getDataSource(), this, schemaPath));
+            }
+        } catch (SQLException | DBException e) {
+            log.debug("ScratchBird JDBC metadata schemas are not available for navigator fallback", e);
+        }
     }
 
     @NotNull

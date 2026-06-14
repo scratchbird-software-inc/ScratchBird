@@ -44,17 +44,30 @@ final class ScratchBirdSchemaTreeBuilder {
 
     @NotNull
     static List<Node> build(@NotNull Collection<String> schemaPaths) {
+        return build(schemaPaths, false);
+    }
+
+    @NotNull
+    static List<Node> build(@NotNull Collection<String> schemaPaths, boolean includeClientReportBranches) {
         List<ScratchBirdCatalogObjectReference> references = new ArrayList<>();
         for (String fullPath : schemaPaths) {
             if (CommonUtils.isNotEmpty(fullPath)) {
                 references.add(ScratchBirdCatalogObjectReference.syntheticSchema(fullPath));
             }
         }
-        return buildFromCatalog(references);
+        return buildFromCatalog(references, includeClientReportBranches);
     }
 
     @NotNull
     static List<Node> buildFromCatalog(@NotNull Collection<ScratchBirdCatalogObjectReference> catalogObjects) {
+        return buildFromCatalog(catalogObjects, false);
+    }
+
+    @NotNull
+    static List<Node> buildFromCatalog(
+        @NotNull Collection<ScratchBirdCatalogObjectReference> catalogObjects,
+        boolean includeClientReportBranches
+    ) {
         Map<String, Node> nodesByPath = new LinkedHashMap<>();
         List<Node> roots = new ArrayList<>();
         Map<String, ScratchBirdCatalogObjectReference> resolvedCatalogObjects = inferMissingParentUuids(catalogObjects);
@@ -66,8 +79,10 @@ final class ScratchBirdSchemaTreeBuilder {
             addPath(nodesByPath, roots, reference);
         }
 
-        for (String metricsPath : ScratchBirdReportCatalog.metricTreePaths()) {
-            addPath(nodesByPath, roots, ScratchBirdCatalogObjectReference.clientOnly(metricsPath, "REPORT"));
+        if (includeClientReportBranches) {
+            for (String metricsPath : ScratchBirdReportCatalog.metricTreePaths()) {
+                addPath(nodesByPath, roots, ScratchBirdCatalogObjectReference.clientOnly(metricsPath, "REPORT"));
+            }
         }
 
         roots.sort(NODE_ORDER);
