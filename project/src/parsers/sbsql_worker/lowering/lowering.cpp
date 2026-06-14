@@ -22620,6 +22620,14 @@ std::string OperationIdForBoundStatement(const BoundStatement& bound, const CstD
       engine_api_command_route.spec != nullptr) {
     return std::string(engine_api_command_route.spec->operation_id);
   }
+  if (LifecycleCommandStartsWith(cst.source, "EXPLAIN")) {
+    return "observability.explain_operation";
+  }
+  if (const std::string observability_operation_id =
+          ObservabilityOperationIdForTokens(words);
+      !observability_operation_id.empty()) {
+    return observability_operation_id;
+  }
   if (const auto bridge_route = AnalyzeBridgeRoute(cst);
       bridge_route.active && bridge_route.valid) {
     return bridge_route.operation_id;
@@ -22876,6 +22884,10 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto transaction_characteristics = AnalyzeTransactionCharacteristicsRoute(cst);
   const auto words = MeaningfulUpperTokens(cst);
   const auto observability_route = AnalyzeObservabilityRoute(cst);
+  const bool source_explain_observability_route =
+      LifecycleCommandStartsWith(cst.source, "EXPLAIN");
+  const bool observability_statement_route =
+      observability_route.active || source_explain_observability_route;
   const auto cursor_control = (bridge_route.active || exact_command_route.active)
                                   ? CursorControlInfo{}
                                   : AnalyzeCursorControl(cst);
@@ -23395,9 +23407,9 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
       AnalyzeScalarSubqueryRoute(cst, envelope.resolved_object_uuids);
   const auto cast_value = AnalyzeCastValueRoute(cst);
   const auto scalar_projection =
-      (cast_value.active || scalar_subquery.active || cursor_control.active ||
-       prepared_control.active || job_route.active || archive_route.active ||
-       engine_api_command_route.active || bridge_route.active)
+      (observability_statement_route || cast_value.active || scalar_subquery.active ||
+       cursor_control.active || prepared_control.active || job_route.active ||
+       archive_route.active || engine_api_command_route.active || bridge_route.active)
           ? ScalarProjectionInfo{}
           : AnalyzeScalarProjection(cst);
   const auto values_set_operation = AnalyzeValuesSetOperation(cst);
@@ -23459,6 +23471,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   PopulateValuesSetOperationAuthority(&envelope, values_set_operation);
   PopulateValuesRowsetAuthority(&envelope, values_rowset);
   PopulateDmlRouteAuthority(&envelope, dml_route);
+  PopulateCatalogDescriptorMutationAuthority(&envelope, catalog_descriptor_mutation);
   PopulateSecurityDclAuthority(&envelope, security_dcl);
   PopulateSecurityPolicyRouteAuthority(&envelope, security_policy_route);
   PopulateAgentRuntimeAuthority(&envelope, agent_route);
@@ -23468,6 +23481,19 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   PopulateEngineApiCommandAuthority(&envelope, engine_api_command_route);
   PopulateEventNotificationAuthority(&envelope, event_route);
   PopulateBridgeRouteAuthority(&envelope, bridge_route);
+  if (source_explain_observability_route) {
+    envelope.operation_family = "sblr.observability.inspect.v3";
+    envelope.sblr_operation_key = "sblr.observability.inspect.v3";
+    envelope.operation_id = "observability.explain_operation";
+    envelope.engine_api_operation_id = envelope.operation_id;
+    envelope.sblr_opcode = ObservabilityOpcodeForOperation(envelope.operation_id);
+    envelope.engine_api_function = "EngineExplainOperation";
+    AppendIfMissing(&envelope.required_rights, "right.observe");
+    AppendIfMissing(&envelope.required_authority_steps,
+                    "authority.engine.observability_api_required");
+    AppendIfMissing(&envelope.required_authority_steps,
+                    "authority.parser.no_sql_text_execution");
+  }
   if (job_route.active) {
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.engine.background_job_scheduler_required");
@@ -23527,6 +23553,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     }
   }
   if (cursor_control.active) {
+    envelope.operation_family = "sblr.general.operation.v3";
+    envelope.sblr_operation_key = "sblr.general.operation.v3";
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.server.cursor_session_registry_required");
     AppendIfMissing(&envelope.required_authority_steps,
@@ -23537,6 +23565,8 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
     AppendIfMissing(&envelope.required_rights, "right.execute");
   }
   if (prepared_control.active) {
+    envelope.operation_family = "sblr.general.operation.v3";
+    envelope.sblr_operation_key = "sblr.general.operation.v3";
     AppendIfMissing(&envelope.required_authority_steps,
                     "authority.server.prepared_statement_session_registry_required");
     AppendIfMissing(&envelope.required_authority_steps,
@@ -23934,7 +23964,11 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
       exact_command_route.spec->requires_cluster_authority;
   const bool cluster_provider_agent_route =
       agent_route.active && agent_route.valid && agent_route.cluster_route;
-  if (HasClusterObservabilityScope(words) && !IsShowClusterProviderStatement(words) &&
+  const bool source_cluster_observability_scope =
+      source_explain_observability_route &&
+      LifecycleCommandStartsWith(cst.source, "EXPLAIN CLUSTER");
+  if ((HasClusterObservabilityScope(words) || source_cluster_observability_scope) &&
+      !IsShowClusterProviderStatement(words) &&
       !cluster_provider_exact_route && !cluster_provider_agent_route) {
     AddVerifierError(&envelope.messages, "SBSQL.OBSERVABILITY.CLUSTER_SCOPE_UNAVAILABLE",
                      "cluster observability options and targets are unavailable in the standalone profile");

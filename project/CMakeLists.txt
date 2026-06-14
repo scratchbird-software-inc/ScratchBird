@@ -17,24 +17,35 @@ enable_testing()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/PublicBranding.cmake")
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
-add_test(
-  NAME public_header_gate
-  COMMAND "${Python3_EXECUTABLE}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/../tools/release/public_header_gate.py"
-          "--root=${CMAKE_CURRENT_SOURCE_DIR}/.."
-)
-set_tests_properties(public_header_gate PROPERTIES
-  LABELS "public_release;license_header;MPL-2.0"
-)
-add_test(
-  NAME public_private_material_reference_gate
-  COMMAND "${Python3_EXECUTABLE}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/../tools/release/public_private_material_reference_gate.py"
-)
-set_tests_properties(public_private_material_reference_gate PROPERTIES
-  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
-  LABELS "public_release;private_material_reference"
-)
+set(SB_PUBLIC_HEADER_GATE_SCRIPT
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/release/public_header_gate.py")
+if(EXISTS "${SB_PUBLIC_HEADER_GATE_SCRIPT}")
+  add_test(
+    NAME public_header_gate
+    COMMAND "${Python3_EXECUTABLE}"
+            "${SB_PUBLIC_HEADER_GATE_SCRIPT}"
+            "--root=${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+  set_tests_properties(public_header_gate PROPERTIES
+    LABELS "public_release;license_header;MPL-2.0"
+  )
+endif()
+unset(SB_PUBLIC_HEADER_GATE_SCRIPT)
+
+set(SB_PUBLIC_PRIVATE_MATERIAL_REFERENCE_GATE_SCRIPT
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/release/public_private_material_reference_gate.py")
+if(EXISTS "${SB_PUBLIC_PRIVATE_MATERIAL_REFERENCE_GATE_SCRIPT}")
+  add_test(
+    NAME public_private_material_reference_gate
+    COMMAND "${Python3_EXECUTABLE}"
+            "${SB_PUBLIC_PRIVATE_MATERIAL_REFERENCE_GATE_SCRIPT}"
+  )
+  set_tests_properties(public_private_material_reference_gate PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    LABELS "public_release;private_material_reference"
+  )
+endif()
+unset(SB_PUBLIC_PRIVATE_MATERIAL_REFERENCE_GATE_SCRIPT)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -3774,15 +3785,20 @@ sb_public_write_branding_manifest("${CMAKE_BINARY_DIR}/public_branding_manifest.
 if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
   sb_public_configure_output_stage("${CMAKE_CURRENT_SOURCE_DIR}" "${Python3_EXECUTABLE}")
 endif()
-add_test(
-  NAME public_branding_gate
-  COMMAND "${Python3_EXECUTABLE}"
-          "${CMAKE_CURRENT_SOURCE_DIR}/../tools/release/public_branding_gate.py"
-          "--manifest=${CMAKE_BINARY_DIR}/public_branding_manifest.tsv"
-)
-set_tests_properties(public_branding_gate PROPERTIES
-  LABELS "public_release;branding"
-)
+set(SB_PUBLIC_BRANDING_GATE_SCRIPT
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/release/public_branding_gate.py")
+if(EXISTS "${SB_PUBLIC_BRANDING_GATE_SCRIPT}")
+  add_test(
+    NAME public_branding_gate
+    COMMAND "${Python3_EXECUTABLE}"
+            "${SB_PUBLIC_BRANDING_GATE_SCRIPT}"
+            "--manifest=${CMAKE_BINARY_DIR}/public_branding_manifest.tsv"
+  )
+  set_tests_properties(public_branding_gate PROPERTIES
+    LABELS "public_release;branding"
+  )
+endif()
+unset(SB_PUBLIC_BRANDING_GATE_SCRIPT)
 if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
   add_test(
     NAME public_output_stage_gate

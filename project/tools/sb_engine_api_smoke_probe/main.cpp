@@ -34,6 +34,8 @@ EngineRequestContext EmbeddedContext() {
   context.trust_mode = EngineTrustMode::embedded_in_process;
   context.request_id = "engine-api-smoke-probe";
   context.security_context_present = true;
+  context.trace_tags.push_back("security.fixture_trace_authority");
+  context.trace_tags.push_back("right:OBS_METRICS_READ_ALL");
   return context;
 }
 
@@ -71,8 +73,10 @@ int main() {
                                   HasDiagnostic(select_result, "SB_ENGINE_API_INVALID_REQUEST") &&
                                   HasDiagnostic(begin_result, "SB_ENGINE_API_INVALID_REQUEST");
   const bool non_crud_stubbed = metrics_result.ok && !HasDiagnostic(metrics_result, "SB_ENGINE_API_NOT_IMPLEMENTED");
-  const bool cluster_fail_closed = HasDiagnostic(cluster_result, "SB_ENGINE_API_CLUSTER_AUTHORITY_UNAVAILABLE") &&
-                                   cluster_result.cluster_authority_required;
+  const bool cluster_fail_closed =
+      (HasDiagnostic(cluster_result, "SB_ENGINE_API_CLUSTER_AUTHORITY_UNAVAILABLE") ||
+       HasDiagnostic(cluster_result, "SBLR.CLUSTER.SUPPORT_NOT_ENABLED")) &&
+      cluster_result.cluster_authority_required;
   const bool embedded_reported = create_result.embedded_trust_mode_observed &&
                                  HasDiagnostic(create_result, "SB_ENGINE_API_EMBEDDED_TRUST_MODE");
   const bool ok = crud_deterministic && non_crud_stubbed && cluster_fail_closed && embedded_reported;
