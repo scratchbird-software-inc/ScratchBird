@@ -108,18 +108,18 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(pluginXml.contains("objectType=\"org.jkiss.dbeaver.ext.generic.model.GenericDataType\""));
         Assert.assertTrue(pluginXml.contains("<extension point=\"org.jkiss.dbeaver.dataTypeProvider\">"));
         Assert.assertTrue(pluginXml.contains("ScratchBirdValueHandlerProvider"));
-        Assert.assertTrue(pluginXml.contains("<extension point=\"org.jkiss.dbeaver.dashboard\">"));
-        Assert.assertTrue(pluginXml.contains("scratchbird.sessions"));
-        Assert.assertTrue(pluginXml.contains("scratchbird.performance"));
-        Assert.assertTrue(pluginXml.contains("<query>SHOW METRICS</query>"));
+        Assert.assertFalse(pluginXml.contains("<extension point=\"org.jkiss.dbeaver.dashboard\">"));
+        Assert.assertFalse(pluginXml.contains("scratchbird.sessions"));
+        Assert.assertFalse(pluginXml.contains("scratchbird.performance"));
+        Assert.assertFalse(pluginXml.contains("<query>SHOW METRICS</query>"));
         Assert.assertFalse(pluginXml.contains("sys.performance"));
         Assert.assertFalse(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericTable\""));
         Assert.assertFalse(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericView\""));
 
         Assert.assertTrue(pluginXml.contains("id=\"scratchbird_jdbc\""));
         Assert.assertTrue(pluginXml.contains("class=\"com.scratchbird.jdbc.SBDriver\""));
-        Assert.assertTrue(pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true\"")
-            || pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&binary_transfer=true\""));
+        Assert.assertTrue(pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true&amp;metadata_fixture_catalog=driver_test\"")
+            || pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&binary_transfer=true&metadata_fixture_catalog=driver_test\""));
         Assert.assertTrue(pluginXml.contains("defaultPort=\"3092\""));
         Assert.assertTrue(pluginXml.contains("path=\"drivers/scratchbird\""));
         Assert.assertTrue(pluginXml.contains("name=\"driver-properties\""));
@@ -145,6 +145,8 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(pluginXml.contains("id=\"dormant_id\""));
         Assert.assertTrue(pluginXml.contains("id=\"dormant_reattach_token\""));
         Assert.assertTrue(pluginXml.contains("id=\"metadataExpandSchemaParents\""));
+        Assert.assertTrue(pluginXml.contains("id=\"metadata_fixture_catalog\""));
+        Assert.assertTrue(pluginXml.contains("defaultValue=\"driver_test\""));
         Assert.assertTrue(pluginXml.contains("execKeywords\" value=\"CALL,ANALYZE,BACKUP,CHECKPOINT,CLUSTER"));
         Assert.assertFalse(pluginXml.contains("COPY,DESC"));
         Assert.assertFalse(pluginXml.contains("DESCRIBE,DO"));
@@ -985,11 +987,7 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(sys.getChildren().isEmpty());
 
         ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
-        Assert.assertNotNull(metrics);
-        Assert.assertTrue(metrics.isClientOnly());
-        Assert.assertFalse(metrics.isCatalogBacked());
-        Assert.assertNotNull(findNodeByName(metrics.getChildren(), "health-scorecards"));
-        Assert.assertNotNull(findNodeByName(metrics.getChildren(), "alerts"));
+        Assert.assertNull(metrics);
     }
 
     @Test
@@ -1059,7 +1057,7 @@ public class ScratchBirdIntegrationTest {
             "analytics.dev"));
 
         Assert.assertEquals(
-            Arrays.asList("sys", "users", "cluster", "remote", "metrics", "analytics", "connections"),
+            Arrays.asList("sys", "users", "cluster", "remote", "analytics", "connections"),
             roots.stream().map(ScratchBirdSchemaTreeBuilder.Node::getName).toList());
 
         ScratchBirdSchemaTreeBuilder.Node analytics = findNodeByName(roots, "analytics");
@@ -1074,24 +1072,7 @@ public class ScratchBirdIntegrationTest {
             Arrays.asList("alpha", "zeta"),
             users.getChildren().stream().map(ScratchBirdSchemaTreeBuilder.Node::getName).toList());
 
-        ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
-        Assert.assertNotNull(metrics);
-        Assert.assertEquals(
-            Arrays.asList(
-                "health-scorecards",
-                "workload-and-sql",
-                "sessions-and-transactions",
-                "locks-and-contention",
-                "storage-buffer-cache",
-                "mga-and-gc",
-                "scheduler-and-jobs",
-                "security-and-auth",
-                "listener-and-parser",
-                "cluster-and-replication",
-                "admin-and-management",
-                "alerts",
-                "future-gated"),
-            metrics.getChildren().stream().map(ScratchBirdSchemaTreeBuilder.Node::getName).toList());
+        Assert.assertNull(findNodeByName(roots, "metrics"));
     }
 
     @Test
@@ -1112,7 +1093,7 @@ public class ScratchBirdIntegrationTest {
 
     @Test
     public void navigatorActionRegistryRoutesMetricsDomainsAndCatalogBranches() {
-        List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(List.of("sys.domains", "data.app"));
+        List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(List.of("sys.domains", "data.app"), true);
 
         ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
         Assert.assertNotNull(metrics);
@@ -1548,7 +1529,7 @@ public class ScratchBirdIntegrationTest {
     public void schemaTreeBuilderPublishesReportLeavesUnderClientOnlyMetricsRoot() {
         List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(List.of(
             "sys",
-            "data.application"));
+            "data.application"), true);
 
         ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
         Assert.assertNotNull(metrics);

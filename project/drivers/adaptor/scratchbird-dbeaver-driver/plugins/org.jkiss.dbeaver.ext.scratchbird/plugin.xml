@@ -217,7 +217,7 @@
                     icon="icons/scratchbird_icon.png"
                     iconBig="icons/scratchbird_icon_big.png"
                     class="com.scratchbird.jdbc.SBDriver"
-                    sampleURL="jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true"
+                    sampleURL="jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true&amp;metadata_fixture_catalog=driver_test"
                     defaultPort="3092"
                     webURL="https://scratchbird.com/"
                     description="ScratchBird JDBC driver"
@@ -234,6 +234,7 @@
                     <property name="application_name" value="dbeaver"/>
                     <property name="protocol" value="native"/>
                     <property name="compression" value="off"/>
+                    <property name="metadata_fixture_catalog" value="driver_test"/>
                     <parameter name="omit-catalog-name" value="true"/>
                     <parameter name="omit-single-catalog" value="false"/>
                     <parameter name="supports-views" value="true"/>
@@ -273,7 +274,7 @@
                         <property id="dormant_id" label="Dormant Id" type="string"/>
                         <property id="dormant_reattach_token" label="Dormant Reattach Token" type="string" features="secured,password"/>
                         <property id="metadataExpandSchemaParents" label="Expand Parent Schema Rows" type="boolean" defaultValue="false"/>
-                        <property id="metadata_fixture_catalog" label="Metadata Fixture Catalog" type="string"/>
+                        <property id="metadata_fixture_catalog" label="Metadata Fixture Catalog" type="string" defaultValue="driver_test"/>
                     </propertyGroup>
                     <propertyGroup label="ScratchBird Driver Tuning">
                         <property id="connect_timeout" label="Connect Timeout Seconds" type="integer" defaultValue="30"/>
@@ -310,68 +311,6 @@
             <property name="functions" value="CURRENT_DATABASE,CURRENT_SCHEMA,CURRENT_ROLE,CURRENT_USER"/>
             <property name="types" value="BOOLEAN,SMALLINT,INTEGER,BIGINT,REAL,DOUBLE,NUMERIC,DECIMAL,CHAR,VARCHAR,TEXT,BYTEA,DATE,TIME,TIMESTAMP,TIMESTAMPTZ,INTERVAL,UUID,JSON,JSONB,ARRAY,COMPOSITE,GEOMETRY,VECTOR,MONEY,XML,INET,CIDR,MACADDR,TSVECTOR,TSQUERY,RANGE"/>
         </dialect>
-    </extension>
-
-    <extension point="org.jkiss.dbeaver.dashboard">
-        <dashboard
-            id="scratchbird.sessions"
-            label="ScratchBird sessions"
-            defaultView="timeseries"
-            group="ScratchBird"
-            updatePeriod="2000"
-            calc="value"
-            value="integer"
-            fetch="columns"
-            showByDefault="true"
-            description="Active ScratchBird session count">
-            <datasource id="scratchbird"/>
-            <query>SELECT COUNT(*) AS "Sessions" FROM sys.sessions</query>
-        </dashboard>
-
-        <dashboard
-            id="scratchbird.transactions"
-            label="ScratchBird transactions"
-            defaultView="timeseries"
-            group="ScratchBird"
-            updatePeriod="2000"
-            calc="value"
-            value="integer"
-            fetch="columns"
-            showByDefault="true"
-            description="Active ScratchBird transaction count">
-            <datasource id="scratchbird"/>
-            <query>SELECT COUNT(*) AS "Transactions" FROM sys.transactions</query>
-        </dashboard>
-
-        <dashboard
-            id="scratchbird.locks"
-            label="ScratchBird locks"
-            defaultView="timeseries"
-            group="ScratchBird"
-            updatePeriod="2000"
-            calc="value"
-            value="integer"
-            fetch="columns"
-            showByDefault="false"
-            description="Current ScratchBird lock count">
-            <datasource id="scratchbird"/>
-            <query>SELECT COUNT(*) AS "Locks" FROM sys.locks</query>
-        </dashboard>
-
-        <dashboard
-            id="scratchbird.performance"
-            label="ScratchBird query latency"
-            defaultView="timeseries"
-            group="ScratchBird"
-            updatePeriod="2000"
-            calc="value"
-            value="integer"
-            fetch="columns"
-            showByDefault="false"
-            description="SBsql metrics snapshot">
-            <datasource id="scratchbird"/>
-            <query>SHOW METRICS</query>
-        </dashboard>
     </extension>
 
 </plugin>
