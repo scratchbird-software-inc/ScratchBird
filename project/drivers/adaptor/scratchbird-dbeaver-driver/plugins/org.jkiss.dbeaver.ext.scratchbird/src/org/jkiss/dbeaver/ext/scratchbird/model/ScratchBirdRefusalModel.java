@@ -34,10 +34,12 @@ public record ScratchBirdRefusalModel(
 ) {
     public enum Kind {
         ADMITTED,
+        SERVER_ADMISSION_REQUIRED,
         PERMISSION_DENIED,
         MISSING_SOURCE,
         UNSUPPORTED,
         SERVER_REFUSED,
+        NOT_DISCLOSED,
         CLIENT_GATED
     }
 
@@ -62,6 +64,14 @@ public record ScratchBirdRefusalModel(
     }
 
     @NotNull
+    public static ScratchBirdRefusalModel serverAdmissionRequired(
+        @NotNull String message,
+        @Nullable String sourceSurface
+    ) {
+        return new ScratchBirdRefusalModel(Kind.SERVER_ADMISSION_REQUIRED, message, sourceSurface);
+    }
+
+    @NotNull
     public static ScratchBirdRefusalModel missingSource(@NotNull String message, @Nullable String sourceSurface) {
         return new ScratchBirdRefusalModel(Kind.MISSING_SOURCE, message, sourceSurface);
     }
@@ -76,7 +86,25 @@ public record ScratchBirdRefusalModel(
         return new ScratchBirdRefusalModel(Kind.SERVER_REFUSED, message, sourceSurface);
     }
 
+    @NotNull
+    public static ScratchBirdRefusalModel notDisclosed(@NotNull String message, @Nullable String sourceSurface) {
+        return new ScratchBirdRefusalModel(Kind.NOT_DISCLOSED, message, sourceSurface);
+    }
+
     public boolean isAdmitted() {
         return kind == Kind.ADMITTED;
+    }
+
+    public boolean allowsServerProbe() {
+        return kind == Kind.ADMITTED || kind == Kind.SERVER_ADMISSION_REQUIRED;
+    }
+
+    public boolean isDeterministicRefusal() {
+        return kind != Kind.ADMITTED && kind != Kind.SERVER_ADMISSION_REQUIRED;
+    }
+
+    @NotNull
+    public String redactedMessage() {
+        return ScratchBirdSecurityRedactor.redactEvidenceText(message);
     }
 }

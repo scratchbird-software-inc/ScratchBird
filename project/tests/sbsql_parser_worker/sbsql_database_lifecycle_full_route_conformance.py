@@ -286,6 +286,7 @@ def seed_database(seeder: str | None, database: Path) -> None:
             "admin",
             ADMIN_VERIFIER.decode("ascii"),
             principal_uuid=ADMIN_PRINCIPAL_UUID,
+            authorization_tags=ADMIN_AUTHORIZATION_TAGS,
             append=True,
         )
         return
@@ -300,6 +301,7 @@ def seed_database(seeder: str | None, database: Path) -> None:
         "admin",
         ADMIN_VERIFIER.decode("ascii"),
         principal_uuid=ADMIN_PRINCIPAL_UUID,
+        authorization_tags=ADMIN_AUTHORIZATION_TAGS,
         append=True,
     )
 

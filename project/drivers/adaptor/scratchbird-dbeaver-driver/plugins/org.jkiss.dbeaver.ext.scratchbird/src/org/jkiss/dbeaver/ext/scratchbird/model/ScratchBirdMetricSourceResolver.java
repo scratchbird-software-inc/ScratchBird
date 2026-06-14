@@ -36,21 +36,21 @@ public final class ScratchBirdMetricSourceResolver {
     @NotNull
     public static ScratchBirdRefusalModel sourceStatus(@NotNull ScratchBirdReportDefinition report) {
         if (report.futureGated()) {
-            return new ScratchBirdRefusalModel(
-                ScratchBirdRefusalModel.Kind.MISSING_SOURCE,
+            return ScratchBirdFeatureBoundaryStatus.unavailable(
+                "report:" + report.id(),
                 "Future-gated report: backing sys view or management surface is not yet published.",
-                String.join(", ", report.sourceSurfaces()));
+                String.join(", ", report.sourceSurfaces())).toRefusalModel();
         }
         if (requiresRawHistogram(report.sourceSurfaces())) {
-            return new ScratchBirdRefusalModel(
-                ScratchBirdRefusalModel.Kind.ADMITTED,
+            return ScratchBirdFeatureBoundaryStatus.requiresServerAdmission(
+                "report:" + report.id(),
                 "Report requires raw histogram family samples; do not derive percentiles from aggregate metrics only.",
-                String.join(", ", report.sourceSurfaces()));
+                String.join(", ", report.sourceSurfaces())).toRefusalModel();
         }
-        return new ScratchBirdRefusalModel(
-            ScratchBirdRefusalModel.Kind.ADMITTED,
+        return ScratchBirdFeatureBoundaryStatus.requiresServerAdmission(
+            "report:" + report.id(),
             "Report may run when the listed server surfaces are visible to the connected principal.",
-            String.join(", ", report.sourceSurfaces()));
+            String.join(", ", report.sourceSurfaces())).toRefusalModel();
     }
 
     private static boolean requiresRawHistogram(@NotNull List<String> sources) {

@@ -32,6 +32,8 @@ constexpr std::string_view kVerifier =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 constexpr std::string_view kWrongVerifier =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+constexpr std::string_view kPassword = "scratchbird";
+constexpr std::string_view kWrongPassword = "scratchbird-wrong";
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -173,6 +175,25 @@ void AlterPrincipalCredential(const Fixture& fixture,
           "failed to alter durable principal credential state");
 }
 
+void WriteGlobalGrantEvent(const Fixture& fixture,
+                           const api::EngineUuid& principal_uuid,
+                           std::string_view privilege,
+                           std::uint64_t generation) {
+  std::ofstream events(fixture.database_path.string() + ".sb.security_principal_events",
+                       std::ios::app);
+  events << api::kSecurityPrincipalLifecycleEventMagic
+         << "\tGRANT\t0\t"
+         << MakeUuid(UuidKind::object, generation + 500).canonical
+         << '\t' << principal_uuid.canonical
+         << "\tprincipal\t\t\t"
+         << privilege
+         << '\t' << principal_uuid.canonical
+         << "\tallow\t"
+         << generation
+         << "\t0\n";
+  Require(static_cast<bool>(events), "failed to write durable global grant event");
+}
+
 std::string LocalPasswordEvidence(std::string_view principal,
                                   const api::EngineUuid& principal_uuid,
                                   std::string_view verifier,
@@ -194,7 +215,8 @@ api::EngineAuthenticateRequest LocalPasswordRequest(
     const Fixture& fixture,
     std::string principal,
     api::EngineUuid principal_uuid,
-    std::string evidence) {
+    std::string evidence,
+    bool include_durable_hint = true) {
   api::EngineAuthenticateRequest request;
   request.context = Context(fixture);
   request.provider_family = "local_password";
@@ -214,7 +236,9 @@ api::EngineAuthenticateRequest LocalPasswordRequest(
   request.option_envelopes.push_back("provider_generation_observed:7");
   request.option_envelopes.push_back("provider_lifecycle_state:healthy");
   request.option_envelopes.push_back("default_policy_installed:true");
-  request.option_envelopes.push_back("durable_principal_uuid:" + principal_uuid.canonical);
+  if (include_durable_hint && !principal_uuid.canonical.empty()) {
+    request.option_envelopes.push_back("durable_principal_uuid:" + principal_uuid.canonical);
+  }
   return request;
 }
 
@@ -301,6 +325,7 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
                             "alice",
                             LocalPasswordFingerprint(kVerifier),
                             91);
+  WriteGlobalGrantEvent(fixture, fixture.principal, "CONNECT", 92);
 
   const auto mismatch = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,
@@ -317,7 +342,7 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
       LocalPasswordEvidence("alice",
                             fixture.principal,
                             kVerifier,
-                            "group:APP,right:CONNECT")));
+                            "group:APP,right:OBS_MANAGEMENT_CONTROL")));
   Require(good.ok && good.authenticated,
           "durable local-password verifier was rejected");
   Require(good.connection_security_context.effective_user_uuid.canonical ==
@@ -325,10 +350,46 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
           "authenticated context did not use durable principal UUID");
   Require(HasEvidence(good, "security_state_authority", "durable_security_catalog"),
           "durable security authority evidence missing");
-  Require(HasEvidence(good, "authorized_group", "APP"),
-          "explicit durable authorization tag was not materialized");
+  Require(!HasEvidence(good, "authorized_group", "APP"),
+          "client-supplied authorization group was trusted");
+  Require(!HasAuthorizationTag(good, "right:OBS_MANAGEMENT_CONTROL"),
+          "client-supplied management right was trusted");
   Require(HasAuthorizationTag(good, "right:CONNECT"),
-          "explicit durable right tag was not preserved");
+          "server-side durable CONNECT grant was not materialized");
+
+  AlterPrincipalCredential(fixture,
+                           fixture.principal,
+                           "alice",
+                           LocalPasswordFingerprint(api::SecuritySha256Hex(kPassword)),
+                           191);
+
+  const auto raw_mismatch = api::EngineAuthenticate(LocalPasswordRequest(
+      fixture,
+      "alice",
+      fixture.principal,
+      std::string(kWrongPassword),
+      false));
+  Require(!raw_mismatch.ok &&
+              HasDiagnosticDetail(raw_mismatch, "credential_verifier_mismatch"),
+          "raw local-password mismatch was accepted");
+
+  const auto raw_good = api::EngineAuthenticate(LocalPasswordRequest(
+      fixture,
+      "alice",
+      fixture.principal,
+      std::string(kPassword),
+      false));
+  Require(raw_good.ok && raw_good.authenticated,
+          "raw local-password credential was rejected");
+  Require(raw_good.connection_security_context.effective_user_uuid.canonical ==
+              fixture.principal.canonical,
+          "raw password auth did not resolve the durable principal UUID from server state");
+  Require(HasEvidence(raw_good,
+                      "security_state_authority",
+                      "mga_security_principal_lifecycle"),
+          "raw password auth did not publish server-derived security authority evidence");
+  Require(HasAuthorizationTag(raw_good, "right:CONNECT"),
+          "raw password auth did not materialize server-derived CONNECT authority");
 }
 
 void TestPrincipalNameDoesNotEscalate(const Fixture& fixture) {

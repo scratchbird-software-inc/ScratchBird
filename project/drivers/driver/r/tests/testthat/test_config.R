@@ -32,7 +32,7 @@ test_that("parse key-value config", {
 })
 
 test_that("parse manager proxy params", {
-  cfg <- sb_config("scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7")
+  cfg <- sb_config("scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7")
   expect_equal(cfg$front_door_mode, "manager_proxy")
   expect_equal(cfg$manager_auth_token, "token")
   expect_equal(cfg$manager_client_flags, 7L)

@@ -40,7 +40,7 @@ class TestConfig < Minitest::Test
 
   def test_parse_manager_proxy_params
     cfg = Scratchbird::Config.parse(
-      "scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7"
+      "scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7"
     )
     assert_equal "manager_proxy", cfg.front_door_mode
     assert_equal "token", cfg.manager_auth_token

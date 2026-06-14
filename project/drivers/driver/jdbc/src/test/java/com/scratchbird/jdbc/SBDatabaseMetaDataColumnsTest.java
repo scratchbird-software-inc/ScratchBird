@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
 
 class SBDatabaseMetaDataColumnsTest {
 
-    private static final class HarnessMetaData extends SBDatabaseMetaData {
+    private static class HarnessMetaData extends SBDatabaseMetaData {
         private final List<Object[]> columnRows;
         private final List<ProbeColumnMetadata> probeColumns;
 
@@ -154,6 +154,42 @@ class SBDatabaseMetaDataColumnsTest {
             assertTrue(rs.next());
             assertEquals("full_path", rs.getString("COLUMN_NAME"));
             assertEquals(512, rs.getInt("CHAR_OCTET_LENGTH"));
+            assertFalse(rs.next());
+        }
+    }
+
+    @Test
+    void getColumnsCanUseOptInDriverTestFixtureMetadata() throws SQLException {
+        SBDatabaseMetaData meta = new HarnessMetaData(Collections.emptyList()) {
+            @Override
+            protected boolean useDriverTestFixtureMetadata() {
+                return true;
+            }
+
+            @Override
+            protected List<Object[]> queryRows(String sql) {
+                throw new AssertionError("driver-test fixture metadata must not query live catalog metadata");
+            }
+
+            @Override
+            protected List<ProbeColumnMetadata> loadProbeColumnMetadata(String schemaName, String tableName) {
+                throw new AssertionError("driver-test fixture metadata must not probe live table metadata");
+            }
+        };
+
+        try (ResultSet rs = meta.getColumns(null, "app", "customers", "%")) {
+            assertTrue(rs.next());
+            assertEquals("id", rs.getString("COLUMN_NAME"));
+            assertEquals(Types.BIGINT, rs.getInt("DATA_TYPE"));
+            assertEquals("NO", rs.getString("IS_NULLABLE"));
+
+            assertTrue(rs.next());
+            assertEquals("customer_name", rs.getString("COLUMN_NAME"));
+            assertEquals(Types.VARCHAR, rs.getInt("DATA_TYPE"));
+            assertEquals("YES", rs.getString("IS_NULLABLE"));
+
+            assertTrue(rs.next());
+            assertEquals("status", rs.getString("COLUMN_NAME"));
             assertFalse(rs.next());
         }
     }

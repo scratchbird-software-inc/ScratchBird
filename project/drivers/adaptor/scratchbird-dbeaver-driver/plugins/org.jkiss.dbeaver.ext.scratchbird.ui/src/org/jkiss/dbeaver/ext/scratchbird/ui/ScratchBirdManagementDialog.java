@@ -27,6 +27,8 @@ package org.jkiss.dbeaver.ext.scratchbird.ui;
 import org.eclipse.jface.dialogs.TitleAreaDialog;
 import org.eclipse.jface.dialogs.IDialogConstants;
 import org.eclipse.swt.SWT;
+import org.eclipse.swt.accessibility.AccessibleAdapter;
+import org.eclipse.swt.accessibility.AccessibleEvent;
 import org.eclipse.swt.dnd.Clipboard;
 import org.eclipse.swt.dnd.TextTransfer;
 import org.eclipse.swt.dnd.Transfer;
@@ -44,6 +46,8 @@ import org.eclipse.swt.widgets.Text;
 import org.jkiss.code.NotNull;
 import org.jkiss.code.Nullable;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdAdminExecutor;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdDataEditorContract;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdDataTransferContract;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdDestructivePlan;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdEditorPageCatalog;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdFormDefinition;
@@ -51,8 +55,11 @@ import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdFormPanelCatalog;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdFormMode;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdFormRegistry;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdLiveProbe;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdManagementActionEnvelope;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdMutationApplyExecutor;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdNavigatorActionRegistry;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdObjectFormContext;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdObjectGraphContract;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdPermissionProbe;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdProbeHistory;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdRefusalModel;
@@ -79,6 +86,9 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     private static final int COPY_REVIEW_PACKET_ID = IDialogConstants.CLIENT_ID + 2;
     private static final int RUN_LIVE_PROBE_ID = IDialogConstants.CLIENT_ID + 3;
     private static final int RUN_AUTHZ_PROBE_ID = IDialogConstants.CLIENT_ID + 4;
+    private static final int VALIDATE_PREVIEW_ID = IDialogConstants.CLIENT_ID + 5;
+    private static final int REFRESH_SERVER_STATUS_ID = IDialogConstants.CLIENT_ID + 6;
+    private static final int APPLY_REQUIRES_ADMISSION_ID = IDialogConstants.CLIENT_ID + 7;
 
     @NotNull
     private final DBSObject targetObject;
@@ -103,6 +113,8 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     @NotNull
     private final ScratchBirdAdminExecutor.ExecutionPlan plan;
     @NotNull
+    private final ScratchBirdManagementActionEnvelope actionEnvelope;
+    @NotNull
     private final ScratchBirdLiveProbe.ProbePlan probePlan;
     @NotNull
     private final List<ScratchBirdTaskDefinition> taskDefinitions;
@@ -115,8 +127,12 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     @Nullable
     private ScratchBirdLiveProbe.ProbeResult taskProbeResult;
     @Nullable
+    private ScratchBirdMutationApplyExecutor.ApplyResult applyResult;
+    @Nullable
     private ScratchBirdLiveProbe.TaskProbePhase taskProbePhase;
     private int selectedTaskIndex;
+    @Nullable
+    private Button applyButton;
     @Nullable
     private Combo taskSelector;
     @Nullable
@@ -170,6 +186,30 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     private Text liveCommandText;
     @Nullable
     private Text liveResultText;
+    @Nullable
+    private Text workflowStatusText;
+    @Nullable
+    private Text workflowPreviewIdentityText;
+    @Nullable
+    private Text workflowValidationText;
+    @Nullable
+    private Text workflowApplyText;
+    @Nullable
+    private Text workflowRefreshText;
+    @Nullable
+    private Text workflowVerifyText;
+    @Nullable
+    private Text workflowRefusalText;
+    @Nullable
+    private Text workflowRollbackText;
+    @Nullable
+    private Text workflowLongOperationText;
+    @Nullable
+    private Text workflowAuditText;
+    @Nullable
+    private Text workflowFeatureBoundaryText;
+    @NotNull
+    private String localValidationSummary = "LOCAL_VALIDATION_PENDING: Preview has not been validated in this dialog session.";
 
     public ScratchBirdManagementDialog(
         @Nullable Shell parentShell,
@@ -191,6 +231,11 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             form,
             mode,
             targetPath);
+        this.actionEnvelope = ScratchBirdManagementActionEnvelope.forPlan(
+            form,
+            mode,
+            targetPath,
+            plan);
         this.editorPlan = ScratchBirdEditorPageCatalog.planFor(form, mode, targetPath);
         this.taskDefinitions = ScratchBirdTaskCatalog.tasksFor(targetPath);
         this.destructivePlan = mode == ScratchBirdFormMode.DELETE ?
@@ -221,6 +266,9 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         tabs.setLayoutData(new GridData(SWT.FILL, SWT.FILL, true, true));
 
         createOverviewTab(tabs, permission);
+        createWorkflowTab(tabs);
+        createDataEditorContractTab(tabs);
+        createDataTransferContractTab(tabs);
         createEditorPages(tabs);
         createScratchBirdPanels(tabs);
         createAuthzTab(tabs);
@@ -237,6 +285,8 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             createTaskTab(tabs);
         }
         createLiveTab(tabs);
+        createMonitoringTab(tabs);
+        createObjectGraphTab(tabs);
         createHistoryTab(tabs);
         createValidationTab(tabs, plan);
         if (report != null || action == ScratchBirdNavigatorActionRegistry.Action.REPORTS ||
@@ -250,15 +300,31 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     @Override
     protected void createButtonsForButtonBar(Composite parent) {
         Button copyScript = createButton(parent, COPY_SCRIPT_ID, "Copy Script", false);
-        copyScript.setToolTipText("Copy the generated ScratchBird SQL/admin preview.");
+        configureButton(copyScript, "Copy the generated ScratchBird SQL/admin preview.", "copy-preview-script");
         Button copyPacket = createButton(parent, COPY_REVIEW_PACKET_ID, "Copy Form Packet", false);
-        copyPacket.setToolTipText("Copy a review packet for this form, target, capability, and generated preview.");
+        configureButton(copyPacket, "Copy a review packet for this form, target, capability, and generated preview.", "copy-form-packet");
+        Button validatePreview = createButton(parent, VALIDATE_PREVIEW_ID, "Validate Preview", false);
+        configureButton(validatePreview, "Run the local ScratchBird parser and workflow proof for the generated preview.", "validate-preview");
+        Button refreshServerStatus = createButton(parent, REFRESH_SERVER_STATUS_ID, "Refresh Server Status", false);
+        configureButton(refreshServerStatus, "Run available server-backed authz and live refresh probes.", "refresh-server-status");
+        refreshServerStatus.setEnabled(authzProbePlan.executable() || probePlan.executable());
         Button runAuthzProbe = createButton(parent, RUN_AUTHZ_PROBE_ID, "Run Authz Probe", false);
-        runAuthzProbe.setToolTipText("Execute the safe server-backed authorization probe for this form.");
+        configureButton(runAuthzProbe, "Execute the safe server-backed authorization probe for this form.", "run-authz-probe");
         runAuthzProbe.setEnabled(authzProbePlan.executable());
         Button runLiveProbe = createButton(parent, RUN_LIVE_PROBE_ID, "Run Live Probe", false);
-        runLiveProbe.setToolTipText("Execute the safe live ScratchBird server probe for this form.");
+        configureButton(runLiveProbe, "Execute the safe live ScratchBird server probe for this form.", "run-live-probe");
         runLiveProbe.setEnabled(probePlan.executable());
+        Button applyRequiresAdmission = createButton(
+            parent,
+            APPLY_REQUIRES_ADMISSION_ID,
+            ScratchBirdManagementWorkflow.applyButtonLabel(applyButtonReady()),
+            false);
+        configureButton(
+            applyRequiresAdmission,
+            "Run the mutation only after the server permission probe admits the exact preview and command hash.",
+            "apply-requires-admission");
+        applyButton = applyRequiresAdmission;
+        applyRequiresAdmission.setEnabled(applyButtonReady());
         createButton(parent, IDialogConstants.OK_ID, IDialogConstants.OK_LABEL, true);
     }
 
@@ -274,12 +340,24 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             setMessage("ScratchBird form review packet copied to clipboard.");
             return;
         }
+        if (buttonId == VALIDATE_PREVIEW_ID) {
+            validatePreview();
+            return;
+        }
+        if (buttonId == REFRESH_SERVER_STATUS_ID) {
+            refreshServerStatus();
+            return;
+        }
         if (buttonId == RUN_AUTHZ_PROBE_ID) {
             runAuthzProbe();
             return;
         }
         if (buttonId == RUN_LIVE_PROBE_ID) {
             runLiveProbe();
+            return;
+        }
+        if (buttonId == APPLY_REQUIRES_ADMISSION_ID) {
+            applyAfterAdmission();
             return;
         }
         super.buttonPressed(buttonId);
@@ -298,6 +376,9 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         addField(container, "Scope", form.scope());
         addField(container, "Purpose", form.purpose());
         addField(container, "Capability", permission.kind() + ": " + permission.message());
+        addField(container, "Feature boundary", actionEnvelope.featureBoundary().availability() + ": " + actionEnvelope.featureBoundary().uiState());
+        addField(container, "Action envelope", actionEnvelope.envelopeId());
+        addField(container, "Preview hash", actionEnvelope.previewHash());
         addField(container, "Server authz probe", authzProbePlan.label());
         addField(container, "Server authz ready", Boolean.toString(authzProbePlan.executable()));
         addField(container, "Task suggestions", Integer.toString(taskDefinitions.size()));
@@ -306,6 +387,53 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         if (targetObject instanceof DBSTypedObject typedObject) {
             ScratchBirdValueProfile valueProfile = ScratchBirdValueProfile.fromTypedObject(typedObject);
             addField(container, "Value profile", valueProfile.familyLabel() + " via " + valueProfile.handlerRouteLabel());
+        }
+    }
+
+    private void createWorkflowTab(@NotNull TabFolder tabs) {
+        Composite container = createTab(tabs, "Workflow");
+        workflowStatusText = addFieldControl(container, "Workflow state", workflowStatusSummary());
+        workflowPreviewIdentityText = addFieldControl(container, "Preview identity", ScratchBirdManagementWorkflow.previewIdentity(plan));
+        workflowValidationText = addFieldControl(container, "Validate result", localValidationSummary);
+        workflowApplyText = addFieldControl(container, "Apply gate", applyGateSummary());
+        workflowRefreshText = addFieldControl(container, "Server refresh", refreshStatusSummary());
+        workflowVerifyText = addFieldControl(container, "Verify result", verifyStatusSummary());
+        workflowRefusalText = addFieldControl(container, "Refusal display", refusalSummary());
+        workflowRollbackText = addFieldControl(container, "Rollback guidance", rollbackSummary());
+        workflowLongOperationText = addFieldControl(container, "Long operation lifecycle", ScratchBirdManagementWorkflow.longOperationSummary());
+        workflowAuditText = addFieldControl(container, "Audit visibility", auditSummary());
+        workflowFeatureBoundaryText = addFieldControl(container, "Feature boundary", featureBoundarySummary());
+        addList(container, "Workflow contract coverage", ScratchBirdManagementWorkflow.contractSummaryLines(targetPath));
+        addList(container, "Accessibility and localization", ScratchBirdManagementWorkflow.accessibilityLocalizationLines());
+    }
+
+    private void createDataEditorContractTab(@NotNull TabFolder tabs) {
+        Composite container = createTab(tabs, "Data Editor");
+        addList(container, "Data editor workflow", ScratchBirdManagementWorkflow.dataEditorLines(targetPath));
+        addField(container, "Apply boundary", applyGateSummary());
+        addField(container, "Refresh boundary", refreshStatusSummary());
+        for (ScratchBirdDataEditorContract.Operation operation : ScratchBirdDataEditorContract.Operation.values()) {
+            ScratchBirdDataEditorContract.EditorPlan editorPlan = ScratchBirdDataEditorContract.plan(operation, targetPath);
+            addField(container, operation.name() + " preview", editorPlan.previewCommand());
+            addField(container, operation.name() + " admission", editorPlan.admissionProbeCommand());
+            addList(container, operation.name() + " transaction proof", editorPlan.transactionProof());
+            addList(container, operation.name() + " type proof", editorPlan.typeProof());
+            addList(container, operation.name() + " refusal proof", editorPlan.refusalProof());
+        }
+    }
+
+    private void createDataTransferContractTab(@NotNull TabFolder tabs) {
+        Composite container = createTab(tabs, "Data Transfer");
+        addList(container, "Data transfer workflow", ScratchBirdManagementWorkflow.dataTransferLines(targetPath));
+        addField(container, "Long operation boundary", ScratchBirdManagementWorkflow.longOperationSummary());
+        addField(container, "Feature boundary", featureBoundarySummary());
+        for (ScratchBirdDataTransferContract.Direction direction : ScratchBirdDataTransferContract.Direction.values()) {
+            ScratchBirdDataTransferContract.TransferPlan transferPlan = ScratchBirdDataTransferContract.plan(direction, targetPath);
+            addField(container, direction.name() + " preview", transferPlan.previewCommand());
+            addField(container, direction.name() + " authorization", transferPlan.authorizationProbe());
+            addList(container, direction.name() + " batching rules", transferPlan.batchingRules());
+            addList(container, direction.name() + " encoding rules", transferPlan.encodingRules());
+            addList(container, direction.name() + " result proof", transferPlan.resultProof());
         }
     }
 
@@ -365,6 +493,12 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         addField(container, "Authority", plan.authority());
         addField(container, "Executable", Boolean.toString(plan.executable()));
         addField(container, "Destructive", Boolean.toString(plan.destructive()));
+        addField(container, "Envelope id", actionEnvelope.envelopeId());
+        addField(container, "Preview hash", actionEnvelope.previewHash());
+        addField(container, "SBLR/UUID policy", actionEnvelope.sblrUuidPolicy());
+        addField(container, "Transaction authority", actionEnvelope.transactionAuthority());
+        addField(container, "Feature refusal", actionEnvelope.featureBoundary().refusalCode());
+        addField(container, "Admission probe", actionEnvelope.admissionProbeCommand());
         addField(container, "Preview", plan.commandText());
     }
 
@@ -423,6 +557,9 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         taskSelector = new Combo(container, SWT.DROP_DOWN | SWT.READ_ONLY);
         taskSelector.setItems(taskSummaries(taskDefinitions).toArray(String[]::new));
         taskSelector.setLayoutData(new GridData(SWT.FILL, SWT.TOP, true, false));
+        taskSelector.setToolTipText("Selected ScratchBird task");
+        setAccessibleName(taskSelector, "Selected ScratchBird task");
+        taskSelector.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, "selected-task");
         taskSelector.select(Math.min(selectedTaskIndex, taskDefinitions.size() - 1));
         taskSelector.addListener(SWT.Selection, event -> {
             selectedTaskIndex = Math.max(0, taskSelector.getSelectionIndex());
@@ -430,6 +567,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
             taskProbeResult = null;
             setErrorMessage(null);
             refreshTaskFields();
+            refreshWorkflowFields();
             ScratchBirdTaskDefinition activeTask = activeTask();
             if (activeTask != null) {
                 setMessage("ScratchBird task context: " + activeTask.id() + " - " + activeTask.title());
@@ -442,14 +580,17 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
 
         taskPreviewButton = new Button(buttonRow, SWT.PUSH);
         taskPreviewButton.setText("Run Task Preview");
+        configureButton(taskPreviewButton, "Run the selected task preview probe when it is read-only and server-backed.", "task-preview");
         taskPreviewButton.addListener(SWT.Selection, event -> runTaskProbe(ScratchBirdLiveProbe.TaskProbePhase.PREVIEW));
 
         taskValidateButton = new Button(buttonRow, SWT.PUSH);
         taskValidateButton.setText("Run Task Validate");
+        configureButton(taskValidateButton, "Run the selected task validate probe when it is read-only and server-backed.", "task-validate");
         taskValidateButton.addListener(SWT.Selection, event -> runTaskProbe(ScratchBirdLiveProbe.TaskProbePhase.VALIDATE));
 
         taskExecuteButton = new Button(buttonRow, SWT.PUSH);
         taskExecuteButton.setText("Run Task Execute");
+        configureButton(taskExecuteButton, "Run the selected task execute probe only when the command remains read-only.", "task-execute");
         taskExecuteButton.addListener(SWT.Selection, event -> runTaskProbe(ScratchBirdLiveProbe.TaskProbePhase.EXECUTE));
 
         taskStatusText = addFieldControl(container, "Task status", taskStatusSummary());
@@ -471,6 +612,30 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         liveResultText = addFieldControl(container, "Probe result", liveResultSummary());
     }
 
+    private void createMonitoringTab(@NotNull TabFolder tabs) {
+        Composite container = createTab(tabs, "Monitoring");
+        addList(container, "Dashboard surfaces", ScratchBirdManagementWorkflow.monitoringDashboardLines());
+        addField(container, "Dashboard refresh status", refreshStatusSummary());
+        addField(container, "Metric history status", historyStatusSummary());
+        addField(container, "Dashboard refusal boundary",
+            "Unsupported or unavailable sys views and SHOW surfaces remain visible refusals; no cached placeholder is presented as current.");
+    }
+
+    private void createObjectGraphTab(@NotNull TabFolder tabs) {
+        ScratchBirdObjectGraphContract.GraphPlan graphPlan = ScratchBirdObjectGraphContract.plan(targetPath);
+        Composite container = createTab(tabs, "Graph");
+        addList(container, "Object graph workflow", ScratchBirdManagementWorkflow.objectGraphLines(targetPath));
+        addField(container, "Dependency query", graphPlan.dependencyQuery());
+        addField(container, "Search query", graphPlan.searchQuery());
+        addField(container, "Generated DDL query", graphPlan.ddlPreviewQuery());
+        addField(container, "Generated SBsql query", graphPlan.sbsqlPreviewQuery());
+        addField(container, "Explain query", graphPlan.explainQuery());
+        addList(container, "Visibility rules", graphPlan.visibilityRules());
+        addField(container, "Search/DDL/SBsql status", verifyStatusSummary());
+        addField(container, "Metadata invalidation", "Refresh from server truth is required before verify; stale or deleted targets are refused.");
+        addField(container, "Authorization-filtered visibility", refusalSummary());
+    }
+
     private void createHistoryTab(@NotNull TabFolder tabs) {
         Composite container = createTab(tabs, "History");
         addField(container, "Scope", targetPath);
@@ -483,6 +648,9 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
 
         historySelector = new Combo(container, SWT.DROP_DOWN | SWT.READ_ONLY);
         historySelector.setLayoutData(new GridData(SWT.FILL, SWT.TOP, true, false));
+        historySelector.setToolTipText("Selected ScratchBird proof record");
+        setAccessibleName(historySelector, "Selected ScratchBird proof record");
+        historySelector.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, "selected-history-record");
         historySelector.addListener(SWT.Selection, event -> {
             selectedHistoryIndex = Math.max(0, historySelector.getSelectionIndex());
             refreshHistoryFields();
@@ -494,6 +662,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
 
         clearHistoryButton = new Button(buttonRow, SWT.PUSH);
         clearHistoryButton.setText("Clear Local History");
+        configureButton(clearHistoryButton, "Clear local ScratchBird probe and task proof history for this scope.", "clear-local-history");
         clearHistoryButton.addListener(SWT.Selection, event -> {
             ScratchBirdProbeHistory.clear(probeScopeKey);
             selectedHistoryIndex = 0;
@@ -572,10 +741,15 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     private static Text addFieldControl(@NotNull Composite parent, @NotNull String label, @NotNull String value) {
         Label labelControl = new Label(parent, SWT.NONE);
         labelControl.setText(label);
+        labelControl.setToolTipText(label);
         labelControl.setLayoutData(new GridData(SWT.LEFT, SWT.TOP, false, false));
+        setAccessibleName(labelControl, label + " label");
 
         Text text = new Text(parent, SWT.BORDER | SWT.READ_ONLY | SWT.WRAP | SWT.V_SCROLL);
         text.setText(value);
+        text.setToolTipText(label);
+        text.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, label);
+        setAccessibleName(text, label + " value");
         GridData data = new GridData(SWT.FILL, SWT.TOP, true, false);
         data.heightHint = Math.min(90, Math.max(28, value.lines().count() > 1 ? 72 : 28));
         text.setLayoutData(data);
@@ -584,6 +758,26 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
 
     private static void addList(@NotNull Composite parent, @NotNull String label, @NotNull List<String> values) {
         addField(parent, label, values.isEmpty() ? "-" : String.join("\n", values));
+    }
+
+    private static void configureButton(
+        @NotNull Button button,
+        @NotNull String toolTip,
+        @NotNull String proofId
+    ) {
+        button.setToolTipText(toolTip);
+        button.setData(ScratchBirdManagementWorkflow.PROOF_DATA_KEY, proofId);
+        setAccessibleName(button, button.getText());
+    }
+
+    private static void setAccessibleName(@NotNull Control control, @NotNull String name) {
+        control.setData(ScratchBirdManagementWorkflow.ACCESSIBLE_NAME_KEY, name);
+        control.getAccessible().addAccessibleListener(new AccessibleAdapter() {
+            @Override
+            public void getName(AccessibleEvent event) {
+                event.result = name;
+            }
+        });
     }
 
     private void copyToClipboard(@NotNull String text) {
@@ -607,6 +801,30 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         appendLine(packet, "Executable", Boolean.toString(plan.executable()));
         appendLine(packet, "Destructive", Boolean.toString(plan.destructive()));
         appendLine(packet, "Authority", plan.authority());
+        appendLine(packet, "Preview hash", ScratchBirdManagementWorkflow.previewHash(plan.commandText()));
+        appendSection(packet, "Workflow status", List.of(
+            workflowStatusSummary(),
+            applyGateSummary(),
+            refreshStatusSummary(),
+            verifyStatusSummary(),
+            refusalSummary()));
+        appendSection(packet, "Action envelope", actionEnvelope.summaryLines());
+        appendSection(packet, "Action review", actionEnvelope.reviewLines());
+        appendSection(packet, "Session isolation", actionEnvelope.sessionScope().summaryLines());
+        appendSection(packet, "Feature boundary", actionEnvelope.featureBoundary().summaryLines());
+        appendSection(packet, "Workflow contract coverage", ScratchBirdManagementWorkflow.contractSummaryLines(targetPath));
+        appendSection(packet, "Network policy", actionEnvelope.networkPolicy().summaryLines());
+        appendSection(packet, "Data editor insert contract", ScratchBirdDataEditorContract.plan(ScratchBirdDataEditorContract.Operation.INSERT, targetPath).summaryLines());
+        appendSection(packet, "Data editor update contract", ScratchBirdDataEditorContract.plan(ScratchBirdDataEditorContract.Operation.UPDATE, targetPath).summaryLines());
+        appendSection(packet, "Data editor delete contract", ScratchBirdDataEditorContract.plan(ScratchBirdDataEditorContract.Operation.DELETE, targetPath).summaryLines());
+        appendSection(packet, "Data editor refresh contract", ScratchBirdDataEditorContract.plan(ScratchBirdDataEditorContract.Operation.REFRESH, targetPath).summaryLines());
+        appendSection(packet, "Data transfer import contract", ScratchBirdDataTransferContract.plan(ScratchBirdDataTransferContract.Direction.IMPORT, targetPath).summaryLines());
+        appendSection(packet, "Data transfer export contract", ScratchBirdDataTransferContract.plan(ScratchBirdDataTransferContract.Direction.EXPORT, targetPath).summaryLines());
+        appendSection(packet, "Object graph contract", ScratchBirdObjectGraphContract.plan(targetPath).summaryLines());
+        appendSection(packet, "Monitoring dashboard surfaces", ScratchBirdManagementWorkflow.monitoringDashboardLines());
+        appendSection(packet, "Object graph tooling boundary", ScratchBirdManagementWorkflow.objectGraphLines(targetPath));
+        appendSection(packet, "Accessibility and localization", ScratchBirdManagementWorkflow.accessibilityLocalizationLines());
+        appendSection(packet, "Manual QA proof anchors", ScratchBirdManagementWorkflow.manualQaChecklist());
         appendSection(packet, "Live probe plan", probePlan.summaryLines());
         appendSection(packet, "Object context", objectContextLines());
         appendEditorPages(packet);
@@ -890,6 +1108,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         selectedHistoryIndex = 0;
         setErrorMessage(null);
         refreshTaskFields();
+        refreshWorkflowFields();
         refreshHistoryFields();
         setMessage(taskStatusSummary());
     }
@@ -914,6 +1133,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         selectedHistoryIndex = 0;
         setErrorMessage(null);
         refreshAuthzProbeFields();
+        refreshWorkflowFields();
         refreshHistoryFields();
         setMessage(authzStatusSummary());
     }
@@ -938,8 +1158,194 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         selectedHistoryIndex = 0;
         setErrorMessage(null);
         refreshLiveProbeFields();
+        refreshWorkflowFields();
         refreshHistoryFields();
         setMessage(liveStatusSummary());
+    }
+
+    private void validatePreview() {
+        localValidationSummary = ScratchBirdManagementWorkflow.validationSummary(
+            ScratchBirdValidationBridge.diagnosticsFor(plan.commandText()),
+            ScratchBirdValidationBridge.statementSummaryFor(plan.commandText()),
+            ScratchBirdValidationBridge.formHintsFor(plan.commandText(), plan.commandText().length(), targetPath));
+        setErrorMessage(null);
+        refreshWorkflowFields();
+        setMessage("ScratchBird preview validated locally; server authorization remains authoritative.");
+    }
+
+    private void refreshServerStatus() {
+        if (!authzProbePlan.executable() && !probePlan.executable()) {
+            setErrorMessage("No safe server-backed ScratchBird refresh probe is available for this form.");
+            return;
+        }
+        final ScratchBirdLiveProbe.ProbeResult[] authzHolder = new ScratchBirdLiveProbe.ProbeResult[1];
+        final ScratchBirdLiveProbe.ProbeResult[] liveHolder = new ScratchBirdLiveProbe.ProbeResult[1];
+        try {
+            UIUtils.runInProgressService(monitor -> {
+                monitor.beginTask("ScratchBird management status refresh", 2);
+                if (authzProbePlan.executable()) {
+                    monitor.subTask("ScratchBird server authorization refresh");
+                    authzHolder[0] = ScratchBirdLiveProbe.execute(monitor, targetObject, authzProbePlan);
+                    monitor.worked(1);
+                }
+                if (probePlan.executable()) {
+                    monitor.subTask("ScratchBird live state refresh");
+                    liveHolder[0] = ScratchBirdLiveProbe.execute(monitor, targetObject, probePlan);
+                    monitor.worked(1);
+                }
+                monitor.done();
+            });
+        } catch (InvocationTargetException e) {
+            setErrorMessage("ScratchBird server status refresh failed: " + e.getTargetException().getMessage());
+            return;
+        } catch (InterruptedException e) {
+            setMessage("ScratchBird server status refresh canceled.");
+            return;
+        }
+        if (authzHolder[0] != null) {
+            authzProbeResult = authzHolder[0];
+            ScratchBirdProbeHistory.recordAuthorizationProbe(probeScopeKey, targetPath, form, authzProbeResult);
+        }
+        if (liveHolder[0] != null) {
+            liveProbeResult = liveHolder[0];
+            ScratchBirdProbeHistory.recordLiveProbe(probeScopeKey, targetPath, form, liveProbeResult);
+        }
+        selectedHistoryIndex = 0;
+        setErrorMessage(null);
+        refreshAuthzProbeFields();
+        refreshLiveProbeFields();
+        refreshWorkflowFields();
+        refreshHistoryFields();
+        setMessage(refreshStatusSummary());
+    }
+
+    private void applyAfterAdmission() {
+        ScratchBirdRefusalModel readiness = applyReadiness();
+        if (!readiness.isAdmitted()) {
+            applyResult = ScratchBirdMutationApplyExecutor.refuse(plan, readiness, actionEnvelope.previewHash(), commandHash());
+            ScratchBirdProbeHistory.recordApply(probeScopeKey, targetPath, form, applyResult);
+            selectedHistoryIndex = 0;
+            setErrorMessage("ScratchBird apply was not run. " + applyGateSummary());
+            refreshWorkflowFields();
+            refreshHistoryFields();
+            return;
+        }
+
+        final ScratchBirdMutationApplyExecutor.ApplyResult[] applyHolder =
+            new ScratchBirdMutationApplyExecutor.ApplyResult[1];
+        final ScratchBirdLiveProbe.ProbeResult[] liveHolder = new ScratchBirdLiveProbe.ProbeResult[1];
+        try {
+            UIUtils.runInProgressService(monitor -> {
+                monitor.beginTask("ScratchBird admitted management apply", probePlan.executable() ? 2 : 1);
+                applyHolder[0] = ScratchBirdMutationApplyExecutor.apply(
+                    monitor,
+                    targetObject,
+                    plan,
+                    authzProbeResult,
+                    actionEnvelope.previewHash(),
+                    commandHash());
+                monitor.worked(1);
+                if (applyHolder[0].applied() && probePlan.executable()) {
+                    monitor.subTask("ScratchBird post-apply refresh");
+                    liveHolder[0] = ScratchBirdLiveProbe.execute(monitor, targetObject, probePlan);
+                    monitor.worked(1);
+                }
+                monitor.done();
+            });
+        } catch (InvocationTargetException e) {
+            setErrorMessage("ScratchBird admitted apply failed: " + e.getTargetException().getMessage());
+            return;
+        } catch (InterruptedException e) {
+            setMessage("ScratchBird admitted apply canceled.");
+            return;
+        }
+
+        applyResult = applyHolder[0];
+        ScratchBirdProbeHistory.recordApply(probeScopeKey, targetPath, form, applyResult);
+        if (liveHolder[0] != null) {
+            liveProbeResult = liveHolder[0];
+            ScratchBirdProbeHistory.recordLiveProbe(probeScopeKey, targetPath, form, liveProbeResult);
+        }
+        selectedHistoryIndex = 0;
+        setErrorMessage(applyResult.applied() ? null : applyResult.status().message());
+        refreshAuthzProbeFields();
+        refreshLiveProbeFields();
+        refreshWorkflowFields();
+        refreshHistoryFields();
+        setMessage(applyGateSummary());
+    }
+
+    private void refreshApplyButton() {
+        if (applyButton == null || applyButton.isDisposed()) {
+            return;
+        }
+        applyButton.setText(ScratchBirdManagementWorkflow.applyButtonLabel(applyButtonReady()));
+        applyButton.setEnabled(applyButtonReady());
+        setAccessibleName(applyButton, applyButton.getText());
+    }
+
+    private boolean applyButtonReady() {
+        return ScratchBirdManagementWorkflow.applyButtonEnabled(plan, permission, authzProbeResult, applyResult,
+            actionEnvelope.previewHash(), commandHash());
+    }
+
+    @NotNull
+    private ScratchBirdRefusalModel applyReadiness() {
+        if (permission.isDeterministicRefusal()) {
+            return permission;
+        }
+        return ScratchBirdMutationApplyExecutor.applyReadiness(
+            plan,
+            authzProbeResult,
+            actionEnvelope.previewHash(),
+            commandHash());
+    }
+
+    @NotNull
+    private String commandHash() {
+        return ScratchBirdManagementActionEnvelope.commandHashFor(plan);
+    }
+
+    private void refuseApply() {
+        setErrorMessage("ScratchBird apply was not run. " + applyGateSummary());
+        refreshWorkflowFields();
+    }
+
+    private void refreshWorkflowFields() {
+        if (workflowStatusText != null && !workflowStatusText.isDisposed()) {
+            workflowStatusText.setText(workflowStatusSummary());
+        }
+        if (workflowPreviewIdentityText != null && !workflowPreviewIdentityText.isDisposed()) {
+            workflowPreviewIdentityText.setText(ScratchBirdManagementWorkflow.previewIdentity(plan));
+        }
+        if (workflowValidationText != null && !workflowValidationText.isDisposed()) {
+            workflowValidationText.setText(localValidationSummary);
+        }
+        if (workflowApplyText != null && !workflowApplyText.isDisposed()) {
+            workflowApplyText.setText(applyGateSummary());
+        }
+        if (workflowRefreshText != null && !workflowRefreshText.isDisposed()) {
+            workflowRefreshText.setText(refreshStatusSummary());
+        }
+        if (workflowVerifyText != null && !workflowVerifyText.isDisposed()) {
+            workflowVerifyText.setText(verifyStatusSummary());
+        }
+        if (workflowRefusalText != null && !workflowRefusalText.isDisposed()) {
+            workflowRefusalText.setText(refusalSummary());
+        }
+        if (workflowRollbackText != null && !workflowRollbackText.isDisposed()) {
+            workflowRollbackText.setText(rollbackSummary());
+        }
+        if (workflowLongOperationText != null && !workflowLongOperationText.isDisposed()) {
+            workflowLongOperationText.setText(ScratchBirdManagementWorkflow.longOperationSummary());
+        }
+        if (workflowAuditText != null && !workflowAuditText.isDisposed()) {
+            workflowAuditText.setText(auditSummary());
+        }
+        if (workflowFeatureBoundaryText != null && !workflowFeatureBoundaryText.isDisposed()) {
+            workflowFeatureBoundaryText.setText(featureBoundarySummary());
+        }
+        refreshApplyButton();
     }
 
     private void refreshAuthzProbeFields() {
@@ -1039,6 +1445,61 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
     }
 
     @NotNull
+    private String workflowStatusSummary() {
+        return ScratchBirdManagementWorkflow.workflowStatus(
+            plan,
+            permission,
+            authzProbeResult,
+            liveProbeResult,
+            taskProbeResult);
+    }
+
+    @NotNull
+    private String applyGateSummary() {
+        return ScratchBirdManagementWorkflow.applyGateSummary(
+            plan,
+            permission,
+            authzProbeResult,
+            applyResult,
+            actionEnvelope.previewHash(),
+            commandHash());
+    }
+
+    @NotNull
+    private String refreshStatusSummary() {
+        return ScratchBirdManagementWorkflow.refreshStatusSummary(
+            authzProbePlan,
+            probePlan,
+            authzProbeResult,
+            liveProbeResult);
+    }
+
+    @NotNull
+    private String verifyStatusSummary() {
+        return ScratchBirdManagementWorkflow.verifyStatusSummary(plan, authzProbeResult, liveProbeResult, applyResult);
+    }
+
+    @NotNull
+    private String refusalSummary() {
+        return ScratchBirdManagementWorkflow.refusalSummary(form, permission, report);
+    }
+
+    @NotNull
+    private String rollbackSummary() {
+        return ScratchBirdManagementWorkflow.rollbackSummary(destructivePlan);
+    }
+
+    @NotNull
+    private String auditSummary() {
+        return ScratchBirdManagementWorkflow.auditSummary(probeScopeKey, targetPath);
+    }
+
+    @NotNull
+    private String featureBoundarySummary() {
+        return ScratchBirdManagementWorkflow.featureBoundarySummary(form, permission);
+    }
+
+    @NotNull
     private String authzStatusSummary() {
         if (authzProbeResult == null) {
             return authzProbePlan.executable() ?
@@ -1047,7 +1508,7 @@ public class ScratchBirdManagementDialog extends TitleAreaDialog {
         }
         if (authzProbeResult.status().isAdmitted()) {
             return authzProbePlan.surrogate() ?
-                "ADMITTED: Server-backed read-only authz probe completed; mutation capability remains unproven." :
+                "ADMITTED: Server-backed read-only authz probe completed; mutation apply still requires permission-probe admission." :
                 "ADMITTED: Server-backed authz probe completed successfully.";
         }
         return authzProbeResult.status().kind() + ": " + authzProbeResult.status().message();

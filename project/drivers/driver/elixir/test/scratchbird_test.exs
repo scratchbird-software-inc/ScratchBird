@@ -23,7 +23,7 @@ defmodule ScratchBirdConfigTest do
     cfg =
       Config.from_opts(
         url:
-          "scratchbird://admin:secret@localhost:3090/mydb?" <>
+          "scratchbird://admin:secret@localhost:3092/mydb?" <>
             "frontdoormode=managed&mcp_auth_token=token&mcp_client_flags=7&mcp_auth_fast_path=false"
       )
 

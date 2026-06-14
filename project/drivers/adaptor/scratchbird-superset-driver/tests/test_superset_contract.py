@@ -189,7 +189,7 @@ def test_create_connect_args_normalizes_jdbc_style_aliases():
     _, connect_args = dialect.create_connect_args(
         _FakeURL(
             host="db.local",
-            port=3090,
+            port=3092,
             username="alice",
             password="secret",
             database="analytics",
@@ -220,7 +220,7 @@ def test_create_connect_args_normalizes_jdbc_style_aliases():
     )
 
     assert connect_args["host"] == "db.local"
-    assert connect_args["port"] == 3090
+    assert connect_args["port"] == 3092
     assert connect_args["database"] == "analytics"
     assert connect_args["schema"] == "tenant.analytics"
     assert connect_args["application_name"] == "superset"

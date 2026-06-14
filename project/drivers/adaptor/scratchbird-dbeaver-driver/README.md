@@ -21,7 +21,7 @@ As of `2026-04-24`, the refreshed static-example ScratchBird environment is
 usable for adapter work:
 
 - live JDBC endpoint:
-  `jdbc:scratchbird://127.0.0.1:13092/main?sslmode=disable`
+  `jdbc:scratchbird://127.0.0.1:3092/default?sslmode=require`
 - direct auth probe resolves to:
   `scratchbird.auth.password_compat`
 - wrapper-based JDBC live smoke is green
