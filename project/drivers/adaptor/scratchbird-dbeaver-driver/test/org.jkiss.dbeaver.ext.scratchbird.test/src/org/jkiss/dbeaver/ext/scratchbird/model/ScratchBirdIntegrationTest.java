@@ -221,8 +221,12 @@ public class ScratchBirdIntegrationTest {
 
         String schemaNodeSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdSchemaNode.java");
         Assert.assertTrue(schemaNodeSource.contains("return ownerCatalog;"));
-        Assert.assertTrue(schemaNodeSource.contains("return querySchema.getPhysicalTables(monitor);"));
-        Assert.assertTrue(schemaNodeSource.contains("return querySchema.getViews(monitor);"));
+        Assert.assertTrue(schemaNodeSource.contains("session.getMetaData().getTables(null, fullPath, \"%\", PHYSICAL_TABLE_TYPES)"));
+        Assert.assertTrue(schemaNodeSource.contains("session.getMetaData().getTables(null, fullPath, \"%\", VIEW_TYPES)"));
+        Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdTable(this, tableName"));
+        Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdView(this, viewName"));
+        Assert.assertTrue(schemaNodeSource.contains("return tables.isEmpty() ? loadMetadataPhysicalTables(monitor) : tables;"));
+        Assert.assertTrue(schemaNodeSource.contains("return views.isEmpty() ? loadMetadataViews(monitor) : views;"));
         Assert.assertTrue(schemaNodeSource.contains("return querySchema.getDataTypes(monitor);"));
         Assert.assertTrue(schemaNodeSource.contains("return getConstraintKeysCache().getObjects(monitor, this, null);"));
         Assert.assertTrue(schemaNodeSource.contains("isTableFoldersVisible()"));
