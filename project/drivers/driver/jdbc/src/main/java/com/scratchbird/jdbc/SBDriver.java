@@ -421,13 +421,13 @@ public class SBDriver implements Driver {
                 host = hostPort.substring(1, bracketEnd);
                 String portStr = hostPort.substring(bracketEnd + 1);
                 if (portStr.startsWith(":")) {
-                    port = Integer.parseInt(portStr.substring(1));
+                    port = parseOptionalPort(portStr.substring(1), DEFAULT_PORT, url);
                 }
             } else {
                 int colonIdx = hostPort.lastIndexOf(':');
                 if (colonIdx >= 0) {
                     host = hostPort.substring(0, colonIdx);
-                    port = Integer.parseInt(hostPort.substring(colonIdx + 1));
+                    port = parseOptionalPort(hostPort.substring(colonIdx + 1), DEFAULT_PORT, url);
                 } else {
                     host = hostPort;
                 }
@@ -464,6 +464,18 @@ public class SBDriver implements Driver {
         }
 
         return props;
+    }
+
+    private static int parseOptionalPort(String portText, int defaultPort, String url) throws SQLException {
+        String normalized = portText == null ? null : portText.trim();
+        if (normalized == null || normalized.isEmpty()) {
+            return defaultPort;
+        }
+        try {
+            return Integer.parseInt(normalized);
+        } catch (NumberFormatException ex) {
+            throw new SQLException("Invalid port in URL: " + url, "08001", ex);
+        }
     }
 
     /**
