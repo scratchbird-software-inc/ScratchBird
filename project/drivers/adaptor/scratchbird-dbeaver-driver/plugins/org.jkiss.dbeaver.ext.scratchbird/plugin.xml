@@ -217,7 +217,7 @@
                     icon="icons/scratchbird_icon.png"
                     iconBig="icons/scratchbird_icon_big.png"
                     class="com.scratchbird.jdbc.SBDriver"
-                    sampleURL="jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=disable&amp;binary_transfer=true"
+                    sampleURL="jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true"
                     defaultPort="3092"
                     webURL="https://scratchbird.com/"
                     description="ScratchBird JDBC driver"
@@ -230,7 +230,7 @@
                     <property name="connect_timeout" value="30"/>
                     <property name="socket_timeout" value="0"/>
                     <property name="binary_transfer" value="true"/>
-                    <property name="sslmode" value="disable"/>
+                    <property name="sslmode" value="require"/>
                     <property name="application_name" value="dbeaver"/>
                     <property name="protocol" value="native"/>
                     <property name="compression" value="off"/>

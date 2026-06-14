@@ -143,8 +143,11 @@ build_jdbc_jar() {
 
 stage_jdbc_driver() {
   local jdbc_jar
-  jdbc_jar="$(find_jdbc_jar)"
-  if [[ -z "${jdbc_jar}" ]]; then
+  if [[ -n "${SCRATCHBIRD_JDBC_JAR:-}" ]]; then
+    jdbc_jar="$(find_jdbc_jar)"
+  else
+    # Always rebuild from the current JDBC source. Reusing a previous staged
+    # jar can install stale driver behavior into a DBeaver checkout.
     build_jdbc_jar
     jdbc_jar="$(find_jdbc_jar)"
   fi

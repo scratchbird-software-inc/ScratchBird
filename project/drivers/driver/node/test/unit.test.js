@@ -151,14 +151,14 @@ test("parseDsn supports key-value", () => {
 });
 
 test("parseDsn supports manager_proxy mode params", () => {
-  const cfg = parseDsn("scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7");
+  const cfg = parseDsn("scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7");
   assert.equal(cfg.frontDoorMode, "manager_proxy");
   assert.equal(cfg.managerAuthToken, "token");
   assert.equal(cfg.managerClientFlags, 7);
 });
 
 test("parseDsn supports metadataExpandSchemaParents aliases", () => {
-  const fromUri = parseDsn("scratchbird://admin:secret@localhost:3090/mydb?metadata_expand_schema_parents=true");
+  const fromUri = parseDsn("scratchbird://admin:secret@localhost:3092/mydb?metadata_expand_schema_parents=true");
   const fromKv = parseDsn("host=127.0.0.1 dbname=mydb user=me expandSchemaParents=1");
   assert.equal(fromUri.metadataExpandSchemaParents, true);
   assert.equal(fromKv.metadataExpandSchemaParents, true);

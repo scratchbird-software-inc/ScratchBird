@@ -32,6 +32,8 @@ constexpr std::string_view kVerifier =
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 constexpr std::string_view kWrongVerifier =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+constexpr std::string_view kPassword = "scratchbird";
+constexpr std::string_view kWrongPassword = "scratchbird-wrong";
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -194,7 +196,8 @@ api::EngineAuthenticateRequest LocalPasswordRequest(
     const Fixture& fixture,
     std::string principal,
     api::EngineUuid principal_uuid,
-    std::string evidence) {
+    std::string evidence,
+    bool include_durable_hint = true) {
   api::EngineAuthenticateRequest request;
   request.context = Context(fixture);
   request.provider_family = "local_password";
@@ -214,7 +217,9 @@ api::EngineAuthenticateRequest LocalPasswordRequest(
   request.option_envelopes.push_back("provider_generation_observed:7");
   request.option_envelopes.push_back("provider_lifecycle_state:healthy");
   request.option_envelopes.push_back("default_policy_installed:true");
-  request.option_envelopes.push_back("durable_principal_uuid:" + principal_uuid.canonical);
+  if (include_durable_hint && !principal_uuid.canonical.empty()) {
+    request.option_envelopes.push_back("durable_principal_uuid:" + principal_uuid.canonical);
+  }
   return request;
 }
 
@@ -329,6 +334,40 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
           "explicit durable authorization tag was not materialized");
   Require(HasAuthorizationTag(good, "right:CONNECT"),
           "explicit durable right tag was not preserved");
+
+  AlterPrincipalCredential(fixture,
+                           fixture.principal,
+                           "alice",
+                           LocalPasswordFingerprint(api::SecuritySha256Hex(kPassword)),
+                           191);
+
+  const auto raw_mismatch = api::EngineAuthenticate(LocalPasswordRequest(
+      fixture,
+      "alice",
+      fixture.principal,
+      std::string(kWrongPassword),
+      false));
+  Require(!raw_mismatch.ok &&
+              HasDiagnosticDetail(raw_mismatch, "credential_verifier_mismatch"),
+          "raw local-password mismatch was accepted");
+
+  const auto raw_good = api::EngineAuthenticate(LocalPasswordRequest(
+      fixture,
+      "alice",
+      fixture.principal,
+      std::string(kPassword),
+      false));
+  Require(raw_good.ok && raw_good.authenticated,
+          "raw local-password credential was rejected");
+  Require(raw_good.connection_security_context.effective_user_uuid.canonical ==
+              fixture.principal.canonical,
+          "raw password auth did not resolve the durable principal UUID from server state");
+  Require(HasEvidence(raw_good,
+                      "security_state_authority",
+                      "mga_security_principal_lifecycle"),
+          "raw password auth did not publish server-derived security authority evidence");
+  Require(HasAuthorizationTag(raw_good, "right:CONNECT"),
+          "raw password auth did not materialize server-derived CONNECT authority");
 }
 
 void TestPrincipalNameDoesNotEscalate(const Fixture& fixture) {
