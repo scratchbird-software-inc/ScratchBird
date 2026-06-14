@@ -287,14 +287,11 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         if (!isTableFoldersVisible()) {
             return Collections.emptyList();
         }
-        List<? extends GenericTableBase> tables = querySchema.getTables(monitor);
+        List<? extends GenericTableBase> tables = loadCachedTables(monitor);
         if (!tables.isEmpty()) {
             return tables;
         }
-        List<GenericTableBase> metadataTables = new ArrayList<>();
-        metadataTables.addAll(loadMetadataPhysicalTables(monitor));
-        metadataTables.addAll(loadMetadataViews(monitor));
-        return metadataTables;
+        return loadAndCacheMetadataTables(monitor);
     }
 
     @Override
@@ -302,16 +299,12 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         if (!isTableFoldersVisible()) {
             return null;
         }
-        GenericTableBase table = querySchema.getTable(monitor, name);
+        GenericTableBase table = loadCachedTable(monitor, name);
         if (table != null) {
             return table;
         }
-        for (GenericTableBase metadataTable : getTables(monitor)) {
-            if (name.equals(metadataTable.getName())) {
-                return metadataTable;
-            }
-        }
-        return null;
+        loadAndCacheMetadataTables(monitor);
+        return getTableCache().getCachedObject(name);
     }
 
     @Override
@@ -319,8 +312,13 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         if (!isTableFoldersVisible()) {
             return Collections.emptyList();
         }
-        List<? extends GenericTable> tables = querySchema.getPhysicalTables(monitor);
-        return tables.isEmpty() ? loadMetadataPhysicalTables(monitor) : tables;
+        List<GenericTable> physicalTables = new ArrayList<>();
+        for (GenericTableBase table : getTables(monitor)) {
+            if (table instanceof GenericTable genericTable && table.isPhysicalTable()) {
+                physicalTables.add(genericTable);
+            }
+        }
+        return physicalTables;
     }
 
     @Override
@@ -328,8 +326,13 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         if (!isViewFoldersVisible()) {
             return Collections.emptyList();
         }
-        List<? extends GenericView> views = querySchema.getViews(monitor);
-        return views.isEmpty() ? loadMetadataViews(monitor) : views;
+        List<GenericView> views = new ArrayList<>();
+        for (GenericTableBase table : getTables(monitor)) {
+            if (table instanceof GenericView view) {
+                views.add(view);
+            }
+        }
+        return views;
     }
 
     @Override
@@ -360,12 +363,7 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     public Collection<? extends DBSObject> getChildren(@NotNull DBRProgressMonitor monitor) throws DBException {
         List<DBSObject> children = new ArrayList<>(childSchemas.values());
         if (isObjectContainerBranch() && !isDomainBranch()) {
-            Collection<? extends DBSObject> queryChildren = querySchema.getChildren(monitor);
-            if (queryChildren.isEmpty()) {
-                children.addAll(getTables(monitor));
-            } else {
-                children.addAll(queryChildren);
-            }
+            children.addAll(getTables(monitor));
         }
         return children;
     }
@@ -378,10 +376,6 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         }
         if (!isObjectContainerBranch() || isDomainBranch()) {
             return null;
-        }
-        DBSObject child = querySchema.getChild(monitor, childName);
-        if (child != null) {
-            return child;
         }
         return getTable(monitor, childName);
     }
@@ -399,8 +393,37 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     }
 
     @NotNull
-    private List<GenericTable> loadMetadataPhysicalTables(@NotNull DBRProgressMonitor monitor) {
-        List<GenericTable> tables = new ArrayList<>();
+    private List<? extends GenericTableBase> loadCachedTables(@NotNull DBRProgressMonitor monitor) throws DBException {
+        try {
+            return super.getTables(monitor);
+        } catch (DBException e) {
+            log.debug("ScratchBird schema table cache is not available for " + fullPath, e);
+            return Collections.emptyList();
+        }
+    }
+
+    @Nullable
+    private GenericTableBase loadCachedTable(@NotNull DBRProgressMonitor monitor, @NotNull String name) throws DBException {
+        try {
+            return super.getTable(monitor, name);
+        } catch (DBException e) {
+            log.debug("ScratchBird schema table cache lookup is not available for " + fullPath + "." + name, e);
+            return null;
+        }
+    }
+
+    @NotNull
+    private List<GenericTableBase> loadAndCacheMetadataTables(@NotNull DBRProgressMonitor monitor) {
+        List<GenericTableBase> tables = new ArrayList<>();
+        tables.addAll(loadMetadataPhysicalTables(monitor));
+        tables.addAll(loadMetadataViews(monitor));
+        getTableCache().setCache(tables);
+        return tables;
+    }
+
+    @NotNull
+    private List<GenericTableBase> loadMetadataPhysicalTables(@NotNull DBRProgressMonitor monitor) {
+        List<GenericTableBase> tables = new ArrayList<>();
         try (JDBCSession session = DBUtils.openMetaSession(monitor, this, "Load ScratchBird JDBC metadata tables");
              ResultSet resultSet = session.getMetaData().getTables(null, fullPath, "%", PHYSICAL_TABLE_TYPES)) {
             while (resultSet.next()) {
@@ -417,8 +440,8 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     }
 
     @NotNull
-    private List<GenericView> loadMetadataViews(@NotNull DBRProgressMonitor monitor) {
-        List<GenericView> views = new ArrayList<>();
+    private List<GenericTableBase> loadMetadataViews(@NotNull DBRProgressMonitor monitor) {
+        List<GenericTableBase> views = new ArrayList<>();
         try (JDBCSession session = DBUtils.openMetaSession(monitor, this, "Load ScratchBird JDBC metadata views");
              ResultSet resultSet = session.getMetaData().getTables(null, fullPath, "%", VIEW_TYPES)) {
             while (resultSet.next()) {
