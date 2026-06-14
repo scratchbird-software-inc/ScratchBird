@@ -50,6 +50,7 @@ public class SBConnectionProperties {
     private boolean tcpKeepAlive = true;
     private String currentSchema;
     private boolean metadataExpandSchemaParents = false;
+    private String metadataFixtureCatalog = "";
     private String role;
     private String applicationName;
     private boolean readOnly = false;
@@ -210,6 +211,13 @@ public class SBConnectionProperties {
             case "dbeaverexpandschemaparents":
             case "dbeaver_expand_schema_parents":
                 this.metadataExpandSchemaParents = parseOptionalBoolean(value, this.metadataExpandSchemaParents);
+                break;
+            case "metadatafixturecatalog":
+            case "metadata_fixture_catalog":
+                this.metadataFixtureCatalog = normalizeOptionalText(value);
+                if (this.metadataFixtureCatalog == null) {
+                    this.metadataFixtureCatalog = "";
+                }
                 break;
             case "role":
                 this.role = value;
@@ -449,6 +457,9 @@ public class SBConnectionProperties {
             case "dbeaverexpandschemaparents":
             case "dbeaver_expand_schema_parents":
                 return String.valueOf(metadataExpandSchemaParents);
+            case "metadatafixturecatalog":
+            case "metadata_fixture_catalog":
+                return metadataFixtureCatalog;
             case "role":
                 return role;
             case "applicationname":
@@ -718,6 +729,17 @@ public class SBConnectionProperties {
 
     public void setMetadataExpandSchemaParents(boolean metadataExpandSchemaParents) {
         this.metadataExpandSchemaParents = metadataExpandSchemaParents;
+    }
+
+    public String getMetadataFixtureCatalog() {
+        return metadataFixtureCatalog;
+    }
+
+    public void setMetadataFixtureCatalog(String metadataFixtureCatalog) {
+        this.metadataFixtureCatalog = normalizeOptionalText(metadataFixtureCatalog);
+        if (this.metadataFixtureCatalog == null) {
+            this.metadataFixtureCatalog = "";
+        }
     }
 
     public String getRole() {
@@ -1059,6 +1081,9 @@ public class SBConnectionProperties {
             props.setProperty("currentSchema", currentSchema);
         }
         props.setProperty("metadataExpandSchemaParents", String.valueOf(metadataExpandSchemaParents));
+        if (metadataFixtureCatalog != null && !metadataFixtureCatalog.isEmpty()) {
+            props.setProperty("metadata_fixture_catalog", metadataFixtureCatalog);
+        }
         props.setProperty("pooling", String.valueOf(pooling));
         props.setProperty("maxPoolSize", String.valueOf(maxPoolSize));
         props.setProperty("minPoolSize", String.valueOf(minPoolSize));

@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 
 class SBDatabaseMetaDataTablesTest {
 
-    private static final class HarnessMetaData extends SBDatabaseMetaData {
+    private static class HarnessMetaData extends SBDatabaseMetaData {
         private final List<Object[]> tableRows;
 
         private HarnessMetaData(List<Object[]> tableRows) {
@@ -68,13 +68,42 @@ class SBDatabaseMetaDataTablesTest {
             while (rs.next()) {
                 seen.add(rs.getString("TABLE_NAME") + ":" + rs.getString("TABLE_TYPE"));
             }
+            assertEquals(Collections.emptyList(), seen);
+        }
+    }
+
+    @Test
+    void getTablesCanUseOptInDriverTestFixtureMetadata() throws SQLException {
+        SBDatabaseMetaData meta = new HarnessMetaData(Collections.emptyList()) {
+            @Override
+            protected boolean useDriverTestFixtureMetadata() {
+                return true;
+            }
+
+            @Override
+            protected List<Object[]> queryRows(String sql) {
+                throw new AssertionError("driver-test fixture metadata must not query live catalog metadata");
+            }
+        };
+
+        try (ResultSet rs = meta.getTables(null, "app", "%", new String[]{"TABLE"})) {
+            List<String> seen = new ArrayList<>();
+            while (rs.next()) {
+                seen.add(rs.getString("TABLE_SCHEM") + "." + rs.getString("TABLE_NAME") + ":" + rs.getString("TABLE_TYPE"));
+            }
             assertEquals(List.of(
-                "columns:SYSTEM VIEW",
-                "object_resolver:SYSTEM VIEW",
-                "schemas:SYSTEM VIEW",
-                "tables:SYSTEM VIEW",
-                "views:SYSTEM VIEW"
+                "app.customers:TABLE",
+                "app.customer_profiles:TABLE",
+                "app.payroll_private:TABLE"
             ), seen);
+        }
+
+        try (ResultSet rs = meta.getTables(null, "sys.security", "users", new String[]{"SYSTEM TABLE"})) {
+            List<String> seen = new ArrayList<>();
+            while (rs.next()) {
+                seen.add(rs.getString("TABLE_SCHEM") + "." + rs.getString("TABLE_NAME") + ":" + rs.getString("TABLE_TYPE"));
+            }
+            assertEquals(List.of("sys.security.users:SYSTEM TABLE"), seen);
         }
     }
 }

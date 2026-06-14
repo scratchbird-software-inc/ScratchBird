@@ -884,6 +884,28 @@ set_tests_properties(public_example_database_seed_gate PROPERTIES
   LABELS "public_release_correctness;public_example_database_seed_gate;PCR-GATE-001;PCR-002;data;example_database;storage_database;public_fixture"
 )
 
+add_executable(public_driver_test_database_seed
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/public_driver_test_database_seed.cpp
+)
+target_compile_features(public_driver_test_database_seed PRIVATE cxx_std_23)
+target_link_libraries(public_driver_test_database_seed PRIVATE
+  sb_engine_internal_api
+  sb_storage_database
+  sb_core_memory
+  sb_core_uuid
+)
+add_test(
+  NAME public_driver_test_database_seed_gate
+  COMMAND public_driver_test_database_seed
+          --output ${CMAKE_CURRENT_BINARY_DIR}/data/driver-test/scratchbird-driver-test.sbdb
+          --manifest ${CMAKE_CURRENT_BINARY_DIR}/data/driver-test/scratchbird-driver-test.manifest.json
+          --resource-seed-pack-root ${CMAKE_CURRENT_SOURCE_DIR}/../../resources/seed-packs/initial-resource-pack
+          --overwrite
+)
+set_tests_properties(public_driver_test_database_seed_gate PROPERTIES
+  LABELS "public_release_correctness;public_driver_test_database_seed_gate;BDRV-FIX-LIVE-001;driver_test_fixture;full_create_database;storage_database;mga;security"
+)
+
 add_test(
   NAME public_private_reference_scan_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2409,6 +2431,7 @@ set(PUBLIC_RELEASE_CORRECTNESS_BUILD_TARGETS
   public_cluster_catalog_crypto_evidence_gate
   public_codec_property_gate
   public_example_database_seed
+  public_driver_test_database_seed
   public_sanitizer_warning_probe
   public_release_version_metadata_tool
   public_secure_defaults_gate

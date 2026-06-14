@@ -36,25 +36,6 @@ import java.util.Map;
 
 final class ScratchBirdSchemaTreeBuilder {
 
-    private static final List<String> CANONICAL_CATALOG_PATHS = List.of(
-        "sys",
-        "sys.catalog",
-        "sys.security",
-        "sys.monitoring",
-        "sys.jobs",
-        "sys.config",
-        "sys.structure",
-        "sys.emulation",
-        "sys.cluster",
-        "sys.internals",
-        "sys.domains",
-        "users",
-        "cluster",
-        "emulated",
-        "remote",
-        "data"
-    );
-
     private static final Comparator<Node> NODE_ORDER = (left, right) ->
         ScratchBirdNamespaceSemantics.comparePaths(left.getFullPath(), right.getFullPath());
 
@@ -77,13 +58,6 @@ final class ScratchBirdSchemaTreeBuilder {
         Map<String, Node> nodesByPath = new LinkedHashMap<>();
         List<Node> roots = new ArrayList<>();
         Map<String, ScratchBirdCatalogObjectReference> resolvedCatalogObjects = inferMissingParentUuids(catalogObjects);
-
-        for (String canonicalPath : CANONICAL_CATALOG_PATHS) {
-            addPath(
-                nodesByPath,
-                roots,
-                resolvedCatalogObjects.getOrDefault(canonicalPath, ScratchBirdCatalogObjectReference.syntheticSchema(canonicalPath)));
-        }
 
         for (ScratchBirdCatalogObjectReference reference : resolvedCatalogObjects.values()) {
             if (ScratchBirdNamespaceSemantics.isMetricsPath(reference.fullPath())) {

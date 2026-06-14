@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 
 class SBDatabaseMetaDataSchemasTest {
 
-    private static final class HarnessMetaData extends SBDatabaseMetaData {
+    private static class HarnessMetaData extends SBDatabaseMetaData {
         private final List<Object[]> schemaRows;
         private final List<Object[]> informationSchemaRows;
         private final boolean expandParents;
@@ -93,8 +93,7 @@ class SBDatabaseMetaDataSchemasTest {
                 "sys",
                 "users.alice.dev",
                 "users.bob.dev",
-                "analytics.prod",
-                "sys.catalog"
+                "analytics.prod"
             ), collectSchemas(rs));
         }
     }
@@ -117,8 +116,7 @@ class SBDatabaseMetaDataSchemasTest {
                 "users.alice",
                 "users.alice.dev",
                 "users.bob",
-                "users.bob.dev",
-                "sys.catalog"
+                "users.bob.dev"
             ), collectSchemas(rs));
         }
     }
@@ -167,7 +165,30 @@ class SBDatabaseMetaDataSchemasTest {
         );
 
         try (ResultSet rs = meta.getSchemas(null, "sys.%")) {
-            assertEquals(Arrays.asList("sys.catalog"), collectSchemas(rs));
+            assertEquals(Collections.emptyList(), collectSchemas(rs));
+        }
+    }
+
+    @Test
+    void getSchemasCanUseOptInDriverTestFixtureMetadata() throws SQLException {
+        SBDatabaseMetaData meta = new HarnessMetaData(
+            false,
+            Collections.emptyList(),
+            Collections.emptyList(),
+            true,
+            true
+        ) {
+            @Override
+            protected boolean useDriverTestFixtureMetadata() {
+                return true;
+            }
+        };
+
+        try (ResultSet rs = meta.getSchemas(null, "app")) {
+            assertEquals(Arrays.asList("app"), collectSchemas(rs));
+        }
+        try (ResultSet rs = meta.getSchemas(null, "sys.security")) {
+            assertEquals(Arrays.asList("sys.security"), collectSchemas(rs));
         }
     }
 

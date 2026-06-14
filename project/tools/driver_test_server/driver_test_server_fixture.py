@@ -212,6 +212,15 @@ def validate_fixture_manifest(manifest: dict[str, Any], issues: list[str]) -> No
         issues.append("fixture_manifest:invalid_schema_version")
     if "server revalidates" not in manifest.get("authority_boundary", "").lower():
         issues.append("fixture_manifest:missing_server_revalidation_boundary")
+    startup = manifest.get("startup", {})
+    if startup.get("database_create_surface") != "public_driver_test_database_seed":
+        issues.append("fixture_manifest:startup_database_create_surface_not_full_seed")
+    if startup.get("full_create_database_required") is not True:
+        issues.append("fixture_manifest:full_create_database_not_required")
+    if startup.get("minimal_resource_bootstrap_allowed") is not False:
+        issues.append("fixture_manifest:minimal_resource_bootstrap_not_forbidden")
+    if startup.get("resource_seed_pack_required") is not True:
+        issues.append("fixture_manifest:resource_seed_pack_not_required")
     required_sections = (
         "startup",
         "shutdown",
@@ -296,7 +305,19 @@ def validate_latest_runtime(latest: dict[str, Any], issues: list[str]) -> None:
     if latest.get("schema_version") != "scratchbird_driver_test_server_v1":
         issues.append("fixture_runtime:invalid_latest_schema")
     server = latest.get("server", {})
+    if not isinstance(server, dict):
+        server = {}
+    if "pid" not in server and latest.get("server_pid"):
+        server = {**server, "pid": latest.get("server_pid")}
     listener = latest.get("listener", {})
+    if not isinstance(listener, dict):
+        listener = {}
+    if "pid" not in listener and latest.get("listener_pid"):
+        listener = {
+            **listener,
+            "pid": latest.get("listener_pid"),
+            "available": latest.get("status") == "running",
+        }
     if not server.get("pid"):
         issues.append("fixture_runtime:missing_server_pid")
     if not listener.get("pid"):
@@ -311,6 +332,23 @@ def validate_latest_runtime(latest: dict[str, Any], issues: list[str]) -> None:
     inet_result = inet.get("result", {})
     if inet.get("ok") is not True and inet_result.get("returncode") != 0:
         issues.append("fixture_runtime:inet_not_verified")
+    database_fixture = latest.get("database_fixture", {})
+    if database_fixture.get("full_create_database") is not True:
+        issues.append("fixture_runtime:database_not_full_create")
+    if database_fixture.get("resource_seed_pack_active") is not True:
+        issues.append("fixture_runtime:resource_seed_pack_not_active")
+    if database_fixture.get("minimal_resource_bootstrap") is not False:
+        issues.append("fixture_runtime:minimal_resource_bootstrap_present")
+    expected_paths = {
+        "app.customers",
+        "app.customer_profiles",
+        "app.payroll_private",
+        "sys.security.users",
+    }
+    seeded_paths = set(database_fixture.get("fixture_objects_seeded", []))
+    missing = sorted(expected_paths - seeded_paths)
+    for path in missing:
+        issues.append(f"fixture_runtime:seed_object_missing:{path}")
 
 
 def validate_commands_file(path: Path, issues: list[str]) -> None:
