@@ -24,6 +24,7 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
     private static final Map<String, List<String>> SYNTHETIC_SYSTEM_VIEWS = Map.of(
         "sys.catalog", List.of("columns", "object_resolver", "schemas", "tables", "views")
     );
+    private static final List<String> SYNTHETIC_SYSTEM_SCHEMAS = List.copyOf(SYNTHETIC_SYSTEM_VIEWS.keySet());
 
     private final SBConnection connection;
 
@@ -1023,17 +1024,21 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         }
         boolean expandSchemaParents = expandSchemaParentNodesInMetadata();
         LinkedHashSet<String> schemaNames = new LinkedHashSet<>();
-        for (Object[] row : queryRows("SELECT schema_name FROM sys.schemas WHERE is_valid = 1 ORDER BY schema_name")) {
-            String schemaName = toStringValue(row, 0);
-            if (schemaName == null || schemaName.isBlank()) {
-                continue;
-            }
-            if (expandSchemaParents) {
-                appendSchemaWithParents(schemaNames, schemaName, schemaPattern);
-            } else if (matchesPattern(schemaName, schemaPattern)) {
-                schemaNames.add(schemaName);
+        List<Object[]> sourceRows = Collections.emptyList();
+        try {
+            sourceRows = queryRows("SELECT schema_name FROM sys.schemas WHERE is_valid = 1 ORDER BY schema_name");
+        } catch (SQLException ignored) {
+            try {
+                sourceRows = queryRows("SELECT schema_name FROM information_schema.schemata ORDER BY schema_name");
+            } catch (SQLException ignoredAgain) {
+                sourceRows = Collections.emptyList();
             }
         }
+
+        for (Object[] row : sourceRows) {
+            appendSchemaName(schemaNames, toStringValue(row, 0), schemaPattern, expandSchemaParents);
+        }
+        appendSyntheticSystemSchemas(schemaNames, schemaPattern, expandSchemaParents);
 
         List<Object[]> rows = new ArrayList<>(schemaNames.size());
         for (String schemaName : schemaNames) {
@@ -1873,6 +1878,23 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             if (matchesPattern(candidate, schemaPattern)) {
                 out.add(candidate);
             }
+        }
+    }
+
+    private void appendSchemaName(Set<String> out, String schemaName, String schemaPattern, boolean expandParents) {
+        if (schemaName == null || schemaName.isBlank()) {
+            return;
+        }
+        if (expandParents) {
+            appendSchemaWithParents(out, schemaName, schemaPattern);
+        } else if (matchesPattern(schemaName, schemaPattern)) {
+            out.add(schemaName);
+        }
+    }
+
+    private void appendSyntheticSystemSchemas(Set<String> out, String schemaPattern, boolean expandParents) {
+        for (String schemaName : SYNTHETIC_SYSTEM_SCHEMAS) {
+            appendSchemaName(out, schemaName, schemaPattern, expandParents);
         }
     }
 
