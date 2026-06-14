@@ -1,0 +1,412 @@
+{
+  "artifact_role": "dbeaver_management_platform_conformance_corpus",
+  "authority_boundary": "DBeaver management-platform fixtures are conformance inputs only. DBeaver-local SBsql, SBLR, UUID, resolver, metadata, import/export, and data-editor material is advisory until the ScratchBird server admits and revalidates it, and MGA transaction inventory remains the only transaction-finality authority.",
+  "component_id": "adaptor:scratchbird-dbeaver-driver",
+  "corpus_id": "dbeaver_management_platform_corpus",
+  "does_not_close_live_server_gate": true,
+  "schema_version": 1,
+  "cases": [
+    {
+      "case_id": "DBEAVER-MGMT-011-LANG-SBLR-001",
+      "category": "language_and_sblr",
+      "claim_boundary": "live_evidence_required_before_complete",
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "coverage": [
+        "dbeaver_shared_sbsql_language_resources",
+        "dbeaver_language_fallback_standard_en",
+        "dbeaver_language_no_disclosure",
+        "dbeaver_sblr_uuid_server_revalidation"
+      ],
+      "driver_finality_authority": false,
+      "gate_ids": [
+        "DBEAVER-MGMT-GATE-011",
+        "DBEAVER-MGMT-GATE-037"
+      ],
+      "language_profiles": [
+        "en-US",
+        "en-CA",
+        "fr-CA",
+        "fr-FR",
+        "de-DE",
+        "it-IT",
+        "es-ES"
+      ],
+      "negative_vectors": [
+        "corrupt_pack",
+        "stale_epoch",
+        "mismatched_schema",
+        "tampered_sblr_uuid_bundle",
+        "cross_principal_replay"
+      ],
+      "parser_execution_authority": false,
+      "proof_status": "required_not_executed_by_static_gate",
+      "required_assertions": [
+        "DBeaver editor validation, completion, quick assist, diagnostics, and prompt planning consume signed shared SBsql resources.",
+        "Localized text and local completion are advisory and cannot disclose hidden objects.",
+        "DBeaver-prepared SBLR/UUID bundles are refused, admitted, or downgraded to SBsql only after server revalidation."
+      ],
+      "required_before_completion": true,
+      "requires_live_server": true,
+      "server_admission": "required",
+      "server_revalidation": "required",
+      "transaction_authority": "server_mga_transaction_inventory",
+      "workplan_ids": [
+        "DBEAVER-MGMT-011",
+        "DBEAVER-MGMT-037"
+      ]
+    },
+    {
+      "case_id": "DBEAVER-MGMT-021-LIVE-CORPUS-001",
+      "category": "live_server_corpus",
+      "claim_boundary": "live_evidence_required_before_complete",
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "coverage": [
+        "dbeaver_live_server_management_corpus",
+        "dbeaver_live_server_clean_reset"
+      ],
+      "driver_finality_authority": false,
+      "gate_ids": [
+        "DBEAVER-MGMT-GATE-021"
+      ],
+      "live_server_paths": [
+        "shared_sbsql_corpus",
+        "dbeaver_management_corpus",
+        "clean_server_reset",
+        "manager_proxy",
+        "embedded_jdbc",
+        "server_revalidation",
+        "audit_result"
+      ],
+      "parser_execution_authority": false,
+      "proof_status": "required_not_executed_by_static_gate",
+      "required_assertions": [
+        "The shared SBsql corpus and DBeaver management corpus run against a clean live server fixture.",
+        "Server reset includes security, catalog, language, and capability epochs.",
+        "Every route proves server admission and audit/refusal evidence."
+      ],
+      "required_before_completion": true,
+      "requires_live_server": true,
+      "server_admission": "required",
+      "server_fixture_ref": "project/tests/conformance/drivers/fixtures/live_driver_test_server/manifest.json",
+      "server_revalidation": "required",
+      "transaction_authority": "server_mga_transaction_inventory",
+      "workplan_ids": [
+        "DBEAVER-MGMT-021"
+      ]
+    },
+    {
+      "case_id": "DBEAVER-MGMT-036-SESSION-ISOLATION-001",
+      "category": "multi_session_isolation",
+      "claim_boundary": "live_evidence_required_before_complete",
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "coverage": [
+        "dbeaver_multi_session_isolation"
+      ],
+      "driver_finality_authority": false,
+      "gate_ids": [
+        "DBEAVER-MGMT-GATE-036"
+      ],
+      "isolation_paths": [
+        "connection_id",
+        "principal",
+        "role",
+        "language_preference",
+        "parser_cache_scope",
+        "completion_cache_scope",
+        "metadata_cache_scope",
+        "transaction_scope",
+        "background_job_scope",
+        "no_cross_connection_leak"
+      ],
+      "parser_execution_authority": false,
+      "proof_status": "required_not_executed_by_static_gate",
+      "required_assertions": [
+        "Two or more simultaneous ScratchBird connections keep metadata, parser, completion, role, language, transaction, and job state isolated.",
+        "Cache reuse across principals or roles is refused or refreshed by server epoch revalidation."
+      ],
+      "required_before_completion": true,
+      "requires_live_server": true,
+      "server_admission": "required",
+      "server_revalidation": "required",
+      "transaction_authority": "server_mga_transaction_inventory",
+      "workplan_ids": [
+        "DBEAVER-MGMT-036"
+      ]
+    },
+    {
+      "case_id": "DBEAVER-MGMT-037-AUTHORIZATION-001",
+      "category": "management_authorization",
+      "claim_boundary": "live_evidence_required_before_complete",
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "authorization_vectors": [
+        "principal_mismatch",
+        "role_mismatch",
+        "group_mismatch",
+        "policy_epoch_injection",
+        "tampered_sblr_uuid_bundle",
+        "server_refusal_vector",
+        "audit_event"
+      ],
+      "coverage": [
+        "dbeaver_server_authorization",
+        "dbeaver_sblr_uuid_server_revalidation"
+      ],
+      "driver_finality_authority": false,
+      "gate_ids": [
+        "DBEAVER-MGMT-GATE-037"
+      ],
+      "parser_execution_authority": false,
+      "proof_status": "required_not_executed_by_static_gate",
+      "required_assertions": [
+        "Every DBeaver-generated action, preview, mutation, SBsql, SBLR, and UUID bundle is admitted or refused by server-side authorization.",
+        "Mismatched principal, role, group, and policy-epoch injection attempts produce deterministic refusal vectors and audit evidence."
+      ],
+      "required_before_completion": true,
+      "requires_live_server": true,
+      "server_admission": "required",
+      "server_revalidation": "required",
+      "transaction_authority": "server_mga_transaction_inventory",
+      "workplan_ids": [
+        "DBEAVER-MGMT-037"
+      ]
+    },
+    {
+      "case_id": "DBEAVER-MGMT-038-PREVIEW-APPLY-001",
+      "category": "preview_apply_conflict",
+      "claim_boundary": "live_evidence_required_before_complete",
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "coverage": [
+        "dbeaver_preview_apply_parity",
+        "dbeaver_stale_object_conflict_refusal"
+      ],
+      "driver_finality_authority": false,
+      "gate_ids": [
+        "DBEAVER-MGMT-GATE-038"
+      ],
+      "parser_execution_authority": false,
+      "preview_apply_paths": [
+        "preview_hash",
+        "applied_operation_hash",
+        "server_refresh",
+        "stale_object_refusal",
+        "deleted_object_refusal",
+        "concurrent_conflict_refusal"
+      ],
+      "proof_status": "required_not_executed_by_static_gate",
+      "required_assertions": [
+        "Previewed SBsql, SBLR, UUID, and UI diff hashes match the applied operation hash or the server refuses deterministically.",
+        "Stale, deleted, or concurrently changed objects are refreshed or refused and are never blindly overwritten."
+      ],
+      "required_before_completion": true,
+      "requires_live_server": true,
+      "server_admission": "required",
+      "server_revalidation": "required",
+      "transaction_authority": "server_mga_transaction_inventory",
+      "workplan_ids": [
+        "DBEAVER-MGMT-038"
+      ]
+    },
+    {
+      "case_id": "DBEAVER-MGMT-039-DATA-EDITOR-001",
+      "category": "data_editor_crud",
+      "claim_boundary": "live_evidence_required_before_complete",
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "coverage": [
+        "dbeaver_data_editor_insert_update_delete",
+        "dbeaver_data_editor_batch_refresh",
+        "dbeaver_data_editor_commit_rollback_autocommit_savepoint",
+        "dbeaver_data_editor_generated_sbsql_sblr_refusal"
+      ],
+      "data_editor_paths": [
+        "insert",
+        "update",
+        "delete",
+        "batching",
+        "refresh",
+        "explicit_commit",
+        "explicit_rollback",
+        "autocommit_success",
+        "autocommit_failure_rollback",
+        "savepoint_rollback",
+        "permission_refusal",
+        "scratchbird_type_handling",
+        "generated_sbsql",
+        "generated_sblr_refusal"
+      ],
+      "driver_finality_authority": false,
+      "gate_ids": [
+        "DBEAVER-MGMT-GATE-039"
+      ],
+      "parser_execution_authority": false,
+      "proof_status": "required_not_executed_by_static_gate",
+      "required_assertions": [
+        "DBeaver data editor insert, update, delete, batching, and refresh use ScratchBird types and server-admitted generated SBsql/SBLR paths.",
+        "Commit, rollback, autocommit success, autocommit failure rollback, and savepoint rollback are proven against server MGA transaction inventory.",
+        "Permission refusals and SBLR refusal behavior are displayed without hiding the server diagnostic."
+      ],
+      "required_before_completion": true,
+      "requires_live_server": true,
+      "server_admission": "required",
+      "server_revalidation": "required",
+      "transaction_authority": "server_mga_transaction_inventory",
+      "workplan_ids": [
+        "DBEAVER-MGMT-039"
+      ]
+    },
+    {
+      "case_id": "DBEAVER-MGMT-040-LONG-OPERATION-001",
+      "category": "long_operation_lifecycle",
+      "claim_boundary": "live_evidence_required_before_complete",
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "coverage": [
+        "dbeaver_long_operation_lifecycle"
+      ],
+      "driver_finality_authority": false,
+      "gate_ids": [
+        "DBEAVER-MGMT-GATE-040"
+      ],
+      "long_operation_paths": [
+        "progress_monitor_events",
+        "cancellation",
+        "timeout",
+        "reconnect",
+        "safe_retry",
+        "partial_failure_state",
+        "audit_visibility",
+        "ui_thread_nonblocking"
+      ],
+      "parser_execution_authority": false,
+      "proof_status": "required_not_executed_by_static_gate",
+      "required_assertions": [
+        "Management and data-transfer jobs expose progress monitor events, cancellation, timeout, reconnect, safe retry, partial failure state, and audit visibility.",
+        "Claimed long-running operations do not block the UI thread and do not leave ambiguous server state."
+      ],
+      "required_before_completion": true,
+      "requires_live_server": true,
+      "server_admission": "required",
+      "server_revalidation": "required",
+      "transaction_authority": "server_mga_transaction_inventory",
+      "workplan_ids": [
+        "DBEAVER-MGMT-040"
+      ]
+    },
+    {
+      "case_id": "DBEAVER-MGMT-041-DATA-TRANSFER-001",
+      "category": "data_transfer",
+      "claim_boundary": "live_evidence_required_before_complete",
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "coverage": [
+        "dbeaver_data_transfer_import_export",
+        "dbeaver_data_transfer_type_encoding",
+        "dbeaver_data_transfer_transaction_authorization"
+      ],
+      "data_transfer_paths": [
+        "import",
+        "export",
+        "data_transfer",
+        "batching",
+        "scratchbird_type_conversion",
+        "encoding",
+        "explicit_commit",
+        "rollback_on_error",
+        "authorization_refusal",
+        "language_resource_hash",
+        "result_parity"
+      ],
+      "driver_finality_authority": false,
+      "gate_ids": [
+        "DBEAVER-MGMT-GATE-041"
+      ],
+      "parser_execution_authority": false,
+      "proof_status": "required_not_executed_by_static_gate",
+      "required_assertions": [
+        "DBeaver import, export, and data-transfer workflows prove ScratchBird type conversion, encoding, batching, language-resource hash binding, and result parity.",
+        "Transaction commit and rollback-on-error behavior is server MGA owned, and authorization refusals are deterministic."
+      ],
+      "required_before_completion": true,
+      "requires_live_server": true,
+      "server_admission": "required",
+      "server_revalidation": "required",
+      "transaction_authority": "server_mga_transaction_inventory",
+      "workplan_ids": [
+        "DBEAVER-MGMT-041"
+      ]
+    },
+    {
+      "case_id": "DBEAVER-MGMT-042-OBJECT-GRAPH-001",
+      "category": "object_graph_tooling",
+      "claim_boundary": "live_evidence_required_before_complete",
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "coverage": [
+        "dbeaver_object_graph_dependency_search",
+        "dbeaver_generated_ddl_sbsql_explain",
+        "dbeaver_metadata_invalidation_authorized_visibility"
+      ],
+      "driver_finality_authority": false,
+      "gate_ids": [
+        "DBEAVER-MGMT-GATE-042"
+      ],
+      "object_graph_paths": [
+        "er_dependency_browse",
+        "object_search",
+        "generated_ddl",
+        "generated_sbsql",
+        "explain_plan",
+        "metadata_invalidation",
+        "authorized_visible_set",
+        "hidden_object_negative"
+      ],
+      "parser_execution_authority": false,
+      "proof_status": "required_not_executed_by_static_gate",
+      "required_assertions": [
+        "ER/dependency browsing, object search, generated DDL, generated SBsql, and explain/plan views are authorization-filtered.",
+        "Metadata invalidation is server-epoch driven and hidden objects do not appear in object graph output."
+      ],
+      "required_before_completion": true,
+      "requires_live_server": true,
+      "server_admission": "required",
+      "server_revalidation": "required",
+      "transaction_authority": "server_mga_transaction_inventory",
+      "workplan_ids": [
+        "DBEAVER-MGMT-042"
+      ]
+    },
+    {
+      "case_id": "DBEAVER-MGMT-045-FEATURE-REFUSAL-001",
+      "category": "feature_boundary_refusal",
+      "claim_boundary": "live_evidence_required_before_complete",
+      "component_id": "adaptor:scratchbird-dbeaver-driver",
+      "coverage": [
+        "dbeaver_feature_boundary_refusal"
+      ],
+      "driver_finality_authority": false,
+      "feature_boundary_paths": [
+        "unsupported_surface",
+        "unavailable_surface",
+        "closed_provider_only_surface",
+        "enterprise_only_surface",
+        "policy_denied_surface",
+        "ui_disabled_or_refusal",
+        "audit_result",
+        "no_overclaim"
+      ],
+      "gate_ids": [
+        "DBEAVER-MGMT-GATE-045"
+      ],
+      "parser_execution_authority": false,
+      "proof_status": "required_not_executed_by_static_gate",
+      "required_assertions": [
+        "Unsupported, unavailable, closed-provider-only, Enterprise-only, and policy-denied surfaces display deterministic feature boundaries or refusals.",
+        "A refused feature cannot look enabled, fail silently, mutate state, or create an implied release claim."
+      ],
+      "required_before_completion": true,
+      "requires_live_server": true,
+      "server_admission": "refusal_required",
+      "server_revalidation": "required",
+      "transaction_authority": "server_mga_transaction_inventory",
+      "workplan_ids": [
+        "DBEAVER-MGMT-045"
+      ]
+    }
+  ]
+}

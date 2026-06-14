@@ -23,6 +23,50 @@ def _hex_text(value: str) -> str:
     return value.encode("utf-8").hex()
 
 
+def _grant_uuid(principal_uuid: str, right: str) -> str:
+    digest = hashlib.sha256(f"{principal_uuid}:{right}".encode("utf-8")).hexdigest()
+    return f"019f0a11-ce00-7000-8000-{digest[:12]}"
+
+
+def _grant_events(
+    principal_uuid: str,
+    authorization_tags: str,
+    grantor_uuid: str | None = None,
+    starting_generation: int = 2,
+) -> list[str]:
+    events: list[str] = []
+    generation = starting_generation
+    grantor = grantor_uuid or principal_uuid
+    for tag in authorization_tags.split(","):
+        tag = tag.strip()
+        if not tag.startswith("right:"):
+            continue
+        right = tag.removeprefix("right:").strip()
+        if not right:
+            continue
+        events.append(
+            "\t".join(
+                [
+                    "SBSECPL1",
+                    "GRANT",
+                    "0",
+                    _grant_uuid(principal_uuid, right),
+                    principal_uuid,
+                    "principal",
+                    "",
+                    "",
+                    right,
+                    grantor,
+                    "allow",
+                    str(generation),
+                    "0",
+                ]
+            )
+        )
+        generation += 1
+    return events
+
+
 def local_password_fingerprint(verifier: str) -> str:
     digest = hashlib.sha256(verifier.encode("utf-8")).hexdigest()
     return f"local-password-verifier:v1:sha256:{digest}"
@@ -73,6 +117,7 @@ def write_local_password_auth_fixture(
     principal: str,
     verifier: str,
     principal_uuid: str = DEFAULT_PRINCIPAL_UUID,
+    authorization_tags: str = "right:CONNECT",
     append: bool = False,
 ) -> None:
     auth_mode = "a" if append else "w"
@@ -95,6 +140,8 @@ def write_local_password_auth_fixture(
     event_mode = "a" if append else "w"
     with Path(str(database) + ".sb.security_principal_events").open(event_mode, encoding="utf-8") as events:
         events.write(event + "\n")
+        for grant_event in _grant_events(principal_uuid, authorization_tags):
+            events.write(grant_event + "\n")
 
 
 def local_password_evidence(

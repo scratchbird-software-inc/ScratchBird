@@ -20,7 +20,7 @@ void main() {
 
   test('parses manager proxy params', () {
     final cfg = ScratchBirdConfig.fromDsn(
-      'scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7',
+      'scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7',
     );
     expect(cfg.frontDoorMode, 'manager_proxy');
     expect(cfg.managerAuthToken, 'token');

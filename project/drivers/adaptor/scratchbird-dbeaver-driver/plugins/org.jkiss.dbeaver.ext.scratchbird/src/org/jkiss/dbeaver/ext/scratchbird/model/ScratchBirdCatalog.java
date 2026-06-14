@@ -43,6 +43,7 @@ import org.jkiss.dbeaver.model.runtime.DBRProgressMonitor;
 import org.jkiss.dbeaver.model.struct.DBSObject;
 import org.jkiss.utils.CommonUtils;
 
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -96,6 +97,10 @@ public class ScratchBirdCatalog extends GenericCatalog {
             }
         }
 
+        if (schemaPaths.isEmpty()) {
+            loadMetadataSchemas(monitor, schemaPaths, schemasByPath);
+        }
+
         List<ScratchBirdCatalogObjectReference> catalogReferences = loadCatalogObjectReferences(monitor);
         if (catalogReferences.isEmpty()) {
             for (String schemaPath : schemaPaths) {
@@ -109,6 +114,29 @@ public class ScratchBirdCatalog extends GenericCatalog {
             roots.add(inflateTree(root, null, schemasByPath));
         }
         schemaTree = roots;
+    }
+
+    private void loadMetadataSchemas(
+        @NotNull DBRProgressMonitor monitor,
+        @NotNull List<String> schemaPaths,
+        @NotNull Map<String, ScratchBirdSchema> schemasByPath
+    ) {
+        try (JDBCSession session = DBUtils.openMetaSession(monitor, this, "Load ScratchBird JDBC metadata schemas");
+             ResultSet resultSet = session.getMetaData().getSchemas(null, "%")) {
+            while (resultSet.next()) {
+                String schemaPath = resultSet.getString("TABLE_SCHEM");
+                if (CommonUtils.isEmpty(schemaPath) || ScratchBirdNamespaceSemantics.isMetricsPath(schemaPath)) {
+                    continue;
+                }
+                if (schemasByPath.containsKey(schemaPath)) {
+                    continue;
+                }
+                schemaPaths.add(schemaPath);
+                schemasByPath.put(schemaPath, new ScratchBirdSchema(getDataSource(), this, schemaPath));
+            }
+        } catch (SQLException | DBException e) {
+            log.debug("ScratchBird JDBC metadata schemas are not available for navigator fallback", e);
+        }
     }
 
     @NotNull
@@ -130,6 +158,32 @@ public class ScratchBirdCatalog extends GenericCatalog {
         @NotNull DBRProgressMonitor monitor
     ) {
         List<ScratchBirdCatalogObjectReference> references = new ArrayList<>();
+        try {
+            executeCatalogObjectQuery(
+                monitor,
+                "WITH RECURSIVE schema_tree AS ( " +
+                    "SELECT r.database_id, r.object_id, r.parent_object_id, r.object_type, r.schema_path, r.full_path, r.object_name, 0 AS depth " +
+                    "FROM sys.catalog.object_resolver r " +
+                    "WHERE r.object_type = 'SCHEMA' " +
+                    "AND (r.parent_object_id IS NULL OR NOT EXISTS ( " +
+                    "SELECT 1 FROM sys.catalog.object_resolver p " +
+                    "WHERE p.object_id = r.parent_object_id AND p.object_type = 'SCHEMA')) " +
+                    "UNION ALL " +
+                    "SELECT c.database_id, c.object_id, c.parent_object_id, c.object_type, c.schema_path, c.full_path, c.object_name, schema_tree.depth + 1 AS depth " +
+                    "FROM sys.catalog.object_resolver c " +
+                    "JOIN schema_tree ON c.parent_object_id = schema_tree.object_id " +
+                    "WHERE c.object_type = 'SCHEMA' " +
+                    ") " +
+                    "SELECT database_id, object_id, parent_object_id, object_type, schema_path, full_path, object_name " +
+                    "FROM schema_tree " +
+                    "ORDER BY depth, full_path",
+                references);
+            return references;
+        } catch (SQLException | DBException e) {
+            log.debug("ScratchBird recursive object resolver tree is not available yet", e);
+        }
+
+        references.clear();
         try {
             executeCatalogObjectQuery(
                 monitor,
@@ -178,14 +232,28 @@ public class ScratchBirdCatalog extends GenericCatalog {
                 if (CommonUtils.isEmpty(databaseUuid)) {
                     databaseUuid = JDBCUtils.safeGetString(resultSet, "database_id");
                 }
-                references.add(ScratchBirdCatalogObjectReference.schema(
+                ScratchBirdCatalogObjectReference reference = ScratchBirdCatalogObjectReference.schema(
                     databaseUuid,
                     JDBCUtils.safeGetString(resultSet, "object_id"),
                     JDBCUtils.safeGetString(resultSet, "parent_object_id"),
                     fullPath,
-                    CommonUtils.isEmpty(objectName) ? leafName(fullPath) : objectName));
+                    CommonUtils.isEmpty(objectName) ? leafName(fullPath) : objectName);
+                references.add(reference);
+                cacheAuthorizedReference(reference);
             }
         }
+    }
+
+    private void cacheAuthorizedReference(@NotNull ScratchBirdCatalogObjectReference reference) {
+        if (!(getDataSource() instanceof ScratchBirdDataSource scratchBirdDataSource)) {
+            return;
+        }
+        ScratchBirdSessionScope sessionScope = scratchBirdDataSource.getScratchBirdSessionScope();
+        sessionScope.resolverCache().putAuthorizedReference(
+            sessionScope.authorizationContext(),
+            reference,
+            CommonUtils.notEmpty(reference.parentUuid()),
+            "server_filtered");
     }
 
     @NotNull

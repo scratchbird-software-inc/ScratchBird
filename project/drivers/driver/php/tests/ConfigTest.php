@@ -41,7 +41,7 @@ final class ConfigTest extends TestCase
 
     public function testParseManagerProxyParams(): void
     {
-        $cfg = Config::fromDsn('scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7');
+        $cfg = Config::fromDsn('scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7');
         $this->assertSame('manager_proxy', $cfg->frontDoorMode);
         $this->assertSame('token', $cfg->managerAuthToken);
         $this->assertSame(7, $cfg->managerClientFlags);

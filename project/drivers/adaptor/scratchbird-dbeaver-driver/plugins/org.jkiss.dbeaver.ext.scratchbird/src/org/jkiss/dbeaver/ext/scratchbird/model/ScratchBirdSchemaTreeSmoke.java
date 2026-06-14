@@ -53,7 +53,7 @@ public final class ScratchBirdSchemaTreeSmoke {
             "users.bob.dev", // duplicate input path
             "analytics.dev",
             "analytics.prod"
-        ));
+        ), true);
 
         require(roots.size() == 8, "Expected canonical roots plus analytics");
 

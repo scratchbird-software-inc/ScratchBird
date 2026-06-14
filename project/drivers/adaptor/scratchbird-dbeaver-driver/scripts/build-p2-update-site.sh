@@ -101,8 +101,11 @@ build_jdbc_jar() {
 
 stage_jdbc_driver() {
   local jdbc_jar
-  jdbc_jar="$(find_jdbc_jar)"
-  if [[ -z "${jdbc_jar}" ]]; then
+  if [[ -n "${SCRATCHBIRD_JDBC_JAR:-}" ]]; then
+    jdbc_jar="$(find_jdbc_jar)"
+  else
+    # Always rebuild from the current JDBC source. Reusing a previous staged
+    # jar can produce an installable DBeaver plugin with stale driver behavior.
     build_jdbc_jar
     jdbc_jar="$(find_jdbc_jar)"
   fi
@@ -149,7 +152,7 @@ stage_jdbc_driver
 
 ${MAVEN} -f "${BUILD_INTEGRATION_DIR}/pom.xml" \
   -Dmaven.repo.local="${MAVEN_REPO_LOCAL}" \
-  clean verify -DskipTests
+  clean verify
 
 REPOSITORY_DIR="${BUILD_INTEGRATION_DIR}/repository/target/repository"
 if [[ ! -f "${REPOSITORY_DIR}/content.jar" && ! -f "${REPOSITORY_DIR}/content.xml" ]]; then

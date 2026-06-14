@@ -63,6 +63,7 @@ public final class ScratchBirdProbeHistory {
     public enum EntryKind {
         AUTHZ_PROBE("Authz probe"),
         LIVE_PROBE("Live probe"),
+        APPLY("Apply"),
         TASK_PREVIEW("Task preview"),
         TASK_VALIDATE("Task validate"),
         TASK_EXECUTE("Task execute");
@@ -103,13 +104,13 @@ public final class ScratchBirdProbeHistory {
             lines.add("Recorded at: " + recordedAt);
             lines.add("Scope: " + targetPath);
             lines.add("Kind: " + kind.label());
-            lines.add("Status: " + status.kind() + ": " + status.message());
+            lines.add("Status: " + status.kind() + ": " + status.redactedMessage());
             lines.add("Form: " + formId + " - " + formName);
             if (!taskId.isBlank()) {
                 lines.add("Task: " + taskId + " - " + taskTitle);
             }
             lines.add("Statements: " + statementCount);
-            lines.add("Authority: " + authority);
+            lines.add("Authority: " + ScratchBirdSecurityRedactor.redactEvidenceText(authority));
             lines.add("Surrogate: " + surrogate);
             return List.copyOf(lines);
         }
@@ -165,12 +166,12 @@ public final class ScratchBirdProbeHistory {
                 "",
                 EntryKind.LIVE_PROBE,
                 result.plan().label(),
-                result.plan().authority(),
-                result.status(),
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.plan().authority()),
+                redactedStatus(result.status()),
                 result.plan().surrogate(),
                 result.statementResults().size(),
-                result.plan().commandText(),
-                result.previewText());
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.plan().commandText()),
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.previewText()));
             addNewestLocked(scopeKey, entry);
             persistLocked();
             return entry;
@@ -196,12 +197,43 @@ public final class ScratchBirdProbeHistory {
                 "",
                 EntryKind.AUTHZ_PROBE,
                 result.plan().label(),
-                result.plan().authority(),
-                result.status(),
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.plan().authority()),
+                redactedStatus(result.status()),
                 result.plan().surrogate(),
                 result.statementResults().size(),
-                result.plan().commandText(),
-                result.previewText());
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.plan().commandText()),
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.previewText()));
+            addNewestLocked(scopeKey, entry);
+            persistLocked();
+            return entry;
+        }
+    }
+
+    @NotNull
+    public static HistoryEntry recordApply(
+        @NotNull String scopeKey,
+        @NotNull String targetPath,
+        @NotNull ScratchBirdFormDefinition form,
+        @NotNull ScratchBirdMutationApplyExecutor.ApplyResult result
+    ) {
+        synchronized (IO_LOCK) {
+            ensureLoadedLocked();
+            HistoryEntry entry = new HistoryEntry(
+                Instant.now().toString(),
+                scopeKey,
+                targetPath,
+                form.id(),
+                form.name(),
+                "",
+                "",
+                EntryKind.APPLY,
+                "ScratchBird admitted apply",
+                "server-authoritative JDBC/SBsql apply after sys.security.permission_probe admission",
+                redactedStatus(result.status()),
+                false,
+                result.applied() ? 1 : 0,
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.commandText()),
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.previewText()));
             addNewestLocked(scopeKey, entry);
             persistLocked();
             return entry;
@@ -234,12 +266,12 @@ public final class ScratchBirdProbeHistory {
                 taskDefinition.title(),
                 kind,
                 result.plan().label(),
-                result.plan().authority(),
-                result.status(),
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.plan().authority()),
+                redactedStatus(result.status()),
                 result.plan().surrogate(),
                 result.statementResults().size(),
-                result.plan().commandText(),
-                result.previewText());
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.plan().commandText()),
+                ScratchBirdSecurityRedactor.redactEvidenceText(result.previewText()));
             addNewestLocked(scopeKey, entry);
             persistLocked();
             return entry;
@@ -425,7 +457,7 @@ public final class ScratchBirdProbeHistory {
             return null;
         }
         try {
-            String sourceSurface = decode(parts[13]);
+            String sourceSurface = ScratchBirdSecurityRedactor.redactEvidenceText(decode(parts[13]));
             return new HistoryEntry(
                 decode(parts[1]),
                 decode(parts[2]),
@@ -436,15 +468,15 @@ public final class ScratchBirdProbeHistory {
                 decode(parts[7]),
                 EntryKind.valueOf(parts[8]),
                 decode(parts[9]),
-                decode(parts[10]),
+                ScratchBirdSecurityRedactor.redactEvidenceText(decode(parts[10])),
                 new ScratchBirdRefusalModel(
                     ScratchBirdRefusalModel.Kind.valueOf(parts[11]),
-                    decode(parts[12]),
+                    ScratchBirdSecurityRedactor.redactEvidenceText(decode(parts[12])),
                     sourceSurface.isBlank() ? null : sourceSurface),
                 Boolean.parseBoolean(parts[14]),
                 Integer.parseInt(parts[15]),
-                decode(parts[16]),
-                decode(parts[17]));
+                ScratchBirdSecurityRedactor.redactEvidenceText(decode(parts[16])),
+                ScratchBirdSecurityRedactor.redactEvidenceText(decode(parts[17])));
         } catch (RuntimeException e) {
             log.warn("Error parsing ScratchBird probe history line", e);
             return null;
@@ -464,5 +496,13 @@ public final class ScratchBirdProbeHistory {
     @NotNull
     private static String normalize(@NotNull String value) {
         return value.toLowerCase(Locale.ENGLISH);
+    }
+
+    @NotNull
+    private static ScratchBirdRefusalModel redactedStatus(@NotNull ScratchBirdRefusalModel status) {
+        return new ScratchBirdRefusalModel(
+            status.kind(),
+            ScratchBirdSecurityRedactor.redactEvidenceText(status.message()),
+            status.sourceSurface() == null ? null : ScratchBirdSecurityRedactor.redactEvidenceText(status.sourceSurface()));
     }
 }

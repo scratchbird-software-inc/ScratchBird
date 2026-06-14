@@ -82,7 +82,7 @@ Driver={ScratchBird};Server=127.0.0.1;Port=3092;Database=mydb;UID=user;AuthMetho
 Manager-proxy:
 
 ```ini
-Driver={ScratchBird};Server=127.0.0.1;Port=3090;Database=mydb;UID=user;PWD=pass;FrontDoorMode=manager_proxy;ManagerAuthToken=token
+Driver={ScratchBird};Server=127.0.0.1;Port=3092;Database=mydb;UID=user;PWD=pass;FrontDoorMode=manager_proxy;ManagerAuthToken=token
 ```
 
 ## Staged Auth / Bootstrap

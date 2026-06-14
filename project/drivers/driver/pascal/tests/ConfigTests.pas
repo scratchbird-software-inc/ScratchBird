@@ -56,7 +56,7 @@ begin
     AssertEqual('secret', Config.Password, 'password kv');
     AssertEqual('off', Config.Compression, 'compression none alias');
 
-    Config := ParseConfig('scratchbird://admin:secret@localhost:3090/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7');
+    Config := ParseConfig('scratchbird://admin:secret@localhost:3092/mydb?front_door_mode=manager_proxy&manager_auth_token=token&manager_client_flags=7');
     AssertEqual('manager_proxy', Config.FrontDoorMode, 'front_door_mode');
     AssertEqual('token', Config.ManagerAuthToken, 'manager_auth_token');
     AssertEqualInt(7, Config.ManagerClientFlags, 'manager_client_flags');

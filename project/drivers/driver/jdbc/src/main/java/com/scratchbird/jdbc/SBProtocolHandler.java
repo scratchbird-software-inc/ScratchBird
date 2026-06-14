@@ -39,6 +39,7 @@ import java.sql.SQLTransientConnectionException;
 import java.sql.SQLTransientException;
 import java.sql.SQLWarning;
 import java.security.KeyStore;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -62,6 +63,7 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 
 /**
  * Protocol handler for ScratchBird native wire protocol.
@@ -2406,8 +2408,11 @@ public class SBProtocolHandler {
             KeyManager[] keyManagers = null;
             TrustManager[] trustManagers = null;
 
+            String sslMode = props.getSslMode();
             if (props.getSslRootCert() != null) {
                 trustManagers = buildTrustManagers(props.getSslRootCert());
+            } else if (!requiresCertificateVerification(sslMode)) {
+                trustManagers = trustAllManagers();
             }
 
             if (props.getSslCert() != null) {
@@ -2420,6 +2425,29 @@ public class SBProtocolHandler {
         } catch (Exception e) {
             throw createSQLException("Failed to initialize SSL context: " + e.getMessage(), "08001", e);
         }
+    }
+
+    private boolean requiresCertificateVerification(String sslMode) {
+        return "verify-ca".equalsIgnoreCase(sslMode) || "verify-full".equalsIgnoreCase(sslMode);
+    }
+
+    private TrustManager[] trustAllManagers() {
+        return new TrustManager[] {
+            new X509TrustManager() {
+                @Override
+                public void checkClientTrusted(X509Certificate[] chain, String authType) {
+                }
+
+                @Override
+                public void checkServerTrusted(X509Certificate[] chain, String authType) {
+                }
+
+                @Override
+                public X509Certificate[] getAcceptedIssuers() {
+                    return new X509Certificate[0];
+                }
+            }
+        };
     }
 
     private TrustManager[] buildTrustManagers(String caPath) throws Exception {
