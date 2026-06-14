@@ -172,66 +172,71 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     }
 
     @Property(viewable = true, order = 7)
+    public boolean isSchemaBranchesFolderVisible() {
+        return catalogBacked && !clientOnly && !isDomainBranch();
+    }
+
+    @Property(viewable = true, order = 8)
     public boolean isObjectFoldersVisible() {
         return isObjectContainerBranch();
     }
 
-    @Property(viewable = true, order = 8)
+    @Property(viewable = true, order = 9)
     public boolean isTableFoldersVisible() {
         return isObjectContainerBranch() && !isDomainBranch();
     }
 
-    @Property(viewable = true, order = 9)
+    @Property(viewable = true, order = 10)
     public boolean isViewFoldersVisible() {
         return isTableFoldersVisible();
     }
 
-    @Property(viewable = true, order = 10)
+    @Property(viewable = true, order = 11)
     public boolean isConstraintFoldersVisible() {
         return isTableFoldersVisible();
     }
 
-    @Property(viewable = true, order = 11)
+    @Property(viewable = true, order = 12)
     public boolean isIndexFoldersVisible() {
         return isTableFoldersVisible();
     }
 
-    @Property(viewable = true, order = 12)
+    @Property(viewable = true, order = 13)
     public boolean isSequenceFoldersVisible() {
         return isTableFoldersVisible();
     }
 
-    @Property(viewable = true, order = 13)
+    @Property(viewable = true, order = 14)
     public boolean isDataTypesFolderVisible() {
         return isDomainBranch();
     }
 
     @Nullable
-    @Property(viewable = true, optional = true, order = 14)
+    @Property(viewable = true, optional = true, order = 15)
     public String getDatabaseUuid() {
         return objectPath.databaseUuid();
     }
 
     @Nullable
-    @Property(viewable = true, optional = true, order = 15)
+    @Property(viewable = true, optional = true, order = 16)
     public String getObjectUuid() {
         return objectPath.objectUuid();
     }
 
     @Nullable
-    @Property(viewable = true, optional = true, order = 16)
+    @Property(viewable = true, optional = true, order = 17)
     public String getParentUuid() {
         return objectPath.parentUuid();
     }
 
     @NotNull
-    @Property(viewable = true, order = 17)
+    @Property(viewable = true, order = 18)
     public String getObjectType() {
         return objectType;
     }
 
     @NotNull
-    @Property(viewable = true, order = 18)
+    @Property(viewable = true, order = 19)
     public String getIdentityStatus() {
         return objectPath.identityStatus();
     }
@@ -348,7 +353,12 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         if (!isConstraintFoldersVisible()) {
             return Collections.emptyList();
         }
-        return getConstraintKeysCache().getObjects(monitor, this, null);
+        try {
+            return getConstraintKeysCache().getObjects(monitor, this, null);
+        } catch (DBException e) {
+            log.debug("ScratchBird schema constraints are not available for navigator at " + fullPath, e);
+            return Collections.emptyList();
+        }
     }
 
     @Override
@@ -356,7 +366,12 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         if (!isIndexFoldersVisible()) {
             return Collections.emptyList();
         }
-        return super.getIndexes(monitor);
+        try {
+            return super.getIndexes(monitor);
+        } catch (DBException e) {
+            log.debug("ScratchBird schema indexes are not available for navigator at " + fullPath, e);
+            return Collections.emptyList();
+        }
     }
 
     @Override

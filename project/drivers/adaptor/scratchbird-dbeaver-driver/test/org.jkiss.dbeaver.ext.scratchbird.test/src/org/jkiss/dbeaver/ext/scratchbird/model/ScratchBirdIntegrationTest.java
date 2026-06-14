@@ -67,7 +67,10 @@ public class ScratchBirdIntegrationTest {
 
         Assert.assertTrue(pluginXml.contains("property=\"schemaTree\""));
         Assert.assertTrue(pluginXml.contains("property=\"childSchemas\""));
-        Assert.assertTrue(pluginXml.contains("recursive=\"..\""));
+        Assert.assertTrue(pluginXml.contains("type=\"org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode\""));
+        Assert.assertTrue(pluginXml.contains("label=\"%tree.schemas.node.name\""));
+        Assert.assertTrue(pluginXml.contains("visibleIf=\"object.schemaBranchesFolderVisible\""));
+        Assert.assertTrue(pluginXml.contains("recursive=\"../..\""));
         Assert.assertTrue(pluginXml.contains("sb_namespace.svg"));
         Assert.assertTrue(pluginXml.contains("sb_system.svg"));
         Assert.assertTrue(pluginXml.contains("sb_domains.svg"));
@@ -113,8 +116,8 @@ public class ScratchBirdIntegrationTest {
         Assert.assertFalse(pluginXml.contains("scratchbird.performance"));
         Assert.assertFalse(pluginXml.contains("<query>SHOW METRICS</query>"));
         Assert.assertFalse(pluginXml.contains("sys.performance"));
-        Assert.assertFalse(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericTable\""));
-        Assert.assertFalse(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericView\""));
+        Assert.assertTrue(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericTable\""));
+        Assert.assertTrue(pluginXml.contains("<folder type=\"org.jkiss.dbeaver.ext.generic.model.GenericView\""));
 
         Assert.assertTrue(pluginXml.contains("id=\"scratchbird_jdbc\""));
         Assert.assertTrue(pluginXml.contains("class=\"com.scratchbird.jdbc.SBDriver\""));
@@ -230,6 +233,9 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdView(this, viewName"));
         Assert.assertTrue(schemaNodeSource.contains("return querySchema.getDataTypes(monitor);"));
         Assert.assertTrue(schemaNodeSource.contains("return getConstraintKeysCache().getObjects(monitor, this, null);"));
+        Assert.assertTrue(schemaNodeSource.contains("ScratchBird schema constraints are not available for navigator"));
+        Assert.assertTrue(schemaNodeSource.contains("ScratchBird schema indexes are not available for navigator"));
+        Assert.assertTrue(schemaNodeSource.contains("public boolean isSchemaBranchesFolderVisible()"));
         Assert.assertTrue(schemaNodeSource.contains("isTableFoldersVisible()"));
         Assert.assertTrue(schemaNodeSource.contains("isDataTypesFolderVisible()"));
         Assert.assertTrue(schemaNodeSource.contains("childSchemas.isEmpty()"));
