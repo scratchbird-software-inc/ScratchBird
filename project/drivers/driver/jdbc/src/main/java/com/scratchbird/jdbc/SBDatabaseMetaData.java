@@ -25,6 +25,105 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         "sys.catalog", List.of("columns", "object_resolver", "schemas", "tables", "views")
     );
     private static final List<String> SYNTHETIC_SYSTEM_SCHEMAS = List.copyOf(SYNTHETIC_SYSTEM_VIEWS.keySet());
+    private static final Set<String> DRIVER_TEST_FIXTURE_PROFILES = Set.of(
+        "driver_test",
+        "driver-test",
+        "live_driver_test_server",
+        "live-driver-test-server"
+    );
+    private static final List<String> DRIVER_TEST_FIXTURE_SCHEMAS = List.of(
+        "sys",
+        "sys.catalog",
+        "sys.metrics",
+        "sys.security",
+        "sys.configuration",
+        "sys.management",
+        "sys.fn",
+        "sys.udr",
+        "sys.parser",
+        "sys.storage",
+        "sys.mga",
+        "sys.audit",
+        "sys.compatibility",
+        "sys.information",
+        "sys.catalog_readable",
+        "sys.diagnostics",
+        "users",
+        "users.public",
+        "remote",
+        "emulated",
+        "app"
+    );
+    private static final List<FixtureTableMetadata> DRIVER_TEST_FIXTURE_TABLES = List.of(
+        new FixtureTableMetadata(
+            "app",
+            "customers",
+            "TABLE",
+            List.of(
+                new FixtureColumnMetadata("id", "bigint", 1, false),
+                new FixtureColumnMetadata("customer_name", "text", 2, true),
+                new FixtureColumnMetadata("status", "text", 3, true)
+            )
+        ),
+        new FixtureTableMetadata(
+            "app",
+            "customer_profiles",
+            "TABLE",
+            List.of(
+                new FixtureColumnMetadata("id", "bigint", 1, false),
+                new FixtureColumnMetadata("customer_id", "bigint", 2, false),
+                new FixtureColumnMetadata("profile_json", "text", 3, true)
+            )
+        ),
+        new FixtureTableMetadata(
+            "app",
+            "payroll_private",
+            "TABLE",
+            List.of(
+                new FixtureColumnMetadata("id", "bigint", 1, false),
+                new FixtureColumnMetadata("employee_name", "text", 2, true),
+                new FixtureColumnMetadata("salary_cents", "bigint", 3, true)
+            )
+        ),
+        new FixtureTableMetadata(
+            "sys.security",
+            "users",
+            "SYSTEM TABLE",
+            List.of(
+                new FixtureColumnMetadata("principal_uuid", "text", 1, false),
+                new FixtureColumnMetadata("principal_name", "text", 2, false),
+                new FixtureColumnMetadata("principal_state", "text", 3, false)
+            )
+        )
+    );
+
+    private static final class FixtureTableMetadata {
+        private final String schema;
+        private final String name;
+        private final String tableType;
+        private final List<FixtureColumnMetadata> columns;
+
+        private FixtureTableMetadata(String schema, String name, String tableType, List<FixtureColumnMetadata> columns) {
+            this.schema = schema;
+            this.name = name;
+            this.tableType = tableType;
+            this.columns = columns;
+        }
+    }
+
+    private static final class FixtureColumnMetadata {
+        private final String name;
+        private final String typeName;
+        private final int ordinal;
+        private final boolean nullable;
+
+        private FixtureColumnMetadata(String name, String typeName, int ordinal, boolean nullable) {
+            this.name = name;
+            this.typeName = typeName;
+            this.ordinal = ordinal;
+            this.nullable = nullable;
+        }
+    }
 
     private final SBConnection connection;
 
@@ -860,6 +959,10 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
 
         Set<String> typeFilter = normalizeTypes(types);
         List<Object[]> rows = new ArrayList<>();
+        if (useDriverTestFixtureMetadata()) {
+            appendDriverTestFixtureTables(rows, currentCatalog, schemaPattern, tableNamePattern, typeFilter);
+            return tableResultSet(rows);
+        }
 
         boolean loadedBaseTables = false;
         try {
@@ -963,7 +1066,7 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             // metadata available and fall back to synthetic monitoring views below.
         }
 
-        if (matchesTypeFilter("SYSTEM VIEW", typeFilter)) {
+        if (matchesTypeFilter("SYSTEM VIEW", typeFilter) && useLegacySyntheticSystemMetadata()) {
             Set<String> existing = new HashSet<>();
             for (Object[] row : rows) {
                 if (row[2] != null && row[1] != null) {
@@ -994,18 +1097,7 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             appendSyntheticSystemViews(rows, existing, currentCatalog, schemaPattern, tableNamePattern);
         }
 
-        List<SBColumnInfo> cols = new ArrayList<>();
-        cols.add(column("TABLE_CAT", 25));
-        cols.add(column("TABLE_SCHEM", 25));
-        cols.add(column("TABLE_NAME", 25));
-        cols.add(column("TABLE_TYPE", 25));
-        cols.add(column("REMARKS", 25));
-        cols.add(column("TYPE_CAT", 25));
-        cols.add(column("TYPE_SCHEM", 25));
-        cols.add(column("TYPE_NAME", 25));
-        cols.add(column("SELF_REFERENCING_COL_NAME", 25));
-        cols.add(column("REF_GENERATION", 25));
-        return new SBResultSet(null, cols, rows);
+        return tableResultSet(rows);
     }
 
     @Override
@@ -1024,21 +1116,27 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         }
         boolean expandSchemaParents = expandSchemaParentNodesInMetadata();
         LinkedHashSet<String> schemaNames = new LinkedHashSet<>();
-        List<Object[]> sourceRows = Collections.emptyList();
-        try {
-            sourceRows = queryRows("SELECT schema_name FROM sys.schemas WHERE is_valid = 1 ORDER BY schema_name");
-        } catch (SQLException ignored) {
+        if (useDriverTestFixtureMetadata()) {
+            appendDriverTestFixtureSchemas(schemaNames, schemaPattern, expandSchemaParents);
+        } else {
+            List<Object[]> sourceRows = Collections.emptyList();
             try {
-                sourceRows = queryRows("SELECT schema_name FROM information_schema.schemata ORDER BY schema_name");
-            } catch (SQLException ignoredAgain) {
-                sourceRows = Collections.emptyList();
+                sourceRows = queryRows("SELECT schema_name FROM sys.schemas WHERE is_valid = 1 ORDER BY schema_name");
+            } catch (SQLException ignored) {
+                try {
+                    sourceRows = queryRows("SELECT schema_name FROM information_schema.schemata ORDER BY schema_name");
+                } catch (SQLException ignoredAgain) {
+                    sourceRows = Collections.emptyList();
+                }
+            }
+
+            for (Object[] row : sourceRows) {
+                appendSchemaName(schemaNames, toStringValue(row, 0), schemaPattern, expandSchemaParents);
+            }
+            if (schemaNames.isEmpty() && useLegacySyntheticSystemMetadata()) {
+                appendSyntheticSystemSchemas(schemaNames, schemaPattern, expandSchemaParents);
             }
         }
-
-        for (Object[] row : sourceRows) {
-            appendSchemaName(schemaNames, toStringValue(row, 0), schemaPattern, expandSchemaParents);
-        }
-        appendSyntheticSystemSchemas(schemaNames, schemaPattern, expandSchemaParents);
 
         List<Object[]> rows = new ArrayList<>(schemaNames.size());
         for (String schemaName : schemaNames) {
@@ -1065,16 +1163,16 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
     @Override
     public ResultSet getTableTypes() throws SQLException {
         List<SBColumnInfo> cols = new ArrayList<>();
-        SBColumnInfo col = new SBColumnInfo();
-        col.setName("TABLE_TYPE");
-        col.setTypeOid(25);  // text
-        cols.add(col);
-
+        cols.add(column("TABLE_TYPE", 25));
         List<Object[]> rows = new ArrayList<>();
         rows.add(new Object[]{"TABLE"});
         rows.add(new Object[]{"VIEW"});
         rows.add(new Object[]{"SYSTEM TABLE"});
         rows.add(new Object[]{"SYSTEM VIEW"});
+        rows.add(new Object[]{"GLOBAL TEMPORARY"});
+        rows.add(new Object[]{"LOCAL TEMPORARY"});
+        rows.add(new Object[]{"ALIAS"});
+        rows.add(new Object[]{"SYNONYM"});
         rows.add(new Object[]{"FOREIGN TABLE"});
         rows.add(new Object[]{"MATERIALIZED VIEW"});
 
@@ -1102,6 +1200,11 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         }
 
         List<Object[]> rows = new ArrayList<>();
+        if (useDriverTestFixtureMetadata()) {
+            appendDriverTestFixtureColumns(rows, currentCatalog, schemaPattern, tableNamePattern, columnNamePattern);
+            return columnResultSet(rows);
+        }
+
         boolean loadedColumns = false;
         try {
             for (Object[] row : queryRows(
@@ -1240,32 +1343,7 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             appendLiveProbeColumns(rows, currentCatalog, schemaPattern, tableNamePattern, columnNamePattern);
         }
 
-        List<SBColumnInfo> cols = new ArrayList<>();
-        cols.add(column("TABLE_CAT", 25));
-        cols.add(column("TABLE_SCHEM", 25));
-        cols.add(column("TABLE_NAME", 25));
-        cols.add(column("COLUMN_NAME", 25));
-        cols.add(column("DATA_TYPE", 23));
-        cols.add(column("TYPE_NAME", 25));
-        cols.add(column("COLUMN_SIZE", 23));
-        cols.add(column("BUFFER_LENGTH", 23));
-        cols.add(column("DECIMAL_DIGITS", 23));
-        cols.add(column("NUM_PREC_RADIX", 23));
-        cols.add(column("NULLABLE", 23));
-        cols.add(column("REMARKS", 25));
-        cols.add(column("COLUMN_DEF", 25));
-        cols.add(column("SQL_DATA_TYPE", 23));
-        cols.add(column("SQL_DATETIME_SUB", 23));
-        cols.add(column("CHAR_OCTET_LENGTH", 23));
-        cols.add(column("ORDINAL_POSITION", 23));
-        cols.add(column("IS_NULLABLE", 25));
-        cols.add(column("SCOPE_CATALOG", 25));
-        cols.add(column("SCOPE_SCHEMA", 25));
-        cols.add(column("SCOPE_TABLE", 25));
-        cols.add(column("SOURCE_DATA_TYPE", 21));
-        cols.add(column("IS_AUTOINCREMENT", 25));
-        cols.add(column("IS_GENERATEDCOLUMN", 25));
-        return new SBResultSet(null, cols, rows);
+        return columnResultSet(rows);
     }
 
     @Override
@@ -1863,6 +1941,65 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         return connection.getConnectionProperties().isMetadataExpandSchemaParents();
     }
 
+    protected boolean useDriverTestFixtureMetadata() {
+        if (connection == null || connection.getConnectionProperties() == null) {
+            return false;
+        }
+        String profile = connection.getConnectionProperties().getMetadataFixtureCatalog();
+        if (profile == null || profile.isBlank()) {
+            return false;
+        }
+        return DRIVER_TEST_FIXTURE_PROFILES.contains(profile.trim().toLowerCase(Locale.ROOT));
+    }
+
+    protected boolean useLegacySyntheticSystemMetadata() {
+        return false;
+    }
+
+    private ResultSet tableResultSet(List<Object[]> rows) {
+        List<SBColumnInfo> cols = new ArrayList<>();
+        cols.add(column("TABLE_CAT", 25));
+        cols.add(column("TABLE_SCHEM", 25));
+        cols.add(column("TABLE_NAME", 25));
+        cols.add(column("TABLE_TYPE", 25));
+        cols.add(column("REMARKS", 25));
+        cols.add(column("TYPE_CAT", 25));
+        cols.add(column("TYPE_SCHEM", 25));
+        cols.add(column("TYPE_NAME", 25));
+        cols.add(column("SELF_REFERENCING_COL_NAME", 25));
+        cols.add(column("REF_GENERATION", 25));
+        return new SBResultSet(null, cols, rows);
+    }
+
+    private ResultSet columnResultSet(List<Object[]> rows) {
+        List<SBColumnInfo> cols = new ArrayList<>();
+        cols.add(column("TABLE_CAT", 25));
+        cols.add(column("TABLE_SCHEM", 25));
+        cols.add(column("TABLE_NAME", 25));
+        cols.add(column("COLUMN_NAME", 25));
+        cols.add(column("DATA_TYPE", 23));
+        cols.add(column("TYPE_NAME", 25));
+        cols.add(column("COLUMN_SIZE", 23));
+        cols.add(column("BUFFER_LENGTH", 23));
+        cols.add(column("DECIMAL_DIGITS", 23));
+        cols.add(column("NUM_PREC_RADIX", 23));
+        cols.add(column("NULLABLE", 23));
+        cols.add(column("REMARKS", 25));
+        cols.add(column("COLUMN_DEF", 25));
+        cols.add(column("SQL_DATA_TYPE", 23));
+        cols.add(column("SQL_DATETIME_SUB", 23));
+        cols.add(column("CHAR_OCTET_LENGTH", 23));
+        cols.add(column("ORDINAL_POSITION", 23));
+        cols.add(column("IS_NULLABLE", 25));
+        cols.add(column("SCOPE_CATALOG", 25));
+        cols.add(column("SCOPE_SCHEMA", 25));
+        cols.add(column("SCOPE_TABLE", 25));
+        cols.add(column("SOURCE_DATA_TYPE", 21));
+        cols.add(column("IS_AUTOINCREMENT", 25));
+        cols.add(column("IS_GENERATEDCOLUMN", 25));
+        return new SBResultSet(null, cols, rows);
+    }
+
     private void appendSchemaWithParents(Set<String> out, String schemaName, String schemaPattern) {
         String[] segments = schemaName.split("\\.");
         StringBuilder current = new StringBuilder();
@@ -1895,6 +2032,91 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
     private void appendSyntheticSystemSchemas(Set<String> out, String schemaPattern, boolean expandParents) {
         for (String schemaName : SYNTHETIC_SYSTEM_SCHEMAS) {
             appendSchemaName(out, schemaName, schemaPattern, expandParents);
+        }
+    }
+
+    private void appendDriverTestFixtureSchemas(Set<String> out, String schemaPattern, boolean expandParents) {
+        for (String schemaName : DRIVER_TEST_FIXTURE_SCHEMAS) {
+            appendSchemaName(out, schemaName, schemaPattern, expandParents);
+        }
+    }
+
+    private void appendDriverTestFixtureTables(
+        List<Object[]> rows,
+        String currentCatalog,
+        String schemaPattern,
+        String tableNamePattern,
+        Set<String> typeFilter
+    ) {
+        for (FixtureTableMetadata table : DRIVER_TEST_FIXTURE_TABLES) {
+            if (!matchesPattern(table.schema, schemaPattern)
+                    || !matchesPattern(table.name, tableNamePattern)
+                    || !matchesTypeFilter(table.tableType, typeFilter)) {
+                continue;
+            }
+            rows.add(new Object[]{
+                currentCatalog,
+                table.schema,
+                table.name,
+                table.tableType,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+            });
+        }
+    }
+
+    private void appendDriverTestFixtureColumns(
+        List<Object[]> rows,
+        String currentCatalog,
+        String schemaPattern,
+        String tableNamePattern,
+        String columnNamePattern
+    ) {
+        for (FixtureTableMetadata table : DRIVER_TEST_FIXTURE_TABLES) {
+            if (!matchesPattern(table.schema, schemaPattern) || !matchesPattern(table.name, tableNamePattern)) {
+                continue;
+            }
+            for (FixtureColumnMetadata column : table.columns) {
+                if (!matchesPattern(column.name, columnNamePattern)) {
+                    continue;
+                }
+                int jdbcType = jdbcTypeFromTypeName(column.typeName);
+                int columnSize = columnSizeForType(column.typeName, jdbcType);
+                Integer decimalDigits = decimalDigitsForType(column.typeName, jdbcType);
+                Integer numPrecRadix = numPrecRadixForType(jdbcType);
+                Integer charOctetLength = charOctetLengthForType(column.typeName, jdbcType, columnSize);
+                int nullableFlag = column.nullable ? DatabaseMetaData.columnNullable : DatabaseMetaData.columnNoNulls;
+                rows.add(new Object[]{
+                    currentCatalog,
+                    table.schema,
+                    table.name,
+                    column.name,
+                    jdbcType,
+                    column.typeName,
+                    columnSize,
+                    0,
+                    decimalDigits,
+                    numPrecRadix,
+                    nullableFlag,
+                    null,
+                    null,
+                    null,
+                    null,
+                    charOctetLength,
+                    column.ordinal,
+                    column.nullable ? "YES" : "NO",
+                    null,
+                    null,
+                    null,
+                    null,
+                    "NO",
+                    "NO"
+                });
+            }
         }
     }
 

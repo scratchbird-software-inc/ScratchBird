@@ -8,6 +8,10 @@
     "listener_binary": "SBgate",
     "parser_binary": "SBParser",
     "database_mode": "single_node_driver_test_database",
+    "database_create_surface": "public_driver_test_database_seed",
+    "full_create_database_required": true,
+    "minimal_resource_bootstrap_allowed": false,
+    "resource_seed_pack_required": true,
     "restart_policy": "stop_then_start_from_recorded_command_bundle"
   },
   "shutdown": {

@@ -964,7 +964,7 @@ public class ScratchBirdIntegrationTest {
             "analytics.dev",
             "analytics.prod"));
 
-        Assert.assertEquals(8, roots.size());
+        Assert.assertEquals(4, roots.size());
 
         ScratchBirdSchemaTreeBuilder.Node users = findNodeByName(roots, "users");
         Assert.assertNotNull(users);
@@ -982,7 +982,7 @@ public class ScratchBirdIntegrationTest {
         ScratchBirdSchemaTreeBuilder.Node sys = findNodeByName(roots, "sys");
         Assert.assertNotNull(sys);
         Assert.assertTrue(sys.isTerminal());
-        Assert.assertNotNull(findNodeByName(sys.getChildren(), "domains"));
+        Assert.assertTrue(sys.getChildren().isEmpty());
 
         ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
         Assert.assertNotNull(metrics);
@@ -1059,7 +1059,7 @@ public class ScratchBirdIntegrationTest {
             "analytics.dev"));
 
         Assert.assertEquals(
-            Arrays.asList("sys", "users", "cluster", "emulated", "remote", "data", "metrics", "analytics", "connections"),
+            Arrays.asList("sys", "users", "cluster", "remote", "metrics", "analytics", "connections"),
             roots.stream().map(ScratchBirdSchemaTreeBuilder.Node::getName).toList());
 
         ScratchBirdSchemaTreeBuilder.Node analytics = findNodeByName(roots, "analytics");
@@ -1112,7 +1112,7 @@ public class ScratchBirdIntegrationTest {
 
     @Test
     public void navigatorActionRegistryRoutesMetricsDomainsAndCatalogBranches() {
-        List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(List.of("data.app"));
+        List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(List.of("sys.domains", "data.app"));
 
         ScratchBirdSchemaTreeBuilder.Node metrics = findNodeByName(roots, "metrics");
         Assert.assertNotNull(metrics);

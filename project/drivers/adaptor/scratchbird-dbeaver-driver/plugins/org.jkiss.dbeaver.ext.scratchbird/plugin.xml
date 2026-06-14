@@ -226,7 +226,7 @@
 
                     <file type="jar" path="drivers/scratchbird"/>
 
-                    <parameter name="driver-properties" value="connect_timeout,socket_timeout,binary_transfer,application_name,schema,currentSchema,search_path,role,sslmode,sslrootcert,sslcert,sslkey,sslpassword,fetch_size,connect_client_flags,protocol,compression,pooling,min_pool_size,max_pool_size,connection_lifetime,acquire_timeout,rewrite_batched_inserts,loggerLevel,loggerFile,front_door_mode,manager_auth_token,manager_username,manager_database,manager_connection_profile,manager_client_intent,manager_client_flags,manager_auth_fast_path,auth_token,auth_method_id,auth_method_payload,auth_payload_json,auth_payload_b64,auth_provider_profile,auth_required_methods,auth_forbidden_methods,auth_require_channel_binding,workload_identity_token,proxy_principal_assertion,dormant_id,dormant_reattach_token,metadataExpandSchemaParents"/>
+                    <parameter name="driver-properties" value="connect_timeout,socket_timeout,binary_transfer,application_name,schema,currentSchema,search_path,role,sslmode,sslrootcert,sslcert,sslkey,sslpassword,fetch_size,connect_client_flags,protocol,compression,pooling,min_pool_size,max_pool_size,connection_lifetime,acquire_timeout,rewrite_batched_inserts,loggerLevel,loggerFile,front_door_mode,manager_auth_token,manager_username,manager_database,manager_connection_profile,manager_client_intent,manager_client_flags,manager_auth_fast_path,auth_token,auth_method_id,auth_method_payload,auth_payload_json,auth_payload_b64,auth_provider_profile,auth_required_methods,auth_forbidden_methods,auth_require_channel_binding,workload_identity_token,proxy_principal_assertion,dormant_id,dormant_reattach_token,metadataExpandSchemaParents,metadata_fixture_catalog"/>
                     <property name="connect_timeout" value="30"/>
                     <property name="socket_timeout" value="0"/>
                     <property name="binary_transfer" value="true"/>
@@ -273,6 +273,7 @@
                         <property id="dormant_id" label="Dormant Id" type="string"/>
                         <property id="dormant_reattach_token" label="Dormant Reattach Token" type="string" features="secured,password"/>
                         <property id="metadataExpandSchemaParents" label="Expand Parent Schema Rows" type="boolean" defaultValue="false"/>
+                        <property id="metadata_fixture_catalog" label="Metadata Fixture Catalog" type="string"/>
                     </propertyGroup>
                     <propertyGroup label="ScratchBird Driver Tuning">
                         <property id="connect_timeout" label="Connect Timeout Seconds" type="integer" defaultValue="30"/>

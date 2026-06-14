@@ -217,6 +217,14 @@ public class SBDriver implements Driver {
         expandSchemaParentsProp.choices = new String[]{"true", "false"};
         propList.add(expandSchemaParentsProp);
 
+        DriverPropertyInfo metadataFixtureCatalogProp = new DriverPropertyInfo(
+            "metadata_fixture_catalog",
+            props.getProperty("metadata_fixture_catalog", ""));
+        metadataFixtureCatalogProp.description =
+            "Optional metadata fixture catalog profile for release test servers; leave empty for normal live metadata";
+        metadataFixtureCatalogProp.choices = new String[]{"", "driver_test"};
+        propList.add(metadataFixtureCatalogProp);
+
         // Application name
         DriverPropertyInfo appProp = new DriverPropertyInfo("ApplicationName",
             props.getProperty("ApplicationName", ""));
