@@ -237,6 +237,40 @@ def validate_fixture_manifest(manifest: dict[str, Any], issues: list[str]) -> No
     for name in ("alice", "bob", "carol", "admin"):
         if name not in user_names:
             issues.append(f"fixture_manifest:missing_user:{name}")
+    alice = next(
+        (user for user in users if isinstance(user, dict) and user.get("name") == "alice"),
+        {},
+    )
+    alice_roles = set(alice.get("roles", [])) if isinstance(alice, dict) else set()
+    alice_rights = set(alice.get("rights", [])) if isinstance(alice, dict) else set()
+    if "sysarch" not in alice_roles:
+        issues.append("fixture_manifest:alice_not_sysarch_role")
+    for right in (
+        "CONNECT",
+        "SELECT",
+        "CREATE",
+        "ALTER",
+        "DROP",
+        "SEC_IDENTITY_ADMIN",
+        "SEC_MEMBERSHIP_ADMIN",
+        "SEC_GRANT_ADMIN",
+        "POLICY_ADMIN",
+        "OBS_MANAGEMENT_CONTROL",
+        "OBS_MANAGEMENT_INSPECT",
+        "OBS_CONFIG_INSPECT",
+        "OBS_CONFIG_CONTROL",
+        "OBS_METRICS_READ_ALL",
+        "OBS_RUNTIME_ALL",
+        "OBS_INDEX_PROFILE_READ",
+        "MGA_TRANSACTION_INSPECT",
+        "UDR_MANAGE",
+        "UDR_INSPECT",
+        "BACKUP_CREATE",
+        "BACKUP_RESTORE",
+        "MANAGER_ADMISSION_ADMIN",
+    ):
+        if right not in alice_rights:
+            issues.append(f"fixture_manifest:alice_missing_sysarch_right:{right}")
     language_profiles = set(manifest.get("language_resources", {}).get("profiles", []))
     for profile in ("en-US", "en-CA", "fr-CA", "fr-FR", "de-DE", "it-IT", "es-ES"):
         if profile not in language_profiles:

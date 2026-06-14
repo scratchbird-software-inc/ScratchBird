@@ -205,6 +205,85 @@ require_supported_dbeaver_version() {
   echo "DBeaver version accepted: ${actual} (minimum ${MIN_DBEAVER_VERSION})"
 }
 
+user_home_for() {
+  local user="$1"
+  if command -v getent >/dev/null 2>&1; then
+    getent passwd "${user}" | awk -F: '{print $6; exit}'
+    return 0
+  fi
+  return 1
+}
+
+dbeaver_data_roots() {
+  local roots=()
+  local sudo_home=""
+  if [[ -n "${XDG_DATA_HOME:-}" ]]; then
+    roots+=("${XDG_DATA_HOME}/DBeaverData")
+  fi
+  if [[ -n "${HOME:-}" ]]; then
+    roots+=("${HOME}/.local/share/DBeaverData")
+  fi
+  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    sudo_home="$(user_home_for "${SUDO_USER}" || true)"
+    if [[ -n "${sudo_home}" ]]; then
+      roots+=("${sudo_home}/.local/share/DBeaverData")
+    fi
+  fi
+  printf '%s\n' "${roots[@]}" | awk 'NF && !seen[$0]++'
+}
+
+refresh_extracted_jdbc_cache() {
+  local zip_path="$1"
+  local plugin_entry=""
+  local tmp_plugin=""
+  local tmp_jdbc=""
+  local root=""
+  local cache=""
+  local refreshed=0
+
+  if ! command -v unzip >/dev/null 2>&1; then
+    echo "Skipping DBeaverData JDBC cache refresh: unzip is not available."
+    return 0
+  fi
+
+  plugin_entry="$(
+    unzip -Z1 "${zip_path}" 2>/dev/null |
+      grep -E '^plugins/org\.jkiss\.dbeaver\.ext\.scratchbird_[^/]+\.jar$' |
+      sort |
+      tail -n 1
+  )"
+  if [[ -z "${plugin_entry}" ]]; then
+    echo "Skipping DBeaverData JDBC cache refresh: ScratchBird plugin jar was not found in update site."
+    return 0
+  fi
+
+  tmp_plugin="$(mktemp)"
+  tmp_jdbc="$(mktemp)"
+  if ! unzip -p "${zip_path}" "${plugin_entry}" > "${tmp_plugin}"; then
+    rm -f "${tmp_plugin}" "${tmp_jdbc}"
+    echo "Skipping DBeaverData JDBC cache refresh: failed to extract ${plugin_entry}."
+    return 0
+  fi
+  if ! unzip -p "${tmp_plugin}" drivers/scratchbird/scratchbird-jdbc.jar > "${tmp_jdbc}"; then
+    rm -f "${tmp_plugin}" "${tmp_jdbc}"
+    echo "Skipping DBeaverData JDBC cache refresh: plugin did not contain drivers/scratchbird/scratchbird-jdbc.jar."
+    return 0
+  fi
+
+  while IFS= read -r root; do
+    [[ -d "${root}/install-data" ]] || continue
+    while IFS= read -r cache; do
+      install -m 0644 "${tmp_jdbc}" "${cache}"
+      refreshed=$((refreshed + 1))
+    done < <(find "${root}/install-data" -path '*/drivers/scratchbird/scratchbird-jdbc.jar' -type f 2>/dev/null)
+  done < <(dbeaver_data_roots)
+
+  rm -f "${tmp_plugin}" "${tmp_jdbc}"
+  if [[ "${refreshed}" -gt 0 ]]; then
+    echo "Refreshed ${refreshed} extracted ScratchBird JDBC cache file(s) under DBeaverData."
+  fi
+}
+
 INSTALL_HINT="${1:-}"
 ZIP_PATH="${2:-}"
 
@@ -274,6 +353,8 @@ if ! grep -q 'org\.jkiss\.dbeaver\.ext\.scratchbird\.feature\.feature\.group' "$
   echo "ScratchBird feature was not found in the installed roots output." >&2
   exit 1
 fi
+
+refresh_extracted_jdbc_cache "${ZIP_PATH}"
 
 cat <<EOF
 ScratchBird install completed successfully.
