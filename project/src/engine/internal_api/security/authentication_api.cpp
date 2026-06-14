@@ -158,6 +158,47 @@ std::vector<std::string> SplitCsv(std::string_view value) {
   return out;
 }
 
+void AddUniqueAuthorizationTag(std::vector<std::string>* tags, std::string tag) {
+  if (tags == nullptr || tag.empty()) { return; }
+  if (std::find(tags->begin(), tags->end(), tag) == tags->end()) {
+    tags->push_back(std::move(tag));
+  }
+}
+
+std::vector<std::string> DurableAuthorizationTagsForPrincipal(
+    const EngineAuthenticateRequest& request,
+    const std::string& principal_uuid,
+    bool include_connect_fallback) {
+  std::vector<std::string> tags;
+  if (include_connect_fallback) {
+    AddUniqueAuthorizationTag(&tags, "right:CONNECT");
+  }
+  if (!IsDurablePrincipalUuid(principal_uuid)) { return tags; }
+  const auto loaded = LoadSecurityPrincipalLifecycleState(request.context);
+  if (!loaded.ok) { return tags; }
+  for (const auto& grant : loaded.state.grants) {
+    if (grant.grantee_kind != "principal" ||
+        grant.grantee_uuid != principal_uuid ||
+        !grant.target_object_uuid.empty() ||
+        grant.grant_effect == "deny" ||
+        !IsKnownSecurityRight(grant.privilege)) {
+      continue;
+    }
+    AddUniqueAuthorizationTag(&tags, "right:" + grant.privilege);
+  }
+  return tags;
+}
+
+std::string JoinCsv(const std::vector<std::string>& values) {
+  std::string out;
+  for (const auto& value : values) {
+    if (value.empty()) { continue; }
+    if (!out.empty()) { out += ","; }
+    out += value;
+  }
+  return out;
+}
+
 std::vector<std::string> AuthorizationTraceTagsForDurableSecurityState(
     const EngineAuthenticateRequest& request,
     const std::map<std::string, std::string>& fields) {
@@ -241,8 +282,65 @@ EngineApiDiagnostic DurableCredentialFingerprintForPrincipal(
                                 "durable_principal_credential_missing");
 }
 
+EngineApiDiagnostic DurableCredentialFingerprintForPrincipalName(
+    const EngineAuthenticateRequest& request,
+    const std::string& principal,
+    std::string* durable_principal_uuid,
+    std::string* credential_fingerprint) {
+  if (durable_principal_uuid == nullptr || credential_fingerprint == nullptr) {
+    return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
+                                  "credential_fingerprint_output_required");
+  }
+  if (principal.empty()) {
+    return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.REQUEST_INVALID",
+                                  "principal_claim_required");
+  }
+  if (request.context.database_path.empty()) {
+    return MakeSecurityDiagnostic("SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                                  "durable_security_state_database_path_required");
+  }
+  const auto loaded = LoadSecurityPrincipalLifecycleState(request.context);
+  if (!loaded.ok) {
+    return MakeSecurityDiagnostic("SECURITY.AUTH_SOURCE_UNAVAILABLE",
+                                  loaded.diagnostic.detail.empty()
+                                      ? "durable_security_state_unavailable"
+                                      : loaded.diagnostic.detail);
+  }
+  const EngineSecurityPrincipalRecord* matched = nullptr;
+  for (const auto& record : loaded.state.principals) {
+    if (record.principal_name != principal) { continue; }
+    if (matched != nullptr) {
+      return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
+                                    "durable_principal_name_ambiguous");
+    }
+    matched = &record;
+  }
+  if (matched == nullptr) {
+    return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
+                                  "durable_principal_credential_missing");
+  }
+  if (matched->lifecycle_state != "active") {
+    return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
+                                  "durable_principal_disabled");
+  }
+  if (matched->credential_fingerprint.empty()) {
+    return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
+                                  "durable_credential_fingerprint_required");
+  }
+  *durable_principal_uuid = matched->principal_uuid;
+  *credential_fingerprint = matched->credential_fingerprint;
+  return EngineApiDiagnostic{"SB_ENGINE_API_OK", "engine.api.ok", {}, false};
+}
+
+bool LooksLikeStructuredAuthEvidence(std::string_view evidence) {
+  return evidence.find("scheme=") != std::string_view::npos ||
+         evidence.find(';') != std::string_view::npos;
+}
+
 EngineApiDiagnostic VerifyLocalPasswordEvidence(const EngineAuthenticateRequest& request,
-                                                const std::string& principal) {
+                                                const std::string& principal,
+                                                std::string* resolved_principal_uuid,
+                                                bool* server_derived_connect_right) {
   if (request.credential_invalid_claim ||
       SecurityOptionPresent(request, "credential:invalid") ||
       SecurityOptionBool(request, "fixture_fail:", false)) {
@@ -255,6 +353,22 @@ EngineApiDiagnostic VerifyLocalPasswordEvidence(const EngineAuthenticateRequest&
   const std::string durable_principal_uuid = DurablePrincipalUuid(request, fields);
   const std::string storage_authority =
       FieldOrOption(request, fields, "storage_authority", "security_storage_authority:");
+  if (scheme == fields.end() && !LooksLikeStructuredAuthEvidence(request.credential_evidence)) {
+    std::string resolved_uuid;
+    std::string durable_fingerprint;
+    const auto durable = DurableCredentialFingerprintForPrincipalName(
+        request, principal, &resolved_uuid, &durable_fingerprint);
+    if (durable.error) { return durable; }
+    const std::string verifier_from_password = SecuritySha256Hex(request.credential_evidence);
+    const std::string expected = LocalPasswordCredentialFingerprint(verifier_from_password);
+    if (expected.empty() || !SecurityConstantTimeEqual(durable_fingerprint, expected)) {
+      return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
+                                    "credential_verifier_mismatch");
+    }
+    if (resolved_principal_uuid != nullptr) { *resolved_principal_uuid = resolved_uuid; }
+    if (server_derived_connect_right != nullptr) { *server_derived_connect_right = true; }
+    return EngineApiDiagnostic{"SB_ENGINE_API_OK", "engine.api.ok", {}, false};
+  }
   if (scheme == fields.end() || scheme->second != "local_password_v1" ||
       evidence_principal == fields.end() || evidence_principal->second != principal ||
       verifier == fields.end() || !IsHexVerifier(verifier->second)) {
@@ -276,6 +390,7 @@ EngineApiDiagnostic VerifyLocalPasswordEvidence(const EngineAuthenticateRequest&
     return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
                                   "credential_verifier_mismatch");
   }
+  if (resolved_principal_uuid != nullptr) { *resolved_principal_uuid = durable_principal_uuid; }
   return EngineApiDiagnostic{"SB_ENGINE_API_OK", "engine.api.ok", {}, false};
 }
 
@@ -401,7 +516,7 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
                                   SecurityOptionBool(request, "credential_evidence_present:", false) ||
                                   SecurityOptionPresent(request, "credential:valid");
   const std::string canonical_provider = CanonicalAuthProviderFamily(provider.empty() ? "local_password" : provider);
-  const auto credential_fields = ParseEvidenceFields(request.credential_evidence);
+  auto credential_fields = ParseEvidenceFields(request.credential_evidence);
   if (canonical_provider == "security_database_temporary_token") {
     const auto temporary_token = VerifySecurityDatabaseTemporaryTokenEvidence(request, principal);
     if (temporary_token.error) {
@@ -411,9 +526,27 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
     provider_request.option_envelopes.push_back("credential_evidence_present:true");
     provider_request.option_envelopes.push_back("protected_material:available");
   } else if ((provider.empty() || provider == "local_password") && credential_present) {
-    const auto local_password = VerifyLocalPasswordEvidence(request, principal);
+    std::string resolved_principal_uuid;
+    bool server_derived_connect_right = false;
+    const auto local_password = VerifyLocalPasswordEvidence(
+        request, principal, &resolved_principal_uuid, &server_derived_connect_right);
     if (local_password.error) {
       return AuthenticationFailureResult(request, local_password.code, local_password.detail);
+    }
+    if (!resolved_principal_uuid.empty()) {
+      credential_fields.emplace("principal_uuid", resolved_principal_uuid);
+      credential_fields.emplace("storage_authority", "mga_security_principal_lifecycle");
+    }
+    const std::string authorization_tags = JoinCsv(
+        DurableAuthorizationTagsForPrincipal(request,
+                                             resolved_principal_uuid,
+                                             server_derived_connect_right));
+    credential_fields.erase("authorization_tags");
+    if (!authorization_tags.empty()) {
+      credential_fields.emplace("authorization_tags", authorization_tags);
+    }
+    if (server_derived_connect_right) {
+      provider_request.option_envelopes.push_back("credential_password_transport:raw");
     }
     provider_request.option_envelopes.push_back("credential_verifier_match:true");
     provider_request.option_envelopes.push_back("protected_material:available");

@@ -96,7 +96,7 @@ public class ScratchBirdMetaModel extends GenericMetaModel {
 
     @Override
     public boolean supportsSequences(@NotNull GenericDataSource dataSource) {
-        return true;
+        return false;
     }
 
     @Override

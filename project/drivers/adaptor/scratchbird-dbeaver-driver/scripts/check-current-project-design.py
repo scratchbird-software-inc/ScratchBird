@@ -22,6 +22,59 @@ README = ROOT / "README.md"
 BUILD_P2 = ROOT / "scripts" / "build-p2-update-site.sh"
 BUILD_BUNDLE = ROOT / "scripts" / "build-stock-test-bundle.sh"
 INSTALL_SOURCE = ROOT / "scripts" / "install-into-dbeaver.sh"
+SCHEMA_NODE_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdSchemaNode.java"
+)
+DATA_SOURCE_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdDataSource.java"
+)
+CATALOG_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdCatalog.java"
+)
+SCHEMA_NODE_MANAGER_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "edit"
+    / "ScratchBirdSchemaNodeManager.java"
+)
 
 REQUIRED_DRIVER_PROPERTIES = {
     "connect_timeout",
@@ -71,6 +124,7 @@ REQUIRED_DRIVER_PROPERTIES = {
     "dormant_id",
     "dormant_reattach_token",
     "metadataExpandSchemaParents",
+    "metadata_fixture_catalog",
 }
 
 REQUIRED_PROVIDER_PROPERTIES = REQUIRED_DRIVER_PROPERTIES - {
@@ -127,6 +181,8 @@ def require_plugin_surface() -> int:
         return fail("sample JDBC URL must expose host and database placeholders")
     if "binary_transfer=true" not in sample_url:
         return fail("sample JDBC URL must use canonical binary_transfer key")
+    if "metadata_fixture_catalog=driver_test" not in sample_url:
+        return fail("sample JDBC URL must select the driver_test metadata fixture for local beta testing")
 
     driver_properties = set()
     for param in driver.findall("parameter"):
@@ -142,9 +198,11 @@ def require_plugin_surface() -> int:
         return fail("driver-properties missing canonical keys: " + ", ".join(missing))
 
     default_names = {prop.get("name") for prop in driver.findall("property")}
-    for required in ("connect_timeout", "socket_timeout", "binary_transfer", "protocol", "compression"):
+    for required in ("connect_timeout", "socket_timeout", "binary_transfer", "protocol", "compression", "metadata_fixture_catalog"):
         if required not in default_names:
             return fail(f"driver default property missing {required}")
+    if driver.find("property[@name='metadata_fixture_catalog']").get("value") != "driver_test":
+        return fail("driver metadata_fixture_catalog default must be driver_test for local beta testing")
     for stale in ("connectTimeout", "socketTimeout", "binaryTransfer"):
         if stale in default_names:
             return fail(f"driver default property still uses stale alias {stale}")
@@ -158,18 +216,110 @@ def require_plugin_surface() -> int:
     if missing_provider:
         return fail("provider-properties missing adapter fields: " + ", ".join(missing_provider))
 
-    performance_dashboard = root.find(".//dashboard[@id='scratchbird.performance']/query")
-    if performance_dashboard is None or (performance_dashboard.text or "").strip() != "SHOW METRICS":
-        return fail("scratchbird.performance dashboard must use SHOW METRICS")
-
+    if root.find(".//extension[@point='org.jkiss.dbeaver.dashboard']") is not None:
+        return fail("live dashboard extension must not be registered until metrics/catalog dashboard queries are implemented")
+    blocked_dashboard_tokens = (
+        "scratchbird.sessions",
+        "scratchbird.transactions",
+        "scratchbird.locks",
+        "scratchbird.performance",
+        'SELECT COUNT(*) AS "Sessions" FROM sys.sessions',
+        'SELECT COUNT(*) AS "Transactions" FROM sys.transactions',
+        'SELECT COUNT(*) AS "Locks" FROM sys.locks',
+        "<query>SHOW METRICS</query>",
+    )
     plugin_text = PLUGIN_XML.read_text(encoding="utf-8")
+    for token in blocked_dashboard_tokens:
+        if token in plugin_text:
+            return fail(f"plugin.xml still registers unsupported dashboard query {token!r}")
+
     if "sys.performance" in plugin_text:
         return fail("plugin.xml still references removed sys.performance surface")
+
+    required_tree_tokens = (
+        '<folder type="org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode"',
+        'label="%tree.schemas.node.name"',
+        'visibleIf="object.schemaBranchesFolderVisible"',
+        'recursive="../.."',
+        '<folder type="org.jkiss.dbeaver.ext.generic.model.GenericTable"',
+        '<folder type="org.jkiss.dbeaver.ext.generic.model.GenericView"',
+    )
+    for token in required_tree_tokens:
+        if token not in plugin_text:
+            return fail(f"plugin.xml missing DBeaver navigator container token {token!r}")
+    return 0
+
+
+def require_schema_node_metadata_fallback() -> int:
+    source = SCHEMA_NODE_SOURCE.read_text(encoding="utf-8")
+    required_tokens = (
+        "return super.getTables(monitor);",
+        "return super.getTable(monitor, name);",
+        "getTableCache().setCache(tables);",
+        "session.getMetaData().getTables(null, fullPath, \"%\", PHYSICAL_TABLE_TYPES)",
+        "session.getMetaData().getTables(null, fullPath, \"%\", VIEW_TYPES)",
+        "new ScratchBirdTable(this, tableName",
+        "new ScratchBirdView(this, viewName",
+        "loadMetadataPhysicalTables(monitor)",
+        "loadMetadataViews(monitor)",
+        "public boolean isSchemaBranchesFolderVisible()",
+        "ScratchBird schema constraints are not available for navigator",
+        "ScratchBird schema indexes are not available for navigator",
+    )
+    for token in required_tokens:
+        if token not in source:
+            return fail(f"schema node metadata fallback missing {token!r}")
+    return 0
+
+
+def require_collapsed_catalog_schema_tree() -> int:
+    source = DATA_SOURCE_SOURCE.read_text(encoding="utf-8")
+    required_tokens = (
+        "public synchronized Collection<ScratchBirdSchemaNode> getSchemaTree",
+        "getOrCreateSyntheticRootCatalog()",
+        "syntheticRootCatalog = null;",
+    )
+    for token in required_tokens:
+        if token not in source:
+            return fail(f"data-source schema tree fallback missing {token!r}")
+    return 0
+
+
+def require_recursive_catalog_tree_query() -> int:
+    source = CATALOG_SOURCE.read_text(encoding="utf-8")
+    required_tokens = (
+        "WITH RECURSIVE schema_tree AS",
+        "JOIN schema_tree ON c.parent_object_id = schema_tree.object_id",
+        "ORDER BY depth, full_path",
+    )
+    for token in required_tokens:
+        if token not in source:
+            return fail(f"catalog recursive schema tree query missing {token!r}")
+    return 0
+
+
+def require_schema_node_manager_nested_create_policy() -> int:
+    source = SCHEMA_NODE_MANAGER_SOURCE.read_text(encoding="utf-8")
+    required_tokens = (
+        "container instanceof ScratchBirdSchemaNode schemaNode",
+        "return false;",
+        "container instanceof ScratchBirdCatalog scratchBirdCatalog",
+    )
+    for token in required_tokens:
+        if token not in source:
+            return fail(f"schema-node manager nested create policy missing {token!r}")
     return 0
 
 
 def main() -> int:
-    for check in (require_no_stale_paths, require_plugin_surface):
+    for check in (
+        require_no_stale_paths,
+        require_plugin_surface,
+        require_schema_node_metadata_fallback,
+        require_collapsed_catalog_schema_tree,
+        require_recursive_catalog_tree_query,
+        require_schema_node_manager_nested_create_policy,
+    ):
         result = check()
         if result != 0:
             return result

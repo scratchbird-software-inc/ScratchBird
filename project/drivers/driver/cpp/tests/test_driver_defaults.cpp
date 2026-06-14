@@ -136,7 +136,7 @@ TEST(DriverDefaultsEnvTest, ParsesManagerProxyConnectionParams) {
     scratchbird::client::NetworkClientConfig cfg;
     scratchbird::core::ErrorContext ctx;
     auto status = scratchbird::client::parseDriverConnectionString(
-        "scratchbird://admin:pw@127.0.0.1:3090/main?"
+        "scratchbird://admin:pw@127.0.0.1:3092/main?"
         "front_door_mode=manager_proxy&manager_auth_token=abc123&"
         "manager_username=admin&manager_database=main&"
         "manager_connection_profile=SBsql&manager_client_intent=SBsql&"
@@ -158,7 +158,7 @@ TEST(DriverDefaultsEnvTest, ParsesBinaryTransferAndCompressionCompatibilityParam
     scratchbird::client::NetworkClientConfig cfg;
     scratchbird::core::ErrorContext ctx;
     auto status = scratchbird::client::parseDriverConnectionString(
-        "scratchbird://admin:pw@127.0.0.1:3090/main?"
+        "scratchbird://admin:pw@127.0.0.1:3092/main?"
         "binary_transfer=false&compression=zstd",
         cfg,
         &ctx);
@@ -171,7 +171,7 @@ TEST(DriverDefaultsEnvTest, RejectsUnsupportedCompressionMode) {
     scratchbird::client::NetworkClientConfig cfg;
     scratchbird::core::ErrorContext ctx;
     auto status = scratchbird::client::parseDriverConnectionString(
-        "scratchbird://admin:pw@127.0.0.1:3090/main?compression=gzip",
+        "scratchbird://admin:pw@127.0.0.1:3092/main?compression=gzip",
         cfg,
         &ctx);
     EXPECT_EQ(status, scratchbird::core::Status::INVALID_ARGUMENT);
@@ -259,7 +259,7 @@ TEST(DriverDefaultsEnvTest, ParseConnectionConfigMirrorsManagedTransportAndSchem
     scratchbird::client::ConnectionConfig cfg;
     scratchbird::core::ErrorContext ctx;
     auto status = scratchbird::client::parseConnectionConfig(
-        "scratchbird://admin:pw@127.0.0.1:3090/main?"
+        "scratchbird://admin:pw@127.0.0.1:3092/main?"
         "front_door_mode=manager_proxy&manager_auth_token=abc123&"
         "currentSchema=users.alice&role=ops&applicationName=cpp_api&"
         "sslmode=verify-full&binary_transfer=true&compression=zstd",
