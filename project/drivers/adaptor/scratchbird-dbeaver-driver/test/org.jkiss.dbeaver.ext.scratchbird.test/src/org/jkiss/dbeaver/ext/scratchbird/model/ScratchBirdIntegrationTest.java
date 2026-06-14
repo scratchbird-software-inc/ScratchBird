@@ -253,6 +253,11 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(catalogSource.contains("WITH RECURSIVE schema_tree AS"));
         Assert.assertTrue(catalogSource.contains("JOIN schema_tree ON c.parent_object_id = schema_tree.object_id"));
         Assert.assertTrue(catalogSource.contains("ORDER BY depth, full_path"));
+
+        String schemaNodeManagerSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdSchemaNodeManager.java");
+        Assert.assertTrue(schemaNodeManagerSource.contains("container instanceof ScratchBirdSchemaNode schemaNode"));
+        Assert.assertTrue(schemaNodeManagerSource.contains("return false;"));
+        Assert.assertTrue(schemaNodeManagerSource.contains("container instanceof ScratchBirdCatalog scratchBirdCatalog"));
     }
 
     @Test

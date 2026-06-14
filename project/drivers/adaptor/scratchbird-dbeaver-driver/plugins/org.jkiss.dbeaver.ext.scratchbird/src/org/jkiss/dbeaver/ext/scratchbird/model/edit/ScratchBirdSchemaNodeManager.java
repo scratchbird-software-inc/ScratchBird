@@ -63,7 +63,7 @@ public class ScratchBirdSchemaNodeManager extends SQLObjectEditor<ScratchBirdSch
         if (container instanceof ScratchBirdSchemaNode schemaNode) {
             return schemaNode.isCatalogBacked() && !schemaNode.isClientOnly() && !schemaNode.isDomainBranch();
         }
-        return container instanceof ScratchBirdCatalog;
+        return false;
     }
 
     @Override

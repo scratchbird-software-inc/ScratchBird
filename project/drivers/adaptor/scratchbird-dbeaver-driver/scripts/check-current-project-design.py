@@ -61,6 +61,20 @@ CATALOG_SOURCE = (
     / "model"
     / "ScratchBirdCatalog.java"
 )
+SCHEMA_NODE_MANAGER_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "edit"
+    / "ScratchBirdSchemaNodeManager.java"
+)
 
 REQUIRED_DRIVER_PROPERTIES = {
     "connect_timeout",
@@ -284,6 +298,19 @@ def require_recursive_catalog_tree_query() -> int:
     return 0
 
 
+def require_schema_node_manager_nested_create_policy() -> int:
+    source = SCHEMA_NODE_MANAGER_SOURCE.read_text(encoding="utf-8")
+    required_tokens = (
+        "container instanceof ScratchBirdSchemaNode schemaNode",
+        "return false;",
+        "container instanceof ScratchBirdCatalog scratchBirdCatalog",
+    )
+    for token in required_tokens:
+        if token not in source:
+            return fail(f"schema-node manager nested create policy missing {token!r}")
+    return 0
+
+
 def main() -> int:
     for check in (
         require_no_stale_paths,
@@ -291,6 +318,7 @@ def main() -> int:
         require_schema_node_metadata_fallback,
         require_collapsed_catalog_schema_tree,
         require_recursive_catalog_tree_query,
+        require_schema_node_manager_nested_create_policy,
     ):
         result = check()
         if result != 0:
