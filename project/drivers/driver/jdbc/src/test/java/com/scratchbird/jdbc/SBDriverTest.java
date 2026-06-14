@@ -60,6 +60,24 @@ public class SBDriverTest {
     }
 
     @Test
+    public void defaultsEmptyPortSegmentFromDbeaverTemplate() throws SQLException {
+        SBConnectionProperties props =
+            SBDriver.parseURL("jdbc:scratchbird://127.0.0.1:/default?sslmode=require", null);
+        assertEquals("127.0.0.1", props.getHost());
+        assertEquals(3092, props.getPort());
+        assertEquals("default", props.getDatabase());
+    }
+
+    @Test
+    public void defaultsEmptyIpv6PortSegmentFromDbeaverTemplate() throws SQLException {
+        SBConnectionProperties props =
+            SBDriver.parseURL("jdbc:scratchbird://[::1]:/default?sslmode=require", null);
+        assertEquals("::1", props.getHost());
+        assertEquals(3092, props.getPort());
+        assertEquals("default", props.getDatabase());
+    }
+
+    @Test
     public void parsesCompressionAndRejectsUnsupportedAlgorithms() throws SQLException {
         SBConnectionProperties zstd = SBDriver.parseURL(
             "jdbc:scratchbird://localhost:3092/demo?compression=zstd", null);
