@@ -66,6 +66,13 @@ function(sb_public_brand_target target_name short_brand full_name scope)
   set_target_properties("${target_name}" PROPERTIES
     OUTPUT_NAME "${short_brand}"
   )
+  get_target_property(target_type "${target_name}" TYPE)
+  if(SB_PUBLIC_TARGET_PLATFORM STREQUAL "windows" AND
+     target_type STREQUAL "SHARED_LIBRARY")
+    set_target_properties("${target_name}" PROPERTIES
+      PREFIX ""
+    )
+  endif()
 
   get_property(sb_public_branding_targets GLOBAL PROPERTY SB_PUBLIC_BRANDING_TARGETS)
   if(NOT sb_public_branding_targets)
