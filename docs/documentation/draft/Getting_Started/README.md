@@ -8,7 +8,7 @@ This guide is intentionally cautious. It describes the architecture and intended
 
 | Directory | Purpose |
 | --- | --- |
-| core_concepts | Plain-language explanations of databases, Convergent Data Engines, and the ScratchBird architecture. |
+| core_concepts | Plain-language explanations of databases, Convergent Data Engines, Multi-Generational Architecture, and the ScratchBird architecture. |
 | operating_modes | How ScratchBird is intended to run as an embedded engine, IPC server, standalone server, or managed group deployment. |
 | architecture | End-user architecture topics: parser separation, recursive schema, SBsql/SBLR, Git-oriented workflows, identity, and recovery. |
 | using_scratchbird | First tasks: creating a database, connecting with SBsql, understanding schemas and reference-system compatibility. |
@@ -36,9 +36,10 @@ ScratchBird uses several branded component names:
 1. [What Is A Database?](core_concepts/what_is_a_database.md)
 2. [What Is A Convergent Data Engine?](core_concepts/what_is_a_convergent_data_engine.md)
 3. [How ScratchBird Implements A CDE](core_concepts/how_scratchbird_implements_a_cde.md)
-4. [Choosing A Mode Summary](operating_modes/choosing_a_mode_summary.md)
-5. [First Database](using_scratchbird/first_database.md)
-6. [First SBsql Session](using_scratchbird/first_sbsql_session.md)
+4. [Understanding MGA](core_concepts/understanding_mga.md)
+5. [Choosing A Mode Summary](operating_modes/choosing_a_mode_summary.md)
+6. [First Database](using_scratchbird/first_database.md)
+7. [First SBsql Session](using_scratchbird/first_sbsql_session.md)
 
 ## Related Manuals
 

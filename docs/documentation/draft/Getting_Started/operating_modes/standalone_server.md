@@ -2,33 +2,17 @@
 
 ## Purpose
 
-Standalone server mode is the client/server shape where clients enter through listener and parser routing. It is the mode to evaluate when a client needs a network-facing entry point, a parser package, protocol negotiation, or compatibility testing through a client tool.
+Standalone server mode is the full client/server shape where clients connect over a network through SBgate (the listener and router) and a parser package that speaks the client's protocol. This is the mode to evaluate when a client needs a network-facing entry point, protocol negotiation, a compatibility parser, or a test of end-to-end client/server behavior.
 
-The defining boundary is that clients do not call SBcore directly. They connect to SBgate, are routed to a parser package, and reach SBcore through the configured local service path.
+The defining boundary is that clients do not reach SBcore (the core database engine) directly. They connect to SBgate, which routes them to a parser package (a component that accepts one client language or protocol family), and that parser lowers admitted work to an internal representation before it reaches the engine.
+
+**Who this is for:** operators validating network-facing deployments, developers testing compatibility parsers, and anyone whose client tool must connect through a listener rather than a local IPC channel.
+
+**How it differs from adjacent modes:** unlike Single-Node IPC Server, standalone server adds a network listener (SBgate) and requires a parser package for every client connection. Unlike Managed Group Deployment, it handles one installation rather than coordinating identity and policy across several.
 
 ## High-Level Shape
 
-```mermaid
-flowchart LR
-    Client[Client tool or application]
-    Gate[SBgate listener]
-    Parser[Parser package]
-    LocalRoute[Local server route]
-    Server[SBsrv]
-    Engine[SBcore]
-    DB[(Database files)]
-    Diagnostics[Message vectors and logs]
-
-    Client --> Gate
-    Gate --> Parser
-    Parser --> LocalRoute
-    LocalRoute --> Server
-    Server --> Engine
-    Engine --> DB
-    Parser --> Diagnostics
-    Server --> Diagnostics
-    Engine --> Diagnostics
-```
+![diagram](./standalone_server-1.svg)
 
 ## What This Mode Is For
 
@@ -46,52 +30,31 @@ Actual suitability depends on the current release, target platform, parser statu
 
 ## Component Responsibilities
 
+Understanding the role of each component makes it easier to diagnose problems at the right layer.
+
 | Component | Responsibility In This Mode |
 | --- | --- |
 | Client | Connects through the configured listener route and sends language or protocol requests. |
 | SBgate | Accepts client connections, performs listener-level routing, and hands work to the selected parser path. |
-| Parser package | Accepts one client language or protocol family, binds visible names, lowers admitted work to SBLR, and renders client-shaped results or diagnostics. |
+| Parser package | Accepts one client language or protocol family, binds visible names, lowers admitted work to SBLR (the internal request representation passed to the engine), and renders client-shaped results or diagnostics. |
 | SBsrv | Provides the local service route to SBcore where configured. |
 | SBcore | Owns durable catalog identity, descriptors, transactions, storage, recovery, authorization, and engine diagnostics. |
 | Configuration | Defines listener endpoints, parser registration, identity sources, database routes, resource files, policy, and diagnostics. |
 
 ## Request Flow
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Gate as SBgate
-    participant Parser as Parser package
-    participant Server as SBsrv
-    participant Engine as SBcore
+The following sequence shows what happens from the moment a client connects to the moment it receives a result. Notice that SBcore is reached only after the connection has been authenticated and the parser has lowered the request.
 
-    Client->>Gate: connect
-    Gate->>Parser: select configured parser route
-    Parser->>Server: attach or open session
-    Server->>Engine: authenticate and materialize authorization
-    Engine-->>Server: session admitted or refused
-    Server-->>Parser: session result
-    Parser-->>Gate: protocol response
-    Gate-->>Client: connected or refused
-    Client->>Gate: statement or protocol request
-    Gate->>Parser: request bytes or text
-    Parser->>Parser: parse and bind
-    Parser->>Server: SBLR request
-    Server->>Engine: execute admitted work
-    Engine-->>Server: result or message vector
-    Server-->>Parser: engine result
-    Parser-->>Gate: client-shaped response
-    Gate-->>Client: rows, status, or diagnostic
-```
+![diagram](./standalone_server-2.svg)
 
 ## Parser Routing
 
-The listener does not make syntax into engine authority. It selects a configured parser path. The parser accepts or refuses the client surface, then submits a bound request to the engine path.
+The listener selects a configured parser path — it does not make syntax into engine authority on its own. The parser accepts or refuses the client surface, then submits a bound request to the engine path.
 
-Parser routing must be explicit enough that users can answer:
+Parser routing should be explicit enough that you can answer these questions for any connected session:
 
 - which parser handled the connection;
-- which database or workarea the session entered;
+- which database or workarea (the namespace root visible to a compatibility client) the session entered;
 - which identity was authenticated;
 - which schema root the session sees;
 - which unsupported or denied requests are refused by the parser;
@@ -99,7 +62,7 @@ Parser routing must be explicit enough that users can answer:
 
 ## Compatibility Parser Boundaries
 
-A compatibility parser is scoped to its own client family.
+A compatibility parser is scoped to its own client family. Being explicit about what a parser must not do prevents accidental bypass of engine authority.
 
 It should not:
 
@@ -121,7 +84,7 @@ It should:
 
 ## First Standalone Server Smoke Test
 
-A useful first standalone test should prove:
+With more components involved than in embedded or IPC mode, a first standalone test needs to verify each layer in turn before declaring success.
 
 1. Required binaries, parser packages, and resource files are staged together.
 2. Configuration validates before accepting clients.
@@ -138,7 +101,7 @@ A useful first standalone test should prove:
 
 ## Diagnostics To Collect
 
-Standalone server mode has more moving parts than embedded or IPC mode. Useful diagnostics include:
+Standalone server mode has more moving parts than embedded or IPC mode. When something goes wrong, capturing diagnostics at each layer points to the right fix faster.
 
 - configuration validation result;
 - listener endpoint and route selection;
@@ -155,9 +118,7 @@ Diagnostics should be redacted before sharing outside trusted support channels.
 
 ## Security And Exposure
 
-Network-facing entry points require careful configuration.
-
-Before allowing access beyond a local test environment, verify:
+Network-facing entry points require explicit configuration — do not rely on defaults to provide security. Before allowing access beyond a local test environment, verify:
 
 - only intended endpoints are listening;
 - authentication is configured;
@@ -167,11 +128,9 @@ Before allowing access beyond a local test environment, verify:
 - server-local file access is denied unless an explicit documented policy admits a safe operation;
 - unsupported management or low-level actions refuse clearly.
 
-This guide does not certify a deployment shape. It describes the concepts to verify.
+This guide describes the concepts to verify, not a certified deployment shape.
 
 ## What This Mode Does Not Provide
-
-Standalone server mode does not automatically provide:
 
 - implementation of every command in every parser package;
 - compatibility with every external client tool;
@@ -180,6 +139,12 @@ Standalone server mode does not automatically provide:
 - automatic data movement;
 - physical backup or repair through parser routes;
 - production readiness without release-specific proof.
+
+## When To Choose Another Mode
+
+If several installations need consistent manager-mediated entry, shared identity, or coordinated policy admission, read [Managed Group Deployment](group_deployment.md).
+
+For hands-on listener startup, parser registration, and configuration procedure, see the [Operating Modes Runbook](../../Operations_Administration/operating_modes_runbook.md).
 
 ## Where To Go Next
 

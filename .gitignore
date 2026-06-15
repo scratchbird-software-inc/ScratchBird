@@ -7,6 +7,7 @@
 !/docs/
 !/project/
 !/.gitignore
+!/.gitattributes
 !/LICENSE
 !/NOTICE
 !/README.md
@@ -110,3 +111,12 @@ project/tests/reference_regression/firebird/original_firebird_qa/**
 project/tests/[d]onor_regression/[d]onor_release_acquisition/**
 project/tests/[d]onor_regression/**/native_tool_harness/tools/**
 project/tests/[d]onor_regression/firebird/original_firebird_qa/**
+
+# Temporary private pre-release distribution bundles. These are intentionally
+# trackable while the repository remains private and must be removed or moved to
+# external release hosting before the first official public source release.
+!/packaging/
+!/packaging/**
+packaging/**/.staging/
+packaging/**/__pycache__/
+packaging/**/*.tmp

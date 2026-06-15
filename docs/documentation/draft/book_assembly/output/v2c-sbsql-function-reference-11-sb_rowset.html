@@ -1,0 +1,1792 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-rowset-functional-reference" id="toc-sb-rowset-functional-reference">SB Rowset Functional
+Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#element" id="toc-element"><code>element</code></a></li>
+<li><a href="#fusion" id="toc-fusion"><code>fusion</code></a></li>
+<li><a href="#generate_series" id="toc-generate_series"><code>generate_series</code></a></li>
+<li><a href="#intersection" id="toc-intersection"><code>intersection</code></a></li>
+<li><a href="#rowset" id="toc-rowset"><code>rowset</code></a></li>
+<li><a href="#rowset_append" id="toc-rowset_append"><code>rowset_append</code></a></li>
+<li><a href="#rowset_new" id="toc-rowset_new"><code>rowset_new</code></a></li>
+<li><a href="#rowset_size" id="toc-rowset_size"><code>rowset_size</code></a></li>
+<li><a href="#rowset_to_array" id="toc-rowset_to_array"><code>rowset_to_array</code></a></li>
+<li><a href="#setof" id="toc-setof"><code>setof</code></a></li>
+<li><a href="#setof_key_text_value_document" id="toc-setof_key_text_value_document"><code>setof_key_text_value_document</code></a></li>
+<li><a href="#setof_key_text_value_text" id="toc-setof_key_text_value_text"><code>setof_key_text_value_text</code></a></li>
+<li><a href="#table_value" id="toc-table_value"><code>table_value</code></a></li>
+<li><a href="#table_value_append" id="toc-table_value_append"><code>table_value_append</code></a></li>
+<li><a href="#table_value_new" id="toc-table_value_new"><code>table_value_new</code></a></li>
+<li><a href="#unnest" id="toc-unnest"><code>unnest</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_rowset.md -->
+<p><a id="ch-language-reference-functional-reference-sb-rowset-md"></a></p>
+<h1 id="sb-rowset-functional-reference">SB Rowset Functional
+Reference</h1>
+<p>Generation task: <code>sb_rowset</code></p>
+<p>Package namespace: <code>sb.rowset</code></p>
+<p>Rowset, set-returning, table-value, multiset, and series construction
+helpers.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Creates and transforms rowset, table-value, array, multiset, and
+generated-series values.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>scalar</td>
+<td style="text-align: right;">16</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="element"><code>element</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>element</code> and returns
+single JSON-backed element or SQL NULL for empty multiset; non-singleton
+multiset refuses with invalid input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>element(multiset&lt;T&gt;)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>multiset&lt;T&gt;</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li>Descriptor rule: one singleton array-backed multiset.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>single JSON-backed element or SQL NULL for empty multiset;
+non-singleton multiset refuses with invalid input.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> element(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.multiset.element</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7c3e-a192-e79f26db9b80</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.multiset_element.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.multiset_element</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>element</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC053-multiset-element</code>.</p>
+<h3 id="fusion"><code>fusion</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>fusion</code> and returns
+array JSON with fused multiset elements.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>fusion(multiset&lt;T&gt;)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>multiset&lt;T&gt;</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li>Descriptor rule: one or more array-backed multisets.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>array JSON with fused multiset elements.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> fusion(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.multiset.fusion</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-70b2-9c5e-e8db048341ca</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.multiset_fusion.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.multiset_fusion</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>fusion</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC053-multiset-fusion</code>.</p>
+<h3 id="generate_series"><code>generate_series</code></h3>
+<p><strong>Purpose:</strong> Returns a generated sequence of values as a
+rowset.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>generate_series(start,stop[,step])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>start</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>stop[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>step]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: int64 start, stop, and optional nonzero int64
+step.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>bounded integer array JSON.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">value</span> <span class="kw">from</span> generate_series(<span class="dv">1</span>, <span class="dv">5</span>) <span class="kw">as</span> <span class="fu">value</span>;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.rowset.generate_series</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7e2c-b437-ebbbc2d4f35b</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.rowset_generate_series.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.rowset_generate_series</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>generate_series</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC053-generate-series-start-stop-step</code>.</p>
+<h3 id="intersection"><code>intersection</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>intersection</code> and
+returns array JSON with common multiset elements.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>intersection(multiset&lt;T&gt;)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>multiset&lt;T&gt;</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li>Descriptor rule: one or more array-backed multisets.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>array JSON with common multiset elements.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> intersection(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.multiset.intersection</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7968-9b55-2bdbfa60c297</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.multiset_intersection.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.multiset_intersection</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>intersection</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC053-multiset-intersection</code>.</p>
+<h3 id="rowset"><code>rowset</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>rowset</code> and returns
+rowset JSON descriptor with zero rows.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>rowset(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: zero or one optional row-shape descriptor.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>rowset JSON descriptor with zero rows.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> rowset(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.rowset.rowset</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-78cb-8907-f0afcc0374f1</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.rowset_rowset.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.rowset_rowset</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>rowset</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC053-rowset-marker</code>.</p>
+<h3 id="rowset_append"><code>rowset_append</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>rowset_append</code> and
+returns rowset JSON descriptor with one appended row.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>rowset_append(rowset,expr[,expr...])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>rowset</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>expr[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>expr...]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: rowset descriptor and one or more row values.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>rowset JSON descriptor with one appended row.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> rowset_append(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.rowset.append</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7275-bd16-ba5ae55214da</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.rowset_append.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.rowset_append</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>rowset_append</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC053-rowset-append-exprs</code>.</p>
+<h3 id="rowset_new"><code>rowset_new</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>rowset_new</code> and
+returns rowset JSON descriptor with zero rows.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>rowset_new(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional row-shape descriptor.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>rowset JSON descriptor with zero rows.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> rowset_new(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.rowset.new</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-77b1-8fef-7b509cc646ae</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.rowset_new.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.rowset_new</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>rowset_new</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC053-rowset-new-empty</code>.</p>
+<h3 id="rowset_size"><code>rowset_size</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>rowset_size</code> and
+returns int64 descriptor row count.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>rowset_size(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one rowset descriptor.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>int64 descriptor row count.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> rowset_size(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.rowset.size</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7aa8-a950-773cbbd414ec</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.rowset_size.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.rowset_size</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>rowset_size</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC053-rowset-size-marker</code>.</p>
+<h3 id="rowset_to_array"><code>rowset_to_array</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>rowset_to_array</code> and
+returns array JSON containing descriptor rows.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>rowset_to_array(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one rowset descriptor.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>array JSON containing descriptor rows.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> rowset_to_array(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.rowset.to_array</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-780f-9abf-9905eff4d97f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.rowset_to_array.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.rowset_to_array</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>rowset_to_array</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC053-rowset-to-array-marker</code>.</p>
+<h3 id="setof"><code>setof</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>setof</code> and returns
+setof JSON descriptor with columns, one row, and row_count.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>setof(T,...,ordinalitybigint)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>T</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li><code>...</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li><code>ordinalitybigint</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li>Descriptor rule: zero or more scalar values.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>setof JSON descriptor with columns, one row, and row_count.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> setof(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.setof.generic</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-70f5-b358-f82a3542467b</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.setof_generic.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.setof_generic</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>setof</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC053-setof-generic</code>.</p>
+<h3 id="setof_key_text_value_document"><code>setof_key_text_value_document</code></h3>
+<p><strong>Purpose:</strong> Evaluates
+<code>setof_key_text_value_document</code> and returns setof JSON
+descriptor containing one key/document row.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>setof(keytext,valuedocument)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>keytext</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>valuedocument</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li>Descriptor rule: non-null text key and nullable document value.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>setof JSON descriptor containing one key/document row.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> setof_key_text_value_document(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.setof.key_text_value_document</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7cd3-a7bf-a84f1da87607</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.setof_key_text_value_document.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.setof_key_text_value_document</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>setof_key_text_value_document</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC053-setof-key-text-value-document</code>.</p>
+<h3 id="setof_key_text_value_text"><code>setof_key_text_value_text</code></h3>
+<p><strong>Purpose:</strong> Evaluates
+<code>setof_key_text_value_text</code> and returns setof JSON descriptor
+containing one key/value text row.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>setof(keytext,valuetext)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>keytext</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>valuetext</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Descriptor rule: non-null text key and nullable text value.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>setof JSON descriptor containing one key/value text row.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> setof_key_text_value_text(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.setof.key_text_value_text</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7d76-a1e4-ac2ea892d178</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.setof_key_text_value_text.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.setof_key_text_value_text</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>setof_key_text_value_text</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC053-setof-key-text-value-text</code>.</p>
+<h3 id="table_value"><code>table_value</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>table_value</code> and
+returns table_value JSON descriptor with zero rows.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>table_value(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: zero or one optional row-shape descriptor.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>table_value JSON descriptor with zero rows.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> table_value(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.table_value.value</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7db1-8865-e6a826478d12</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.table_value_value.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.table_value_value</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>table_value</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC053-table-value-marker</code>.</p>
+<h3 id="table_value_append"><code>table_value_append</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>table_value_append</code>
+and returns table_value JSON descriptor with one appended row.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>table_value_append(tv,row)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>tv</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li><code>row</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li>Descriptor rule: table_value descriptor and one row payload.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>table_value JSON descriptor with one appended row.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> table_value_append(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.table_value.append</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7d07-aa7b-1f120bd32150</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.table_value_append.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.table_value_append</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>table_value_append</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC053-table-value-append-row</code>.</p>
+<h3 id="table_value_new"><code>table_value_new</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>table_value_new</code> and
+returns table_value JSON descriptor with zero rows.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>table_value_new(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional row-shape descriptor.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>table_value JSON descriptor with zero rows.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> table_value_new(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.table_value.new</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-769f-af69-9f68356bf2cf</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.table_value_new.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.table_value_new</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>table_value_new</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC053-table-value-new-empty</code>.</p>
+<h3 id="unnest"><code>unnest</code></h3>
+<p><strong>Purpose:</strong> Expands an array or descriptor-supported
+collection into a rowset.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>unnest(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one array descriptor.</li>
+<li>Coercion: rowset/table_value arguments use bounded JSON descriptors;
+set-returning helpers emit array JSON payloads; scalar arguments are
+converted through SBLR scalar encodings.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor-dependent routes; SQL NULL scalar elements are represented as
+JSON null where rows or arrays are constructed.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>array JSON preserving input elements.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: descriptor and array payloads are deterministic
+UTF-8 JSON text; no collation-sensitive comparison except exact multiset
+token matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR rowset.table
+runtime using bounded in-core descriptor helpers; no parser SQL,
+external execution, storage scan, cursor lifecycle authority, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed descriptor, scalar non-array unnest,
+step-zero generate_series, or non-array multiset input refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> item <span class="kw">from</span> unnest(<span class="dt">array</span>[<span class="dv">1</span>, <span class="dv">2</span>, <span class="dv">3</span>]) <span class="kw">as</span> item;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.rowset.unnest</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7713-a8f2-6cda4672b5c5</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.rowset_unnest.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.rowset_unnest</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>unnest</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC053-unnest-marker</code>.</p>
+</body>
+</html>

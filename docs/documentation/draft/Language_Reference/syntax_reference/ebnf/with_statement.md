@@ -21,7 +21,7 @@ with_clause             ::= "WITH" "RECURSIVE"? cte_list select_statement ;
 
 | Parent Production |
 | --- |
-| query_statement |
+| query_dml_stmt |
 
 ## Child Productions
 
@@ -36,7 +36,7 @@ with_clause             ::= "WITH" "RECURSIVE"? cte_list select_statement ;
 
 ```ebnf
 recursive_values_cte    ::= "WITH" "RECURSIVE" identifier column_alias_list?
-                            "AS" "(" values_source "UNION" "DISTINCT"? values_source ")"
+                            "AS" "(" insert_source "UNION" "DISTINCT"? insert_source ")"
                             select_statement ;
 ```
 

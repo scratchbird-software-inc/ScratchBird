@@ -289,6 +289,11 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
       api_request.predicate.canonical_predicate_envelope = operand.value;
     }
   }
+  const std::string current_role_uuid =
+      api::SecurityOptionValue(api_request, "current_role_uuid:");
+  if (!current_role_uuid.empty()) {
+    api_request.context.current_role_uuid.canonical = current_role_uuid;
+  }
   if (api_request.target_object.uuid.canonical.empty()) {
     api_request.target_object.uuid.canonical =
         api::SecurityOptionValue(api_request, "target_object_uuid:");

@@ -27,7 +27,7 @@ merge_target ::=
 
 merge_source ::=
       table_expression
-    | "(" query_statement ")" source_alias? ;
+    | "(" query_dml_stmt ")" source_alias? ;
 
 merge_when_clause ::=
       WHEN MATCHED merge_when_condition? THEN merge_matched_action
@@ -53,10 +53,7 @@ upsert_statement ::=
     conflict_clause?
     returning_clause? ;
 
-upsert_source ::=
-      values_insert_source
-    | query_insert_source
-    | default_values_source ;
+upsert_source ::= insert_source ;
 
 conflict_clause ::=
     ON CONFLICT conflict_target? conflict_action ;

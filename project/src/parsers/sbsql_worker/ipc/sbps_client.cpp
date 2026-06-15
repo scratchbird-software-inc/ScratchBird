@@ -353,6 +353,12 @@ std::string UuidToText(const std::array<std::uint8_t, 16>& uuid) {
   return out;
 }
 
+bool UuidPresent(const std::array<std::uint8_t, 16>& uuid) {
+  return std::any_of(uuid.begin(), uuid.end(), [](std::uint8_t value) {
+    return value != 0;
+  });
+}
+
 std::array<std::uint8_t, 16> TextToUuid(std::string_view text) {
   std::array<std::uint8_t, 16> out{};
   auto hex_value = [](char ch) -> int {
@@ -861,6 +867,7 @@ std::vector<std::uint8_t> EncodeAuthPayload(const AuthCredentialEnvelope& creden
   PutString(&out, credentials.requested_language.empty() ? "en" : credentials.requested_language);
   PutString(&out, credentials.credential_evidence);
   PutString(&out, credentials.application_name);
+  PutString(&out, credentials.requested_role);
   return out;
 }
 
@@ -1146,6 +1153,8 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
   std::uint64_t snapshot_visible_through_local_transaction_id = 0;
   std::string transaction_uuid;
   std::string transaction_timestamp;
+  std::vector<std::string> effective_role_uuids;
+  std::vector<std::string> effective_group_uuids;
   if (offset < attach_response.payload.size()) {
     if (offset + 16 > attach_response.payload.size()) {
       AddDiagnostic(messages, "PARSER_SERVER_IPC.ATTACH_RESULT_INVALID", "The server attach result payload is malformed.");
@@ -1159,6 +1168,50 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
         !ReadString(attach_response.payload, &offset, &transaction_timestamp)) {
       AddDiagnostic(messages, "PARSER_SERVER_IPC.ATTACH_RESULT_INVALID", "The server attach result payload is malformed.");
       return false;
+    }
+  }
+  if (offset < attach_response.payload.size()) {
+    auto add_unique_uuid_text = [](std::vector<std::string>* values,
+                                   const std::array<std::uint8_t, 16>& uuid) {
+      if (values == nullptr || !UuidPresent(uuid)) return;
+      const std::string text = UuidToText(uuid);
+      if (std::find(values->begin(), values->end(), text) == values->end()) {
+        values->push_back(text);
+      }
+    };
+    if (offset + 4 > attach_response.payload.size()) {
+      AddDiagnostic(messages, "PARSER_SERVER_IPC.ATTACH_RESULT_INVALID", "The server attach role payload is malformed.");
+      return false;
+    }
+    const auto role_count = GetU32(attach_response.payload, offset);
+    offset += 4;
+    for (std::uint32_t index = 0; index < role_count; ++index) {
+      if (offset + 16 > attach_response.payload.size()) {
+        AddDiagnostic(messages, "PARSER_SERVER_IPC.ATTACH_RESULT_INVALID", "The server attach role payload is malformed.");
+        return false;
+      }
+      add_unique_uuid_text(&effective_role_uuids, GetUuid(attach_response.payload, offset));
+      offset += 16;
+    }
+    if (offset + 16 > attach_response.payload.size()) {
+      AddDiagnostic(messages, "PARSER_SERVER_IPC.ATTACH_RESULT_INVALID", "The server attach active-role payload is malformed.");
+      return false;
+    }
+    add_unique_uuid_text(&effective_role_uuids, GetUuid(attach_response.payload, offset));
+    offset += 16;
+    if (offset + 4 > attach_response.payload.size()) {
+      AddDiagnostic(messages, "PARSER_SERVER_IPC.ATTACH_RESULT_INVALID", "The server attach group payload is malformed.");
+      return false;
+    }
+    const auto group_count = GetU32(attach_response.payload, offset);
+    offset += 4;
+    for (std::uint32_t index = 0; index < group_count; ++index) {
+      if (offset + 16 > attach_response.payload.size()) {
+        AddDiagnostic(messages, "PARSER_SERVER_IPC.ATTACH_RESULT_INVALID", "The server attach group payload is malformed.");
+        return false;
+      }
+      add_unique_uuid_text(&effective_group_uuids, GetUuid(attach_response.payload, offset));
+      offset += 16;
     }
   }
   (void)database_path;
@@ -1181,6 +1234,8 @@ bool SbpsClient::AuthenticateAndAttach(const AuthCredentialEnvelope& credentials
   session->principal_claim = credentials.principal;
   session->auth_provider_family =
       credentials.provider_family.empty() ? "local_password" : credentials.provider_family;
+  session->effective_role_uuids = std::move(effective_role_uuids);
+  session->effective_group_uuids = std::move(effective_group_uuids);
   ApplySbpsLanguageContext(session,
                            credentials.requested_language,
                            descriptor_epoch == 0 ? name_resolution_epoch

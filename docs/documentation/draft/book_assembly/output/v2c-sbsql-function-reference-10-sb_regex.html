@@ -1,0 +1,1360 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-regex-functional-reference" id="toc-sb-regex-functional-reference">SB Regex Functional Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#occurrences_regex" id="toc-occurrences_regex"><code>occurrences_regex</code></a></li>
+<li><a href="#position_regex" id="toc-position_regex"><code>position_regex</code></a></li>
+<li><a href="#regexp_count" id="toc-regexp_count"><code>regexp_count</code></a></li>
+<li><a href="#regexp_like" id="toc-regexp_like"><code>regexp_like</code></a></li>
+<li><a href="#regexp_match" id="toc-regexp_match"><code>regexp_match</code></a></li>
+<li><a href="#regexp_matches" id="toc-regexp_matches"><code>regexp_matches</code></a></li>
+<li><a href="#regexp_replace" id="toc-regexp_replace"><code>regexp_replace</code></a></li>
+<li><a href="#regexp_split_to_array" id="toc-regexp_split_to_array"><code>regexp_split_to_array</code></a></li>
+<li><a href="#regexp_split_to_table" id="toc-regexp_split_to_table"><code>regexp_split_to_table</code></a></li>
+<li><a href="#regexp_substr" id="toc-regexp_substr"><code>regexp_substr</code></a></li>
+<li><a href="#substring_regex" id="toc-substring_regex"><code>substring_regex</code></a></li>
+<li><a href="#translate_regex" id="toc-translate_regex"><code>translate_regex</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_regex.md -->
+<p><a id="ch-language-reference-functional-reference-sb-regex-md"></a></p>
+<h1 id="sb-regex-functional-reference">SB Regex Functional
+Reference</h1>
+<p>Generation task: <code>sb_regex</code></p>
+<p>Package namespace: <code>sb.regex</code></p>
+<p>Regular expression matching, search, counting, replacement, and split
+helpers.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>This package contains registered SBsql built-in operations.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>scalar</td>
+<td style="text-align: right;">12</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="occurrences_regex"><code>occurrences_regex</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>occurrences regex</code>
+regular-expression helper on text input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>OCCURRENCES_REGEX(patternINstring[FLAGflags])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>patternINstring[FLAGflags]</code>: Bound using the declared
+descriptor rules for this overload.</li>
+<li>Descriptor rule: pattern, string, and optional flags.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>int64 match count.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> occurrences_regex(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.occurrences_regex</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b44-8ced-ebb34f783c6e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_count.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.occurrences_regex</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>occurrences_regex</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC058-occurrences-regex-signature</code>.</p>
+<h3 id="position_regex"><code>position_regex</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>position regex</code>
+regular-expression helper on text input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>POSITION_REGEX([START\|AFTER]patternINstring[OCCURRENCEn][FLAGflags])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>[START\|AFTER]patternINstring[OCCURRENCEn][FLAGflags]</code>:
+Bound using the declared descriptor rules for this overload.</li>
+<li>Descriptor rule: pattern, string, optional occurrence, flags, and
+mode.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>int64 one-based position or 0.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> position_regex(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.position_regex</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b96-a548-8a2131a2a3ff</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_position.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.position_regex</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>position_regex</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-position-regex</code>.</p>
+<h3 id="regexp_count"><code>regexp_count</code></h3>
+<p><strong>Purpose:</strong> Counts regular expression matches in
+text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>regexp_count(string,pattern[,flags])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>string</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>pattern[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>flags]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative regex/text-pattern
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for text, regex pattern,
+flags, occurrence, and group arguments.</li>
+<li>NULL handling: strict unless the conformance fixtures row evidence
+defines an exact diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative regexp_count regex/text-pattern scalar
+result as implemented by the SBLR expression runtime; fixture
+descriptors int64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable_locale_versioned.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors and regex engine
+version.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset and
+versioned regex engine semantics for character matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/regex-pattern errors use builtin error compatibility
+matrix and the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> regexp_count(<span class="st">&#39;banana&#39;</span>, <span class="st">&#39;an&#39;</span>) <span class="kw">as</span> match_count;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.regexp_count</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-739b-b315-f6ecf36919ef</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_count.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.regex_count</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>regexp_count</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC017_REGEX_TEXT_PATTERN_FIXTURES</code>.</p>
+<h3 id="regexp_like"><code>regexp_like</code></h3>
+<p><strong>Purpose:</strong> Returns whether text matches a regular
+expression pattern.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>regexp_like(string,pattern[,flags])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>string</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>pattern[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>flags]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>regex match using versioned regex engine.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable_locale_versioned.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">regexp_like</span>(<span class="st">&#39;ScratchBird&#39;</span>, <span class="st">&#39;Bird$&#39;</span>) <span class="kw">as</span> is_match;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.regex.match</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-76a3-9af7-b2ed28df4682</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_match.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.regex_match</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>regex_match</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-regex-function-positive;SBSFCOP-regex-function-invalid-pattern</code>.</p>
+<h3 id="regexp_match"><code>regexp_match</code></h3>
+<p><strong>Purpose:</strong> Returns match information for a regular
+expression pattern.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>regexp_match(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative regex/text-pattern
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for text, regex pattern,
+flags, occurrence, and group arguments.</li>
+<li>NULL handling: strict unless the conformance fixtures row evidence
+defines an exact diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative regexp_match regex/text-pattern scalar
+result as implemented by the SBLR expression runtime; fixture
+descriptors array.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable_locale_versioned.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors and regex engine
+version.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset and
+versioned regex engine semantics for character matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/regex-pattern errors use builtin error compatibility
+matrix and the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> regexp_match(<span class="st">&#39;ScratchBird&#39;</span>, <span class="st">&#39;Bird$&#39;</span>) <span class="kw">as</span> match_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.regexp_match</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-78a1-b997-3b057ae06c2c</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_match_array.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.regex_match_array</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>regexp_match</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC017_REGEX_TEXT_PATTERN_FIXTURES</code>.</p>
+<h3 id="regexp_matches"><code>regexp_matches</code></h3>
+<p><strong>Purpose:</strong> Returns match rows for a regular expression
+pattern.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>regexp_matches(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: string, pattern, and optional flags.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>array descriptor containing captures.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> regexp_matches(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.regexp_matches</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-76b2-be48-22dbe15e24d2</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_match_array.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.regexp_matches</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>regexp_matches</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-regexp-matches-bare</code>.</p>
+<h3 id="regexp_replace"><code>regexp_replace</code></h3>
+<p><strong>Purpose:</strong> Returns text with regular expression
+matches replaced.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>regexp_replace(string,pattern,replacement[,flags])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>string</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>pattern</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>replacement[</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>flags]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative regex/text-pattern
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for text, regex pattern,
+flags, occurrence, and group arguments.</li>
+<li>NULL handling: strict unless the conformance fixtures row evidence
+defines an exact diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative regexp_replace regex/text-pattern scalar
+result as implemented by the SBLR expression runtime; fixture
+descriptors character.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable_locale_versioned.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors and regex engine
+version.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset and
+versioned regex engine semantics for character matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/regex-pattern errors use builtin error compatibility
+matrix and the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">regexp_replace</span>(<span class="st">&#39;ScratchBird&#39;</span>, <span class="st">&#39;Bird$&#39;</span>, <span class="st">&#39;Core&#39;</span>) <span class="kw">as</span> changed_text;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.regexp_replace</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7077-b07f-23d53db4cd24</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_replace.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.regex_replace</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>regexp_replace</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC017_REGEX_TEXT_PATTERN_FIXTURES</code>.</p>
+<h3 id="regexp_split_to_array"><code>regexp_split_to_array</code></h3>
+<p><strong>Purpose:</strong> Splits text into an array using a regular
+expression delimiter.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>regexp_split_to_array(text,pattern)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>text</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>pattern</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative regex/text-pattern
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for text, regex pattern,
+flags, occurrence, and group arguments.</li>
+<li>NULL handling: strict unless the conformance fixtures row evidence
+defines an exact diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative regexp_split_to_array regex/text-pattern
+scalar result as implemented by the SBLR expression runtime; fixture
+descriptors array.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable_locale_versioned.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors and regex engine
+version.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset and
+versioned regex engine semantics for character matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/regex-pattern errors use builtin error compatibility
+matrix and the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> regexp_split_to_array(<span class="st">&#39;a,b,c&#39;</span>, <span class="st">&#39;,&#39;</span>) <span class="kw">as</span> parts;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.regexp_split_to_array</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7452-8ea1-2ded0fc33632</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_split_to_array.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.regex_split_to_array</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>regexp_split_to_array</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC017_REGEX_TEXT_PATTERN_FIXTURES</code>.</p>
+<h3 id="regexp_split_to_table"><code>regexp_split_to_table</code></h3>
+<p><strong>Purpose:</strong> Splits text into rows using a regular
+expression delimiter.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>regexp_split_to_table(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: string and pattern.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>array descriptor containing split text values.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> regexp_split_to_table(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.regexp_split_to_table</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7cee-b7f9-1a495f927737</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_split_to_array.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.regexp_split_to_table</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>regexp_split_to_table</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC058-regexp-split-to-table-bare</code>.</p>
+<h3 id="regexp_substr"><code>regexp_substr</code></h3>
+<p><strong>Purpose:</strong> Returns the substring matched by a regular
+expression.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>regexp_substr(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative regex/text-pattern
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for text, regex pattern,
+flags, occurrence, and group arguments.</li>
+<li>NULL handling: strict unless the conformance fixtures row evidence
+defines an exact diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative regexp_substr regex/text-pattern scalar
+result as implemented by the SBLR expression runtime; fixture
+descriptors character.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable_locale_versioned.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors and regex engine
+version.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset and
+versioned regex engine semantics for character matching.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/regex-pattern errors use builtin error compatibility
+matrix and the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">regexp_substr</span>(<span class="st">&#39;order-123&#39;</span>, <span class="st">&#39;[0-9]+&#39;</span>) <span class="kw">as</span> matched_text;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.regexp_substr</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7395-a58c-59cbad29d4f4</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_substr.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.regex_substr</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>regexp_substr</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC017_REGEX_TEXT_PATTERN_FIXTURES</code>.</p>
+<h3 id="substring_regex"><code>substring_regex</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>substring regex</code>
+regular-expression helper on text input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>substring_regex(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: pattern, string, optional occurrence, group, and
+flags.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character text or SQL NULL.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> substring_regex(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.substring_regex</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7485-8ae8-900e757d3f67</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_substr.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.substring_regex</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>substring_regex</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-substring-regex-bare</code>.</p>
+<h3 id="translate_regex"><code>translate_regex</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>translate regex</code>
+regular-expression helper on text input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>TRANSLATE_REGEX(patternINstringWITHreplacement[OCCURRENCEn\|ALL][FLAGflags])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>patternINstringWITHreplacement[OCCURRENCEn\|ALL][FLAGflags]</code>:
+Bound using the declared descriptor rules for this overload.</li>
+<li>Descriptor rule: pattern, string, replacement, optional
+occurrence/ALL, and flags.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> translate_regex(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.translate_regex</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7bbb-9d9f-2aefb6bea146</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.regex_replace.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.translate_regex</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>translate_regex</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC058-translate-regex-signature</code>.</p>
+</body>
+</html>

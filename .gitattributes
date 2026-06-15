@@ -1,0 +1,18 @@
+# Packaging artifacts are temporary private pre-release binaries until the
+# official public release process moves them to release hosting.
+packaging/**/*.msi -diff -text
+packaging/**/*.exe -diff -text
+packaging/**/*.deb -diff -text
+packaging/**/*.rpm -diff -text
+packaging/**/*.pkg -diff -text
+packaging/**/*.dmg -diff -text
+packaging/**/*.zip -diff -text
+packaging/**/*.tar.gz -diff -text
+packaging/**/*.tgz -diff -text
+packaging/**/*.7z -diff -text
+packaging/**/*.pdf -diff -text
+packaging/**/*.dll -diff -text
+packaging/**/*.so -diff -text
+packaging/**/*.dylib -diff -text
+packaging/**/*.lib -diff -text
+packaging/**/*.a -diff -text

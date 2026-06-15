@@ -25,7 +25,7 @@ The parser can route agent statements to SBLR. The parser cannot execute an agen
 ## Statement Surface
 
 ```ebnf
-agent_statement ::=
+agent_stmt ::=
       show_agent_statement
     | alter_agent_statement
     | create_agent_override_statement

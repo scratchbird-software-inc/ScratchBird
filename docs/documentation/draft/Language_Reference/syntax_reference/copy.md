@@ -48,7 +48,7 @@ copy_statement ::=
 
 copy_target ::=
       table_ref copy_column_list?
-    | QUERY "(" query_statement ")" ;
+    | QUERY "(" query_dml_stmt ")" ;
 
 copy_column_list ::=
     "(" identifier ("," identifier)* ")" ;

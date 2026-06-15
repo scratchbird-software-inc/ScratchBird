@@ -2,9 +2,9 @@
 
 ## Purpose
 
-ScratchBird schemas form a tree. A schema can contain database objects and, where supported, child schemas. This is different from a flat model where all schemas live at one level.
+After reading this page you will understand why ScratchBird organizes schemas as a nested tree rather than a flat list, and why that choice matters for security, compatibility, and database organization.
 
-The recursive schema tree is important for native SBsql administration, compatibility workareas, sandboxing, catalog projections, and durable UUID-backed object identity.
+In many database systems, all schemas share a single level — every schema is directly visible to every connected user (subject to grants). ScratchBird takes a different approach: schemas form a tree, so an application can live under its own branch, a compatibility parser can see only its assigned workarea (a schema branch presented as the client's visible database root), and system objects are separated from user objects by design. The recursive schema tree is central to native SBsql administration, compatibility workareas, sandboxing, catalog projections, and durable UUID-backed object identity.
 
 ## Basic Shape
 
@@ -49,9 +49,11 @@ Recursive schemas let ScratchBird represent several ideas without flattening the
 
 ## Durable Identity Versus Path Names
 
-A path such as `applications.app.tables.notes` is user-facing. The durable object is represented by catalog identity and descriptors.
+Path names like `applications.app.tables.notes` are convenient for humans, but they are not what SBcore uses as the authoritative record. Every durable object is identified by a UUID, and the path name is just a label that resolves to that identity during name binding. This separation is what makes renames safe: the object's identity does not change, only its visible label does.
 
-That matters because:
+A path such as `applications.app.tables.notes` is user-facing. The durable object is represented by catalog identity and descriptors (the engine's metadata records for objects, types, and constraints).
+
+That distinction matters because:
 
 - an object can be renamed;
 - a branch can be moved or reorganized where supported;
@@ -64,23 +66,11 @@ Names are necessary for users. UUID identity is necessary for durable engine aut
 
 ## Session Views
 
+One of the most practical consequences of the tree model is that different sessions can be shown different portions of it. An administrative user may navigate the full tree. An application user may only see the branch their application lives under. A compatibility parser session may see its workarea as if it were the entire database. This is part of the security model, not a display feature — the visible root limits which objects a session can name and access.
+
 Different sessions can see different roots.
 
-```mermaid
-flowchart TB
-    Full[/Full database tree/]
-    Admin[Authorized SBsql administration]
-    AppUser[Application user root]
-    Compat[Compatibility workarea root]
-    CatalogProjection[Catalog projection objects]
-    Hidden[Objects outside visible root]
-
-    Full --> Admin
-    Full --> AppUser
-    Full --> Compat
-    Compat --> CatalogProjection
-    Full --> Hidden
-```
+![diagram](./recursive_schema_tree-1.svg)
 
 An authorized administrative SBsql session may see broad portions of the tree. A normal application user may see an application branch. A compatibility parser session may see its workarea as the root.
 
@@ -105,39 +95,13 @@ The exact inspection and assignment syntax belongs in the Language Reference.
 
 Name resolution turns text into object identity.
 
-```mermaid
-flowchart TD
-    Text[Text name]
-    Parser[Parser route]
-    Identity[Session identity]
-    VisibleRoot[Visible schema root]
-    Current[Current schema]
-    Search[Search path if applicable]
-    Catalog[Catalog lookup]
-    Policy[Grant and policy check]
-    Txn[Transaction visibility]
-    UUID[Resolved object UUID]
-    Refusal[Message vector]
-
-    Text --> Parser
-    Parser --> Identity
-    Identity --> VisibleRoot
-    VisibleRoot --> Current
-    Current --> Search
-    Search --> Catalog
-    Catalog --> Policy
-    Policy --> Txn
-    Txn --> UUID
-    Catalog --> Refusal
-    Policy --> Refusal
-    Txn --> Refusal
-```
+![diagram](./recursive_schema_tree-2.svg)
 
 An unqualified name such as `notes` may resolve through the current schema. A qualified name such as `app.notes` gives more path information. Neither form bypasses visibility, grants, policy, or transaction state.
 
 ## Compatibility Workareas
 
-A compatibility workarea is a schema branch presented to a parser route as the client-visible database root.
+A compatibility workarea is a schema branch presented to a parser route as the client-visible database root. The parser route sees a familiar namespace; the rest of the ScratchBird tree remains outside the client's visible scope. This is how ScratchBird can host multiple parser routes — each with its own default namespace expectations — on the same underlying database without those routes interfering with each other.
 
 This lets the parser show a client a familiar namespace without giving that client direct access to the entire ScratchBird tree.
 
@@ -157,14 +121,14 @@ A catalog projection can expose selected metadata if the projection object has a
 
 ## Current Schema Examples
 
-An SBsql session may use a current schema for shorter statements.
+An SBsql session resolves unqualified names through the current schema path. The command that changes the current schema is release-specific; use `show schema path;` to inspect the active path.
 
 ```sql
 create schema app;
-set schema app;
+show schema path;
 
-create table notes (
-    note_id uint64 not null,
+create table app.notes (
+    note_id bigint not null,
     note_text text not null
 );
 
@@ -173,7 +137,7 @@ from notes
 order by note_id;
 ```
 
-The unqualified name `notes` resolves relative to the current schema. A more explicit script can use qualified names:
+The unqualified name `notes` resolves relative to the current schema path. A more explicit script can use qualified names:
 
 ```sql
 select note_id, note_text

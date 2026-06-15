@@ -8,12 +8,12 @@ Generation task: `ebnf_select_modifier`
 ## Production
 
 ```ebnf
-select_modifier         ::= "ALL" | "DISTINCT" ;
+set_quantifier          ::= "ALL" | "DISTINCT" ;
 ```
 
 ## Meaning
 
-`select_modifier` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`set_quantifier` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 

@@ -27,6 +27,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -371,6 +372,8 @@ def execute_row_query(
     txn_id: int,
     sql: str,
     expected_rows: tuple[tuple[bytes | None, ...], ...] | None = None,
+    require_data_row: bool = True,
+    require_row_description: bool = True,
 ) -> int:
     send_frame(sock, MSG_QUERY, sequence, query_payload(sql), attachment=attachment, txn_id=txn_id)
     sequence += 1
@@ -392,7 +395,11 @@ def execute_row_query(
             break
         elif msg_type == MSG_ERROR:
             raise RouteError(f"{sql} failed with ERROR payload {payload!r}")
-    if not (saw_row_description and saw_data_row and saw_complete):
+    if not saw_complete:
+        raise RouteError(f"{sql} did not traverse SBWP/SBsql/SBPS/server/engine as a row result")
+    if require_row_description and not saw_row_description:
+        raise RouteError(f"{sql} did not traverse SBWP/SBsql/SBPS/server/engine as a row result")
+    if require_data_row and not saw_data_row:
         raise RouteError(f"{sql} did not traverse SBWP/SBsql/SBPS/server/engine as a row result")
     if expected_rows is not None:
         if not any(row_values_match(row, expected) for row in decoded_rows for expected in expected_rows):
@@ -486,6 +493,40 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
             raise RouteError("engine transaction begin did not return an active MGA transaction")
 
         sequence = execute_row_query(sock, sequence, attachment, txn_id, "SELECT 1")
+        sequence = execute_row_query(
+            sock,
+            sequence,
+            attachment,
+            txn_id,
+            "SELECT pb.* FROM sys.configuration.policy_bindings AS pb",
+            require_data_row=False,
+            require_row_description=False,
+        )
+        for system_table in (
+            "sys.catalog.column_descriptor",
+            "sys.catalog.index_definitions",
+            "sys.catalog.object_comments",
+            "sys.catalog.object_dependencies",
+            "sys.catalog.object_identity",
+            "sys.catalog.object_name_entries",
+            "sys.catalog.object_name_vectors",
+            "sys.catalog.object_versions",
+            "sys.catalog.synonym",
+            "sys.constraint_dependency",
+            "sys.constraint_descriptor",
+            "sys.constraint_subject",
+            "sys.constraint_support_structure",
+            "sys.key_descriptor",
+        ):
+            sequence = execute_row_query(
+                sock,
+                sequence,
+                attachment,
+                txn_id,
+                f"SELECT * FROM {system_table}",
+                require_data_row=False,
+                require_row_description=False,
+            )
         sequence = execute_row_query(sock, sequence, attachment, txn_id, "VALUES (1, 'two'), (3, NULL)")
         if copy_fixture_seeded:
             sequence = execute_row_query(
@@ -550,6 +591,36 @@ def run_positive_route(port: int, copy_fixture_seeded: bool) -> None:
             txn_id = ready_txn
 
         send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+
+def run_light_authenticated_route(port: int) -> None:
+    with connect_tls(port) as sock:
+        attachment, sequence, txn_id = authenticate(
+            sock,
+            local_password_evidence("benchmark_user", BENCHMARK_VERIFIER),
+        )
+        sequence = execute_row_query(sock, sequence, attachment, txn_id, "SELECT 1")
+        send_frame(sock, MSG_TERMINATE, sequence + 1, attachment=attachment)
+
+
+def run_concurrent_tls_routes(port: int, count: int) -> None:
+    errors: list[str] = []
+    lock = threading.Lock()
+
+    def worker(index: int) -> None:
+        try:
+            run_light_authenticated_route(port)
+        except Exception as exc:  # noqa: BLE001 - aggregate all route evidence.
+            with lock:
+                errors.append(f"client {index}: {exc}")
+
+    threads = [threading.Thread(target=worker, args=(index,)) for index in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    if errors:
+        raise RouteError("concurrent TLS route failed: " + "; ".join(errors))
 
 
 def run_copy_protocol_negative_routes(port: int, copy_fixture_seeded: bool) -> None:
@@ -803,6 +874,7 @@ def main() -> int:
           run_plaintext_required_refusal(port)
           run_binary_copy_required_refusal(port)
           run_positive_route(port, args.example_db_seeder is not None)
+          run_concurrent_tls_routes(port, 4)
           run_copy_protocol_negative_routes(port, args.example_db_seeder is not None)
           run_negative_auth_route(port)
           run_invalid_evidence_auth_route(port)

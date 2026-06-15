@@ -47,7 +47,7 @@ cluster_option_list ::=
 
 | Parent production | Purpose |
 | --- | --- |
-| `private_cluster_statement` | Places inspection in the cluster-gated statement family. |
+| `cluster_stmt` | Places inspection in the cluster-gated statement family. |
 
 ## Admission Notes
 

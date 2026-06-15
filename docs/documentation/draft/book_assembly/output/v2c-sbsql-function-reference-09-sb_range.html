@@ -1,0 +1,1051 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-range-functional-reference" id="toc-sb-range-functional-reference">SB Range Functional Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#range_contains" id="toc-range_contains"><code>range_contains</code></a></li>
+<li><a href="#range_contains_element" id="toc-range_contains_element"><code>range_contains_element</code></a></li>
+<li><a href="#range_lower" id="toc-range_lower"><code>range_lower</code></a></li>
+<li><a href="#range_lower_inc" id="toc-range_lower_inc"><code>range_lower_inc</code></a></li>
+<li><a href="#range_overlaps" id="toc-range_overlaps"><code>range_overlaps</code></a></li>
+<li><a href="#range_strictly_left" id="toc-range_strictly_left"><code>range_strictly_left</code></a></li>
+<li><a href="#range_strictly_right" id="toc-range_strictly_right"><code>range_strictly_right</code></a></li>
+<li><a href="#range_upper" id="toc-range_upper"><code>range_upper</code></a></li>
+<li><a href="#range_upper_inc" id="toc-range_upper_inc"><code>range_upper_inc</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_range.md -->
+<p><a id="ch-language-reference-functional-reference-sb-range-md"></a></p>
+<h1 id="sb-range-functional-reference">SB Range Functional
+Reference</h1>
+<p>Generation task: <code>sb_range</code></p>
+<p>Package namespace: <code>sb.scalar</code> (range functions register
+under <code>sb.scalar.range_*</code>)</p>
+<p>Range-boundary and containment helpers for descriptor-backed range
+values.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Inspects descriptor-backed ranges and evaluates range
+relationships.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>scalar</td>
+<td style="text-align: right;">9</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="range_contains"><code>range_contains</code></h3>
+<p><strong>Purpose:</strong> Returns whether one range contains another
+range.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>range_contains(value_1, value_2)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>value_1</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value_2</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: two deterministic range descriptors.</li>
+<li>Coercion: range arguments accept deterministic bracket text like
+[lower,upper) or flat JSON descriptors with lower, upper, lower_inc,
+upper_inc, and empty fields; element comparison uses numeric ordering
+when both sides parse as finite numbers, otherwise lexical text
+ordering.</li>
+<li>NULL handling: SQL null input returns SQL null boolean.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>boolean true when the right range is empty or wholly contained by the
+left range.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: implementation default character descriptor for
+textual bounds; boolean helpers return boolean descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure range scalar helper; accepts
+deterministic textual and flat-json range descriptors; no parser SQL
+execution, catalog/storage lookup, external plugin call, transaction
+finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity or malformed descriptor refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> range_contains(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.range_contains</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-79e8-8098-f3a7e1212ace</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.scalar_range_contains.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.scalar_range_contains</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>range_contains</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC035-range-contains-true;SBSFC035-range-contains-empty</code>.</p>
+<h3 id="range_contains_element"><code>range_contains_element</code></h3>
+<p><strong>Purpose:</strong> Returns whether a range contains a scalar
+element.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>range_contains_element(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: range descriptor and scalar element.</li>
+<li>Coercion: range arguments accept deterministic bracket text like
+[lower,upper) or flat JSON descriptors with lower, upper, lower_inc,
+upper_inc, and empty fields; element comparison uses numeric ordering
+when both sides parse as finite numbers, otherwise lexical text
+ordering.</li>
+<li>NULL handling: SQL null input returns SQL null boolean.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>boolean true when the element falls within the range bounds.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: implementation default character descriptor for
+textual bounds; boolean helpers return boolean descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure range scalar helper; accepts
+deterministic textual and flat-json range descriptors; no parser SQL
+execution, catalog/storage lookup, external plugin call, transaction
+finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity or malformed descriptor refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> range_contains_element(active_range, <span class="dv">42</span>) <span class="kw">from</span> app.range_examples;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.range_contains_element</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-74ed-91c4-1b280b76ac8a</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.scalar_range_contains_element.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.scalar_range_contains_element</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>range_contains_element</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC035-range-contains-element;SBSFC035-range-json-contains-element</code>.</p>
+<h3 id="range_lower"><code>range_lower</code></h3>
+<p><strong>Purpose:</strong> Returns the lower bound of a range.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>range_lower(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one deterministic range descriptor.</li>
+<li>Coercion: range arguments accept deterministic bracket text like
+[lower,upper) or flat JSON descriptors with lower, upper, lower_inc,
+upper_inc, and empty fields; element comparison uses numeric ordering
+when both sides parse as finite numbers, otherwise lexical text
+ordering.</li>
+<li>NULL handling: SQL null input returns SQL null character.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character textual lower bound or SQL null when the range is empty or
+unbounded below.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: implementation default character descriptor for
+textual bounds; boolean helpers return boolean descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure range scalar helper; accepts
+deterministic textual and flat-json range descriptors; no parser SQL
+execution, catalog/storage lookup, external plugin call, transaction
+finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity or malformed descriptor refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> range_lower(active_range) <span class="kw">from</span> app.time_windows;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.range_lower</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7228-a8fd-b333c6378a8f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.scalar_range_lower.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.scalar_range_lower</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>range_lower</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC035-range-lower;SBSFC035-range-lower-empty-null</code>.</p>
+<h3 id="range_lower_inc"><code>range_lower_inc</code></h3>
+<p><strong>Purpose:</strong> Returns whether the lower range bound is
+inclusive.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>range_lower_inc(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one deterministic range descriptor.</li>
+<li>Coercion: range arguments accept deterministic bracket text like
+[lower,upper) or flat JSON descriptors with lower, upper, lower_inc,
+upper_inc, and empty fields; element comparison uses numeric ordering
+when both sides parse as finite numbers, otherwise lexical text
+ordering.</li>
+<li>NULL handling: SQL null input returns SQL null boolean.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>boolean true when the lower bound is present and inclusive.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: implementation default character descriptor for
+textual bounds; boolean helpers return boolean descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure range scalar helper; accepts
+deterministic textual and flat-json range descriptors; no parser SQL
+execution, catalog/storage lookup, external plugin call, transaction
+finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity or malformed descriptor refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> range_lower_inc(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.range_lower_inc</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7d64-9a6c-3f0fb7806195</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.scalar_range_lower_inc.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.scalar_range_lower_inc</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>range_lower_inc</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC035-range-lower-inc</code>.</p>
+<h3 id="range_overlaps"><code>range_overlaps</code></h3>
+<p><strong>Purpose:</strong> Returns whether two ranges overlap.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>range_overlaps(value_1, value_2)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>value_1</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value_2</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: two deterministic range descriptors.</li>
+<li>Coercion: range arguments accept deterministic bracket text like
+[lower,upper) or flat JSON descriptors with lower, upper, lower_inc,
+upper_inc, and empty fields; element comparison uses numeric ordering
+when both sides parse as finite numbers, otherwise lexical text
+ordering.</li>
+<li>NULL handling: SQL null input returns SQL null boolean.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>boolean true when non-empty ranges share at least one included
+point.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: implementation default character descriptor for
+textual bounds; boolean helpers return boolean descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure range scalar helper; accepts
+deterministic textual and flat-json range descriptors; no parser SQL
+execution, catalog/storage lookup, external plugin call, transaction
+finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity or malformed descriptor refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> range_overlaps(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.range_overlaps</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-70da-bb90-bf9233ce6a1a</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.scalar_range_overlaps.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.scalar_range_overlaps</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>range_overlaps</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC035-range-overlaps-boundary;SBSFC035-range-overlaps-invalid</code>.</p>
+<h3 id="range_strictly_left"><code>range_strictly_left</code></h3>
+<p><strong>Purpose:</strong> Returns whether one range lies strictly
+before another range.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>range_strictly_left(value_1, value_2)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>value_1</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value_2</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: two deterministic range descriptors.</li>
+<li>Coercion: range arguments accept deterministic bracket text like
+[lower,upper) or flat JSON descriptors with lower, upper, lower_inc,
+upper_inc, and empty fields; element comparison uses numeric ordering
+when both sides parse as finite numbers, otherwise lexical text
+ordering.</li>
+<li>NULL handling: SQL null input returns SQL null boolean.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>boolean true when the left range ends before the right range begins
+without overlap.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: implementation default character descriptor for
+textual bounds; boolean helpers return boolean descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure range scalar helper; accepts
+deterministic textual and flat-json range descriptors; no parser SQL
+execution, catalog/storage lookup, external plugin call, transaction
+finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity or malformed descriptor refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> range_strictly_left(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.range_strictly_left</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7240-837d-0768c70f3346</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.scalar_range_strictly_left.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.scalar_range_strictly_left</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>range_strictly_left</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC035-range-strictly-left</code>.</p>
+<h3 id="range_strictly_right"><code>range_strictly_right</code></h3>
+<p><strong>Purpose:</strong> Returns whether one range lies strictly
+after another range.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>range_strictly_right(value_1, value_2)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>value_1</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value_2</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: two deterministic range descriptors.</li>
+<li>Coercion: range arguments accept deterministic bracket text like
+[lower,upper) or flat JSON descriptors with lower, upper, lower_inc,
+upper_inc, and empty fields; element comparison uses numeric ordering
+when both sides parse as finite numbers, otherwise lexical text
+ordering.</li>
+<li>NULL handling: SQL null input returns SQL null boolean.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>boolean true when the left range begins after the right range ends
+without overlap.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: implementation default character descriptor for
+textual bounds; boolean helpers return boolean descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure range scalar helper; accepts
+deterministic textual and flat-json range descriptors; no parser SQL
+execution, catalog/storage lookup, external plugin call, transaction
+finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity or malformed descriptor refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> range_strictly_right(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.range_strictly_right</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7952-998a-6734177d6c8d</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.scalar_range_strictly_right.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.scalar_range_strictly_right</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>range_strictly_right</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC035-range-strictly-right</code>.</p>
+<h3 id="range_upper"><code>range_upper</code></h3>
+<p><strong>Purpose:</strong> Returns the upper bound of a range.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>range_upper(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one deterministic range descriptor.</li>
+<li>Coercion: range arguments accept deterministic bracket text like
+[lower,upper) or flat JSON descriptors with lower, upper, lower_inc,
+upper_inc, and empty fields; element comparison uses numeric ordering
+when both sides parse as finite numbers, otherwise lexical text
+ordering.</li>
+<li>NULL handling: SQL null input returns SQL null character.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character textual upper bound or SQL null when the range is empty or
+unbounded above.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: implementation default character descriptor for
+textual bounds; boolean helpers return boolean descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure range scalar helper; accepts
+deterministic textual and flat-json range descriptors; no parser SQL
+execution, catalog/storage lookup, external plugin call, transaction
+finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity or malformed descriptor refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> range_upper(active_range) <span class="kw">from</span> app.time_windows;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.range_upper</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7c9b-bab4-4579be8d3fde</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.scalar_range_upper.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.scalar_range_upper</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>range_upper</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC035-range-upper</code>.</p>
+<h3 id="range_upper_inc"><code>range_upper_inc</code></h3>
+<p><strong>Purpose:</strong> Returns whether the upper range bound is
+inclusive.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>range_upper_inc(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one deterministic range descriptor.</li>
+<li>Coercion: range arguments accept deterministic bracket text like
+[lower,upper) or flat JSON descriptors with lower, upper, lower_inc,
+upper_inc, and empty fields; element comparison uses numeric ordering
+when both sides parse as finite numbers, otherwise lexical text
+ordering.</li>
+<li>NULL handling: SQL null input returns SQL null boolean.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>boolean true when the upper bound is present and inclusive.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: implementation default character descriptor for
+textual bounds; boolean helpers return boolean descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure range scalar helper; accepts
+deterministic textual and flat-json range descriptors; no parser SQL
+execution, catalog/storage lookup, external plugin call, transaction
+finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity or malformed descriptor refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> range_upper_inc(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.scalar.range_upper_inc</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-75dc-bf43-b957d26590a9</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.scalar_range_upper_inc.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.scalar_range_upper_inc</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>range_upper_inc</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC035-range-upper-inc;SBSFC035-range-upper-inc-null</code>.</p>
+</body>
+</html>

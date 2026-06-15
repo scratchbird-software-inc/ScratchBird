@@ -8,7 +8,7 @@ Generation task: `ebnf_revoke_statement`
 ## Production
 
 ```ebnf
-revoke_stmt             ::= "REVOKE" grant_payload "FROM" principal_ref revoke_option_list? ;
+revoke_stmt             ::= "REVOKE" privilege_set "FROM" grantee_list revoke_option_list? ;
 ```
 
 ## Meaning
@@ -21,13 +21,14 @@ Full user-facing semantics for revoke behavior, grant-option removal, admin-opti
 
 | Parent Production |
 | --- |
-| security_statement |
+| dcl_security_stmt |
 
 ## Child Productions
 
 | Child Production |
 | --- |
-| principal_ref |
+| privilege_set |
+| grantee_list |
 
 ## Practical Notes
 

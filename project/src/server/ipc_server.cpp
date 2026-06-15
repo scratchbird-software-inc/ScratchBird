@@ -25,6 +25,7 @@
 
 #include "catalog/name_registry.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/sys_information_projection.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include <algorithm>
@@ -812,6 +813,37 @@ std::array<std::uint8_t, 16> PsNameSyntheticUuid(std::string_view normalized_nam
   return uuid;
 }
 
+std::string PsNameVirtualSystemName(std::string normalized_name) {
+  if (normalized_name == "sys.version" ||
+      normalized_name == "sys.metrics" ||
+      normalized_name == "sys.catalog") {
+    return normalized_name;
+  }
+  const std::string canonical_name =
+      engine_api::SysInformationCanonicalViewPath(normalized_name);
+  if (engine_api::FindSysInformationProjectionDefinition(canonical_name) != nullptr) {
+    return canonical_name;
+  }
+  return {};
+}
+
+std::optional<std::string> PsNameRenderedVirtualSystemName(
+    const std::array<std::uint8_t, 16>& uuid) {
+  if (uuid == PsNameSyntheticUuid("sys.version")) return "sys.version";
+  if (uuid == PsNameSyntheticUuid("sys.metrics")) return "sys.metrics";
+  if (uuid == PsNameSyntheticUuid("sys.catalog")) return "sys.catalog";
+  for (const auto& definition : engine_api::BuiltinSysInformationProjectionDefinitions()) {
+    if (uuid == PsNameSyntheticUuid(definition.view_path)) return definition.view_path;
+    static constexpr std::string_view kCanonicalPrefix = "sys.information.";
+    if (definition.view_path.rfind(kCanonicalPrefix, 0) == 0) {
+      const std::string legacy_alias =
+          "sys.information_schema." + definition.view_path.substr(kCanonicalPrefix.size());
+      if (uuid == PsNameSyntheticUuid(legacy_alias)) return definition.view_path;
+    }
+  }
+  return std::nullopt;
+}
+
 bool PsNameHasOpenDatabase(const HostedEngineState& engine_state) {
   for (const auto& database : engine_state.databases) {
     if (database.database_open) return true;
@@ -892,6 +924,9 @@ engine_api::EngineRequestContext PsNameEngineContextFromSession(
   }
   context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
   context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
+  if (!sbps::IsZeroUuid(session.active_role_uuid)) {
+    context.current_role_uuid.canonical = UuidBytesToText(session.active_role_uuid);
+  }
   context.transaction_uuid.canonical = session.transaction_uuid;
   context.statement_uuid.canonical = UuidBytesToText(frame.header.request_uuid);
   context.local_transaction_id = session.local_transaction_id;
@@ -1083,6 +1118,22 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
                       frame.header.sequence_number,
                       static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult));
   }
+  const auto normalized = PsNameLower(decoded->presented_name);
+  const std::string virtual_system_name = PsNameVirtualSystemName(normalized);
+  if (!virtual_system_name.empty()) {
+    return PsNameResponseFrame(
+        frame,
+        static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
+        sbps::kSchemaResolveNameResultV1,
+        EncodePsNameResolvePayload("resolved",
+                                   PsNameSyntheticUuid(virtual_system_name),
+                                   virtual_system_name,
+                                   decoded->object_class.empty() ? "relation" : decoded->object_class,
+                                   1,
+                                   1,
+                                   "public virtual system object"),
+        false);
+  }
   std::optional<ServerSessionRecord> session;
   if (session_registry != nullptr) {
     const auto found = session_registry->sessions_by_uuid.find(UuidBytesToText(frame.header.session_uuid));
@@ -1155,35 +1206,17 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
       }
     }
   }
-  const auto normalized = PsNameLower(decoded->presented_name);
-  const bool visible_system_name = normalized == "sys.version" ||
-                                   normalized == "sys.metrics" ||
-                                   normalized == "sys.catalog";
-  if (!visible_system_name) {
-    return PsNameResponseFrame(
-        frame,
-        static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
-        sbps::kSchemaResolveNameResultV1,
-        EncodePsNameResolvePayload("not_found_or_not_visible",
-                                   {},
-                                   "",
-                                   decoded->object_class,
-                                   1,
-                                   1,
-                                   "public resolver returned no UUID"),
-        false);
-  }
   return PsNameResponseFrame(
       frame,
       static_cast<std::uint16_t>(sbps::MessageType::kResolveNameResult),
       sbps::kSchemaResolveNameResultV1,
-      EncodePsNameResolvePayload("resolved",
-                                 PsNameSyntheticUuid(normalized),
-                                 normalized,
-                                 decoded->object_class.empty() ? "relation" : decoded->object_class,
+      EncodePsNameResolvePayload("not_found_or_not_visible",
+                                 {},
+                                 "",
+                                 decoded->object_class,
                                  1,
                                  1,
-                                 "public virtual system object"),
+                                 "public resolver returned no UUID"),
       false);
 }
 
@@ -1206,14 +1239,8 @@ std::vector<std::uint8_t> RenderUuidPublicFrame(const sbps::Frame& frame,
                       static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidResult));
   }
   const auto uuid = PsNameGetUuid(frame.payload, 0);
-  const auto version_uuid = PsNameSyntheticUuid("sys.version");
-  const auto metrics_uuid = PsNameSyntheticUuid("sys.metrics");
-  const auto catalog_uuid = PsNameSyntheticUuid("sys.catalog");
-  std::string name;
-  if (uuid == version_uuid) name = "sys.version";
-  else if (uuid == metrics_uuid) name = "sys.metrics";
-  else if (uuid == catalog_uuid) name = "sys.catalog";
-  if (name.empty()) {
+  const auto name = PsNameRenderedVirtualSystemName(uuid);
+  if (!name) {
     return PsNameResponseFrame(
         frame,
         static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidResult),
@@ -1233,7 +1260,7 @@ std::vector<std::uint8_t> RenderUuidPublicFrame(const sbps::Frame& frame,
       sbps::kSchemaRenderUuidResultV1,
       EncodePsNameResolvePayload("rendered",
                                  uuid,
-                                 name,
+                                 *name,
                                  "relation",
                                  1,
                                  1,

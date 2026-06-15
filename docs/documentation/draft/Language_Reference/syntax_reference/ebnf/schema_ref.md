@@ -8,12 +8,14 @@ Generation task: `ebnf_schema_ref`
 ## Production
 
 ```ebnf
-schema_ref              ::= uuid_ref | qualified_name ;
+schema_ref              ::= uuid_reference | qualified_name ;
 ```
+
+<!-- Fragment dispatcher: schema_ref is a grammar-level fragment with no registry id of its own. -->
 
 ## Meaning
 
-`schema_ref` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`schema_ref` is an SBsql grammar fragment. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 
@@ -24,7 +26,7 @@ No parent production reference was detected in the grammar text.
 | Child Production |
 | --- |
 | qualified_name |
-| uuid_ref |
+| uuid_reference |
 
 ## Practical Notes
 

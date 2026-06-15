@@ -9,14 +9,17 @@ Generation task: `data_types_numeric`
 
 ## Purpose
 
-Numeric values bind through descriptor-aware overload resolution. Integers,
-unsigned integers, decimals, decimal floating values, approximate reals, and
-money-like domains choose their result descriptor before execution.
+SBsql supports a range of numeric types from single-byte integers through
+high-precision decimals and approximate reals. Choosing the right type is a
+matter of knowing which precision and range you need, since the descriptor
+chosen at bind time controls how arithmetic results are typed, how values
+compare, and what happens at the boundary of the representable range.
 
 Arithmetic is strict by default. Overflow, underflow, divide-by-zero,
 unsupported precision, ambiguous signed/unsigned widening, invalid casts, and
 unsupported special values return diagnostics rather than silent wraparound or
-silent truncation.
+silent truncation. If you need a computation to succeed even when precision is
+lost, use an explicit cast that states the conversion you intend.
 
 ## Supported Numeric Types
 

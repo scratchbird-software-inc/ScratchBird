@@ -19,9 +19,7 @@ upsert_target ::=
     qualified_name target_alias? ;
 
 upsert_source ::=
-      values_insert_source
-    | query_insert_source
-    | default_values_source ;
+      insert_source ;
 
 conflict_clause ::=
     ON CONFLICT conflict_target? conflict_action ;
@@ -61,16 +59,14 @@ After parsing, the binder must resolve:
 
 | Parent production | Purpose |
 | --- | --- |
-| `dml_statement` | Places `UPSERT` in the data manipulation statement family. |
+| `data_change_stmt` | Places `UPSERT` in the data manipulation statement family. |
 
 ## Child Productions
 
 | Child production | Role |
 | --- | --- |
 | `qualified_name` | Resolves the target object name. |
-| `values_insert_source` | Supplies explicit insert rows. |
-| `query_insert_source` | Supplies query-produced insert rows. |
-| `default_values_source` | Supplies default-only rows. |
+| `insert_source` | Supplies insert rows (values, query, or default). |
 | `assignment_list` | Defines conflict update assignments. |
 | `where_clause` | Qualifies the conflict update action. |
 | `projection_list` | Defines `RETURNING` output. |

@@ -46,6 +46,7 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         "sys.audit",
         "sys.compatibility",
         "sys.information",
+        "sys.information_schema",
         "sys.catalog_readable",
         "sys.diagnostics",
         "users",
@@ -55,46 +56,145 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         "app"
     );
     private static final List<FixtureTableMetadata> DRIVER_TEST_FIXTURE_TABLES = List.of(
-        new FixtureTableMetadata(
+        fixtureTable(
             "app",
             "customers",
             "TABLE",
-            List.of(
-                new FixtureColumnMetadata("id", "bigint", 1, false),
-                new FixtureColumnMetadata("customer_name", "text", 2, true),
-                new FixtureColumnMetadata("status", "text", 3, true)
-            )
+            column("id", "bigint", 1, false),
+            column("customer_name", "text", 2, true),
+            column("status", "text", 3, true)
         ),
-        new FixtureTableMetadata(
+        fixtureTable(
             "app",
             "customer_profiles",
             "TABLE",
-            List.of(
-                new FixtureColumnMetadata("id", "bigint", 1, false),
-                new FixtureColumnMetadata("customer_id", "bigint", 2, false),
-                new FixtureColumnMetadata("profile_json", "text", 3, true)
-            )
+            column("id", "bigint", 1, false),
+            column("customer_id", "bigint", 2, false),
+            column("profile_json", "text", 3, true)
         ),
-        new FixtureTableMetadata(
+        fixtureTable(
             "app",
             "payroll_private",
             "TABLE",
-            List.of(
-                new FixtureColumnMetadata("id", "bigint", 1, false),
-                new FixtureColumnMetadata("employee_name", "text", 2, true),
-                new FixtureColumnMetadata("salary_cents", "bigint", 3, true)
-            )
+            column("id", "bigint", 1, false),
+            column("employee_name", "text", 2, true),
+            column("salary_cents", "bigint", 3, true)
         ),
-        new FixtureTableMetadata(
+        fixtureView("sys", "namespaces", columns("namespace_path", "namespace_kind", "owner_uuid", "visibility_state")),
+        fixtureView("sys", "capabilities", columns("capability_name", "capability_state", "requires_right", "surface_path")),
+        fixtureView("sys.catalog", "schemas", columns("schema_uuid", "parent_schema_uuid", "schema_path", "owner_uuid")),
+        fixtureView("sys.catalog", "tables", columns("table_uuid", "schema_path", "table_name", "table_kind", "storage_kind")),
+        fixtureView("sys.catalog", "columns", columns("table_uuid", "column_uuid", "column_name", "data_type", "ordinal_position")),
+        fixtureView("sys.catalog", "views", columns("view_uuid", "schema_path", "view_name", "is_updatable", "definition_hash")),
+        fixtureView("sys.catalog", "object_resolver", columns("database_id", "object_id", "parent_object_id", "object_type", "schema_path", "full_path", "object_name")),
+        fixtureView("sys.catalog", "object_dependencies", columns("object_id", "depends_on_object_id", "dependency_kind", "is_runtime_dependency")),
+        fixtureView("sys.catalog", "object_descriptor", columns("descriptor_uuid", "object_uuid", "descriptor_kind", "descriptor_state")),
+        fixtureView("sys.catalog", "object_comment", columns("object_uuid", "comment_language", "comment_text", "last_altered_tx")),
+        fixtureView("sys.catalog", "generated_ddl", columns("object_uuid", "dialect", "ddl_text", "generation_state")),
+        fixtureView("sys.catalog", "generated_sbsql", columns("object_uuid", "sbsql_text", "generation_state", "policy_hash")),
+        fixtureView("sys.catalog", "type_descriptor", columns("type_uuid", "type_name", "carrier_kind", "storage_class")),
+        fixtureView("sys.catalog", "domain_descriptor", columns("domain_uuid", "base_type_uuid", "constraint_policy_uuid", "element_policy_uuid")),
+        fixtureView("sys.catalog", "domain_element", columns("domain_uuid", "element_name", "element_type_uuid", "ordinal_position")),
+        fixtureView("sys.catalog", "reference_type_mapping", columns("reference_family", "source_type_name", "target_type_uuid", "mapping_state")),
+        fixtureView("sys.catalog", "type_capability", columns("type_uuid", "capability_name", "capability_state", "evidence_hash")),
+        fixtureView("sys.catalog", "operation_descriptor", columns("operation_uuid", "operation_name", "input_shape", "result_shape")),
+        fixtureView("sys.catalog", "artifacts", columns("artifact_uuid", "artifact_kind", "artifact_name", "artifact_hash")),
+        fixtureView("sys.metrics", "runtime_metrics", columns("metric_name", "metric_value", "unit", "sample_time")),
+        fixtureView("sys.metrics", "sessions", columns("session_uuid", "principal_uuid", "state", "started_at")),
+        fixtureView("sys.metrics", "transactions", columns("transaction_uuid", "state", "snapshot_id", "age_ms")),
+        fixtureView("sys.metrics", "locks", columns("lock_uuid", "object_uuid", "lock_mode", "holder_session_uuid")),
+        fixtureView("sys.metrics", "index_profiles", columns("index_uuid", "probe_count", "hit_count", "last_probe_time")),
+        fixtureTable(
             "sys.security",
             "users",
             "SYSTEM TABLE",
-            List.of(
-                new FixtureColumnMetadata("principal_uuid", "text", 1, false),
-                new FixtureColumnMetadata("principal_name", "text", 2, false),
-                new FixtureColumnMetadata("principal_state", "text", 3, false)
-            )
-        )
+            column("principal_uuid", "text", 1, false),
+            column("principal_name", "text", 2, false),
+            column("principal_state", "text", 3, false)
+        ),
+        fixtureTable("sys.security", "roles", "SYSTEM TABLE", columns("role_uuid", "role_name", "role_state", "inherits_from")),
+        fixtureTable("sys.security", "groups", "SYSTEM TABLE", columns("group_uuid", "group_name", "group_state", "tenant_uuid")),
+        fixtureView("sys.security", "grants", columns("grant_uuid", "grantee_uuid", "object_uuid", "right_name", "grant_state")),
+        fixtureView("sys.security", "policies", columns("policy_uuid", "policy_name", "policy_kind", "enforcement_state")),
+        fixtureView("sys.security", "row_policies", columns("policy_uuid", "table_uuid", "predicate_sblr_hash", "enforcement_state")),
+        fixtureView("sys.security", "masking_policies", columns("policy_uuid", "column_uuid", "mask_kind", "enforcement_state")),
+        fixtureView("sys.security", "audit_policies", columns("policy_uuid", "event_family", "retention_policy", "evidence_required")),
+        fixtureView("sys.security", "tenants", columns("tenant_uuid", "tenant_name", "tenant_state", "parent_tenant_uuid")),
+        fixtureView("sys.security", "permission_probe", columns("principal_uuid", "object_uuid", "right_name", "is_allowed", "reason_code")),
+        fixtureView("sys.security", "protected_material_catalog", columns("protected_material_uuid", "material_kind", "lifecycle_state", "active_version_uuid")),
+        fixtureView("sys.security", "protected_material_version", columns("protected_material_version_uuid", "protected_material_uuid", "rotation_state", "created_tx")),
+        fixtureView("sys.security", "protected_material_policy_binding", columns("binding_uuid", "protected_material_uuid", "policy_uuid", "binding_scope")),
+        fixtureView("sys.security", "protected_material_audit", columns("audit_uuid", "protected_material_uuid", "event_kind", "redacted_evidence_hash")),
+        fixtureView("sys.security", "protected_material_cache", columns("protected_material_uuid", "cache_state", "ttl_ms", "plaintext_material_returned")),
+        fixtureView("sys.configuration", "settings", columns("setting_name", "setting_value", "source_scope", "effective_state")),
+        fixtureView("sys.configuration", "profiles", columns("profile_uuid", "profile_name", "profile_kind", "profile_state")),
+        fixtureView("sys.configuration", "effective_settings", columns("setting_name", "effective_value", "resolved_from", "policy_hash")),
+        fixtureView("sys.configuration", "policy_bindings", columns("binding_uuid", "profile_uuid", "policy_uuid", "binding_state")),
+        fixtureView("sys.management", "runtime", columns("runtime_id", "component_name", "state", "last_transition_time")),
+        fixtureView("sys.management", "operation", columns("operation_id", "operation_name", "operation_state", "requires_right")),
+        fixtureView("sys.management", "sessions", columns("session_uuid", "principal_uuid", "client_app", "state")),
+        fixtureView("sys.management", "transactions", columns("transaction_uuid", "session_uuid", "state", "snapshot_id")),
+        fixtureView("sys.management", "locks", columns("lock_uuid", "object_uuid", "holder_session_uuid", "lock_mode")),
+        fixtureView("sys.management", "routes", columns("route_uuid", "listener_name", "route_state", "tls_required")),
+        fixtureView("sys.management", "services", columns("service_uuid", "service_name", "service_state", "control_policy")),
+        fixtureView("sys.management", "support_bundles", columns("bundle_uuid", "created_at", "redaction_state", "bundle_hash")),
+        fixtureView("sys.fn", "functions", columns("function_uuid", "function_name", "function_kind", "result_type")),
+        fixtureView("sys.fn", "signatures", columns("signature_uuid", "function_uuid", "argument_types", "result_type")),
+        fixtureView("sys.fn", "overloads", columns("overload_uuid", "function_uuid", "specific_name", "priority")),
+        fixtureView("sys.udr", "packages", columns("package_uuid", "package_name", "package_state", "trust_class")),
+        fixtureView("sys.udr", "routines", columns("routine_uuid", "package_uuid", "routine_name", "routine_kind")),
+        fixtureView("sys.udr", "entrypoints", columns("entrypoint_uuid", "routine_uuid", "language_name", "symbol_name")),
+        fixtureView("sys.udr", "permissions", columns("permission_uuid", "package_uuid", "right_name", "policy_uuid")),
+        fixtureView("sys.udr", "artifacts", columns("artifact_uuid", "package_uuid", "artifact_name", "artifact_hash")),
+        fixtureView("sys.parser", "parsers", columns("parser_uuid", "parser_name", "parser_family", "parser_state")),
+        fixtureView("sys.parser", "parser_routes", columns("route_uuid", "parser_uuid", "dialect_name", "route_state")),
+        fixtureView("sys.parser", "dialects", columns("dialect_name", "base_dialect", "compatibility_state", "parser_family")),
+        fixtureView("sys.parser", "packages", columns("package_uuid", "parser_uuid", "package_name", "package_hash")),
+        fixtureView("sys.parser", "registrations", columns("registration_uuid", "parser_uuid", "registered_at", "authority_state")),
+        fixtureView("sys.storage", "filespaces", columns("filespace_uuid", "filespace_name", "path_policy", "filespace_state")),
+        fixtureView("sys.storage", "filespace", columns("filespace_uuid", "filespace_name", "page_size", "checksum_policy")),
+        fixtureView("sys.storage", "object", columns("storage_object_uuid", "object_uuid", "filespace_uuid", "allocation_state")),
+        fixtureView("sys.storage", "shadow", columns("shadow_uuid", "filespace_uuid", "shadow_state", "sync_lsn")),
+        fixtureView("sys.storage", "page_family", columns("page_family_uuid", "family_name", "page_kind", "checksum_kind")),
+        fixtureView("sys.storage", "management_profile", columns("profile_uuid", "profile_name", "maintenance_policy", "profile_state")),
+        fixtureView("sys.storage", "row_descriptor", columns("descriptor_uuid", "table_uuid", "layout_hash", "version_state")),
+        fixtureView("sys.storage", "checksums", columns("page_id", "checksum_kind", "checksum_state", "last_verified_at")),
+        fixtureView("sys.mga", "transactions", columns("transaction_uuid", "state", "snapshot_id", "started_at")),
+        fixtureView("sys.mga", "snapshots", columns("snapshot_id", "oldest_visible_tx", "newest_visible_tx", "created_at")),
+        fixtureView("sys.mga", "record_versions", columns("record_version_uuid", "object_uuid", "creating_tx", "deleting_tx")),
+        fixtureView("sys.mga", "garbage_collection", columns("worker_uuid", "oldest_interesting_tx", "last_sweep_at", "state")),
+        fixtureView("sys.mga", "recovery_state", columns("recovery_uuid", "phase", "checkpoint_lsn", "recovery_state")),
+        fixtureView("sys.audit", "events", columns("audit_uuid", "event_time", "principal_uuid", "event_kind", "evidence_hash")),
+        fixtureView("sys.audit", "event_streams", columns("stream_uuid", "stream_name", "retention_policy", "stream_state")),
+        fixtureView("sys.audit", "audit_policies", columns("policy_uuid", "event_family", "capture_level", "policy_state")),
+        fixtureView("sys.compatibility", "dialects", columns("dialect_uuid", "dialect_name", "reference_family", "support_state")),
+        fixtureView("sys.compatibility", "feature_matrix", columns("feature_id", "dialect_name", "support_state", "refusal_reason")),
+        fixtureView("sys.compatibility", "parser_profiles", columns("profile_uuid", "dialect_name", "parser_uuid", "profile_state")),
+        fixtureView("sys.compatibility", "type_mapping", columns("mapping_uuid", "dialect_name", "source_type", "target_type")),
+        fixtureView("sys.information", "schemata", columns("catalog_name", "schema_name", "schema_owner", "schema_kind")),
+        fixtureView("sys.information", "tables", columns("table_catalog", "table_schema", "table_name", "table_type")),
+        fixtureView("sys.information", "columns", columns("table_schema", "table_name", "column_name", "data_type", "ordinal_position")),
+        fixtureView("sys.information", "views", columns("table_schema", "table_name", "is_updatable", "definition_hash")),
+        fixtureView("sys.information", "routines", columns("routine_schema", "routine_name", "routine_type", "data_type")),
+        fixtureView("sys.information", "constraints", columns("constraint_schema", "constraint_name", "table_name", "constraint_type")),
+        fixtureView("sys.information", "indexes", columns("index_schema", "index_name", "table_name", "index_type")),
+        fixtureView("sys.information", "domains", columns("domain_schema", "domain_name", "data_type", "domain_state")),
+        fixtureView("sys.information", "sequences", columns("sequence_schema", "sequence_name", "data_type", "sequence_state")),
+        fixtureView("sys.information", "triggers", columns("trigger_schema", "trigger_name", "event_object_table", "action_timing")),
+        fixtureView("sys.information", "privileges", columns("grantee", "object_schema", "object_name", "privilege_type")),
+        fixtureView("sys.information_schema", "schemata", columns("catalog_name", "schema_name", "schema_owner", "default_character_set_name")),
+        fixtureView("sys.information_schema", "tables", columns("table_catalog", "table_schema", "table_name", "table_type")),
+        fixtureView("sys.information_schema", "columns", columns("table_schema", "table_name", "column_name", "data_type", "ordinal_position")),
+        fixtureView("sys.information_schema", "views", columns("table_schema", "table_name", "view_definition", "is_updatable")),
+        fixtureView("sys.catalog_readable", "relations", columns("relation_uuid", "schema_path", "relation_name", "relation_kind")),
+        fixtureView("sys.catalog_readable", "object_names", columns("object_uuid", "language_tag", "display_name", "name_class")),
+        fixtureView("sys.catalog_readable", "object_dependencies", columns("object_uuid", "depends_on_object_uuid", "dependency_kind", "visibility_state")),
+        fixtureView("sys.catalog_readable", "object_privileges", columns("object_uuid", "grantee_uuid", "right_name", "is_grantable")),
+        fixtureView("sys.diagnostics", "messages", columns("message_code", "severity", "message_text", "detail_code")),
+        fixtureView("sys.diagnostics", "message_catalog", columns("message_code", "locale", "message_template", "catalog_state")),
+        fixtureView("sys.diagnostics", "support_bundles", columns("bundle_uuid", "created_at", "redaction_state", "bundle_hash")),
+        fixtureView("sys.diagnostics", "health", columns("component_name", "health_state", "last_check_time", "detail_code")),
+        fixtureView("sys.diagnostics", "logs", columns("log_uuid", "component_name", "log_level", "redaction_state"))
     );
 
     private static final class FixtureTableMetadata {
@@ -123,6 +223,33 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             this.ordinal = ordinal;
             this.nullable = nullable;
         }
+    }
+
+    private static FixtureTableMetadata fixtureTable(
+            String schema,
+            String name,
+            String tableType,
+            FixtureColumnMetadata... columns) {
+        return new FixtureTableMetadata(schema, name, tableType, List.of(columns));
+    }
+
+    private static FixtureTableMetadata fixtureView(
+            String schema,
+            String name,
+            FixtureColumnMetadata... columns) {
+        return fixtureTable(schema, name, "SYSTEM VIEW", columns);
+    }
+
+    private static FixtureColumnMetadata column(String name, String typeName, int ordinal, boolean nullable) {
+        return new FixtureColumnMetadata(name, typeName, ordinal, nullable);
+    }
+
+    private static FixtureColumnMetadata[] columns(String... names) {
+        FixtureColumnMetadata[] columns = new FixtureColumnMetadata[names.length];
+        for (int index = 0; index < names.length; index++) {
+            columns[index] = column(names[index], "text", index + 1, true);
+        }
+        return columns;
     }
 
     private final SBConnection connection;
@@ -959,9 +1086,43 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
 
         Set<String> typeFilter = normalizeTypes(types);
         List<Object[]> rows = new ArrayList<>();
-        if (useDriverTestFixtureMetadata()) {
-            appendDriverTestFixtureTables(rows, currentCatalog, schemaPattern, tableNamePattern, typeFilter);
+
+        try {
+            for (Object[] row : queryRows(
+                "SELECT object_name, object_kind, schema_path, object_path " +
+                "FROM sys.catalog_readable.object_tree"
+            )) {
+                String objectKind = readableObjectTreeObjectKind(row);
+                if (objectKind == null || "schema".equalsIgnoreCase(objectKind)) {
+                    continue;
+                }
+                String tableName = readableObjectTreeObjectName(row);
+                String schemaName = objectTreeSchemaPath(
+                    readableObjectTreeSchemaPath(row),
+                    readableObjectTreeObjectPath(row));
+                if (!matchesPattern(schemaName, schemaPattern) || !matchesPattern(tableName, tableNamePattern)) {
+                    continue;
+                }
+                String tableType = mapReadableObjectTreeType(objectKind, schemaName);
+                if (!matchesTypeFilter(tableType, typeFilter)) {
+                    continue;
+                }
+                rows.add(new Object[]{
+                    currentCatalog,
+                    schemaName,
+                    tableName,
+                    tableType,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                });
+            }
             return tableResultSet(rows);
+        } catch (SQLException ignored) {
+            // Fall back to older live metadata paths and then explicit driver-test fixtures.
         }
 
         boolean loadedBaseTables = false;
@@ -1097,6 +1258,10 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             appendSyntheticSystemViews(rows, existing, currentCatalog, schemaPattern, tableNamePattern);
         }
 
+        if (rows.isEmpty() && useDriverTestFixtureMetadata()) {
+            appendDriverTestFixtureTables(rows, currentCatalog, schemaPattern, tableNamePattern, typeFilter);
+        }
+
         return tableResultSet(rows);
     }
 
@@ -1116,9 +1281,22 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         }
         boolean expandSchemaParents = expandSchemaParentNodesInMetadata();
         LinkedHashSet<String> schemaNames = new LinkedHashSet<>();
-        if (useDriverTestFixtureMetadata()) {
-            appendDriverTestFixtureSchemas(schemaNames, schemaPattern, expandSchemaParents);
-        } else {
+        try {
+            for (Object[] row : queryRows(
+                "SELECT object_path, object_kind " +
+                "FROM sys.catalog_readable.object_tree"
+            )) {
+                if (!"schema".equalsIgnoreCase(readableObjectTreeObjectKind(row))) {
+                    continue;
+                }
+                appendSchemaName(schemaNames, readableObjectTreeObjectPath(row), schemaPattern, expandSchemaParents);
+            }
+            return schemaResultSet(schemaNames, currentCatalog);
+        } catch (SQLException ignored) {
+            // Fall back to older live metadata paths and then explicit driver-test fixtures.
+        }
+
+        {
             List<Object[]> sourceRows = Collections.emptyList();
             try {
                 sourceRows = queryRows("SELECT schema_name FROM sys.schemas WHERE is_valid = 1 ORDER BY schema_name");
@@ -1137,15 +1315,11 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
                 appendSyntheticSystemSchemas(schemaNames, schemaPattern, expandSchemaParents);
             }
         }
-
-        List<Object[]> rows = new ArrayList<>(schemaNames.size());
-        for (String schemaName : schemaNames) {
-            rows.add(new Object[]{schemaName, currentCatalog});
+        if (schemaNames.isEmpty() && useDriverTestFixtureMetadata()) {
+            appendDriverTestFixtureSchemas(schemaNames, schemaPattern, expandSchemaParents);
         }
-        List<SBColumnInfo> cols = new ArrayList<>();
-        cols.add(column("TABLE_SCHEM", 25));
-        cols.add(column("TABLE_CATALOG", 25));
-        return new SBResultSet(null, cols, rows);
+
+        return schemaResultSet(schemaNames, currentCatalog);
     }
 
     @Override
@@ -1200,11 +1374,6 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         }
 
         List<Object[]> rows = new ArrayList<>();
-        if (useDriverTestFixtureMetadata()) {
-            appendDriverTestFixtureColumns(rows, currentCatalog, schemaPattern, tableNamePattern, columnNamePattern);
-            return columnResultSet(rows);
-        }
-
         boolean loadedColumns = false;
         try {
             for (Object[] row : queryRows(
@@ -1337,6 +1506,10 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             } catch (SQLException ignored) {
                 // Leave empty on fallback failure; metadata shape remains valid.
             }
+        }
+
+        if (rows.isEmpty() && useDriverTestFixtureMetadata()) {
+            appendDriverTestFixtureColumns(rows, currentCatalog, schemaPattern, tableNamePattern, columnNamePattern);
         }
 
         if (rows.isEmpty()) {
@@ -1971,6 +2144,17 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         return new SBResultSet(null, cols, rows);
     }
 
+    private ResultSet schemaResultSet(Set<String> schemaNames, String currentCatalog) {
+        List<Object[]> rows = new ArrayList<>(schemaNames.size());
+        for (String schemaName : schemaNames) {
+            rows.add(new Object[]{schemaName, currentCatalog});
+        }
+        List<SBColumnInfo> cols = new ArrayList<>();
+        cols.add(column("TABLE_SCHEM", 25));
+        cols.add(column("TABLE_CATALOG", 25));
+        return new SBResultSet(null, cols, rows);
+    }
+
     private ResultSet columnResultSet(List<Object[]> rows) {
         List<SBColumnInfo> cols = new ArrayList<>();
         cols.add(column("TABLE_CAT", 25));
@@ -2033,6 +2217,68 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         for (String schemaName : SYNTHETIC_SYSTEM_SCHEMAS) {
             appendSchemaName(out, schemaName, schemaPattern, expandParents);
         }
+    }
+
+    private String objectTreeSchemaPath(String schemaPath, String objectPath) {
+        if (schemaPath != null && !schemaPath.isBlank()) {
+            return schemaPath;
+        }
+        if (objectPath == null) {
+            return null;
+        }
+        int separator = objectPath.lastIndexOf('.');
+        return separator < 0 ? null : objectPath.substring(0, separator);
+    }
+
+    private boolean isReadableObjectTreeFullRow(Object[] row) {
+        return row != null && row.length >= 10;
+    }
+
+    private String readableObjectTreeObjectPath(Object[] row) {
+        return isReadableObjectTreeFullRow(row) ? toStringValue(row, 2) : toStringValue(row, 0);
+    }
+
+    private String readableObjectTreeObjectName(Object[] row) {
+        return isReadableObjectTreeFullRow(row) ? toStringValue(row, 3) : toStringValue(row, 0);
+    }
+
+    private String readableObjectTreeObjectKind(Object[] row) {
+        return isReadableObjectTreeFullRow(row) ? toStringValue(row, 4) : toStringValue(row, 1);
+    }
+
+    private String readableObjectTreeSchemaPath(Object[] row) {
+        return isReadableObjectTreeFullRow(row) ? toStringValue(row, 7) : toStringValue(row, 2);
+    }
+
+    private boolean isSystemSchema(String schemaName) {
+        if (schemaName == null) {
+            return false;
+        }
+        String normalized = schemaName.toLowerCase(Locale.ROOT);
+        return "sys".equals(normalized) || normalized.startsWith("sys.");
+    }
+
+    private String mapReadableObjectTreeType(String objectKind, String schemaName) {
+        String normalized = objectKind == null
+            ? ""
+            : objectKind.trim().toLowerCase(Locale.ROOT);
+        String mapped;
+        if (normalized.contains("view")) {
+            mapped = normalized.contains("materialized") ? "MATERIALIZED VIEW" : "VIEW";
+        } else if (normalized.contains("temporary")) {
+            mapped = "TEMPORARY TABLE";
+        } else {
+            mapped = "TABLE";
+        }
+        if (isSystemSchema(schemaName)) {
+            if ("VIEW".equals(mapped) || "MATERIALIZED VIEW".equals(mapped)) {
+                return "SYSTEM VIEW";
+            }
+            if ("TABLE".equals(mapped)) {
+                return "SYSTEM TABLE";
+            }
+        }
+        return mapped;
     }
 
     private void appendDriverTestFixtureSchemas(Set<String> out, String schemaPattern, boolean expandParents) {
@@ -2746,7 +2992,7 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
             }
         }
 
-        if ("sys".equals(schema)) {
+        if (isSystemSchema(schema)) {
             if ("VIEW".equals(type) || "MATERIALIZED VIEW".equals(type)) {
                 return "SYSTEM VIEW";
             }
@@ -2769,7 +3015,7 @@ public class SBDatabaseMetaData implements DatabaseMetaData {
         } else {
             mapped = "TABLE";
         }
-        if ("sys".equalsIgnoreCase(schemaName) && "VIEW".equals(mapped)) {
+        if (isSystemSchema(schemaName) && "VIEW".equals(mapped)) {
             return "SYSTEM VIEW";
         }
         return mapped;

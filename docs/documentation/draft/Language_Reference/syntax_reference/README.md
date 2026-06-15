@@ -39,6 +39,7 @@ This directory contains SBsql statement, expression, lifecycle, and clause refer
 | Agents and agent management | [agent.md](agent.md) |
 | Transactions | [transaction_control.md](transaction_control.md) |
 | Backup, restore, replication, and migration | [backup_restore_replication_migration.md](backup_restore_replication_migration.md) |
+| Catalog artifacts and external Git versioning | [catalog_artifacts_and_external_git.md](catalog_artifacts_and_external_git.md) |
 | Multimodel statements | [multimodel_statements.md](multimodel_statements.md) |
 
 ## Procedural SQL Pages

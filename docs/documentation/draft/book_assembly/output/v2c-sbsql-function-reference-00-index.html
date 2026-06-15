@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sbsql-language-reference-functions" id="toc-sbsql-language-reference-functions">SBsql Language Reference —
+Functions</a>
+<ul>
+<li><a href="#who-this-book-is-for" id="toc-who-this-book-is-for">Who
+this book is for</a></li>
+<li><a href="#about-this-book" id="toc-about-this-book">About this
+book</a></li>
+<li><a href="#parts-in-this-volume" id="toc-parts-in-this-volume">Parts
+in this volume</a></li>
+</ul></li>
+<li><a href="#function-reference-namespace-files" id="toc-function-reference-namespace-files">Function Reference —
+Namespace Files</a></li>
+<li><a href="#glossary" id="toc-glossary">Glossary</a>
+<ul>
+<li><a href="#purpose" id="toc-purpose">Purpose</a></li>
+<li><a href="#scratchbird-product-names" id="toc-scratchbird-product-names">ScratchBird Product Names</a></li>
+<li><a href="#architecture-terms" id="toc-architecture-terms">Architecture Terms</a></li>
+<li><a href="#database-and-catalog-terms" id="toc-database-and-catalog-terms">Database And Catalog Terms</a></li>
+<li><a href="#schema-and-name-terms" id="toc-schema-and-name-terms">Schema And Name Terms</a></li>
+<li><a href="#transaction-and-recovery-terms" id="toc-transaction-and-recovery-terms">Transaction And Recovery
+Terms</a></li>
+<li><a href="#security-terms" id="toc-security-terms">Security
+Terms</a></li>
+<li><a href="#data-and-type-terms" id="toc-data-and-type-terms">Data And
+Type Terms</a></li>
+<li><a href="#query-terms" id="toc-query-terms">Query Terms</a></li>
+<li><a href="#procedural-terms" id="toc-procedural-terms">Procedural
+Terms</a></li>
+<li><a href="#operations-and-data-movement-terms" id="toc-operations-and-data-movement-terms">Operations And Data Movement
+Terms</a></li>
+<li><a href="#build-and-release-terms" id="toc-build-and-release-terms">Build And Release Terms</a></li>
+</ul></li>
+<li><a href="#about-this-documentation" id="toc-about-this-documentation">About This Documentation</a></li>
+</ul>
+</nav>
+<h1 id="sbsql-language-reference-functions">SBsql Language Reference —
+Functions</h1>
+<p><em>ScratchBird documentation — draft</em></p>
+<h2 id="who-this-book-is-for">Who this book is for</h2>
+<p>Developers using built-in functions, operators, aggregates, and
+windows.</p>
+<h2 id="about-this-book">About this book</h2>
+<p>This volume is the SBsql functional reference: the built-in function
+packages, operators, aggregates, window functions, and special forms,
+grouped by namespace. It is split into one file per namespace group;
+this index lists them. It is the third of three SBsql reference
+volumes.</p>
+<h2 id="parts-in-this-volume">Parts in this volume</h2>
+<ul>
+<li><strong>Functional Reference</strong></li>
+</ul>
+<blockquote>
+<p>This is a <strong>draft</strong>. See <em>About This
+Documentation</em> at the end of this book for status and license.
+Confirm any specific behavior against the current build.</p>
+</blockquote>
+<h1 id="function-reference-namespace-files">Function Reference —
+Namespace Files</h1>
+<p>This volume is split into one file per namespace group. The files, in
+order:</p>
+<ul>
+<li><strong>Functional Reference Index</strong> —
+<code>v2c-sbsql-function-reference-01-overview.md</code></li>
+<li><strong>SB Core Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-02-sb_core.md</code></li>
+<li><strong>SB Crypto Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-03-sb_crypto.md</code></li>
+<li><strong>SB Cursor Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-04-sb_cursor.md</code></li>
+<li><strong>SB Diagnostic Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-05-sb_diagnostic.md</code></li>
+<li><strong>SB JSON Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-06-sb_json.md</code></li>
+<li><strong>SB LOB Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-07-sb_lob.md</code></li>
+<li><strong>SB Operator Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-08-sb_operator.md</code></li>
+<li><strong>SB Range Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-09-sb_range.md</code></li>
+<li><strong>SB Regex Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-10-sb_regex.md</code></li>
+<li><strong>SB Rowset Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-11-sb_rowset.md</code></li>
+<li><strong>SB Spatial Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-12-sb_spatial.md</code></li>
+<li><strong>SB Temporal Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-13-sb_temporal.md</code></li>
+<li><strong>SB Timeseries Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-14-sb_timeseries.md</code></li>
+<li><strong>SB UUID Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-15-sb_uuid.md</code></li>
+<li><strong>SB Vector Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-16-sb_vector.md</code></li>
+<li><strong>SB XML Functional Reference</strong> —
+<code>v2c-sbsql-function-reference-17-sb_xml.md</code></li>
+</ul>
+<p><a id="ch-glossary"></a></p>
+<h1 id="glossary">Glossary</h1>
+<h2 id="purpose">Purpose</h2>
+<p>This glossary defines terms used across the ScratchBird documentation
+set. The definitions are written for end users, evaluators, operators,
+and developers. They are intentionally concise and cautious: a term
+appearing here does not mean the related feature is complete, enabled,
+or available in every build.</p>
+<h2 id="scratchbird-product-names">ScratchBird Product Names</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>ScratchBird</td>
+<td>The project and product line described by this documentation.</td>
+</tr>
+<tr class="even">
+<td>ScratchBird Convergent Data Engine</td>
+<td>The full product concept: engine, parsers, tools, resources, and
+operational surfaces.</td>
+</tr>
+<tr class="odd">
+<td>SB</td>
+<td>Short brand form used in names and examples.</td>
+</tr>
+<tr class="even">
+<td>SBcore</td>
+<td>ScratchBird Engine. The embedded engine library that owns durable
+catalog identity, transactions, storage, security admission, recovery
+decisions, and engine diagnostics.</td>
+</tr>
+<tr class="odd">
+<td>SBsql</td>
+<td>ScratchBird SQL. The native ScratchBird command language and script
+runner surface.</td>
+</tr>
+<tr class="even">
+<td>SBParser</td>
+<td>ScratchBird Core Parser. The native SBsql parser package that lowers
+SBsql requests to SBLR.</td>
+</tr>
+<tr class="odd">
+<td>SBsrv</td>
+<td>ScratchBird IPC Server. A local multi-user server process for
+same-machine clients.</td>
+</tr>
+<tr class="even">
+<td>SBgate</td>
+<td>ScratchBird Listener. The listener and parser-facing entry point
+used for network-facing client traffic.</td>
+</tr>
+<tr class="odd">
+<td>SBmgr</td>
+<td>ScratchBird Single Node Manager. A single-node front door that can
+proxy authenticated connections to internal listener routes in managed
+deployments.</td>
+</tr>
+<tr class="even">
+<td>SBadm</td>
+<td>ScratchBird Administrator. Administrative utility name for
+configuration, time zone, character set, collation, and policy
+management where present.</td>
+</tr>
+<tr class="odd">
+<td>SBbak</td>
+<td>ScratchBird Backup Manager. Utility name for backup and backup-set
+operations where present.</td>
+</tr>
+<tr class="even">
+<td>SBsec</td>
+<td>ScratchBird Security. Utility name for security provider, user,
+role, group, and policy management where present.</td>
+</tr>
+<tr class="odd">
+<td>SBdoc</td>
+<td>ScratchBird Doctor. Utility name for analysis, diagnosis, and
+repair-oriented workflows where present and admitted.</td>
+</tr>
+<tr class="even">
+<td>SBcop</td>
+<td>ScratchBird Conformance Officer. Utility name for conformance and
+comparison checks where present.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="architecture-terms">Architecture Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Convergent Data Engine</td>
+<td>An engine design that attempts to bring multiple data shapes, parser
+surfaces, transaction rules, security rules, and diagnostics under one
+shared engine authority model.</td>
+</tr>
+<tr class="even">
+<td>CDE</td>
+<td>Abbreviation for Convergent Data Engine.</td>
+</tr>
+<tr class="odd">
+<td>Engine authority</td>
+<td>The rule that durable behavior belongs to SBcore: object identity,
+descriptors, transactions, security admission, storage, recovery, and
+diagnostics.</td>
+</tr>
+<tr class="even">
+<td>Parser boundary</td>
+<td>The separation between a client language or wire protocol and engine
+execution authority.</td>
+</tr>
+<tr class="odd">
+<td>Parser package</td>
+<td>A component that accepts a specific language or protocol surface and
+lowers accepted work to ScratchBird execution requests.</td>
+</tr>
+<tr class="even">
+<td>Compatibility parser</td>
+<td>A standalone parser package for one reference-system client family.
+It should not silently accept unrelated dialects.</td>
+</tr>
+<tr class="odd">
+<td>SBsql language profile</td>
+<td>A parser resource profile that can change user-facing SBsql
+spellings, phrase order, diagnostics, completion hints, and source
+rendering without changing SBLR, UUID identity, descriptors, security,
+storage, or MGA transaction authority.</td>
+</tr>
+<tr class="even">
+<td>Canonical element stream</td>
+<td>The normalized parser output created before UUID binding. It records
+canonical token and surface identities rather than treating localized
+words as engine authority.</td>
+</tr>
+<tr class="odd">
+<td>Standard SBsql fallback</td>
+<td>A policy-controlled input fallback that lets a non-English session
+accept canonical English SBsql when the preferred language profile does
+not parse the statement.</td>
+</tr>
+<tr class="even">
+<td>Parser route</td>
+<td>The configured path that determines which parser handles a client
+request.</td>
+</tr>
+<tr class="odd">
+<td>SBLR</td>
+<td>ScratchBird’s bound engine-facing request representation. Parsers
+emit SBLR after parsing and binding accepted work.</td>
+</tr>
+<tr class="even">
+<td>Bound request</td>
+<td>A structured request whose names, values, parameters, and types have
+been resolved enough to submit toward engine authority.</td>
+</tr>
+<tr class="odd">
+<td>Raw text</td>
+<td>The command text received from a client before parsing. Raw text is
+not durable engine authority.</td>
+</tr>
+<tr class="even">
+<td>Catalog projection</td>
+<td>A view or metadata surface that presents engine catalog information
+in a particular shape for a parser, tool, or user.</td>
+</tr>
+<tr class="odd">
+<td>Workarea</td>
+<td>A schema-root area presented to a parser or user as its operating
+root.</td>
+</tr>
+<tr class="even">
+<td>Compatibility surface</td>
+<td>The subset of behavior a parser or tool is designed and proven to
+accept, execute, or refuse clearly.</td>
+</tr>
+<tr class="odd">
+<td>Refusal</td>
+<td>A controlled response that says a request is unsupported, denied,
+unavailable, unsafe, or otherwise not admitted.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="database-and-catalog-terms">Database And Catalog Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Database</td>
+<td>A managed durable store of data, metadata, identity, transactions,
+security rules, diagnostics, and recovery behavior.</td>
+</tr>
+<tr class="even">
+<td>Metadata</td>
+<td>Information that describes data, such as schemas, tables, columns,
+types, constraints, indexes, views, routines, grants, policies, and
+catalog rows.</td>
+</tr>
+<tr class="odd">
+<td>Catalog</td>
+<td>Engine-owned metadata that describes durable database objects and
+their relationships.</td>
+</tr>
+<tr class="even">
+<td>Catalog identity</td>
+<td>The durable identity of a catalog object, separate from the
+user-facing name used to spell it.</td>
+</tr>
+<tr class="odd">
+<td>UUID identity</td>
+<td>Durable object identity based on UUIDs rather than only text
+names.</td>
+</tr>
+<tr class="even">
+<td>Object descriptor</td>
+<td>Engine metadata describing an object shape, type, storage behavior,
+dependency, or operational capability.</td>
+</tr>
+<tr class="odd">
+<td>Type descriptor</td>
+<td>Metadata describing a datatype, its value behavior, binary
+representation, capabilities, and related rules.</td>
+</tr>
+<tr class="even">
+<td>Domain</td>
+<td>A reusable constrained type definition.</td>
+</tr>
+<tr class="odd">
+<td>Constraint</td>
+<td>A rule attached to a table, column, domain, or related object.</td>
+</tr>
+<tr class="even">
+<td>Index</td>
+<td>A search structure maintained for faster lookup, ordering,
+constraint enforcement, or query planning where implemented.</td>
+</tr>
+<tr class="odd">
+<td>View</td>
+<td>A named query projection.</td>
+</tr>
+<tr class="even">
+<td>Materialized view</td>
+<td>A stored projection whose refresh and dependency behavior must be
+defined by the implementation.</td>
+</tr>
+<tr class="odd">
+<td>Procedure</td>
+<td>A stored routine that can perform controlled work and may return
+output parameters or result sets where supported.</td>
+</tr>
+<tr class="even">
+<td>Function</td>
+<td>A routine that returns a value or result.</td>
+</tr>
+<tr class="odd">
+<td>Package</td>
+<td>A named grouping of routine definitions where supported.</td>
+</tr>
+<tr class="even">
+<td>Trigger</td>
+<td>Routine behavior tied to table, database, transaction, or
+event-style actions where implemented.</td>
+</tr>
+<tr class="odd">
+<td>Sequence</td>
+<td>A database object that generates ordered values according to its
+definition.</td>
+</tr>
+<tr class="even">
+<td>Comment</td>
+<td>Descriptive metadata attached to an object. Comments do not grant
+authority and should not contain secrets.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="schema-and-name-terms">Schema And Name Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Schema</td>
+<td>A namespace branch that can contain objects and, where supported,
+child schemas.</td>
+</tr>
+<tr class="even">
+<td>Recursive schema tree</td>
+<td>A schema model where schemas can contain child schemas, creating a
+tree rather than one flat namespace.</td>
+</tr>
+<tr class="odd">
+<td>Database root</td>
+<td>The top of the durable database tree. Not every session can see it
+directly.</td>
+</tr>
+<tr class="even">
+<td>Parser-visible root</td>
+<td>The root of the namespace presented to the selected parser
+route.</td>
+</tr>
+<tr class="odd">
+<td>Home schema</td>
+<td>The schema associated with a user, identity, or configured
+workarea.</td>
+</tr>
+<tr class="even">
+<td>Current schema</td>
+<td>The default schema used for unqualified names in a session.</td>
+</tr>
+<tr class="odd">
+<td>Search path</td>
+<td>An ordered lookup path used by commands that allow path-based name
+resolution.</td>
+</tr>
+<tr class="even">
+<td>Qualified name</td>
+<td>A name that includes schema or path information, such as
+<code>app.notes</code>.</td>
+</tr>
+<tr class="odd">
+<td>Unqualified name</td>
+<td>A name without schema qualification, such as
+<code>notes</code>.</td>
+</tr>
+<tr class="even">
+<td>Name resolution</td>
+<td>The process of turning a user-visible name into engine object
+identity.</td>
+</tr>
+<tr class="odd">
+<td>Sandbox</td>
+<td>The visible boundary that limits what a session or parser route can
+name, inspect, or access.</td>
+</tr>
+<tr class="even">
+<td>Schema branch</td>
+<td>A subtree of the database namespace.</td>
+</tr>
+<tr class="odd">
+<td>Object lifecycle</td>
+<td>The create, alter, rename, comment, describe, use, refresh,
+validate, or drop actions that apply to an object type.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="transaction-and-recovery-terms">Transaction And Recovery
+Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Transaction</td>
+<td>A boundary around work that can commit, roll back, and participate
+in visibility rules.</td>
+</tr>
+<tr class="even">
+<td>Commit</td>
+<td>Make a transaction’s admitted changes final according to engine
+visibility rules.</td>
+</tr>
+<tr class="odd">
+<td>Rollback</td>
+<td>Discard uncommitted transaction changes.</td>
+</tr>
+<tr class="even">
+<td>Savepoint</td>
+<td>A named point inside a transaction that can be rolled back without
+ending the whole transaction where supported.</td>
+</tr>
+<tr class="odd">
+<td>Autocommit</td>
+<td>A mode where each statement may be committed automatically according
+to session and parser rules.</td>
+</tr>
+<tr class="even">
+<td>MGA</td>
+<td>ScratchBird’s transaction and visibility authority model. In this
+documentation, the key rule is that transaction finality belongs to the
+engine.</td>
+</tr>
+<tr class="odd">
+<td>Visibility</td>
+<td>The rule that determines which transaction versions a session can
+see.</td>
+</tr>
+<tr class="even">
+<td>Cleanup</td>
+<td>Engine-controlled work that reclaims or resolves old transaction
+state when it is safe.</td>
+</tr>
+<tr class="odd">
+<td>Recovery</td>
+<td>The process of reopening or refusing a database after shutdown,
+interruption, or uncertain durable state.</td>
+</tr>
+<tr class="even">
+<td>Recovery-required state</td>
+<td>A state where the engine requires recovery handling before normal
+writes can proceed.</td>
+</tr>
+<tr class="odd">
+<td>Fail closed</td>
+<td>Refuse work when the safe outcome is uncertain instead of silently
+accepting it.</td>
+</tr>
+<tr class="even">
+<td>Reopen proof</td>
+<td>A test that closes and reopens a database to verify committed state
+is still present.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="security-terms">Security Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Identity</td>
+<td>The authenticated user, service, or agent identity attached to a
+session or operation.</td>
+</tr>
+<tr class="even">
+<td>Principal</td>
+<td>A user, role, group, service, or other authority-bearing
+identity.</td>
+</tr>
+<tr class="odd">
+<td>Authentication</td>
+<td>Establishing who the session or agent is.</td>
+</tr>
+<tr class="even">
+<td>Authorization</td>
+<td>Deciding what an authenticated identity is allowed to do.</td>
+</tr>
+<tr class="odd">
+<td>Grant</td>
+<td>A permission given to a principal or object.</td>
+</tr>
+<tr class="even">
+<td>Revoke</td>
+<td>Removal of a previously granted permission.</td>
+</tr>
+<tr class="odd">
+<td>Role</td>
+<td>A named set of privileges that can be granted and activated
+according to policy.</td>
+</tr>
+<tr class="even">
+<td>Policy</td>
+<td>A rule that controls access, masking, row visibility, external
+access, operational admission, or protected material use.</td>
+</tr>
+<tr class="odd">
+<td>Row-level security</td>
+<td>Policy behavior that limits which rows a session can see or
+change.</td>
+</tr>
+<tr class="even">
+<td>Mask</td>
+<td>A policy-controlled transformation that hides or changes protected
+values in query output.</td>
+</tr>
+<tr class="odd">
+<td>Protected material</td>
+<td>Secrets or sensitive values that require controlled storage,
+reference, redaction, and use.</td>
+</tr>
+<tr class="even">
+<td>Secret reference</td>
+<td>A reference to protected material without placing the raw secret in
+a parser packet, script, or diagnostic.</td>
+</tr>
+<tr class="odd">
+<td>Materialized authorization</td>
+<td>Authorization information loaded into an engine-admissible form
+before work is executed.</td>
+</tr>
+<tr class="even">
+<td>Denied</td>
+<td>A refusal because the authenticated identity, policy, or sandbox
+does not admit the operation.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="data-and-type-terms">Data And Type Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Datatype</td>
+<td>A named value category with storage, comparison, conversion, and
+validation behavior.</td>
+</tr>
+<tr class="even">
+<td>Scalar value</td>
+<td>A single value such as an integer, timestamp, boolean, UUID, or text
+value.</td>
+</tr>
+<tr class="odd">
+<td>Numeric type</td>
+<td>A datatype for integer, unsigned integer, decimal, fixed-point, or
+floating-point values.</td>
+</tr>
+<tr class="even">
+<td>Text type</td>
+<td>A datatype for character data governed by character set and
+collation rules.</td>
+</tr>
+<tr class="odd">
+<td>Character set</td>
+<td>The encoding rules for text values.</td>
+</tr>
+<tr class="even">
+<td>Collation</td>
+<td>The comparison and ordering rules for text values.</td>
+</tr>
+<tr class="odd">
+<td>Temporal type</td>
+<td>A datatype for dates, times, timestamps, intervals, or
+time-zone-aware values.</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>A fixed-size identifier value commonly used for durable
+identity.</td>
+</tr>
+<tr class="odd">
+<td>Binary value</td>
+<td>A sequence of bytes with type-specific interpretation.</td>
+</tr>
+<tr class="even">
+<td>Protected value</td>
+<td>A value governed by protected-material policy.</td>
+</tr>
+<tr class="odd">
+<td>Document value</td>
+<td>A structured value such as JSON-like data where implemented.</td>
+</tr>
+<tr class="even">
+<td>Graph value</td>
+<td>A relationship-oriented value or model surface where
+implemented.</td>
+</tr>
+<tr class="odd">
+<td>Vector value</td>
+<td>A numeric vector used for similarity or embedding-style operations
+where implemented.</td>
+</tr>
+<tr class="even">
+<td>Time-series value</td>
+<td>A value or record organized around time-oriented measurement
+behavior where implemented.</td>
+</tr>
+<tr class="odd">
+<td>Coercion</td>
+<td>An implicit or explicit conversion between compatible types.</td>
+</tr>
+<tr class="even">
+<td>Cast</td>
+<td>An explicit type conversion requested by the user.</td>
+</tr>
+<tr class="odd">
+<td>Null</td>
+<td>A marker for absence of a value, distinct from zero, empty string,
+or false.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="query-terms">Query Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>DDL</td>
+<td>Data definition language: commands that create, alter, describe,
+comment on, rename, or drop database objects.</td>
+</tr>
+<tr class="even">
+<td>DML</td>
+<td>Data manipulation language: commands that read or change rows and
+values.</td>
+</tr>
+<tr class="odd">
+<td>Query</td>
+<td>A request that reads data and returns a result set or scalar
+result.</td>
+</tr>
+<tr class="even">
+<td>Result set</td>
+<td>Rows and columns returned by a query or routine.</td>
+</tr>
+<tr class="odd">
+<td>Projection</td>
+<td>The selected output columns or expressions of a query.</td>
+</tr>
+<tr class="even">
+<td>Predicate</td>
+<td>A condition used to filter rows or control logic.</td>
+</tr>
+<tr class="odd">
+<td>Join</td>
+<td>A query operation that combines rows from more than one source.</td>
+</tr>
+<tr class="even">
+<td>Grouping</td>
+<td>A query operation that forms groups of rows for aggregate
+calculations.</td>
+</tr>
+<tr class="odd">
+<td>Aggregate</td>
+<td>A calculation over multiple rows, such as count or sum where
+implemented.</td>
+</tr>
+<tr class="even">
+<td>Window function</td>
+<td>A calculation over a window of rows related to the current row where
+implemented.</td>
+</tr>
+<tr class="odd">
+<td>CTE</td>
+<td>Common table expression. A named temporary query expression inside a
+statement.</td>
+</tr>
+<tr class="even">
+<td>Recursive CTE</td>
+<td>A CTE that refers to itself according to the rules of the language
+surface.</td>
+</tr>
+<tr class="odd">
+<td>Ordering</td>
+<td>The explicit sort order requested for result rows.</td>
+</tr>
+<tr class="even">
+<td>Limit</td>
+<td>A request to return only a bounded number of rows.</td>
+</tr>
+<tr class="odd">
+<td>Offset</td>
+<td>A request to skip a number of rows before returning results.</td>
+</tr>
+<tr class="even">
+<td>Upsert</td>
+<td>Insert-or-update behavior according to a conflict rule where
+supported.</td>
+</tr>
+<tr class="odd">
+<td>Merge</td>
+<td>A statement that conditionally inserts, updates, or deletes based on
+a source relation where supported.</td>
+</tr>
+<tr class="even">
+<td>Copy</td>
+<td>A large or streaming data input or output surface where implemented
+and admitted.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="procedural-terms">Procedural Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Procedural SQL</td>
+<td>Stored routine language constructs such as blocks, variables,
+control flow, cursors, exceptions, and triggers where implemented.</td>
+</tr>
+<tr class="even">
+<td>Block</td>
+<td>A procedural unit containing declarations and executable
+statements.</td>
+</tr>
+<tr class="odd">
+<td>Variable</td>
+<td>A named procedural value local to a routine or block.</td>
+</tr>
+<tr class="even">
+<td>Cursor</td>
+<td>A controlled handle over a result set.</td>
+</tr>
+<tr class="odd">
+<td>Result-set cursor</td>
+<td>A cursor passed or returned as a routine-controlled result where
+supported.</td>
+</tr>
+<tr class="even">
+<td>Exception handler</td>
+<td>Procedural logic that handles a diagnostic or error condition.</td>
+</tr>
+<tr class="odd">
+<td>Event trigger</td>
+<td>Trigger-style behavior tied to database, transaction, or event
+actions where implemented.</td>
+</tr>
+<tr class="even">
+<td>UDR</td>
+<td>User-defined routine or parser-support routine package, depending on
+context. In parser documentation, it commonly means the package that
+supports bridge or extension behavior for that parser.</td>
+</tr>
+<tr class="odd">
+<td>Bridge</td>
+<td>A controlled connection or interface used by a parser-support
+routine to reach another database surface where configured and
+admitted.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operations-and-data-movement-terms">Operations And Data Movement
+Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Configuration</td>
+<td>Settings that control startup, resource locations, parser
+registration, security providers, policy defaults, and runtime
+behavior.</td>
+</tr>
+<tr class="even">
+<td>Resource file</td>
+<td>A staged file needed by the product, such as character set,
+collation, time zone, policy, or configuration data.</td>
+</tr>
+<tr class="odd">
+<td>Health check</td>
+<td>A diagnostic check that reports whether a component appears alive
+and able to answer.</td>
+</tr>
+<tr class="even">
+<td>Readiness check</td>
+<td>A diagnostic check that reports whether a component is ready to
+accept intended work.</td>
+</tr>
+<tr class="odd">
+<td>Liveness check</td>
+<td>A diagnostic check that reports whether a component is still
+running.</td>
+</tr>
+<tr class="even">
+<td>Support bundle</td>
+<td>A redacted package of diagnostic evidence for review or
+support.</td>
+</tr>
+<tr class="odd">
+<td>Redaction</td>
+<td>Removing or masking protected material before diagnostics are shown
+or bundled.</td>
+</tr>
+<tr class="even">
+<td>Message vector</td>
+<td>Structured diagnostic output used for errors, refusals, and
+operational status.</td>
+</tr>
+<tr class="odd">
+<td>Logical stream</td>
+<td>Data movement represented as statements, rows, records, or events
+rather than physical page files.</td>
+</tr>
+<tr class="even">
+<td>Logical backup</td>
+<td>A backup stream that represents database content as logical metadata
+and data operations.</td>
+</tr>
+<tr class="odd">
+<td>Logical restore</td>
+<td>Replaying a logical stream as admitted database operations.</td>
+</tr>
+<tr class="even">
+<td>Physical backup</td>
+<td>A page-copy or file-copy backup shape. Compatibility parser routes
+should not treat physical page-copy formats as normal logical restore
+input.</td>
+</tr>
+<tr class="odd">
+<td>Import</td>
+<td>Bring external logical data into a database through an admitted
+parser or tool route.</td>
+</tr>
+<tr class="even">
+<td>Export</td>
+<td>Write logical data from a database to an external stream or file
+according to policy.</td>
+</tr>
+<tr class="odd">
+<td>CDC</td>
+<td>Change data capture. A stream or record of changes suitable for
+replication, ETL, or integration where implemented.</td>
+</tr>
+<tr class="even">
+<td>Replication</td>
+<td>Copying changes between systems according to an ordering and
+identity model where implemented.</td>
+</tr>
+<tr class="odd">
+<td>ETL</td>
+<td>Extract, transform, load. A data movement workflow that reads from
+one source, transforms, and writes to another target.</td>
+</tr>
+<tr class="even">
+<td>Migration</td>
+<td>Moving schema, data, routines, security, or operational behavior
+from one database shape to another.</td>
+</tr>
+<tr class="odd">
+<td>Quarantine</td>
+<td>Holding questionable incoming records or events aside for review
+instead of applying them silently.</td>
+</tr>
+<tr class="even">
+<td>Cutover</td>
+<td>The controlled switch from one active source or route to
+another.</td>
+</tr>
+<tr class="odd">
+<td>Idempotency key</td>
+<td>A value used to detect repeated events or operations so replay can
+be handled safely.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="build-and-release-terms">Build And Release Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Build output</td>
+<td>The generated binaries, libraries, parser packages, resources, and
+configuration artifacts for a target platform.</td>
+</tr>
+<tr class="even">
+<td>Output tree</td>
+<td>The staged directory layout intended for testing or release
+packaging.</td>
+</tr>
+<tr class="odd">
+<td>Target platform</td>
+<td>The operating system and architecture being built or tested.</td>
+</tr>
+<tr class="even">
+<td>Proof gate</td>
+<td>A test or validation step intended to prove that a behavior remains
+implemented and has not regressed.</td>
+</tr>
+<tr class="odd">
+<td>CTest</td>
+<td>The test runner integration used by many project tests.</td>
+</tr>
+<tr class="even">
+<td>Conformance test</td>
+<td>A test that compares behavior against a declared specification,
+parser expectation, or compatibility target.</td>
+</tr>
+<tr class="odd">
+<td>Smoke test</td>
+<td>A small test proving that a basic workflow starts, runs, and
+stops.</td>
+</tr>
+<tr class="even">
+<td>Regression test</td>
+<td>A test intended to prevent a previously handled behavior from
+breaking again.</td>
+</tr>
+<tr class="odd">
+<td>Draft documentation</td>
+<td>Documentation under active review. Draft status means users should
+verify commands and claims against the current build and tests.</td>
+</tr>
+</tbody>
+</table>
+<h1 id="about-this-documentation">About This Documentation</h1>
+<p>This book is part of the ScratchBird documentation set. ScratchBird
+is a Convergent Data Engine (CDE).</p>
+<p><strong>Draft status.</strong> This is draft documentation. It
+describes the architecture and intended behavior of the source tree. A
+topic appearing here does not by itself guarantee that a feature is
+complete, enabled, performant, certified, or available in any particular
+build. Always confirm against the current build, configuration, tests,
+and release notes.</p>
+<p><strong>License.</strong> The ScratchBird engine is distributed under
+the Mozilla Public License 2.0 (MPL-2.0). This documentation describes
+that open-source engine.</p>
+<p><strong>No certification claim.</strong> Nothing in this
+documentation constitutes a security certification, performance
+benchmark, or compatibility guarantee.</p>
+</body>
+</html>

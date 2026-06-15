@@ -421,6 +421,14 @@ struct SysInformationProjectionContext {
   std::string session_language = "en";
   std::string default_language = "en";
   std::string session_uuid;
+  std::string principal_name;
+  std::string principal_uuid;
+  std::string requested_role_name;
+  std::string active_role_name;
+  std::string active_role_uuid;
+  std::vector<std::string> effective_role_names;
+  std::vector<std::string> effective_role_uuids;
+  std::vector<std::string> effective_group_uuids;
   std::uint64_t visible_catalog_generation_id = 0;
   bool strict_mode = false;
   bool cluster_authority_available = false;

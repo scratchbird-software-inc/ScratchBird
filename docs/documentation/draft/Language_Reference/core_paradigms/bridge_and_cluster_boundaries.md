@@ -48,21 +48,7 @@ cluster-classified.
 
 ## Bridge Lifecycle
 
-```mermaid
-stateDiagram-v2
-    [*] --> registered: bridge package registered
-    registered --> configured: connection descriptor created
-    configured --> attached: attach/connect requested
-    attached --> authenticated: identity established
-    authenticated --> session_open: session opened
-    session_open --> transaction_active: begin remote transaction
-    transaction_active --> transaction_active: cursor/fetch/stream/savepoint
-    transaction_active --> session_open: commit or rollback
-    session_open --> draining: drain or cancel
-    draining --> attached: drain complete
-    attached --> detached: detach
-    detached --> [*]
-```
+![diagram](./bridge_and_cluster_boundaries-1.svg)
 
 Bridge registration makes a capability available. It does not create an
 automatic connection or grant anyone authority to use it. An authorized SBsql
@@ -92,29 +78,7 @@ operation is admitted.
 A bridge operation can involve one local transaction and one or more remote
 transactions. Each participating database owns its own transaction state.
 
-```mermaid
-sequenceDiagram
-    participant U as User session
-    participant L as Local engine
-    participant B as Bridge package
-    participant R as Remote endpoint
-    U->>L: begin local transaction
-    L->>B: open bridge session
-    B->>R: authenticate and open remote session
-    L->>B: begin remote transaction
-    B->>R: begin transaction
-    U->>L: query remote relation
-    L->>B: fetch through bridge cursor
-    B->>R: execute/fetch
-    R-->>B: rows and diagnostics
-    B-->>L: descriptor-bound rows
-    U->>L: commit
-    L->>B: commit remote transaction when policy requires it
-    B->>R: commit
-    R-->>B: remote finality evidence
-    B-->>L: evidence
-    L->>L: commit local transaction through MGA
-```
+![diagram](./bridge_and_cluster_boundaries-2.svg)
 
 Rules:
 
@@ -257,17 +221,7 @@ A distributed query:
 Cluster-classified statements are recognized so tools and scripts can receive
 stable diagnostics. Recognition is not execution.
 
-```mermaid
-flowchart TD
-    A[Parse cluster-classified SBsql] --> B[Bind names, descriptors, and session context]
-    B --> C[Classify cluster operation]
-    C --> D{Build admits cluster routing?}
-    D -- no --> E[unsupported message vector]
-    D -- yes --> F[Call cluster provider boundary]
-    F --> G{Provider executes production behavior?}
-    G -- no --> H[unlicensed or fail-closed message vector]
-    G -- yes --> I[provider-owned cluster route]
-```
+![diagram](./bridge_and_cluster_boundaries-3.svg)
 
 The public compile/link stub exists to prove parser routing, SBLR mapping, ABI
 wiring, diagnostics, and fail-closed behavior. It provides no cluster
@@ -391,20 +345,20 @@ bridge_stream_operation ::=
 ```
 
 ```ebnf
-private_cluster_statement ::= show_cluster
-                            | alter_cluster
-                            | create_cluster
-                            | drop_cluster ;
+cluster_stmt ::= show_cluster
+               | alter_cluster_stmt
+               | create_cluster_stmt
+               | drop_cluster_stmt ;
 ```
 
 ```ebnf
 show_cluster            ::= "SHOW" "CLUSTER" cluster_target ;
-alter_cluster           ::= "ALTER" "CLUSTER" cluster_action ;
-create_cluster          ::= "CREATE" "CLUSTER" cluster_create_payload ;
-drop_cluster            ::= "DROP" "CLUSTER" cluster_ref ;
+alter_cluster_stmt      ::= "ALTER" "CLUSTER" cluster_action ;
+create_cluster_stmt     ::= "CREATE" "CLUSTER" cluster_create_payload ;
+drop_cluster_stmt       ::= "DROP" "CLUSTER" cluster_ref ;
 ```
 
-The grammar production name `private_cluster_statement` is historical. It
+The grammar production name `cluster_stmt` (formerly `private_cluster_statement`)
 describes cluster-classified statement grouping. It does not mean production
 cluster implementation code is present in the public build.
 

@@ -67,10 +67,12 @@ public class ScratchBirdIntegrationTest {
 
         Assert.assertTrue(pluginXml.contains("property=\"schemaTree\""));
         Assert.assertTrue(pluginXml.contains("property=\"childSchemas\""));
+        Assert.assertTrue(pluginXml.contains("<treeInjection path=\"generic/catalog\">\n                <items label=\"#schema\" path=\"schema\" property=\"schemaTree\""));
+        Assert.assertTrue(pluginXml.contains("<items label=\"#schema\" path=\"schema\" property=\"childSchemas\""));
+        Assert.assertTrue(pluginXml.contains("recursive=\"..\""));
+        Assert.assertFalse(pluginXml.contains("label=\"%tree.schemas.node.name\""));
+        Assert.assertFalse(pluginXml.contains("recursive=\"../..\""));
         Assert.assertTrue(pluginXml.contains("type=\"org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode\""));
-        Assert.assertTrue(pluginXml.contains("label=\"%tree.schemas.node.name\""));
-        Assert.assertTrue(pluginXml.contains("visibleIf=\"object.schemaBranchesFolderVisible\""));
-        Assert.assertTrue(pluginXml.contains("recursive=\"../..\""));
         Assert.assertTrue(pluginXml.contains("sb_namespace.svg"));
         Assert.assertTrue(pluginXml.contains("sb_system.svg"));
         Assert.assertTrue(pluginXml.contains("sb_domains.svg"));
@@ -121,8 +123,9 @@ public class ScratchBirdIntegrationTest {
 
         Assert.assertTrue(pluginXml.contains("id=\"scratchbird_jdbc\""));
         Assert.assertTrue(pluginXml.contains("class=\"com.scratchbird.jdbc.SBDriver\""));
-        Assert.assertTrue(pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true&amp;metadata_fixture_catalog=driver_test\"")
-            || pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&binary_transfer=true&metadata_fixture_catalog=driver_test\""));
+        Assert.assertTrue(pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true\"")
+            || pluginXml.contains("sampleURL=\"jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&binary_transfer=true\""));
+        Assert.assertFalse(pluginXml.contains("metadata_fixture_catalog=driver_test"));
         Assert.assertTrue(pluginXml.contains("defaultPort=\"3092\""));
         Assert.assertTrue(pluginXml.contains("path=\"drivers/scratchbird\""));
         Assert.assertTrue(pluginXml.contains("name=\"driver-properties\""));
@@ -196,8 +199,17 @@ public class ScratchBirdIntegrationTest {
             "sys.catalog.object_resolver",
             ScratchBirdQualifiedNames.qualifyPath("sys.catalog", "object_resolver"));
         Assert.assertEquals(
+            "app.customers",
+            ScratchBirdQualifiedNames.qualifyAuthorityPath("app.customers"));
+        Assert.assertEquals(
+            "users.home.\"Jane Doe\".profiles",
+            ScratchBirdQualifiedNames.qualifyAuthorityPath("users.home.Jane Doe.profiles"));
+        Assert.assertEquals(
             "users.home.\"Jane Doe\".profiles",
             ScratchBirdQualifiedNames.qualifyPath("users.home.Jane Doe", "profiles"));
+        Assert.assertEquals(
+            "users.public",
+            ScratchBirdQualifiedNames.parentPath("users.public.compat_identity_user_map_contract"));
         Assert.assertNotEquals(
             "\"users.public\".compat_identity_user_map_contract",
             ScratchBirdQualifiedNames.qualifyPath("users.public", "compat_identity_user_map_contract"));
@@ -227,10 +239,19 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(schemaNodeSource.contains("return super.getTables(monitor);"));
         Assert.assertTrue(schemaNodeSource.contains("return super.getTable(monitor, name);"));
         Assert.assertTrue(schemaNodeSource.contains("getTableCache().setCache(tables);"));
-        Assert.assertTrue(schemaNodeSource.contains("session.getMetaData().getTables(null, fullPath, \"%\", PHYSICAL_TABLE_TYPES)"));
-        Assert.assertTrue(schemaNodeSource.contains("session.getMetaData().getTables(null, fullPath, \"%\", VIEW_TYPES)"));
+        Assert.assertTrue(schemaNodeSource.contains("navigatorPhysicalTables"));
+        Assert.assertTrue(schemaNodeSource.contains("navigatorViews"));
+        Assert.assertTrue(schemaNodeSource.contains("addNavigatorPhysicalTable"));
+        Assert.assertTrue(schemaNodeSource.contains("addNavigatorView"));
+        Assert.assertTrue(schemaNodeSource.contains("hasNavigatorRelations()"));
+        Assert.assertTrue(schemaNodeSource.contains("getTableCache().setCache(navigatorTables);"));
+        Assert.assertTrue(schemaNodeSource.contains("if (hasNavigatorRelations()) {\n            getTables(monitor);"));
+        Assert.assertTrue(schemaNodeSource.contains("session.getMetaData().getTables(null, getAuthorityPath(), \"%\", PHYSICAL_TABLE_TYPES)"));
+        Assert.assertTrue(schemaNodeSource.contains("session.getMetaData().getTables(null, getAuthorityPath(), \"%\", VIEW_TYPES)"));
         Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdTable(this, tableName"));
         Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdView(this, viewName"));
+        Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdTable(this, tableName, tableType, null, objectPath)"));
+        Assert.assertTrue(schemaNodeSource.contains("new ScratchBirdView(this, viewName, viewType, null, objectPath)"));
         Assert.assertTrue(schemaNodeSource.contains("return querySchema.getDataTypes(monitor);"));
         Assert.assertTrue(schemaNodeSource.contains("return getConstraintKeysCache().getObjects(monitor, this, null);"));
         Assert.assertTrue(schemaNodeSource.contains("ScratchBird schema constraints are not available for navigator"));
@@ -250,9 +271,22 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(dataSourceSource.contains("syntheticRootCatalog = null;"));
 
         String catalogSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdCatalog.java");
-        Assert.assertTrue(catalogSource.contains("WITH RECURSIVE schema_tree AS"));
-        Assert.assertTrue(catalogSource.contains("JOIN schema_tree ON c.parent_object_id = schema_tree.object_id"));
-        Assert.assertTrue(catalogSource.contains("ORDER BY depth, full_path"));
+        Assert.assertTrue(catalogSource.contains("FROM sys.catalog_readable.navigator_tree"));
+        Assert.assertTrue(catalogSource.contains("navigatorAuthorityPath"));
+        Assert.assertTrue(catalogSource.contains("navigatorPathFromNodePath"));
+        Assert.assertTrue(catalogSource.contains("nodeRole != null && nodeRole.startsWith(\"database.\")"));
+        Assert.assertTrue(catalogSource.contains("return nodePath;"));
+        Assert.assertTrue(catalogSource.contains("ScratchBirdCatalogObjectReference.catalogObject"));
+        Assert.assertTrue(catalogSource.contains("isNavigatorPhysicalTable"));
+        Assert.assertTrue(catalogSource.contains("isNavigatorView"));
+        Assert.assertTrue(catalogSource.contains("node.addNavigatorPhysicalTable"));
+        Assert.assertTrue(catalogSource.contains("node.addNavigatorView"));
+        Assert.assertTrue(catalogSource.contains("child.getObjectPath()"));
+        Assert.assertTrue(catalogSource.contains("ScratchBird readable navigator tree is required for first-release navigation"));
+        Assert.assertTrue(catalogSource.contains("schemaTree = Collections.emptyList();"));
+        Assert.assertFalse(catalogSource.contains("ORDER BY depth, sort_group, sort_ordinal"));
+        Assert.assertFalse(catalogSource.contains("FROM sys.catalog_readable.object_tree"));
+        Assert.assertFalse(catalogSource.contains("FROM sys.catalog.object_resolver"));
 
         String schemaNodeManagerSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdSchemaNodeManager.java");
         Assert.assertTrue(schemaNodeManagerSource.contains("container instanceof ScratchBirdSchemaNode schemaNode"));
@@ -924,6 +958,25 @@ public class ScratchBirdIntegrationTest {
         Assert.assertTrue(supportSource.contains("BEFORE INSERT ON "));
         Assert.assertTrue(supportSource.contains("isDomainPath"));
         Assert.assertTrue(supportSource.contains("isMetricsPath"));
+        Assert.assertTrue(supportSource.contains("container instanceof ScratchBirdSchemaNode schemaNode"));
+        Assert.assertTrue(supportSource.contains("return schemaNode.getAuthorityPath();"));
+        Assert.assertTrue(supportSource.contains("object instanceof ScratchBirdTable scratchBirdTable"));
+        Assert.assertTrue(supportSource.contains("object instanceof ScratchBirdView scratchBirdView"));
+
+        String tableSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdTable.java");
+        Assert.assertTrue(tableSource.contains("ScratchBirdObjectPath objectPath"));
+        Assert.assertTrue(tableSource.contains("qualifyAuthorityPath(objectPath.authorityPath())"));
+        Assert.assertTrue(tableSource.contains("getAuthoritySchemaPath"));
+
+        String viewSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdView.java");
+        Assert.assertTrue(viewSource.contains("ScratchBirdObjectPath objectPath"));
+        Assert.assertTrue(viewSource.contains("qualifyAuthorityPath(objectPath.authorityPath())"));
+        Assert.assertTrue(viewSource.contains("getAuthoritySchemaPath"));
+
+        String tableManagerSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/edit/ScratchBirdTableManager.java");
+        Assert.assertTrue(tableManagerSource.contains("return ScratchBirdManagerSupport.canCreateRegularSqlObject(container);"));
+        Assert.assertTrue(tableManagerSource.contains("GenericConstants.TABLE_TYPE_TABLE"));
+        Assert.assertTrue(tableManagerSource.contains("createTableOrViewImpl"));
 
         String domainTypeSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdDomainDataType.java");
         Assert.assertTrue(domainTypeSource.contains("implements DBPSaveableObject"));
@@ -1071,6 +1124,78 @@ public class ScratchBirdIntegrationTest {
     }
 
     @Test
+    public void schemaTreeBuilderKeepsNavigatorPseudoGroupsClientOnly() {
+        List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.buildFromCatalog(List.of(
+            ScratchBirdCatalogObjectReference.clientOnly("Management", "DATABASE.MANAGEMENT"),
+            ScratchBirdCatalogObjectReference.clientOnly("Management.Security", "DATABASE.SECURITY"),
+            ScratchBirdCatalogObjectReference.clientOnly("Management.Security.users", "SECURITY.USERS"),
+            ScratchBirdCatalogObjectReference.clientOnly("Management.Programmability", "DATABASE.PROGRAMMABILITY"),
+            ScratchBirdCatalogObjectReference.schema(
+                "db-uuid",
+                "sys-uuid",
+                null,
+                "sys",
+                "sys")));
+
+        ScratchBirdSchemaTreeBuilder.Node management = findNodeByName(roots, "Management");
+        Assert.assertNotNull(management);
+        Assert.assertTrue(management.isClientOnly());
+        Assert.assertFalse(management.isCatalogBacked());
+        Assert.assertEquals("DATABASE.MANAGEMENT", management.getObjectType());
+
+        ScratchBirdSchemaTreeBuilder.Node security = findNodeByName(management.getChildren(), "Security");
+        Assert.assertNotNull(security);
+        Assert.assertTrue(security.isClientOnly());
+        Assert.assertFalse(security.isCatalogBacked());
+        Assert.assertEquals("DATABASE.SECURITY", security.getObjectType());
+
+        ScratchBirdSchemaTreeBuilder.Node users = findNodeByName(security.getChildren(), "users");
+        Assert.assertNotNull(users);
+        Assert.assertTrue(users.isClientOnly());
+        Assert.assertFalse(users.isCatalogBacked());
+
+        ScratchBirdSchemaTreeBuilder.Node programmability = findNodeByName(management.getChildren(), "Programmability");
+        Assert.assertNotNull(programmability);
+        Assert.assertTrue(programmability.isClientOnly());
+
+        ScratchBirdSchemaTreeBuilder.Node sys = findNodeByName(roots, "sys");
+        Assert.assertNotNull(sys);
+        Assert.assertFalse(sys.isClientOnly());
+        Assert.assertTrue(sys.isCatalogBacked());
+    }
+
+    @Test
+    public void schemaTreeBuilderKeepsNavigatorDisplayPathSeparateFromAuthorityPath() {
+        List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.buildFromCatalog(List.of(
+            ScratchBirdCatalogObjectReference.schema(
+                "db-uuid",
+                "app-uuid",
+                null,
+                "app",
+                "app"),
+            ScratchBirdCatalogObjectReference.clientOnly("app.Tables", "SCHEMA.TABLES"),
+            ScratchBirdCatalogObjectReference.catalogObject(
+                "db-uuid",
+                "customers-uuid",
+                "app-uuid",
+                "TABLE",
+                "app.Tables.customers",
+                "app.customers",
+                "customers")));
+
+        ScratchBirdSchemaTreeBuilder.Node app = findNodeByName(roots, "app");
+        Assert.assertNotNull(app);
+        ScratchBirdSchemaTreeBuilder.Node tables = findNodeByName(app.getChildren(), "Tables");
+        Assert.assertNotNull(tables);
+        ScratchBirdSchemaTreeBuilder.Node customers = findNodeByName(tables.getChildren(), "customers");
+        Assert.assertNotNull(customers);
+        Assert.assertEquals("app.Tables.customers", customers.getFullPath());
+        Assert.assertEquals("app.customers", customers.getObjectPath().authorityPath());
+        Assert.assertEquals("customers-uuid", customers.getObjectPath().objectUuid());
+        Assert.assertEquals("TABLE", customers.getObjectType());
+    }
+
+    @Test
     public void schemaTreeBuilderOrdersRootsAndChildrenDeterministically() {
         List<ScratchBirdSchemaTreeBuilder.Node> roots = ScratchBirdSchemaTreeBuilder.build(Arrays.asList(
             "users.zeta",
@@ -1083,7 +1208,7 @@ public class ScratchBirdIntegrationTest {
             "analytics.dev"));
 
         Assert.assertEquals(
-            Arrays.asList("sys", "users", "cluster", "remote", "analytics", "connections"),
+            Arrays.asList("sys", "users", "remote", "cluster", "analytics", "connections"),
             roots.stream().map(ScratchBirdSchemaTreeBuilder.Node::getName).toList());
 
         ScratchBirdSchemaTreeBuilder.Node analytics = findNodeByName(roots, "analytics");

@@ -8,10 +8,18 @@ Generation task: `data_types_text_collation`
 
 ## Purpose
 
-Text values carry character set and collation descriptors. The descriptor, not
-the spelling of the SQL type, controls storage encoding, character length,
+Storing and comparing text correctly requires knowing more than the number of
+characters. Every text value in SBsql carries two descriptor properties: a
+_character set_ (the encoding used to store bytes) and a _collation_ (the rules
+for ordering, comparing, and making values unique). The descriptor, not the
+spelling of the SQL type, controls storage encoding, character length,
 comparison, ordering, grouping, uniqueness, pattern matching, hash keys, index
 keys, generated columns, masks, and result rendering.
+
+If you compare two text values from columns with different collations without an
+explicit collation clause, the engine reports a collation mismatch rather than
+silently choosing one. This keeps results deterministic and avoids surprising
+behavior when collations differ between databases or sessions.
 
 Binary values are not text. A byte string can become text only through an
 explicit conversion that states an encoding or through an admitted assignment

@@ -167,8 +167,8 @@ class SBDatabaseMetaDataColumnsTest {
             }
 
             @Override
-            protected List<Object[]> queryRows(String sql) {
-                throw new AssertionError("driver-test fixture metadata must not query live catalog metadata");
+            protected List<Object[]> queryRows(String sql) throws SQLException {
+                throw new SQLException("live catalog metadata unavailable");
             }
 
             @Override
@@ -190,6 +190,49 @@ class SBDatabaseMetaDataColumnsTest {
 
             assertTrue(rs.next());
             assertEquals("status", rs.getString("COLUMN_NAME"));
+            assertFalse(rs.next());
+        }
+
+        try (ResultSet rs = meta.getColumns(null, "sys.information", "tables", "%")) {
+            assertTrue(rs.next());
+            assertEquals("table_catalog", rs.getString("COLUMN_NAME"));
+            assertEquals(Types.VARCHAR, rs.getInt("DATA_TYPE"));
+
+            assertTrue(rs.next());
+            assertEquals("table_schema", rs.getString("COLUMN_NAME"));
+
+            assertTrue(rs.next());
+            assertEquals("table_name", rs.getString("COLUMN_NAME"));
+
+            assertTrue(rs.next());
+            assertEquals("table_type", rs.getString("COLUMN_NAME"));
+            assertFalse(rs.next());
+        }
+
+        try (ResultSet rs = meta.getColumns(null, "sys.parser", "dialects", "%")) {
+            assertTrue(rs.next());
+            assertEquals("dialect_name", rs.getString("COLUMN_NAME"));
+
+            assertTrue(rs.next());
+            assertEquals("base_dialect", rs.getString("COLUMN_NAME"));
+
+            assertTrue(rs.next());
+            assertEquals("compatibility_state", rs.getString("COLUMN_NAME"));
+
+            assertTrue(rs.next());
+            assertEquals("parser_family", rs.getString("COLUMN_NAME"));
+            assertFalse(rs.next());
+        }
+
+        try (ResultSet rs = meta.getColumns(null, "sys.catalog", "object_resolver", "object_%")) {
+            assertTrue(rs.next());
+            assertEquals("object_id", rs.getString("COLUMN_NAME"));
+
+            assertTrue(rs.next());
+            assertEquals("object_type", rs.getString("COLUMN_NAME"));
+
+            assertTrue(rs.next());
+            assertEquals("object_name", rs.getString("COLUMN_NAME"));
             assertFalse(rs.next());
         }
     }

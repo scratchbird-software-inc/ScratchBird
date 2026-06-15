@@ -32,6 +32,7 @@
 #else
 #include <csignal>
 #include <cstdlib>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <sys/un.h>
@@ -250,6 +251,12 @@ std::string DescribeExitStatus(int status) {
   }
   return "worker exited with unclassified wait status=" + std::to_string(status);
 }
+
+bool SetCloseOnExec(int fd) {
+  const int flags = ::fcntl(fd, F_GETFD, 0);
+  if (flags < 0) return false;
+  return ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
+}
 #endif
 
 } // namespace
@@ -456,17 +463,31 @@ ParserHandoffResult ParserPool::HandoffClient(std::intptr_t client_fd,
                                               std::uint16_t client_port,
                                               std::uint64_t connection_id,
                                               const ParserHandoffBinding& binding) {
-  std::lock_guard lock(mutex_);
+  std::unique_lock lock(mutex_);
   if (!running_ || draining_) {
     return {false, "draining", ErrorSet("LISTENER.HANDOFF_DRAINING", "listener is draining and refuses new handoffs", "sb_listener.handoff")};
   }
-  ReapExitedWorkersLocked();
-  PurgeTerminalWorkersLocked();
-  auto* worker = FindIdleWorkerLocked();
-  if (worker == nullptr) {
+
+  auto acquire_worker = [&]() -> ParserWorker* {
+    ReapExitedWorkersLocked();
+    PurgeTerminalWorkersLocked();
+    auto* candidate = FindIdleWorkerLocked();
+    if (candidate != nullptr) return candidate;
     EnsureWarmWorkersLocked();
-    worker = FindIdleWorkerLocked();
-  }
+    candidate = FindIdleWorkerLocked();
+    if (candidate != nullptr) return candidate;
+    if (ActiveWorkerCountLocked() < config_.warm_pool_max) {
+      const auto now_ms = NowMillis();
+      std::string block_reason;
+      if (!RetryBlockedLocked(now_ms, &block_reason)) {
+        candidate = SpawnWorkerLocked(now_ms);
+        if (candidate != nullptr) return candidate;
+      }
+    }
+    return nullptr;
+  };
+
+  auto* worker = acquire_worker();
   if (worker == nullptr && config_.spawn_strategy == ParserSpawnStrategy::kOnDemand) {
     const auto now_ms = NowMillis();
     std::string block_reason;
@@ -475,6 +496,19 @@ ParserHandoffResult ParserPool::HandoffClient(std::intptr_t client_fd,
       return {false, block_reason, ErrorSet("LISTENER.HANDOFF_RETRY_BLOCKED", "parser worker spawn is delayed by restart backoff or quarantine", "sb_listener.handoff", {{"reason", block_reason}})};
     }
     worker = SpawnWorkerLocked(now_ms);
+  }
+  const auto wait_started = std::chrono::steady_clock::now();
+  const auto wait_deadline =
+      wait_started + std::chrono::milliseconds(std::max<std::uint32_t>(1u, config_.handoff_ack_timeout_ms));
+  while (worker == nullptr && ActiveWorkerCountLocked() >= config_.warm_pool_max &&
+         std::chrono::steady_clock::now() < wait_deadline) {
+    lock.unlock();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    lock.lock();
+    if (!running_ || draining_) {
+      return {false, "draining", ErrorSet("LISTENER.HANDOFF_DRAINING", "listener is draining and refuses new handoffs", "sb_listener.handoff")};
+    }
+    worker = acquire_worker();
   }
   if (worker == nullptr) {
     const auto now_ms = NowMillis();
@@ -1035,6 +1069,15 @@ bool ParserPool::LaunchWorkerLocked(ParserWorker* worker, std::uint64_t now_ms) 
     worker->state = ParserWorkerState::kQuarantined;
     worker->last_diagnostic = std::string("socketpair failed: ") + std::strerror(errno);
     RecordFaultLocked(worker, "spawn_socketpair_failed", worker->last_diagnostic);
+    if (metrics_) metrics_->Increment("sys.metrics.listener.parser_pool.worker_spawn_failed_total");
+    return false;
+  }
+  if (!SetCloseOnExec(sockets[0])) {
+    CloseFd(&sockets[0]);
+    CloseFd(&sockets[1]);
+    worker->state = ParserWorkerState::kQuarantined;
+    worker->last_diagnostic = std::string("control socket close-on-exec guard failed: ") + std::strerror(errno);
+    RecordFaultLocked(worker, "spawn_control_socket_cloexec_failed", worker->last_diagnostic);
     if (metrics_) metrics_->Increment("sys.metrics.listener.parser_pool.worker_spawn_failed_total");
     return false;
   }

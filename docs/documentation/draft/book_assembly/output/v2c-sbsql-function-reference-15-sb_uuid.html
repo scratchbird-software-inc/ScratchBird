@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-uuid-functional-reference" id="toc-sb-uuid-functional-reference">SB UUID Functional Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#uuid_generate_v1" id="toc-uuid_generate_v1"><code>uuid_generate_v1</code></a></li>
+<li><a href="#uuid_generate_v3" id="toc-uuid_generate_v3"><code>uuid_generate_v3</code></a></li>
+<li><a href="#uuid_generate_v4" id="toc-uuid_generate_v4"><code>uuid_generate_v4</code></a></li>
+<li><a href="#uuid_generate_v5" id="toc-uuid_generate_v5"><code>uuid_generate_v5</code></a></li>
+<li><a href="#uuid_nil" id="toc-uuid_nil"><code>uuid_nil</code></a></li>
+<li><a href="#uuid_timestamp" id="toc-uuid_timestamp"><code>uuid_timestamp</code></a></li>
+<li><a href="#uuid_v1" id="toc-uuid_v1"><code>uuid_v1</code></a></li>
+<li><a href="#uuid_v4" id="toc-uuid_v4"><code>uuid_v4</code></a></li>
+<li><a href="#uuid_v7" id="toc-uuid_v7"><code>uuid_v7</code></a></li>
+<li><a href="#uuid_version" id="toc-uuid_version"><code>uuid_version</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_uuid.md -->
+<p><a id="ch-language-reference-functional-reference-sb-uuid-md"></a></p>
+<h1 id="sb-uuid-functional-reference">SB UUID Functional Reference</h1>
+<p>Generation task: <code>sb_uuid</code></p>
+<p>Package namespace: <code>sb.uuid</code></p>
+<p>UUID generation, parsing, inspection, and timestamp extraction
+helpers.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Generates and inspects UUID values without assigning catalog identity
+unless the caller uses the value in a catalog operation.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>scalar</td>
+<td style="text-align: right;">10</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="uuid_generate_v1"><code>uuid_generate_v1</code></h3>
+<p><strong>Purpose:</strong> Generates a UUID value using the
+version-1-compatible generator surface.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>uuid_generate_v1()</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li>This function takes no arguments.</li>
+<li>Descriptor rule: descriptor_authoritative UUID compatibility helper
+arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; UUID text inputs must
+canonicalize before UUID helper semantics apply.</li>
+<li>NULL handling: not applicable; nullary function.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>UUID v1-compatible value; descriptor=uuid.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile.</li>
+<li>Determinism: not foldable; generates a new UUID unless deterministic
+fixture context overrides.</li>
+<li>Side effects: volatile_value_generation.</li>
+<li>Collation/charset: uses byte-stable canonical UUID text where text
+parsing is required; otherwise not applicable.</li>
+<li>Timezone: UTC timestamp_tz rendering for UUID timestamp extraction;
+otherwise not applicable.</li>
+<li>Security and authority: none; helper executes under SBLR descriptor
+authority and does not allocate engine identity unless explicitly used
+by caller context.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity, invalid UUID text, unsupported UUID timestamp version, and
+domain errors use canonical UUID helper diagnostics from the conformance
+fixtures fixtures.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> uuid_generate_v1() <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.uuid.generate_v1</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7ebb-8eec-060c8b4adbb9</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.uuid_generate_v1.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.uuid_generate_v1</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>uuid_generate_v1</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>volatile_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC028-uuid-generate-v1</code>.</p>
+<h3 id="uuid_generate_v3"><code>uuid_generate_v3</code></h3>
+<p><strong>Purpose:</strong> Generates a deterministic UUID from a
+namespace UUID and name using the version-3-compatible surface.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>uuid_generate_v3(namespace,name)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>namespace</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>name</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative UUID compatibility helper
+arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; UUID text inputs must
+canonicalize before UUID helper semantics apply.</li>
+<li>NULL handling: strict; NULL namespace or name returns NULL
+uuid.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>deterministic UUID v3 from namespace UUID and name;
+descriptor=uuid.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when namespace and name are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses byte-stable canonical UUID text where text
+parsing is required; otherwise not applicable.</li>
+<li>Timezone: UTC timestamp_tz rendering for UUID timestamp extraction;
+otherwise not applicable.</li>
+<li>Security and authority: none; helper executes under SBLR descriptor
+authority and does not allocate engine identity unless explicitly used
+by caller context.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity, invalid UUID text, unsupported UUID timestamp version, and
+domain errors use canonical UUID helper diagnostics from the conformance
+fixtures fixtures.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> uuid_generate_v3(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.uuid.generate_v3</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-765c-a462-4dac8737d001</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.uuid_generate_v3.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.uuid_generate_v3</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>uuid_generate_v3</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC028-uuid-generate-v3-arity;SBSFC028-uuid-generate-v3-dns-example;SBSFC028-uuid-generate-v3-null;SBSFC028-uuid-generate-v3-invalid-namespace</code>.</p>
+<h3 id="uuid_generate_v4"><code>uuid_generate_v4</code></h3>
+<p><strong>Purpose:</strong> Generates a random UUID value using the
+version-4-compatible generator surface.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>uuid_generate_v4()</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li>This function takes no arguments.</li>
+<li>Descriptor rule: descriptor_authoritative UUID compatibility helper
+arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; UUID text inputs must
+canonicalize before UUID helper semantics apply.</li>
+<li>NULL handling: not applicable; nullary function.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>random UUID v4 value; descriptor=uuid.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile.</li>
+<li>Determinism: not foldable; generates a new UUID unless deterministic
+fixture context overrides.</li>
+<li>Side effects: volatile_value_generation.</li>
+<li>Collation/charset: uses byte-stable canonical UUID text where text
+parsing is required; otherwise not applicable.</li>
+<li>Timezone: UTC timestamp_tz rendering for UUID timestamp extraction;
+otherwise not applicable.</li>
+<li>Security and authority: none; helper executes under SBLR descriptor
+authority and does not allocate engine identity unless explicitly used
+by caller context.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity, invalid UUID text, unsupported UUID timestamp version, and
+domain errors use canonical UUID helper diagnostics from the conformance
+fixtures fixtures.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> uuid_generate_v4() <span class="kw">as</span> new_uuid;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.uuid.generate_v4</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7e63-b855-587564821ba2</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.uuid_generate_v4.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.uuid_generate_v4</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>uuid_generate_v4</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>volatile_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC028-uuid-generate-v4</code>.</p>
+<h3 id="uuid_generate_v5"><code>uuid_generate_v5</code></h3>
+<p><strong>Purpose:</strong> Generates a deterministic UUID from a
+namespace UUID and name using the version-5-compatible surface.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>uuid_generate_v5(namespace,name)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>namespace</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>name</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative UUID compatibility helper
+arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; UUID text inputs must
+canonicalize before UUID helper semantics apply.</li>
+<li>NULL handling: strict; NULL namespace or name returns NULL
+uuid.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>deterministic UUID v5 from namespace UUID and name;
+descriptor=uuid.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when namespace and name are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses byte-stable canonical UUID text where text
+parsing is required; otherwise not applicable.</li>
+<li>Timezone: UTC timestamp_tz rendering for UUID timestamp extraction;
+otherwise not applicable.</li>
+<li>Security and authority: none; helper executes under SBLR descriptor
+authority and does not allocate engine identity unless explicitly used
+by caller context.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity, invalid UUID text, unsupported UUID timestamp version, and
+domain errors use canonical UUID helper diagnostics from the conformance
+fixtures fixtures.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> uuid_generate_v5(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.uuid.generate_v5</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f42-b1e9-618f013887b3</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.uuid_generate_v5.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.uuid_generate_v5</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>uuid_generate_v5</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC028-uuid-generate-v5-arity;SBSFC028-uuid-generate-v5-dns-example;SBSFC028-uuid-generate-v5-null;SBSFC028-uuid-generate-v5-invalid-namespace</code>.</p>
+<h3 id="uuid_nil"><code>uuid_nil</code></h3>
+<p><strong>Purpose:</strong> Returns the nil UUID value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>uuid_nil()</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li>This function takes no arguments.</li>
+<li>Descriptor rule: descriptor_authoritative UUID compatibility helper
+arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; UUID text inputs must
+canonicalize before UUID helper semantics apply.</li>
+<li>NULL handling: not applicable; nullary function.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>nil UUID constant; descriptor=uuid.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable; returns a constant nil UUID.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses byte-stable canonical UUID text where text
+parsing is required; otherwise not applicable.</li>
+<li>Timezone: UTC timestamp_tz rendering for UUID timestamp extraction;
+otherwise not applicable.</li>
+<li>Security and authority: none; helper executes under SBLR descriptor
+authority and does not allocate engine identity unless explicitly used
+by caller context.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity, invalid UUID text, unsupported UUID timestamp version, and
+domain errors use canonical UUID helper diagnostics from the conformance
+fixtures fixtures.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> uuid_nil() <span class="kw">as</span> nil_uuid;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.uuid.nil</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-761e-9280-aefd19556637</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.uuid_nil.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.uuid_nil</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>uuid_nil</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC028-uuid-nil;SBSFC028-uuid-nil-arity</code>.</p>
+<h3 id="uuid_timestamp"><code>uuid_timestamp</code></h3>
+<p><strong>Purpose:</strong> Extracts the timestamp component from UUID
+versions that carry one.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>uuid_timestamp(uuid)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>uuid</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative UUID compatibility helper
+arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; UUID text inputs must
+canonicalize before UUID helper semantics apply.</li>
+<li>NULL handling: strict; NULL UUID returns NULL timestamp_tz.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>timestamp_tz extracted from UUID v1 or v7 embedded timestamp.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when UUID argument is constant with stable
+descriptor.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses byte-stable canonical UUID text where text
+parsing is required; otherwise not applicable.</li>
+<li>Timezone: UTC timestamp_tz rendering for UUID timestamp extraction;
+otherwise not applicable.</li>
+<li>Security and authority: none; helper executes under SBLR descriptor
+authority and does not allocate engine identity unless explicitly used
+by caller context.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity, invalid UUID text, unsupported UUID timestamp version, and
+domain errors use canonical UUID helper diagnostics from the conformance
+fixtures fixtures.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> uuid_timestamp(uuid_generate_v1()) <span class="kw">as</span> uuid_time;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.uuid.timestamp</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7184-bffb-d4c74e43d38b</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.uuid_timestamp.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.uuid_timestamp</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>uuid_timestamp</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC028-uuid-timestamp-v1;SBSFC028-uuid-timestamp-v7;SBSFC028-uuid-timestamp-null;SBSFC028-uuid-timestamp-invalid;SBSFC028-uuid-timestamp-unsupported-version;SBSFC028-uuid-timestamp-arity</code>.</p>
+<h3 id="uuid_v1"><code>uuid_v1</code></h3>
+<p><strong>Purpose:</strong> Generates or normalizes a
+version-1-compatible UUID value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>uuid_v1()</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li>This function takes no arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>compatibility UUID generator; not engine identity.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: volatile_value_generation.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> uuid_v1() <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.uuid.v1</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-7feb-b0a9-3353de7091ed</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.uuid_v1.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.uuid_v1</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>uuid_v1</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>BIF-CONF-454332ee9ff7;SBSFC012-sb-uuid-v1-wrapper</code>.</p>
+<h3 id="uuid_v4"><code>uuid_v4</code></h3>
+<p><strong>Purpose:</strong> Generates a version-4 random UUID
+value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>uuid_v4()</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li>This function takes no arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>random UUID generator; not engine identity.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: volatile_value_generation.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> uuid_v4() <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.uuid.v4</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-7940-8ecf-0c79114eb869</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.uuid_v4.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.uuid_v4</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>uuid_v4</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>BIF-CONF-3e9192b7d40c;SBSFC012-sb-uuid-v4-wrapper</code>.</p>
+<h3 id="uuid_v7"><code>uuid_v7</code></h3>
+<p><strong>Purpose:</strong> Generates a version-7 time-ordered UUID
+value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>uuid_v7()</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li>This function takes no arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>engine identity UUID generator; v7 only for engine identities.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: volatile_value_generation.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> uuid_v7() <span class="kw">as</span> ordered_uuid;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.uuid.v7</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-7fe3-a3d5-21174bd948db</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.uuid_v7.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.uuid_v7</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>uuid_v7</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>BIF-CONF-87b293759d19;SBSFC012-sb-uuid-v7-wrapper</code>.</p>
+<h3 id="uuid_version"><code>uuid_version</code></h3>
+<p><strong>Purpose:</strong> Returns the version field from a UUID
+value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>uuid_version(uuid)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>uuid</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative UUID compatibility helper
+arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; UUID text inputs must
+canonicalize before UUID helper semantics apply.</li>
+<li>NULL handling: strict; NULL UUID returns NULL int64.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>UUID version nibble as int64; nil UUID returns 0.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when UUID argument is constant with stable
+descriptor.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses byte-stable canonical UUID text where text
+parsing is required; otherwise not applicable.</li>
+<li>Timezone: UTC timestamp_tz rendering for UUID timestamp extraction;
+otherwise not applicable.</li>
+<li>Security and authority: none; helper executes under SBLR descriptor
+authority and does not allocate engine identity unless explicitly used
+by caller context.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity, invalid UUID text, unsupported UUID timestamp version, and
+domain errors use canonical UUID helper diagnostics from the conformance
+fixtures fixtures.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> uuid_version(<span class="fu">cast</span>(<span class="st">&#39;00000000-0000-4000-8000-000000000000&#39;</span> <span class="kw">as</span> uuid)) <span class="kw">as</span> version_number;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.uuid.version</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-773e-929d-76fcd97ac981</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.uuid_version.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.uuid_version</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>uuid_version</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC028-uuid-version-v1;SBSFC028-uuid-version-v4;SBSFC028-uuid-version-nil;SBSFC028-uuid-version-null;SBSFC028-uuid-version-invalid</code>.</p>
+</body>
+</html>

@@ -59,6 +59,7 @@ struct AuthCredentialEnvelope {
   std::string principal;
   std::string requested_database{"default"};
   std::string requested_language{"en"};
+  std::string requested_role;
   std::string application_name;
   std::string credential_evidence;
   bool credential_evidence_present{false};

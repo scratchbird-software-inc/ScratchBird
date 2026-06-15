@@ -60,7 +60,7 @@ restore_option ::=
 
 | Parent production | Purpose |
 | --- | --- |
-| `archive_replication_migration_statement` | Places `RESTORE` in the administrative data-movement family. |
+| `archive_replication_stmt` | Places `RESTORE` in the administrative data-movement family. |
 
 ## Admission Notes
 
