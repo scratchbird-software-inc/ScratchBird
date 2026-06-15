@@ -40,6 +40,16 @@ CTestTestfile.cmake
 Testing/
 project/drivers/**/.gradle/
 project/drivers/**/build/
+project/drivers/**/build_*/
+project/drivers/**/.build/
+project/drivers/**/.dart_tool/
+project/drivers/**/_build/
+project/drivers/**/deps/
+project/drivers/**/dist/
+project/drivers/**/node_modules/
+project/drivers/**/target/
+project/drivers/**/bin/Debug/
+project/drivers/**/obj/
 *.o
 *.obj
 *.a

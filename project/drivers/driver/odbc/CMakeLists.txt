@@ -38,6 +38,12 @@ endif()
 
 add_library(scratchbird_odbc SHARED ${ODBC_SOURCES})
 
+add_executable(sb_isql_odbc
+    tools/sb_isql_odbc.cpp
+)
+
+find_package(OpenSSL REQUIRED)
+
 # C++ standard
 set_target_properties(scratchbird_odbc PROPERTIES
     CXX_STANDARD 17
@@ -61,6 +67,14 @@ target_include_directories(scratchbird_odbc
         $<INSTALL_INTERFACE:include>
 )
 
+target_include_directories(sb_isql_odbc
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_LIST_DIR}/../cpp/include
+)
+target_compile_features(sb_isql_odbc PRIVATE cxx_std_17)
+target_link_libraries(sb_isql_odbc PRIVATE scratchbird_odbc OpenSSL::Crypto)
+
 # Platform-specific includes and libraries
 if(WIN32)
     # Windows - ODBC is part of the SDK
@@ -74,6 +88,7 @@ if(WIN32)
         odbccp32
         ws2_32
     )
+    target_link_libraries(sb_isql_odbc PRIVATE odbc32 odbccp32 ws2_32)
 else()
     # Unix - Find ODBC driver manager
     set(ODBC_INCLUDE_DIR "")
@@ -111,6 +126,8 @@ else()
         message(STATUS "ODBC include: ${ODBC_INCLUDE_DIR}")
         target_include_directories(scratchbird_odbc PRIVATE ${ODBC_INCLUDE_DIR})
         target_link_libraries(scratchbird_odbc PRIVATE ${ODBC_LIBRARY})
+        target_include_directories(sb_isql_odbc PRIVATE ${ODBC_INCLUDE_DIR})
+        target_link_libraries(sb_isql_odbc PRIVATE ${ODBC_LIBRARY})
     else()
         message(WARNING "ODBC not found. Building with generic ODBC headers.")
         # Assume headers are in standard location
@@ -137,9 +154,11 @@ else()
     # pthread for threading
     find_package(Threads REQUIRED)
     target_link_libraries(scratchbird_odbc PRIVATE Threads::Threads)
+    target_link_libraries(sb_isql_odbc PRIVATE Threads::Threads)
     
     # dl for dynamic loading
     target_link_libraries(scratchbird_odbc PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(sb_isql_odbc PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
 # Link with scratchbird C++ client if available

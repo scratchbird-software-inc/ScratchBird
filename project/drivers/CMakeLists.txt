@@ -41,6 +41,9 @@ set(SB_DRIVER_RELEASE_DECLARATION_GATE
 set(SB_DRIVER_STATIC_REQUIREMENT_GATE
   "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/driver_static_requirement_gate.py"
 )
+set(SB_DRIVER_NATIVE_FULL_SURFACE_GATE
+  "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/driver_native_full_surface_gate.py"
+)
 set(SB_DRIVER_DBEAVER_MANAGEMENT_GATE
   "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/validate_dbeaver_management_platform_corpus.py"
 )
@@ -132,6 +135,20 @@ function(sb_add_driver_dbeaver_management_gate test_name)
   )
   set_tests_properties("${test_name}" PROPERTIES
     LABELS "driver;driver_static_requirement_gate;dbeaver_management_platform_gate;${test_name}"
+    ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
+  )
+endfunction()
+
+function(sb_add_driver_native_full_surface_gate test_name mode)
+  add_test(
+    NAME "${test_name}"
+    COMMAND
+      "${Python3_EXECUTABLE}" "${SB_DRIVER_NATIVE_FULL_SURFACE_GATE}"
+      "--repo-root" "${PROJECT_SOURCE_DIR}/.."
+      "--mode" "${mode}"
+  )
+  set_tests_properties("${test_name}" PROPERTIES
+    LABELS "driver;driver_native_full_surface_gate;${test_name}"
     ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache"
   )
 endfunction()
@@ -238,6 +255,8 @@ sb_add_driver_static_requirement_gate(sbsql_language_resource sbsql_language_res
 sb_add_driver_static_requirement_gate(driver_sblr_uuid_authorization sblr_uuid_authorization)
 sb_add_driver_static_requirement_gate(driver_cache_lifecycle cache_lifecycle)
 sb_add_driver_dbeaver_management_gate(dbeaver_management_platform_corpus_gate)
+sb_add_driver_native_full_surface_gate(driver_native_full_surface_gate_input gate-input)
+sb_add_driver_native_full_surface_gate(driver_native_full_surface_tool_inventory tool-inventory)
 
 sb_add_driver_status_package_gate(driver_row_status_manifest_gate driver-row-status DSR-030 DSR-032)
 sb_add_driver_status_package_gate(adapter_row_status_manifest_gate adapter-row-status DSR-031 DSR-032)
