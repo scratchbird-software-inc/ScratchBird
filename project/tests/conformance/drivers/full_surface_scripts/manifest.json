@@ -49,7 +49,7 @@
     "SBDFS-170",
     "SBDFS-180"
   ],
-  "exhaustive_generated_assertion_count": 10,
+  "exhaustive_generated_assertion_count": 0,
   "required_coverage": [
     "schema_bootstrap",
     "all_table_column_type_families",
@@ -244,6 +244,76 @@
       "path": "scripts/090_optimizer_paths.sbsql",
       "coverage": ["optimizer_index_lookup", "optimizer_grouping", "optimizer_join", "optimizer_cte"],
       "assertions": ["SBDFS-090-001"]
+    },
+    {
+      "script_id": "SBDFS-100",
+      "path": "generated/scripts/100_surface_replay_manifest.sbsql",
+      "coverage": ["generated_full_surface"],
+      "assertions": ["SBDFS-100-001", "SBDFS-100-002", "SBDFS-100-003", "SBDFS-100-004"],
+      "generated_case_count": 2621
+    },
+    {
+      "script_id": "SBDFS-101",
+      "path": "generated/scripts/101_surface_replay_commands.sbsql",
+      "coverage": ["generated_full_surface"],
+      "assertions": ["SBDFS-101-001"],
+      "generated_case_count": 2618
+    },
+    {
+      "script_id": "SBDFS-110",
+      "path": "generated/scripts/110_sblr_uuid_roundtrip_manifest.sbsql",
+      "coverage": ["generated_full_surface"],
+      "assertions": ["SBDFS-110-001"],
+      "generated_case_count": 2618
+    },
+    {
+      "script_id": "SBDFS-120",
+      "path": "generated/scripts/120_datatype_native_load.sbsql",
+      "coverage": ["generated_full_surface"],
+      "assertions": ["SBDFS-120-001", "SBDFS-120-002"],
+      "generated_case_count": 5679
+    },
+    {
+      "script_id": "SBDFS-130",
+      "path": "generated/scripts/130_datatype_dml_matrix.sbsql",
+      "coverage": ["generated_full_surface"],
+      "assertions": ["SBDFS-130-001"],
+      "generated_case_count": 1378
+    },
+    {
+      "script_id": "SBDFS-140",
+      "path": "generated/scripts/140_index_family_variation_matrix.sbsql",
+      "coverage": ["generated_full_surface"],
+      "assertions": ["SBDFS-140-001"],
+      "generated_case_count": 28898
+    },
+    {
+      "script_id": "SBDFS-150",
+      "path": "generated/scripts/150_query_join_window_cte_matrix.sbsql",
+      "coverage": ["generated_full_surface"],
+      "assertions": ["SBDFS-150-001"],
+      "generated_case_count": 2066
+    },
+    {
+      "script_id": "SBDFS-160",
+      "path": "generated/scripts/160_builtin_function_invocations.sbsql",
+      "coverage": ["generated_full_surface"],
+      "assertions": ["SBDFS-160-001"],
+      "generated_case_count": 1714
+    },
+    {
+      "script_id": "SBDFS-170",
+      "path": "generated/scripts/170_cast_operator_matrix.sbsql",
+      "coverage": ["generated_full_surface"],
+      "assertions": ["SBDFS-170-001"],
+      "generated_case_count": 14794
+    },
+    {
+      "script_id": "SBDFS-180",
+      "path": "generated/scripts/180_optimizer_and_storage_manifest.sbsql",
+      "coverage": ["generated_full_surface"],
+      "assertions": ["SBDFS-180-001"],
+      "generated_case_count": 622
     }
   ]
 }

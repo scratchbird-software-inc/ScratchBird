@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from exhaustive_generators import generate_exhaustive_assets
+from exhaustive_generators import source_summary
 
 
 SUITE_ROOT = Path(__file__).resolve().parent
@@ -82,6 +82,38 @@ def copy_expected_files(suite_root: Path, output_root: Path) -> list[str]:
         target.write_text(text, encoding="utf-8")
         copied.append(str(target))
     return copied
+
+
+def copy_generated_expected_files(suite_root: Path, output_root: Path) -> list[str]:
+    source_root = suite_root / "generated" / EXPECTED_DIR
+    if not source_root.is_dir():
+        return []
+    output_expected = output_root / EXPECTED_DIR
+    copied: list[str] = []
+    for source in sorted(path for path in source_root.rglob("*") if path.is_file()):
+        rel = source.relative_to(source_root)
+        target = output_expected / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        copied.append(str(target))
+    return copied
+
+
+def generated_summary_from_manifest(repo_root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    summary = source_summary(repo_root)
+    generated_scripts = [
+        item for item in manifest.get("scripts", [])
+        if isinstance(item, dict) and str(item.get("script_id", "")).startswith("SBDFS-1")
+    ]
+    summary["generated_script_count"] = len(generated_scripts)
+    summary["generated_case_count"] = sum(
+        int(item.get("generated_case_count", 0)) for item in generated_scripts
+    )
+    minimums = manifest.get("exhaustive_source_minimums", {})
+    if isinstance(minimums, dict):
+        for key in ("generated_datatype_rows", "generated_index_cases", "generated_cast_cases"):
+            summary[key] = int(minimums.get(key, summary.get(key, 0)))
+    return summary
 
 
 def sql_string(value: str | None) -> str:
@@ -310,30 +342,10 @@ def compile_suite(
         )
 
     chain_text = "\n".join(chain_parts).rstrip() + "\n"
-    exhaustive_scripts, exhaustive_expected_files, exhaustive_summary = generate_exhaustive_assets(
-        repo_root=repo_root,
-        output_scripts=output_scripts,
-        output_root=output_root,
-        namespace=values["__SB_NAMESPACE__"],
-        manifest=manifest,
-    )
-    for item in exhaustive_scripts:
-        script_path = Path(str(item["compiled_path"]))
-        rendered = script_path.read_text(encoding="utf-8")
-        compiled_scripts.append(item)
-        chain_parts.extend(
-            [
-                f"-- begin_script: {script_path.name}",
-                rendered.rstrip(),
-                f"-- end_script: {script_path.name}",
-                "",
-            ]
-        )
-
-    chain_text = "\n".join(chain_parts).rstrip() + "\n"
     chain_path = output_root / "full_surface_chain.sbsql"
     chain_path.write_text(chain_text, encoding="utf-8")
     expected_files = copy_expected_files(suite_root, output_root)
+    expected_files.extend(copy_generated_expected_files(suite_root, output_root))
 
     compiled_manifest = {
         "schema_version": 1,
@@ -348,14 +360,14 @@ def compile_suite(
         "compiled_chain_path": str(chain_path),
         "compiled_chain_sha256": sha256_text(chain_text),
         "compiled_scripts": compiled_scripts,
-        "expected_files": expected_files + exhaustive_expected_files,
+        "expected_files": expected_files,
         "builtin_fixture_csvs": copied_fixture_csvs,
         "builtin_fixture_sources": fixture_sources,
         "builtin_fixture_rows": len(fixture_rows),
         "builtin_fixture_surface_ids": len(
             {row["surface_id"] for row in fixture_rows if row["surface_id"]}
         ),
-        "exhaustive_summary": exhaustive_summary,
+        "exhaustive_summary": generated_summary_from_manifest(repo_root, manifest),
     }
     manifest_path = output_root / "compiled_manifest.json"
     manifest_path.write_text(

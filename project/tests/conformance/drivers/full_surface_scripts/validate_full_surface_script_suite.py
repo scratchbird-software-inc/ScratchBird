@@ -92,6 +92,10 @@ def validate_manifest_shape(manifest: dict[str, Any], suite_root: Path) -> list[
     covered: set[str] = set()
     if as_list(manifest.get("exhaustive_generated_script_ids")):
         covered.add("generated_full_surface")
+    expected_generated_ids = {
+        str(item) for item in as_list(manifest.get("exhaustive_generated_script_ids"))
+    }
+    manifest_generated_ids: set[str] = set()
     for item in scripts:
         script_id = str(item.get("script_id", ""))
         if not script_id:
@@ -99,6 +103,8 @@ def validate_manifest_shape(manifest: dict[str, Any], suite_root: Path) -> list[
         elif script_id in script_ids:
             errors.append(f"manifest:duplicate_script_id:{script_id}")
         script_ids.add(script_id)
+        if script_id.startswith("SBDFS-1"):
+            manifest_generated_ids.add(script_id)
 
         item_coverage = {str(value) for value in as_list(item.get("coverage"))}
         unknown = item_coverage - required_coverage
@@ -139,6 +145,11 @@ def validate_manifest_shape(manifest: dict[str, Any], suite_root: Path) -> list[
     missing_coverage = required_coverage - covered
     if missing_coverage:
         errors.append(f"manifest:missing_required_coverage:{','.join(sorted(missing_coverage))}")
+    if manifest_generated_ids != expected_generated_ids:
+        errors.append(
+            "manifest:generated_script_entries_drift:"
+            f"{','.join(sorted(manifest_generated_ids))}"
+        )
     return errors
 
 
@@ -377,8 +388,8 @@ def validate_compiled_sample(
     }
     compiled_generated_ids = {
         str(item.get("script_id"))
-        for item in generated
-        if str(item.get("script_id", "")).startswith("SBDFS-1")
+        for item in as_list(compiled.get("compiled_scripts"))
+        if isinstance(item, dict) and str(item.get("script_id", "")).startswith("SBDFS-1")
     }
     if compiled_generated_ids != expected_generated_ids:
         errors.append(

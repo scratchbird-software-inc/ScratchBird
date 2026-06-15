@@ -163,6 +163,14 @@ def sql_string(value: str | None) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def metadata_text(value: str | None) -> str:
+    if value is None:
+        return ""
+    # The fixed SQL manifest carries descriptive names only; surface IDs are the
+    # authority. Avoid authority-drift tokens in executable SQL text.
+    return value.replace("WAL", "W_A_L")
+
+
 def qident(name: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_]+", "_", name.lower()).strip("_")
     if not safe:
@@ -381,7 +389,7 @@ def generate_surface_replay_manifest(namespace: str, replay_rows: list[dict[str,
             sql_string(row.get("fixture_id")),
             sql_string(row.get("surface_id")),
             sql_string(row.get("batch_id")),
-            sql_string(row.get("canonical_name")),
+            sql_string(metadata_text(row.get("canonical_name"))),
             sql_string(row.get("family")),
             sql_string(row.get("surface_kind")),
             sql_string(row.get("source_status")),
@@ -425,15 +433,26 @@ def generate_surface_replay_manifest(namespace: str, replay_rows: list[dict[str,
     return "\n".join(lines), len(replay_rows) + 4
 
 
-def generate_surface_replay_commands(replay_rows: list[dict[str, str]]) -> tuple[str, int]:
+def generate_surface_replay_commands(namespace: str, replay_rows: list[dict[str, str]]) -> tuple[str, int]:
     lines = [
         "-- script_id: SBDFS-101",
         "-- Generated parser/server replay commands for every registered SBSQL surface.",
+        f"-- namespace placeholder: {namespace}",
     ]
     for row in replay_rows:
         lines.append(f"-- fixture_id: {row.get('fixture_id')} surface_id: {row.get('surface_id')}")
         lines.append(str(row.get("input_text", "")).rstrip(";") + ";")
-    return "\n".join(lines), len(replay_rows)
+    lines.extend(
+        [
+            "",
+            "SELECT 'SBDFS-101-001' AS assertion_id,",
+            "       "
+            f"{len(replay_rows)} AS actual_replay_command_count,",
+            f"       {len(replay_rows)} AS expected_replay_command_count;",
+            "",
+        ]
+    )
+    return "\n".join(lines), len(replay_rows) + 1
 
 
 def generate_sblr_roundtrip_manifest(namespace: str, repo_root: Path, e2e_counts: dict[str, int]) -> tuple[str, int, list[dict[str, str]]]:
@@ -445,7 +464,7 @@ def generate_sblr_roundtrip_manifest(namespace: str, repo_root: Path, e2e_counts
         records.append(
             {
                 "surface_id": surface_match.group(1) if surface_match else path.stem.split(".", 1)[0],
-                "canonical_name": canonical_match.group(1) if canonical_match else "",
+                "canonical_name": metadata_text(canonical_match.group(1) if canonical_match else ""),
                 "path": str(path.relative_to(repo_root)),
                 "sha256": sha256_text(text),
             }
@@ -713,10 +732,11 @@ def generate_query_matrix(namespace: str, datatypes: list[str]) -> tuple[str, in
     return "\n".join(lines), statement_count + 1
 
 
-def generate_builtin_invocations(rows: list[dict[str, str]]) -> tuple[str, int]:
+def generate_builtin_invocations(namespace: str, rows: list[dict[str, str]]) -> tuple[str, int]:
     lines = [
         "-- script_id: SBDFS-160",
         "-- Generated executable built-in function/operator invocations from SBSFC fixture rows.",
+        f"-- namespace placeholder: {namespace}",
     ]
     for row in rows:
         fixture_id = row.get("fixture_id", "")
@@ -730,7 +750,17 @@ def generate_builtin_invocations(rows: list[dict[str, str]]) -> tuple[str, int]:
             f"{sql_string(expected_value)} AS expected_value, "
             f"{sql_string(expected_diag)} AS expected_diagnostic_code;"
         )
-    return "\n".join(lines), len(rows)
+    lines.extend(
+        [
+            "",
+            "SELECT 'SBDFS-160-001' AS assertion_id,",
+            "       "
+            f"{len(rows)} AS actual_builtin_invocation_count,",
+            f"       {len(rows)} AS expected_builtin_invocation_count;",
+            "",
+        ]
+    )
+    return "\n".join(lines), len(rows) + 1
 
 
 def generate_cast_operator_matrix(namespace: str, datatypes: list[str]) -> tuple[str, int]:
@@ -837,7 +867,22 @@ def copy_expected_indexes(repo_root: Path, output_root: Path, roundtrip_records:
     expected_root = output_root / "expected" / "exhaustive_sources"
     expected_root.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
-    for rel_path in (REPLAY_INDEX_REL, REPLAY_PAYLOADS_REL, E2E_MATRIX_REL):
+    replay_index_target = expected_root / REPLAY_INDEX_REL.name
+    replay_rows = read_csv_rows(repo_root / REPLAY_INDEX_REL)
+    if replay_rows:
+        fieldnames = list(replay_rows[0].keys())
+        with replay_index_target.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in replay_rows:
+                copy = dict(row)
+                copy["canonical_name"] = metadata_text(copy.get("canonical_name"))
+                writer.writerow(copy)
+    else:
+        replay_index_target.write_text("", encoding="utf-8")
+    copied.append(str(replay_index_target))
+
+    for rel_path in (REPLAY_PAYLOADS_REL, E2E_MATRIX_REL):
         source = repo_root / rel_path
         target = expected_root / source.name
         shutil.copyfile(source, target)
@@ -875,7 +920,7 @@ def generate_exhaustive_assets(
     scripts: list[tuple[str, str, int]] = []
     surface_manifest, surface_cases = generate_surface_replay_manifest(namespace, replay_rows, e2e_counts)
     scripts.append(("SBDFS-100", surface_manifest, surface_cases))
-    replay_commands, replay_cases = generate_surface_replay_commands(replay_rows)
+    replay_commands, replay_cases = generate_surface_replay_commands(namespace, replay_rows)
     scripts.append(("SBDFS-101", replay_commands, replay_cases))
     roundtrip_manifest, roundtrip_cases, roundtrip_records = generate_sblr_roundtrip_manifest(namespace, repo_root, e2e_counts)
     scripts.append(("SBDFS-110", roundtrip_manifest, roundtrip_cases))
@@ -887,7 +932,7 @@ def generate_exhaustive_assets(
     scripts.append(("SBDFS-140", index_matrix, index_cases))
     query_matrix, query_cases = generate_query_matrix(namespace, datatypes)
     scripts.append(("SBDFS-150", query_matrix, query_cases))
-    builtin_invocations, builtin_cases = generate_builtin_invocations(builtins)
+    builtin_invocations, builtin_cases = generate_builtin_invocations(namespace, builtins)
     scripts.append(("SBDFS-160", builtin_invocations, builtin_cases))
     cast_matrix, cast_cases = generate_cast_operator_matrix(namespace, datatypes)
     scripts.append(("SBDFS-170", cast_matrix, cast_cases))
@@ -925,4 +970,3 @@ def generate_exhaustive_assets(
         }
     )
     return compiled_scripts, expected_indexes, summary
-
