@@ -1,0 +1,928 @@
+#!/usr/bin/env python3
+# Copyright (c) 2026 ScratchBird Software Inc.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# SPDX-License-Identifier: MPL-2.0
+
+"""Generator helpers for the driver full-surface SBSQL corpus.
+
+The checked-in suite stays compact. This module expands it into the large
+driver-specific scripts and proof indexes under build/.
+"""
+
+from __future__ import annotations
+
+import csv
+import hashlib
+import json
+import re
+import shutil
+from pathlib import Path
+from typing import Any
+
+
+REPLAY_INDEX_REL = Path("project/tests/sbsql_parser_worker/generated/replay/DIFFERENTIAL_REPLAY_FIXTURE_INDEX.csv")
+REPLAY_PAYLOADS_REL = Path("project/tests/sbsql_parser_worker/generated/replay/DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl")
+E2E_MATRIX_REL = Path("project/tests/sbsql_parser_worker/generated/exhaustive_e2e/EXHAUSTIVE_E2E_VARIATION_MATRIX.csv")
+SBLR_ROUND_TRIP_ROOT_REL = Path("project/tests/sbsql_parser_worker/generated/full_surface/sblr_binary_round_trip")
+AUTH_ROUTE_ROOT_REL = Path("project/tests/sbsql_parser_worker/generated/full_surface/authenticated_route")
+DATATYPE_INVENTORY_REL = Path("project/tests/conformance/datatypes/datatype_layout_inventory.yaml")
+PAGE_LAYOUT_INVENTORY_REL = Path("project/tests/conformance/storage/page_layout_inventory.yaml")
+INDEX_REGISTRY_REL = Path("project/src/core/index/index_family_registry.hpp")
+INDEX_PROOF_MATRIX_REL = Path("project/tests/release_evidence/commercial_readiness_public_evidence/artifacts/DURABLE_STORAGE_INDEX_PROOF_MATRIX.csv")
+INDEX_READINESS_MANIFEST_REL = Path("project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml")
+OPTIMIZER_READINESS_MANIFEST_REL = Path("project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml")
+BUILTIN_FIXTURE_ROOT_REL = Path("project/tests/sbsql_parser_worker/generated/full_surface")
+
+GENERATED_SCRIPT_SPECS = (
+    ("SBDFS-100", "100_surface_replay_manifest.sbsql"),
+    ("SBDFS-101", "101_surface_replay_commands.sbsql"),
+    ("SBDFS-110", "110_sblr_uuid_roundtrip_manifest.sbsql"),
+    ("SBDFS-120", "120_datatype_native_load.sbsql"),
+    ("SBDFS-130", "130_datatype_dml_matrix.sbsql"),
+    ("SBDFS-140", "140_index_family_variation_matrix.sbsql"),
+    ("SBDFS-150", "150_query_join_window_cte_matrix.sbsql"),
+    ("SBDFS-160", "160_builtin_function_invocations.sbsql"),
+    ("SBDFS-170", "170_cast_operator_matrix.sbsql"),
+    ("SBDFS-180", "180_optimizer_and_storage_manifest.sbsql"),
+)
+
+CONCRETE_SQL_TYPES = {
+    "null_type": "VARCHAR(32)",
+    "boolean": "BOOLEAN",
+    "int8": "INT8",
+    "int16": "SMALLINT",
+    "int32": "INTEGER",
+    "int64": "BIGINT",
+    "int128": "INT128",
+    "uint8": "UINT8",
+    "uint16": "UINT16",
+    "uint32": "UINT32",
+    "uint64": "UINT64",
+    "uint128": "UINT128",
+    "bfloat16": "BFLOAT16",
+    "real16": "REAL16",
+    "real32": "REAL",
+    "real64": "DOUBLE PRECISION",
+    "real128": "REAL128",
+    "decimal": "DECIMAL(38, 9)",
+    "decimal_float": "DECFLOAT",
+    "uuid": "UUID",
+    "ip_address": "IP_ADDRESS",
+    "network_prefix": "NETWORK_PREFIX",
+    "mac_address": "MAC_ADDRESS",
+    "character": "VARCHAR(512)",
+    "binary": "VARBINARY(512)",
+    "bit_string": "BIT VARYING(512)",
+    "date": "DATE",
+    "time": "TIME",
+    "timestamp": "TIMESTAMP",
+    "interval": "INTERVAL",
+    "blob": "BLOB",
+    "document": "DOCUMENT",
+    "json_document": "JSON",
+    "binary_json_document": "JSONB",
+    "bson_document": "BSON",
+    "xml_document": "XML",
+    "hstore_document": "HSTORE",
+    "object_document": "OBJECT",
+    "flattened_object_document": "FLATTENED_OBJECT",
+    "enum_value": "ENUM_VALUE",
+    "set_value": "SET_VALUE",
+    "array": "ARRAY<INTEGER>",
+    "list": "LIST<INTEGER>",
+    "map": "MAP<VARCHAR(64), INTEGER>",
+    "row": "ROW",
+    "composite": "COMPOSITE",
+    "variant": "VARIANT",
+    "range": "RANGE<INTEGER>",
+    "multirange": "MULTIRANGE<INTEGER>",
+    "token_stream": "TOKEN_STREAM",
+    "search_query": "SEARCH_QUERY",
+    "search_rank_feature": "SEARCH_RANK_FEATURE",
+    "search_completion": "SEARCH_COMPLETION",
+    "search_percolator": "SEARCH_PERCOLATOR",
+    "geometry": "GEOMETRY",
+    "geography": "GEOGRAPHY",
+    "point": "POINT",
+    "shape": "SHAPE",
+    "raster": "RASTER",
+    "vector": "VECTOR(8)",
+    "dense_vector": "DENSE_VECTOR(8)",
+    "sparse_vector": "SPARSE_VECTOR(8)",
+    "binary_vector": "BINARY_VECTOR(64)",
+    "quantized_vector": "QUANTIZED_VECTOR(8)",
+    "graph_node": "GRAPH_NODE",
+    "graph_edge": "GRAPH_EDGE",
+    "graph_path": "GRAPH_PATH",
+    "time_series_value": "TIME_SERIES_VALUE",
+    "columnar_segment": "COLUMNAR_SEGMENT",
+    "aggregate_state": "AGGREGATE_STATE",
+    "hll_sketch": "HLL_SKETCH",
+    "bloom_filter": "BLOOM_FILTER",
+    "quantile_sketch": "QUANTILE_SKETCH",
+    "histogram_sketch": "HISTOGRAM_SKETCH",
+    "ranking_summary": "RANKING_SUMMARY",
+    "vector_summary": "VECTOR_SUMMARY",
+    "lob_locator": "LOB_LOCATOR",
+    "external_file_locator": "EXTERNAL_FILE_LOCATOR",
+    "remote_object_locator": "REMOTE_OBJECT_LOCATOR",
+    "bridge_handle": "BRIDGE_HANDLE",
+    "cursor_handle": "CURSOR_HANDLE",
+    "system_reference": "SYSTEM_REFERENCE",
+    "opaque_extension": "OPAQUE_EXTENSION",
+    "cursor": "CURSOR",
+    "result_set": "RESULT_SET",
+    "table_value": "TABLE_VALUE",
+}
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    return sha256_bytes(path.read_bytes())
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def sql_string(value: str | None) -> str:
+    if value is None or value == "":
+        return "NULL"
+    return "'" + value.replace("'", "''") + "'"
+
+
+def qident(name: str) -> str:
+    safe = re.sub(r"[^a-zA-Z0-9_]+", "_", name.lower()).strip("_")
+    if not safe:
+        safe = "x"
+    if safe[0].isdigit():
+        safe = "x_" + safe
+    return safe
+
+
+def parse_yaml_list(text: str, key: str, indent: int = 6) -> list[str]:
+    marker = f"{key}:"
+    values: list[str] = []
+    in_section = False
+    prefix = " " * indent + "- "
+    for line in text.splitlines():
+        if line.strip() == marker:
+            in_section = True
+            continue
+        if not in_section:
+            continue
+        if line.startswith(prefix):
+            values.append(line.split("- ", 1)[1].strip())
+            continue
+        if line.strip() and not line.startswith(" " * indent):
+            break
+    return values
+
+
+def required_datatypes(repo_root: Path) -> list[str]:
+    return parse_yaml_list((repo_root / DATATYPE_INVENTORY_REL).read_text(encoding="utf-8"), "required_types")
+
+
+def supported_page_sizes(repo_root: Path) -> list[str]:
+    text = (repo_root / PAGE_LAYOUT_INVENTORY_REL).read_text(encoding="utf-8")
+    return parse_yaml_list(text, "supported_page_sizes", indent=2)
+
+
+def index_families(repo_root: Path) -> list[str]:
+    header = (repo_root / INDEX_REGISTRY_REL).read_text(encoding="utf-8")
+    match = re.search(r"enum class IndexFamily\s*:[^{]+{(?P<body>.*?)};", header, re.S)
+    if not match:
+        raise ValueError("IndexFamily enum not found")
+    names: list[str] = []
+    for raw in match.group("body").split(","):
+        name = raw.strip().split("=", 1)[0].strip()
+        if name and name != "unknown":
+            names.append(name)
+    return names
+
+
+def fixture_rows(repo_root: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for path in sorted((repo_root / BUILTIN_FIXTURE_ROOT_REL).glob("*.csv")):
+        for row in read_csv_rows(path):
+            copy = dict(row)
+            copy["source_file"] = path.name
+            rows.append(copy)
+    return rows
+
+
+def source_summary(repo_root: Path) -> dict[str, Any]:
+    replay_rows = read_csv_rows(repo_root / REPLAY_INDEX_REL)
+    e2e_rows = read_csv_rows(repo_root / E2E_MATRIX_REL)
+    datatypes = required_datatypes(repo_root)
+    families = index_families(repo_root)
+    fixture_count = len(fixture_rows(repo_root))
+    sblr_files = sorted((repo_root / SBLR_ROUND_TRIP_ROOT_REL).glob("*.yaml"))
+    route_files = sorted((repo_root / AUTH_ROUTE_ROOT_REL).glob("*.yaml"))
+    return {
+        "replay_rows": len(replay_rows),
+        "full_route_replay_rows": sum("full_route" in row.get("route_set", "").split(";") for row in replay_rows),
+        "e2e_scopes": len(e2e_rows),
+        "e2e_counts": {row["scope_id"]: int(row["expected_count"]) for row in e2e_rows},
+        "datatype_count": len(datatypes),
+        "page_size_count": len(supported_page_sizes(repo_root)),
+        "index_family_count": len(families),
+        "builtin_fixture_rows": fixture_count,
+        "sblr_round_trip_files": len(sblr_files),
+        "authenticated_route_files": len(route_files),
+    }
+
+
+def deterministic_int(seed: str, index: int, modulo: int) -> int:
+    digest = hashlib.sha256(f"{seed}:{index}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % modulo
+
+
+def literal_for_datatype(datatype: str, index: int) -> str:
+    n = deterministic_int(datatype, index, 10_000_000)
+    if datatype == "null_type":
+        return "NULL"
+    if datatype == "boolean":
+        return "TRUE" if index % 2 == 0 else "FALSE"
+    if datatype.startswith("int"):
+        return str((n % 200000) - 100000)
+    if datatype.startswith("uint"):
+        return str(n)
+    if datatype in {"bfloat16", "real16", "real32", "real64", "real128", "decimal", "decimal_float"}:
+        return f"{(n % 100000) - 50000}.{index % 1000:03d}"
+    if datatype == "uuid":
+        return f"UUID '018f0a2b-0000-7{index % 10:03d}-9{index % 10:03d}-{n:012d}'"
+    if datatype == "ip_address":
+        return f"'10.{index % 255}.{(index * 7) % 255}.{(index * 13) % 255}'"
+    if datatype == "network_prefix":
+        return f"'10.{index % 255}.0.0/16'"
+    if datatype == "mac_address":
+        return f"'02:00:{index % 255:02x}:{(index * 3) % 255:02x}:{(index * 5) % 255:02x}:{(index * 7) % 255:02x}'"
+    if datatype == "character":
+        return sql_string(f"sb-{datatype}-{index}-{n}")
+    if datatype == "binary":
+        return f"X'{n:012x}'"
+    if datatype == "bit_string":
+        return "B'" + format(n % 256, "08b") + "'"
+    if datatype == "date":
+        return f"DATE '2026-{(index % 12) + 1:02d}-{(index % 28) + 1:02d}'"
+    if datatype == "time":
+        return f"TIME '{index % 24:02d}:{(index * 3) % 60:02d}:{(index * 7) % 60:02d}'"
+    if datatype == "timestamp":
+        return f"TIMESTAMP '2026-{(index % 12) + 1:02d}-{(index % 28) + 1:02d} {index % 24:02d}:{(index * 3) % 60:02d}:{(index * 7) % 60:02d}'"
+    if datatype == "interval":
+        return f"INTERVAL '{(index % 365) + 1} days'"
+    if datatype in {"document", "json_document", "binary_json_document", "bson_document", "object_document", "flattened_object_document"}:
+        return "JSON " + sql_string(json.dumps({"datatype": datatype, "i": index, "n": n}, sort_keys=True))
+    if datatype == "xml_document":
+        return "XML " + sql_string(f"<row datatype=\"{datatype}\" i=\"{index}\" n=\"{n}\"/>")
+    if datatype in {"array", "list"}:
+        return f"ARRAY[{index}, {n % 1000}, {(n // 7) % 1000}]"
+    if datatype == "vector" or datatype.endswith("_vector"):
+        return "VECTOR " + sql_string("[" + ",".join(f"{((n + i * 17) % 1000) / 1000.0:.3f}" for i in range(8)) + "]")
+    if datatype == "point":
+        return sql_string(f"POINT({index % 100} {(n % 100)})")
+    if datatype in {"geometry", "geography", "shape"}:
+        return sql_string(f"POINT({index % 100} {(n % 100)})")
+    return f"CAST({sql_string(json.dumps({'datatype': datatype, 'i': index, 'n': n}, sort_keys=True))} AS {CONCRETE_SQL_TYPES.get(datatype, datatype.upper())})"
+
+
+def argument_to_sql(value: Any) -> str:
+    if not isinstance(value, dict):
+        return sql_string(json.dumps(value, sort_keys=True))
+    if value.get("is_null") is True:
+        descriptor = str(value.get("descriptor_id") or value.get("descriptor") or "VARCHAR(64)")
+        return f"CAST(NULL AS {descriptor})"
+    if "int64_value" in value:
+        return str(value["int64_value"])
+    if "uint64_value" in value:
+        return str(value["uint64_value"])
+    if "real64_value" in value:
+        return str(value["real64_value"])
+    if "bool_value" in value:
+        return "TRUE" if value["bool_value"] else "FALSE"
+    if "text_value" in value:
+        return sql_string(str(value["text_value"]))
+    if "binary_hex" in value:
+        return "X'" + str(value["binary_hex"]) + "'"
+    if "hex" in value:
+        return "X'" + str(value["hex"]) + "'"
+    if "binary_value" in value and isinstance(value["binary_value"], list):
+        return "X'" + "".join(f"{int(part) & 0xff:02x}" for part in value["binary_value"]) + "'"
+    if "value" in value:
+        kind = str(value.get("type") or value.get("descriptor") or "")
+        raw = value["value"]
+        if isinstance(raw, bool):
+            return "TRUE" if raw else "FALSE"
+        if isinstance(raw, (int, float)):
+            return str(raw)
+        if kind in {"json", "json_document"}:
+            return "JSON " + sql_string(str(raw))
+        return sql_string(str(raw))
+    return sql_string(json.dumps(value, sort_keys=True))
+
+
+def render_function_call(row: dict[str, str]) -> str:
+    function_id = row.get("function_id") or row.get("canonical_builtin_id") or "unknown_function"
+    name = function_id.split(".")[-1]
+    args_text = row.get("arguments_json") or "[]"
+    try:
+        args = json.loads(args_text)
+    except json.JSONDecodeError:
+        args = []
+    if not isinstance(args, list):
+        args = [args]
+    rendered_args = ", ".join(argument_to_sql(item) for item in args)
+    return f"{name}({rendered_args})"
+
+
+def write_text(path: Path, text: str) -> dict[str, Any]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    return {"path": str(path), "sha256": sha256_text(text.rstrip() + "\n"), "lines": text.count("\n") + 1}
+
+
+def generate_surface_replay_manifest(namespace: str, replay_rows: list[dict[str, str]], e2e_counts: dict[str, int]) -> tuple[str, int]:
+    lines = [
+        "-- script_id: SBDFS-100",
+        "-- Generated full SBSQL surface replay manifest.",
+        f"CREATE TABLE {namespace}.surface_replay_manifest (",
+        "    fixture_id VARCHAR(96) PRIMARY KEY,",
+        "    surface_id VARCHAR(64) NOT NULL,",
+        "    batch_id VARCHAR(32),",
+        "    canonical_name VARCHAR(256),",
+        "    family VARCHAR(128),",
+        "    surface_kind VARCHAR(64),",
+        "    source_status VARCHAR(64),",
+        "    operation_family VARCHAR(128),",
+        "    primary_route VARCHAR(96),",
+        "    route_set TEXT,",
+        "    input_text TEXT,",
+        "    expected_server_result TEXT,",
+        "    expected_engine_effect TEXT,",
+        "    expected_payload_ref TEXT",
+        ");",
+        "",
+    ]
+    for row in replay_rows:
+        values = [
+            sql_string(row.get("fixture_id")),
+            sql_string(row.get("surface_id")),
+            sql_string(row.get("batch_id")),
+            sql_string(row.get("canonical_name")),
+            sql_string(row.get("family")),
+            sql_string(row.get("surface_kind")),
+            sql_string(row.get("source_status")),
+            sql_string(row.get("operation_family")),
+            sql_string(row.get("primary_route")),
+            sql_string(row.get("route_set")),
+            sql_string(row.get("input_text")),
+            sql_string(row.get("expected_server_result")),
+            sql_string(row.get("expected_engine_effect")),
+            sql_string(row.get("expected_payload_json")),
+        ]
+        lines.append(f"INSERT INTO {namespace}.surface_replay_manifest VALUES ({', '.join(values)});")
+    lines.extend(
+        [
+            "",
+            "SELECT 'SBDFS-100-001' AS assertion_id,",
+            "       COUNT(*) AS actual_replay_rows,",
+            f"       {e2e_counts.get('replay_fixture_index', len(replay_rows))} AS expected_replay_rows",
+            f"FROM {namespace}.surface_replay_manifest;",
+            "",
+            "SELECT 'SBDFS-100-002' AS assertion_id,",
+            "       COUNT(*) AS actual_full_route_rows,",
+            f"       {e2e_counts.get('full_route_executable_surfaces', 0)} AS expected_full_route_rows",
+            f"FROM {namespace}.surface_replay_manifest",
+            "WHERE route_set LIKE '%full_route%';",
+            "",
+            "SELECT 'SBDFS-100-003' AS assertion_id,",
+            "       COUNT(*) AS actual_expression_runtime_rows,",
+            f"       {e2e_counts.get('expression_runtime_catalog', 0)} AS expected_expression_runtime_rows",
+            f"FROM {namespace}.surface_replay_manifest",
+            "WHERE surface_kind IN ('function', 'operator', 'variable');",
+            "",
+            "SELECT 'SBDFS-100-004' AS assertion_id,",
+            "       COUNT(*) AS actual_statement_surface_rows,",
+            f"       {e2e_counts.get('statement_surface_catalog', 0)} AS expected_statement_surface_rows",
+            f"FROM {namespace}.surface_replay_manifest",
+            "WHERE surface_kind NOT IN ('function', 'operator', 'variable');",
+            "",
+        ]
+    )
+    return "\n".join(lines), len(replay_rows) + 4
+
+
+def generate_surface_replay_commands(replay_rows: list[dict[str, str]]) -> tuple[str, int]:
+    lines = [
+        "-- script_id: SBDFS-101",
+        "-- Generated parser/server replay commands for every registered SBSQL surface.",
+    ]
+    for row in replay_rows:
+        lines.append(f"-- fixture_id: {row.get('fixture_id')} surface_id: {row.get('surface_id')}")
+        lines.append(str(row.get("input_text", "")).rstrip(";") + ";")
+    return "\n".join(lines), len(replay_rows)
+
+
+def generate_sblr_roundtrip_manifest(namespace: str, repo_root: Path, e2e_counts: dict[str, int]) -> tuple[str, int, list[dict[str, str]]]:
+    records: list[dict[str, str]] = []
+    for path in sorted((repo_root / SBLR_ROUND_TRIP_ROOT_REL).glob("*.yaml")):
+        text = path.read_text(encoding="utf-8")
+        surface_match = re.search(r'^surface_id:\s*"([^"]+)"', text, re.M)
+        canonical_match = re.search(r'^canonical_name:\s*"([^"]+)"', text, re.M)
+        records.append(
+            {
+                "surface_id": surface_match.group(1) if surface_match else path.stem.split(".", 1)[0],
+                "canonical_name": canonical_match.group(1) if canonical_match else "",
+                "path": str(path.relative_to(repo_root)),
+                "sha256": sha256_text(text),
+            }
+        )
+    lines = [
+        "-- script_id: SBDFS-110",
+        "-- Generated SBLR binary/UUID round-trip proof index.",
+        f"CREATE TABLE {namespace}.sblr_roundtrip_manifest (",
+        "    surface_id VARCHAR(64) PRIMARY KEY,",
+        "    canonical_name VARCHAR(256),",
+        "    fixture_path TEXT NOT NULL,",
+        "    fixture_sha256 VARCHAR(64) NOT NULL",
+        ");",
+        "",
+    ]
+    for row in records:
+        values = [sql_string(row["surface_id"]), sql_string(row["canonical_name"]), sql_string(row["path"]), sql_string(row["sha256"])]
+        lines.append(f"INSERT INTO {namespace}.sblr_roundtrip_manifest VALUES ({', '.join(values)});")
+    lines.extend(
+        [
+            "",
+            "SELECT 'SBDFS-110-001' AS assertion_id,",
+            "       COUNT(*) AS actual_sblr_roundtrip_rows,",
+            f"       {e2e_counts.get('surface_registry', len(records))} AS expected_sblr_roundtrip_rows",
+            f"FROM {namespace}.sblr_roundtrip_manifest;",
+            "",
+        ]
+    )
+    return "\n".join(lines), len(records) + 1, records
+
+
+def generate_datatype_native_load(namespace: str, datatypes: list[str], rows_per_type: int = 64) -> tuple[str, int]:
+    lines = [
+        "-- script_id: SBDFS-120",
+        "-- Generated native datatype load and deterministic random value matrix.",
+        f"CREATE TABLE {namespace}.datatype_surface_manifest (",
+        "    datatype_name VARCHAR(96) PRIMARY KEY,",
+        "    sql_type_name VARCHAR(160) NOT NULL,",
+        "    generated_rows INTEGER NOT NULL",
+        ");",
+        "",
+    ]
+    statement_count = 1
+    for datatype in datatypes:
+        table_name = f"dt_{qident(datatype)}_values"
+        sql_type = CONCRETE_SQL_TYPES.get(datatype, datatype.upper())
+        lines.append(
+            f"INSERT INTO {namespace}.datatype_surface_manifest VALUES "
+            f"({sql_string(datatype)}, {sql_string(sql_type)}, {rows_per_type});"
+        )
+        lines.append(
+            f"CREATE TABLE {namespace}.{table_name} ("
+            "case_id INTEGER PRIMARY KEY, "
+            f"sample_value {sql_type}, "
+            f"alternate_value {sql_type}, "
+            "seed_text VARCHAR(128) NOT NULL);"
+        )
+        statement_count += 2
+        for index in range(rows_per_type):
+            values = [
+                str(index),
+                literal_for_datatype(datatype, index),
+                literal_for_datatype(datatype, index + rows_per_type),
+                sql_string(f"{datatype}:{index}"),
+            ]
+            lines.append(f"INSERT INTO {namespace}.{table_name} VALUES ({', '.join(values)});")
+            statement_count += 1
+    lines.extend(
+        [
+            "",
+            "SELECT 'SBDFS-120-001' AS assertion_id,",
+            "       COUNT(*) AS actual_datatype_count,",
+            f"       {len(datatypes)} AS expected_datatype_count",
+            f"FROM {namespace}.datatype_surface_manifest;",
+            "",
+            "SELECT 'SBDFS-120-002' AS assertion_id,",
+            "       SUM(generated_rows) AS actual_generated_rows,",
+            f"       {len(datatypes) * rows_per_type} AS expected_generated_rows",
+            f"FROM {namespace}.datatype_surface_manifest;",
+            "",
+        ]
+    )
+    return "\n".join(lines), statement_count + 2
+
+
+def generate_datatype_dml_matrix(namespace: str, datatypes: list[str]) -> tuple[str, int]:
+    operations = ("insert", "select", "update", "delete", "merge", "upsert", "returning", "predicate")
+    lines = [
+        "-- script_id: SBDFS-130",
+        "-- Generated per-datatype DML matrix.",
+        f"CREATE TABLE {namespace}.datatype_dml_case_manifest (",
+        "    case_id VARCHAR(160) PRIMARY KEY,",
+        "    datatype_name VARCHAR(96) NOT NULL,",
+        "    operation_name VARCHAR(32) NOT NULL,",
+        "    statement_text TEXT NOT NULL",
+        ");",
+        "",
+    ]
+    statement_count = 1
+    for datatype in datatypes:
+        table_name = f"dt_{qident(datatype)}_values"
+        for operation in operations:
+            case_id = f"DML-{qident(datatype)}-{operation}"
+            if operation == "insert":
+                statement = f"INSERT INTO {namespace}.{table_name} VALUES (100001, {literal_for_datatype(datatype, 100001)}, {literal_for_datatype(datatype, 100002)}, 'dml-extra')"
+            elif operation == "select":
+                statement = f"SELECT COUNT(*) FROM {namespace}.{table_name} WHERE sample_value IS NOT NULL"
+            elif operation == "update":
+                statement = f"UPDATE {namespace}.{table_name} SET sample_value = alternate_value WHERE case_id % 7 = 0"
+            elif operation == "delete":
+                statement = f"DELETE FROM {namespace}.{table_name} WHERE case_id = 100001"
+            elif operation == "merge":
+                statement = f"MERGE INTO {namespace}.{table_name} AS target USING {namespace}.{table_name} AS source ON target.case_id = source.case_id WHEN MATCHED THEN UPDATE SET seed_text = source.seed_text"
+            elif operation == "upsert":
+                statement = f"UPSERT INTO {namespace}.{table_name} (case_id, sample_value, alternate_value, seed_text) VALUES (100002, {literal_for_datatype(datatype, 100003)}, {literal_for_datatype(datatype, 100004)}, 'dml-upsert')"
+            elif operation == "returning":
+                statement = f"UPDATE {namespace}.{table_name} SET seed_text = seed_text || ':returning' WHERE case_id = 1 RETURNING case_id"
+            else:
+                statement = f"SELECT case_id FROM {namespace}.{table_name} WHERE sample_value = alternate_value OR sample_value IS NULL"
+            lines.append(
+                f"INSERT INTO {namespace}.datatype_dml_case_manifest VALUES "
+                f"({sql_string(case_id)}, {sql_string(datatype)}, {sql_string(operation)}, {sql_string(statement)});"
+            )
+            lines.append(statement + ";")
+            statement_count += 2
+    lines.extend(
+        [
+            "",
+            "SELECT 'SBDFS-130-001' AS assertion_id,",
+            "       COUNT(*) AS actual_dml_cases,",
+            f"       {len(datatypes) * len(operations)} AS expected_dml_cases",
+            f"FROM {namespace}.datatype_dml_case_manifest;",
+            "",
+        ]
+    )
+    return "\n".join(lines), statement_count + 1
+
+
+def generate_index_matrix(namespace: str, datatypes: list[str], families: list[str]) -> tuple[str, int]:
+    variations = ("plain", "unique", "partial", "covering", "expression", "descending")
+    lines = [
+        "-- script_id: SBDFS-140",
+        "-- Generated index family x datatype x variation matrix.",
+        f"CREATE TABLE {namespace}.index_case_manifest (",
+        "    case_id VARCHAR(192) PRIMARY KEY,",
+        "    datatype_name VARCHAR(96) NOT NULL,",
+        "    family_name VARCHAR(64) NOT NULL,",
+        "    variation_name VARCHAR(64) NOT NULL,",
+        "    statement_text TEXT NOT NULL",
+        ");",
+        "",
+    ]
+    statement_count = 1
+    for datatype in datatypes:
+        table_name = f"dt_{qident(datatype)}_values"
+        for family in families:
+            family_sql = family.upper()
+            for variation in variations:
+                idx_name = f"idx_{qident(datatype)}_{qident(family)}_{variation}"
+                if variation == "unique":
+                    statement = f"CREATE UNIQUE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (case_id)"
+                elif variation == "partial":
+                    statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (sample_value) WHERE case_id % 2 = 0"
+                elif variation == "covering":
+                    statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (sample_value) INCLUDE (seed_text)"
+                elif variation == "expression":
+                    statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (CAST(sample_value AS VARCHAR(512)))"
+                elif variation == "descending":
+                    statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (sample_value DESC)"
+                else:
+                    statement = f"CREATE INDEX {idx_name} ON {namespace}.{table_name} USING {family_sql} (sample_value)"
+                case_id = f"IDX-{qident(datatype)}-{qident(family)}-{variation}"
+                lines.append(
+                    f"INSERT INTO {namespace}.index_case_manifest VALUES "
+                    f"({sql_string(case_id)}, {sql_string(datatype)}, {sql_string(family)}, {sql_string(variation)}, {sql_string(statement)});"
+                )
+                lines.append(statement + ";")
+                statement_count += 2
+    expected = len(datatypes) * len(families) * len(variations)
+    lines.extend(
+        [
+            "",
+            "SELECT 'SBDFS-140-001' AS assertion_id,",
+            "       COUNT(*) AS actual_index_cases,",
+            f"       {expected} AS expected_index_cases",
+            f"FROM {namespace}.index_case_manifest;",
+            "",
+        ]
+    )
+    return "\n".join(lines), statement_count + 1
+
+
+def generate_query_matrix(namespace: str, datatypes: list[str]) -> tuple[str, int]:
+    operations = (
+        "point_lookup",
+        "range_scan",
+        "null_scan",
+        "self_inner_join",
+        "self_left_join",
+        "exists_subquery",
+        "group_by_value",
+        "window_by_id",
+        "recursive_cte",
+        "union_self",
+        "order_by_value",
+        "aggregate_count",
+    )
+    lines = [
+        "-- script_id: SBDFS-150",
+        "-- Generated query/join/window/CTE matrix over every datatype table.",
+        f"CREATE TABLE {namespace}.query_case_manifest (",
+        "    case_id VARCHAR(192) PRIMARY KEY,",
+        "    datatype_name VARCHAR(96) NOT NULL,",
+        "    operation_name VARCHAR(64) NOT NULL,",
+        "    statement_text TEXT NOT NULL",
+        ");",
+        "",
+    ]
+    statement_count = 1
+    for datatype in datatypes:
+        table_name = f"dt_{qident(datatype)}_values"
+        for operation in operations:
+            if operation == "point_lookup":
+                statement = f"SELECT * FROM {namespace}.{table_name} WHERE case_id = 1"
+            elif operation == "range_scan":
+                statement = f"SELECT COUNT(*) FROM {namespace}.{table_name} WHERE case_id BETWEEN 10 AND 20"
+            elif operation == "null_scan":
+                statement = f"SELECT COUNT(*) FROM {namespace}.{table_name} WHERE sample_value IS NULL"
+            elif operation == "self_inner_join":
+                statement = f"SELECT COUNT(*) FROM {namespace}.{table_name} AS a INNER JOIN {namespace}.{table_name} AS b ON a.case_id = b.case_id"
+            elif operation == "self_left_join":
+                statement = f"SELECT COUNT(*) FROM {namespace}.{table_name} AS a LEFT JOIN {namespace}.{table_name} AS b ON a.case_id = b.case_id + 1"
+            elif operation == "exists_subquery":
+                statement = f"SELECT COUNT(*) FROM {namespace}.{table_name} AS a WHERE EXISTS (SELECT 1 FROM {namespace}.{table_name} AS b WHERE b.case_id = a.case_id)"
+            elif operation == "group_by_value":
+                statement = f"SELECT sample_value, COUNT(*) FROM {namespace}.{table_name} GROUP BY sample_value"
+            elif operation == "window_by_id":
+                statement = f"SELECT case_id, ROW_NUMBER() OVER (ORDER BY case_id) AS rn FROM {namespace}.{table_name}"
+            elif operation == "recursive_cte":
+                statement = "WITH RECURSIVE seq(n) AS (VALUES (1) UNION ALL SELECT n + 1 FROM seq WHERE n < 16) SELECT COUNT(*) FROM seq"
+            elif operation == "union_self":
+                statement = f"SELECT case_id FROM {namespace}.{table_name} WHERE case_id < 4 UNION SELECT case_id FROM {namespace}.{table_name} WHERE case_id < 4"
+            elif operation == "order_by_value":
+                statement = f"SELECT sample_value FROM {namespace}.{table_name} ORDER BY sample_value"
+            else:
+                statement = f"SELECT COUNT(*), MIN(case_id), MAX(case_id) FROM {namespace}.{table_name}"
+            case_id = f"QRY-{qident(datatype)}-{operation}"
+            lines.append(
+                f"INSERT INTO {namespace}.query_case_manifest VALUES "
+                f"({sql_string(case_id)}, {sql_string(datatype)}, {sql_string(operation)}, {sql_string(statement)});"
+            )
+            lines.append(statement + ";")
+            statement_count += 2
+    expected = len(datatypes) * len(operations)
+    lines.extend(
+        [
+            "",
+            "SELECT 'SBDFS-150-001' AS assertion_id,",
+            "       COUNT(*) AS actual_query_cases,",
+            f"       {expected} AS expected_query_cases",
+            f"FROM {namespace}.query_case_manifest;",
+            "",
+        ]
+    )
+    return "\n".join(lines), statement_count + 1
+
+
+def generate_builtin_invocations(rows: list[dict[str, str]]) -> tuple[str, int]:
+    lines = [
+        "-- script_id: SBDFS-160",
+        "-- Generated executable built-in function/operator invocations from SBSFC fixture rows.",
+    ]
+    for row in rows:
+        fixture_id = row.get("fixture_id", "")
+        expected_value = row.get("expected_result_value") or row.get("expected_result_json") or ""
+        expected_diag = row.get("expected_diagnostic_code", "")
+        call = render_function_call(row)
+        lines.append(f"-- fixture_id: {fixture_id} expected_diagnostic: {expected_diag or 'none'}")
+        lines.append(
+            f"SELECT {sql_string(fixture_id)} AS fixture_id, "
+            f"{call} AS actual_value, "
+            f"{sql_string(expected_value)} AS expected_value, "
+            f"{sql_string(expected_diag)} AS expected_diagnostic_code;"
+        )
+    return "\n".join(lines), len(rows)
+
+
+def generate_cast_operator_matrix(namespace: str, datatypes: list[str]) -> tuple[str, int]:
+    lines = [
+        "-- script_id: SBDFS-170",
+        "-- Generated cast/operator matrix across every datatype pair.",
+        f"CREATE TABLE {namespace}.cast_operator_case_manifest (",
+        "    case_id VARCHAR(192) PRIMARY KEY,",
+        "    source_datatype VARCHAR(96) NOT NULL,",
+        "    target_datatype VARCHAR(96) NOT NULL,",
+        "    statement_text TEXT NOT NULL",
+        ");",
+        "",
+    ]
+    statement_count = 1
+    for source in datatypes:
+        source_table = f"dt_{qident(source)}_values"
+        for target in datatypes:
+            target_type = CONCRETE_SQL_TYPES.get(target, target.upper())
+            case_id = f"CAST-{qident(source)}-TO-{qident(target)}"
+            statement = f"SELECT CAST(sample_value AS {target_type}) AS cast_value FROM {namespace}.{source_table} WHERE case_id = 1"
+            lines.append(
+                f"INSERT INTO {namespace}.cast_operator_case_manifest VALUES "
+                f"({sql_string(case_id)}, {sql_string(source)}, {sql_string(target)}, {sql_string(statement)});"
+            )
+            lines.append(statement + ";")
+            statement_count += 2
+    expected = len(datatypes) * len(datatypes)
+    lines.extend(
+        [
+            "",
+            "SELECT 'SBDFS-170-001' AS assertion_id,",
+            "       COUNT(*) AS actual_cast_cases,",
+            f"       {expected} AS expected_cast_cases",
+            f"FROM {namespace}.cast_operator_case_manifest;",
+            "",
+        ]
+    )
+    return "\n".join(lines), statement_count + 1
+
+
+def generate_optimizer_manifest(namespace: str, repo_root: Path, families: list[str], page_sizes: list[str]) -> tuple[str, int, list[dict[str, str]]]:
+    source_files = [
+        repo_root / INDEX_PROOF_MATRIX_REL,
+        repo_root / INDEX_READINESS_MANIFEST_REL,
+        repo_root / OPTIMIZER_READINESS_MANIFEST_REL,
+    ]
+    records = [
+        {
+            "path": str(path.relative_to(repo_root)),
+            "sha256": sha256_file(path),
+            "bytes": str(path.stat().st_size),
+        }
+        for path in source_files
+    ]
+    lines = [
+        "-- script_id: SBDFS-180",
+        "-- Generated optimizer, page-size, and index readiness source manifest.",
+        f"CREATE TABLE {namespace}.optimizer_storage_source_manifest (",
+        "    source_path TEXT PRIMARY KEY,",
+        "    source_sha256 VARCHAR(64) NOT NULL,",
+        "    source_bytes INTEGER NOT NULL",
+        ");",
+        f"CREATE TABLE {namespace}.optimizer_page_index_matrix (",
+        "    case_id VARCHAR(160) PRIMARY KEY,",
+        "    page_size INTEGER NOT NULL,",
+        "    index_family VARCHAR(64) NOT NULL,",
+        "    statement_text TEXT NOT NULL",
+        ");",
+        "",
+    ]
+    statement_count = 2
+    for row in records:
+        lines.append(
+            f"INSERT INTO {namespace}.optimizer_storage_source_manifest VALUES "
+            f"({sql_string(row['path'])}, {sql_string(row['sha256'])}, {row['bytes']});"
+        )
+        statement_count += 1
+    for page_size in page_sizes:
+        for family in families:
+            case_id = f"OPT-{page_size}-{qident(family)}"
+            statement = f"EXPLAIN SELECT * FROM {namespace}.dt_int64_values WHERE case_id BETWEEN 1 AND {int(page_size) % 97 + 1}"
+            lines.append(
+                f"INSERT INTO {namespace}.optimizer_page_index_matrix VALUES "
+                f"({sql_string(case_id)}, {int(page_size)}, {sql_string(family)}, {sql_string(statement)});"
+            )
+            lines.append(statement + ";")
+            statement_count += 2
+    expected = len(page_sizes) * len(families)
+    lines.extend(
+        [
+            "",
+            "SELECT 'SBDFS-180-001' AS assertion_id,",
+            "       COUNT(*) AS actual_optimizer_page_index_cases,",
+            f"       {expected} AS expected_optimizer_page_index_cases",
+            f"FROM {namespace}.optimizer_page_index_matrix;",
+            "",
+        ]
+    )
+    return "\n".join(lines), statement_count + 1, records
+
+
+def copy_expected_indexes(repo_root: Path, output_root: Path, roundtrip_records: list[dict[str, str]], optimizer_records: list[dict[str, str]]) -> list[str]:
+    expected_root = output_root / "expected" / "exhaustive_sources"
+    expected_root.mkdir(parents=True, exist_ok=True)
+    copied: list[str] = []
+    for rel_path in (REPLAY_INDEX_REL, REPLAY_PAYLOADS_REL, E2E_MATRIX_REL):
+        source = repo_root / rel_path
+        target = expected_root / source.name
+        shutil.copyfile(source, target)
+        copied.append(str(target))
+    roundtrip_index = expected_root / "sblr_roundtrip_index.jsonl"
+    roundtrip_index.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in roundtrip_records),
+        encoding="utf-8",
+    )
+    copied.append(str(roundtrip_index))
+    optimizer_index = expected_root / "optimizer_storage_source_index.jsonl"
+    optimizer_index.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in optimizer_records),
+        encoding="utf-8",
+    )
+    copied.append(str(optimizer_index))
+    return copied
+
+
+def generate_exhaustive_assets(
+    *,
+    repo_root: Path,
+    output_scripts: Path,
+    output_root: Path,
+    namespace: str,
+    manifest: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+    replay_rows = read_csv_rows(repo_root / REPLAY_INDEX_REL)
+    e2e_counts = {row["scope_id"]: int(row["expected_count"]) for row in read_csv_rows(repo_root / E2E_MATRIX_REL)}
+    datatypes = required_datatypes(repo_root)
+    families = index_families(repo_root)
+    page_sizes = supported_page_sizes(repo_root)
+    builtins = fixture_rows(repo_root)
+
+    scripts: list[tuple[str, str, int]] = []
+    surface_manifest, surface_cases = generate_surface_replay_manifest(namespace, replay_rows, e2e_counts)
+    scripts.append(("SBDFS-100", surface_manifest, surface_cases))
+    replay_commands, replay_cases = generate_surface_replay_commands(replay_rows)
+    scripts.append(("SBDFS-101", replay_commands, replay_cases))
+    roundtrip_manifest, roundtrip_cases, roundtrip_records = generate_sblr_roundtrip_manifest(namespace, repo_root, e2e_counts)
+    scripts.append(("SBDFS-110", roundtrip_manifest, roundtrip_cases))
+    datatype_load, datatype_load_cases = generate_datatype_native_load(namespace, datatypes)
+    scripts.append(("SBDFS-120", datatype_load, datatype_load_cases))
+    dml_matrix, dml_cases = generate_datatype_dml_matrix(namespace, datatypes)
+    scripts.append(("SBDFS-130", dml_matrix, dml_cases))
+    index_matrix, index_cases = generate_index_matrix(namespace, datatypes, families)
+    scripts.append(("SBDFS-140", index_matrix, index_cases))
+    query_matrix, query_cases = generate_query_matrix(namespace, datatypes)
+    scripts.append(("SBDFS-150", query_matrix, query_cases))
+    builtin_invocations, builtin_cases = generate_builtin_invocations(builtins)
+    scripts.append(("SBDFS-160", builtin_invocations, builtin_cases))
+    cast_matrix, cast_cases = generate_cast_operator_matrix(namespace, datatypes)
+    scripts.append(("SBDFS-170", cast_matrix, cast_cases))
+    optimizer_manifest, optimizer_cases, optimizer_records = generate_optimizer_manifest(namespace, repo_root, families, page_sizes)
+    scripts.append(("SBDFS-180", optimizer_manifest, optimizer_cases))
+
+    compiled_scripts: list[dict[str, Any]] = []
+    generated_case_count = 0
+    for script_id, text, case_count in scripts:
+        filename = dict(GENERATED_SCRIPT_SPECS)[script_id]
+        target = output_scripts / filename
+        info = write_text(target, text)
+        generated_case_count += case_count
+        compiled_scripts.append(
+            {
+                "script_id": script_id,
+                "source_path": "generated_from_public_full_surface_artifacts",
+                "compiled_path": str(target),
+                "sha256": info["sha256"],
+                "assertions": [f"{script_id}-001"],
+                "coverage": ["generated_full_surface"],
+                "generated": True,
+                "generated_case_count": case_count,
+            }
+        )
+    expected_indexes = copy_expected_indexes(repo_root, output_root, roundtrip_records, optimizer_records)
+    summary = source_summary(repo_root)
+    summary.update(
+        {
+            "generated_script_count": len(compiled_scripts),
+            "generated_case_count": generated_case_count,
+            "generated_datatype_rows": len(datatypes) * 64,
+            "generated_index_cases": len(datatypes) * len(families) * 6,
+            "generated_cast_cases": len(datatypes) * len(datatypes),
+        }
+    )
+    return compiled_scripts, expected_indexes, summary
+

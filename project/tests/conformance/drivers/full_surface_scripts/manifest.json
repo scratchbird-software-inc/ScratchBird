@@ -21,6 +21,35 @@
     "release_function_operator_fixture_surface_ids": 1101,
     "diagnostic_rows": 163
   },
+  "exhaustive_source_minimums": {
+    "replay_rows": 2617,
+    "full_route_replay_rows": 2560,
+    "e2e_scopes": 10,
+    "datatype_count": 86,
+    "page_size_count": 11,
+    "index_family_count": 28,
+    "builtin_fixture_rows": 1713,
+    "sblr_round_trip_files": 2617,
+    "authenticated_route_files": 2617,
+    "generated_script_count": 10,
+    "generated_case_count": 63000,
+    "generated_datatype_rows": 5504,
+    "generated_index_cases": 14448,
+    "generated_cast_cases": 7396
+  },
+  "exhaustive_generated_script_ids": [
+    "SBDFS-100",
+    "SBDFS-101",
+    "SBDFS-110",
+    "SBDFS-120",
+    "SBDFS-130",
+    "SBDFS-140",
+    "SBDFS-150",
+    "SBDFS-160",
+    "SBDFS-170",
+    "SBDFS-180"
+  ],
+  "exhaustive_generated_assertion_count": 10,
   "required_coverage": [
     "schema_bootstrap",
     "all_table_column_type_families",
@@ -72,7 +101,8 @@
     "optimizer_index_lookup",
     "optimizer_grouping",
     "optimizer_join",
-    "optimizer_cte"
+    "optimizer_cte",
+    "generated_full_surface"
   ],
   "scripts": [
     {

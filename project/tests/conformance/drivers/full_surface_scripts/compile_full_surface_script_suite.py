@@ -18,6 +18,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from exhaustive_generators import generate_exhaustive_assets
+
 
 SUITE_ROOT = Path(__file__).resolve().parent
 MANIFEST_NAME = "manifest.json"
@@ -308,6 +310,27 @@ def compile_suite(
         )
 
     chain_text = "\n".join(chain_parts).rstrip() + "\n"
+    exhaustive_scripts, exhaustive_expected_files, exhaustive_summary = generate_exhaustive_assets(
+        repo_root=repo_root,
+        output_scripts=output_scripts,
+        output_root=output_root,
+        namespace=values["__SB_NAMESPACE__"],
+        manifest=manifest,
+    )
+    for item in exhaustive_scripts:
+        script_path = Path(str(item["compiled_path"]))
+        rendered = script_path.read_text(encoding="utf-8")
+        compiled_scripts.append(item)
+        chain_parts.extend(
+            [
+                f"-- begin_script: {script_path.name}",
+                rendered.rstrip(),
+                f"-- end_script: {script_path.name}",
+                "",
+            ]
+        )
+
+    chain_text = "\n".join(chain_parts).rstrip() + "\n"
     chain_path = output_root / "full_surface_chain.sbsql"
     chain_path.write_text(chain_text, encoding="utf-8")
     expected_files = copy_expected_files(suite_root, output_root)
@@ -325,13 +348,14 @@ def compile_suite(
         "compiled_chain_path": str(chain_path),
         "compiled_chain_sha256": sha256_text(chain_text),
         "compiled_scripts": compiled_scripts,
-        "expected_files": expected_files,
+        "expected_files": expected_files + exhaustive_expected_files,
         "builtin_fixture_csvs": copied_fixture_csvs,
         "builtin_fixture_sources": fixture_sources,
         "builtin_fixture_rows": len(fixture_rows),
         "builtin_fixture_surface_ids": len(
             {row["surface_id"] for row in fixture_rows if row["surface_id"]}
         ),
+        "exhaustive_summary": exhaustive_summary,
     }
     manifest_path = output_root / "compiled_manifest.json"
     manifest_path.write_text(

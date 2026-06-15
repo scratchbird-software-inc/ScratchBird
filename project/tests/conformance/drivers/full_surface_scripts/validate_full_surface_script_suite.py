@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from compile_full_surface_script_suite import compile_suite
+from exhaustive_generators import GENERATED_SCRIPT_SPECS, source_summary
 
 
 SUITE_ROOT = Path(__file__).resolve().parent
@@ -89,6 +90,8 @@ def validate_manifest_shape(manifest: dict[str, Any], suite_root: Path) -> list[
     script_ids: set[str] = set()
     assertion_ids: set[str] = set()
     covered: set[str] = set()
+    if as_list(manifest.get("exhaustive_generated_script_ids")):
+        covered.add("generated_full_surface")
     for item in scripts:
         script_id = str(item.get("script_id", ""))
         if not script_id:
@@ -155,6 +158,7 @@ def validate_expected_files(
     errors: list[str] = []
     scripts = [item for item in as_list(manifest.get("scripts")) if isinstance(item, dict)]
     assertion_count = sum(len(as_list(item.get("assertions"))) for item in scripts)
+    assertion_count += int(manifest.get("exhaustive_generated_assertion_count", 0))
     if expected_assertions.get("schema_version") != 1:
         errors.append("expected_assertions:schema_version_must_be_1")
     if expected_assertions.get("assertion_count") != assertion_count:
@@ -293,6 +297,28 @@ def validate_builtin_fixture_sources(
     return errors
 
 
+def validate_exhaustive_sources(repo_root: Path, suite_manifest: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    try:
+        observed = source_summary(repo_root)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return [f"exhaustive_sources:load_failed:{exc}"]
+    minimums = suite_manifest.get("exhaustive_source_minimums", {})
+    if not isinstance(minimums, dict):
+        return ["manifest:exhaustive_source_minimums_not_object"]
+    for key, minimum in minimums.items():
+        if key.startswith("generated_"):
+            continue
+        actual = int(observed.get(str(key), 0))
+        if actual < int(minimum):
+            errors.append(f"exhaustive_sources:{key}:below_minimum:{actual}<{minimum}")
+    generated_ids = set(str(item) for item in as_list(suite_manifest.get("exhaustive_generated_script_ids")))
+    expected_ids = {script_id for script_id, _filename in GENERATED_SCRIPT_SPECS}
+    if generated_ids != expected_ids:
+        errors.append("manifest:exhaustive_generated_script_ids_drift")
+    return errors
+
+
 def validate_compiled_sample(
     repo_root: Path,
     suite_root: Path,
@@ -346,6 +372,29 @@ def validate_compiled_sample(
     ]
     if not generated:
         errors.append("compiler:missing_generated_builtin_fixture_script")
+    expected_generated_ids = {
+        str(item) for item in as_list(manifest.get("exhaustive_generated_script_ids"))
+    }
+    compiled_generated_ids = {
+        str(item.get("script_id"))
+        for item in generated
+        if str(item.get("script_id", "")).startswith("SBDFS-1")
+    }
+    if compiled_generated_ids != expected_generated_ids:
+        errors.append(
+            "compiler:exhaustive_generated_script_id_drift:"
+            f"{','.join(sorted(compiled_generated_ids))}"
+        )
+    summary = compiled.get("exhaustive_summary", {})
+    if not isinstance(summary, dict):
+        errors.append("compiler:missing_exhaustive_summary")
+    else:
+        minimums = manifest.get("exhaustive_source_minimums", {})
+        if isinstance(minimums, dict):
+            for key, minimum in minimums.items():
+                actual = int(summary.get(str(key), 0))
+                if actual < int(minimum):
+                    errors.append(f"compiler:exhaustive_summary:{key}:below_minimum:{actual}<{minimum}")
     return errors
 
 
@@ -399,6 +448,7 @@ def main() -> int:
         if language_manifest is not None:
             errors.extend(validate_language_manifest(language_manifest, manifest))
             errors.extend(validate_builtin_fixture_sources(repo_root, manifest, language_manifest))
+        errors.extend(validate_exhaustive_sources(repo_root, manifest))
         errors.extend(validate_compiled_sample(repo_root, suite_root, output_root, manifest))
     if manifest and expected_assertions and expected_refusals:
         errors.extend(validate_expected_files(manifest, expected_assertions, expected_refusals))
