@@ -1,0 +1,2497 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-operator-functional-reference" id="toc-sb-operator-functional-reference">SB Operator Functional
+Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#add" id="toc-add"><code>add</code></a></li>
+<li><a href="#and" id="toc-and"><code>and</code></a></li>
+<li><a href="#array_contains" id="toc-array_contains"><code>array_contains</code></a></li>
+<li><a href="#concat" id="toc-concat"><code>concat</code></a></li>
+<li><a href="#divide" id="toc-divide"><code>divide</code></a></li>
+<li><a href="#equal" id="toc-equal"><code>equal</code></a></li>
+<li><a href="#greater" id="toc-greater"><code>greater</code></a></li>
+<li><a href="#greater_equal" id="toc-greater_equal"><code>greater_equal</code></a></li>
+<li><a href="#ilike" id="toc-ilike"><code>ilike</code></a></li>
+<li><a href="#is_distinct_from" id="toc-is_distinct_from"><code>is_distinct_from</code></a></li>
+<li><a href="#json_get" id="toc-json_get"><code>json_get</code></a></li>
+<li><a href="#json_get_text" id="toc-json_get_text"><code>json_get_text</code></a></li>
+<li><a href="#less" id="toc-less"><code>less</code></a></li>
+<li><a href="#less_equal" id="toc-less_equal"><code>less_equal</code></a></li>
+<li><a href="#like" id="toc-like"><code>like</code></a></li>
+<li><a href="#modulo" id="toc-modulo"><code>modulo</code></a></li>
+<li><a href="#multiply" id="toc-multiply"><code>multiply</code></a></li>
+<li><a href="#not" id="toc-not"><code>not</code></a></li>
+<li><a href="#not_equal" id="toc-not_equal"><code>not_equal</code></a></li>
+<li><a href="#or" id="toc-or"><code>or</code></a></li>
+<li><a href="#regex_match" id="toc-regex_match"><code>regex_match</code></a></li>
+<li><a href="#subtract" id="toc-subtract"><code>subtract</code></a></li>
+<li><a href="#unary_minus" id="toc-unary_minus"><code>unary_minus</code></a></li>
+<li><a href="#xor" id="toc-xor"><code>xor</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_operator.md -->
+<p><a id="ch-language-reference-functional-reference-sb-operator-md"></a></p>
+<h1 id="sb-operator-functional-reference">SB Operator Functional
+Reference</h1>
+<p>Generation task: <code>sb_operator</code></p>
+<p>Package namespace: <code>sb.operator</code></p>
+<p>Operator functions for arithmetic, comparison, boolean, pattern,
+JSON, array, and vector-like operator spellings.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Documents operator-backed expression surfaces. SBsql usually uses
+symbolic syntax; the function names here identify the bound
+operation.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Most operator entries are normally written using symbolic or keyword
+syntax. The function-style names document the operation that the parser
+binds after precedence and type-resolution rules are applied.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>operator</td>
+<td style="text-align: right;">24</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="add"><code>add</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>+</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>add(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative add operator/function result as implemented
+by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> <span class="op">+</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.add</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-736d-a32f-578b52136cfc</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_add.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_add</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_add</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-add-int64;SBSFCOP-add-null</code>.</p>
+<h3 id="and"><code>and</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>AND</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>and(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative and operator/function result as implemented
+by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="kw">true</span> <span class="kw">and</span> <span class="kw">false</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.and</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7184-9845-fe5b75231c3e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_and.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_and</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_and</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-and-3vl-false;SBSFCOP-and-3vl-unknown</code>.</p>
+<h3 id="array_contains"><code>array_contains</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>@&gt;</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>array_contains(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative array_contains operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> @<span class="op">&gt;</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.array_contains</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7e5d-ab20-ae6502c0aef3</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_array_contains.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_array_contains</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_array_contains</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-array-contains-positive;SBSFCOP-array-contains-negative</code>.</p>
+<h3 id="concat"><code>concat</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>||</code> string
+concatenation operator after descriptor binding selects compatible
+operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>concat(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative text/binary operand
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for text/character
+operands.</li>
+<li>NULL handling: operator/function-specific NULL handling follows the
+conformance fixtures row evidence; null_concat_returns_null dialect
+parameter controls whether NULL operands propagate NULL or are treated
+as empty string.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative concatenated character result as implemented
+by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for text
+operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="st">&#39;Hello&#39;</span> <span class="op">||</span> <span class="st">&#39;, &#39;</span> <span class="op">||</span> <span class="st">&#39;World&#39;</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.concat</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7977-afb8-130dd8d3b751</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_concat.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_concat</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_concat</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFCOP-concat-text</code>.</p>
+<h3 id="divide"><code>divide</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>/</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>divide(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative divide operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> <span class="op">/</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.divide</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f6c-a735-c88297635dac</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_divide.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_divide</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_divide</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-divide-int64;SBSFCOP-divide-by-zero</code>.</p>
+<h3 id="equal"><code>equal</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>=</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>equal(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative equal operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> <span class="op">=</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.equal</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7bc5-acb4-2d63211337cc</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_equal.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_equal</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_equal</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-equal-int64;SBSFCOP-equal-null</code>.</p>
+<h3 id="greater"><code>greater</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>&gt;</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>greater(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative greater operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> <span class="op">&gt;</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.greater</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7ca9-ae06-ac2539b92994</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_greater.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_greater</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_greater</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-greater-int64;SBSFCOP-greater-null</code>.</p>
+<h3 id="greater_equal"><code>greater_equal</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>&gt;=</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>greater_equal(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative greater_equal operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> <span class="op">&gt;=</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.greater_equal</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7ae9-9e20-824a87d2ba62</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_greater_equal.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_greater_equal</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_greater_equal</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-greater-equal-int64;SBSFCOP-greater-equal-null</code>.</p>
+<h3 id="ilike"><code>ilike</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>ILIKE</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>ilike(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative ilike operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable_locale_versioned.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="st">&#39;ScratchBird&#39;</span> ilike <span class="st">&#39;scratch%&#39;</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.ilike</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7341-a890-14cb79a0b41a</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_ilike.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.operator_ilike</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_ilike</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-ilike-positive;SBSFCOP-ilike-negative;SBSFCOP-ilike-null;SBSFCOP-ilike-invalid-escape;SBSFCOP-ilike-non-text-left</code>.</p>
+<h3 id="is_distinct_from"><code>is_distinct_from</code></h3>
+<p><strong>Purpose:</strong> Implements the
+<code>IS DISTINCT FROM</code> operator after descriptor binding selects
+compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>is_distinct_from(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative is_distinct_from operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">1</span> <span class="kw">is</span> <span class="kw">distinct</span> <span class="kw">from</span> <span class="kw">null</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.is_distinct_from</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7af6-8918-d8551dc2f34b</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_is_distinct_from.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_is_distinct_from</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_is_distinct_from</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-is-distinct-null;SBSFCOP-is-distinct-both-null</code>.</p>
+<h3 id="json_get"><code>json_get</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>get</code> JSON helper
+under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_get(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_get operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">cast</span>(<span class="st">&#39;{&quot;a&quot;:1}&#39;</span> <span class="kw">as</span> json_document) <span class="op">-&gt;</span> <span class="st">&#39;a&#39;</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.json_get</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-71ea-9744-3c99eb020678</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_json_get.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_json_get</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_json_get</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFCOP-json-get-document</code>.</p>
+<h3 id="json_get_text"><code>json_get_text</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>get text</code> JSON
+helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_get_text(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_get_text operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">cast</span>(<span class="st">&#39;{&quot;a&quot;:1}&#39;</span> <span class="kw">as</span> json_document) <span class="op">-&gt;</span> <span class="st">&#39;a&#39;</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.json_get_text</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7bed-b971-c2f027b3dd45</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_json_get_text.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_json_get_text</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_json_get_text</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-json-get-text-string;SBSFCOP-json-get-text-missing</code>.</p>
+<h3 id="less"><code>less</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>&lt;</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>less(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative less operator/function result as implemented
+by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> <span class="op">&lt;</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.less</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7fe9-ba37-5a2a95a2c62c</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_less.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_less</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_less</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-less-int64;SBSFCOP-less-null</code>.</p>
+<h3 id="less_equal"><code>less_equal</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>&lt;=</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>less_equal(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative less_equal operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> <span class="op">&lt;=</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.less_equal</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-752e-bdd4-0d76297583b4</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_less_equal.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_less_equal</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_less_equal</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-less-equal-int64;SBSFCOP-less-equal-null</code>.</p>
+<h3 id="like"><code>like</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>LIKE</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>like(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative like operator/function result as implemented
+by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="st">&#39;ScratchBird&#39;</span> <span class="kw">like</span> <span class="st">&#39;Scratch%&#39;</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.like</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b5f-adfa-d93b9775ebf4</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_like.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_like</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_like</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-like-positive;SBSFCOP-like-null;SBSFCOP-like-descriptor-collation;SBSFCOP-like-refusal</code>.</p>
+<h3 id="modulo"><code>modulo</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>%</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>modulo(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative modulo operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> % <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.modulo</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-72aa-a8a1-eec01cf5b997</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_modulo.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_modulo</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_modulo</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-modulo-int64;SBSFCOP-modulo-by-zero</code>.</p>
+<h3 id="multiply"><code>multiply</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>*</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>multiply(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative multiply operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> <span class="op">*</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.multiply</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-736c-97c7-c8250907109f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_multiply.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_multiply</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_multiply</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-multiply-int64;SBSFCOP-multiply-null</code>.</p>
+<h3 id="not"><code>not</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>NOT</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>NOT(xLIKEy)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>xLIKEy</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative not operator/function result as implemented
+by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="kw">not</span> <span class="kw">false</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.not</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7513-8e77-83deace81805</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_not.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_not</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_not</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-not-3vl;SBSFCOP-not-like-composed;SBSFCOP-not-like-refusal</code>.</p>
+<h3 id="not_equal"><code>not_equal</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>&lt;&gt;</code>
+operator after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>not_equal(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative not_equal operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> <span class="op">&lt;&gt;</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.not_equal</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7361-9fd3-f01338e9ee35</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_not_equal.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_not_equal</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_not_equal</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-not-equal-int64;SBSFCOP-not-equal-null</code>.</p>
+<h3 id="or"><code>or</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>OR</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>or(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative or operator/function result as implemented
+by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="kw">true</span> <span class="kw">or</span> <span class="kw">false</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.or</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f93-b028-8161d1eee2f0</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_or.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_or</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_or</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-or-3vl-true;SBSFCOP-or-3vl-unknown</code>.</p>
+<h3 id="regex_match"><code>regex_match</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>~</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>regex_match(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative regex_match operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> ~ <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.regex_match</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7272-8555-dc403503398b</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_regex_match.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_regex_match</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_regex_match</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-regex-match-positive;SBSFCOP-regex-match-invalid-pattern</code>.</p>
+<h3 id="subtract"><code>subtract</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>-</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>subtract(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative subtract operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> <span class="op">-</span> <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.subtract</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b48-b1ac-bffb0c75b1e1</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_subtract.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_subtract</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_subtract</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-subtract-int64;SBSFCOP-subtract-null</code>.</p>
+<h3 id="unary_minus"><code>unary_minus</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>unary -</code>
+operator after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>unary_minus(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative operator/function
+arguments bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for operator/function
+operands.</li>
+<li>NULL handling: operator/function-specific NULL and three-valued
+logic handling follows the conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative unary_minus operator/function result as
+implemented by the SBLR expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when operands are constants and
+collation/version dependencies are stable.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+text/pattern operands where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="op">-</span><span class="dv">42</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.unary_minus</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7219-a08f-5b2e49ba7e93</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_unary_minus.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_unary_minus</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_unary_minus</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_operator</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFCOP-unary-minus-int64;SBSFCOP-unary-minus-null;SBSFCOP-unary-minus-overflow</code>.</p>
+<h3 id="xor"><code>xor</code></h3>
+<p><strong>Purpose:</strong> Implements the <code>XOR</code> operator
+after descriptor binding selects compatible operand types.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xor(...)</code></li>
+<li>Syntax category:
+<code>operator_expression, function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by the
+parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for native
+function/operator operands.</li>
+<li>NULL handling: function/operator-specific NULL handling follows the
+conformance fixtures row evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative xor result as implemented by the SBLR
+expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_by_arguments.</li>
+<li>Determinism: foldable only when inputs are constants with stable
+descriptors and function-specific context is fixed.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain errors use builtin error compatibility matrix and
+the conformance fixtures exact diagnostic row evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="dv">6</span> XOR <span class="dv">3</span> <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.operator.xor</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-724f-8a03-f9ed4772186f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>operator</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>operator_expression, function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.operator_xor.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.operator.operator_xor</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>operator_xor</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC026-native-xor</code>.</p>
+</body>
+</html>

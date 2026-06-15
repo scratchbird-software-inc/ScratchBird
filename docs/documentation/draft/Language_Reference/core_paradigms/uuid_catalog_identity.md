@@ -41,17 +41,7 @@ Examples:
 
 ## Identity Flow
 
-```mermaid
-flowchart TD
-    A[SBsql source name] --> B[Resolver context]
-    B --> C[Sandbox and metadata visibility]
-    C --> D[Catalog lookup]
-    D --> E[UUID-bound object reference]
-    E --> F[Descriptor binding]
-    F --> G[SBLRExecutionEnvelope]
-    G --> H[Server admission]
-    H --> I[Engine execution]
-```
+![diagram](./uuid_catalog_identity-1.svg)
 
 The resolver context includes current schema, home schema, search path, default
 root, sandbox root, identifier profile, language profile, active transaction,
@@ -204,20 +194,7 @@ See [Security And Sandboxing](security_and_sandboxing.md).
 Catalog identity participates in MGA. Creating, renaming, altering, dropping, or
 retiring an object is a transaction-governed catalog operation.
 
-```mermaid
-sequenceDiagram
-    participant S as SBsql statement
-    participant B as Binder
-    participant E as Engine
-    participant C as Catalog
-    participant M as MGA
-    S->>B: create table app.orders ...
-    B->>E: SBLR catalog mutation request
-    E->>C: allocate table UUID and descriptors
-    E->>M: record transaction-owned catalog versions
-    S->>E: commit
-    E->>M: publish commit finality
-```
+![diagram](./uuid_catalog_identity-2.svg)
 
 The UUID may be allocated before commit, but its user-visible finality depends
 on transaction outcome. If the transaction rolls back, the object is not visible
@@ -319,7 +296,7 @@ drop table app.sales_order restrict;
 ## Syntax Productions
 
 ```ebnf
-object_ref              ::= uuid_ref
+object_ref              ::= uuid_reference
                           | qualified_name ;
 ```
 
@@ -328,7 +305,7 @@ qualified_name          ::= name_part ("." name_part)* ;
 ```
 
 ```ebnf
-uuid_ref                ::= "UUID" string_literal ;
+uuid_reference                ::= "UUID" string_literal ;
 ```
 
 ```ebnf
@@ -337,8 +314,8 @@ name_part               ::= identifier
 ```
 
 ```ebnf
-identity_rendering      ::= show_statement
-                          | describe_statement
+identity_rendering      ::= show_stmt
+                          | describe_stmt
                           | catalog_query
                           | support_diagnostic ;
 ```

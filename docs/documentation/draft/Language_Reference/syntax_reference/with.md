@@ -35,11 +35,11 @@ recursive_modifier ::=
     RECURSIVE ;
 
 cte_list ::=
-    cte ("," cte)* ;
+    cte_def ("," cte_def)* ;
 
-cte ::=
+cte_def ::=
     identifier column_alias_list? cte_materialization_hint?
-    AS "(" query_statement ")" ;
+    AS "(" query_dml_stmt ")" ;
 
 column_alias_list ::=
     "(" identifier ("," identifier)* ")" ;
@@ -53,7 +53,7 @@ cte_materialization_hint ::=
 
 ```ebnf
 with_query_statement ::=
-    with_clause query_statement ;
+    with_clause query_dml_stmt ;
 ```
 
 SBsql is context sensitive. `WITH`, `RECURSIVE`, `MATERIALIZED`, and related words are command words in CTE contexts and should not be treated as globally reserved identifiers elsewhere.
@@ -180,7 +180,7 @@ recursive_cte ::=
     AS "(" anchor_member recursive_set_operator recursive_member ")" ;
 
 anchor_member ::=
-    query_statement ;
+    query_dml_stmt ;
 
 recursive_set_operator ::=
       UNION
@@ -188,7 +188,7 @@ recursive_set_operator ::=
     | UNION DISTINCT ;
 
 recursive_member ::=
-    query_statement ;
+    query_dml_stmt ;
 ```
 
 Basic numeric recursion:
@@ -501,7 +501,7 @@ order by depth, category_id;
 | --- | --- | --- | --- | --- |
 | `with_clause` | grammar production | query | yes | rowset descriptor |
 | `cte_list` | grammar production | query | yes | CTE descriptor set |
-| `cte` | grammar production | query | yes | CTE rowset descriptor |
+| `cte_def` | grammar production | query | yes | CTE rowset descriptor |
 | `recursive_cte` | grammar production | query | yes | recursive rowset descriptor |
 | `anchor_member` | query member | query | yes | rowset descriptor |
 | `recursive_member` | query member | query | yes | rowset descriptor |

@@ -2477,6 +2477,7 @@ bool HandleStartup(SbsqlTestWireSession* session,
   }
   credentials.requested_language = get_param("language");
   if (credentials.requested_language.empty()) credentials.requested_language = "en";
+  credentials.requested_role = get_param("role");
   credentials.application_name = get_param("application_name");
   if (!config.manager_auth_token.empty()) {
     credentials.provider_family = config.manager_auth_provider_family.empty()

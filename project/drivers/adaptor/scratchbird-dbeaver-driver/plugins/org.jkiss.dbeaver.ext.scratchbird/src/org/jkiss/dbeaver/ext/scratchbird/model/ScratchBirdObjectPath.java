@@ -36,6 +36,7 @@ public record ScratchBirdObjectPath(
     @Nullable String objectUuid,
     @Nullable String parentUuid,
     @NotNull String displayPath,
+    @NotNull String authorityPath,
     @NotNull List<String> segments,
     boolean clientOnly
 ) {
@@ -45,6 +46,7 @@ public record ScratchBirdObjectPath(
             null,
             null,
             null,
+            displayPath,
             displayPath,
             Arrays.stream(displayPath.split("\\.")).filter(segment -> !segment.isEmpty()).toList(),
             clientOnly);
@@ -57,6 +59,7 @@ public record ScratchBirdObjectPath(
             reference.objectUuid(),
             reference.parentUuid(),
             reference.fullPath(),
+            reference.effectiveAuthorityPath(),
             Arrays.stream(reference.fullPath().split("\\.")).filter(segment -> !segment.isEmpty()).toList(),
             reference.clientOnly());
     }

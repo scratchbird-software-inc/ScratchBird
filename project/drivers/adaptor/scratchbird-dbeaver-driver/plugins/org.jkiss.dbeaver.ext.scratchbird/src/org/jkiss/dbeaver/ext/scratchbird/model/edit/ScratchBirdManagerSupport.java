@@ -39,6 +39,8 @@ import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdDataSource;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdNamespaceSemantics;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdObjectFormContext;
 import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdTable;
+import org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdView;
 import org.jkiss.dbeaver.model.DBPDataSource;
 import org.jkiss.dbeaver.model.DBPEvaluationContext;
 import org.jkiss.dbeaver.model.DBPQualifiedObject;
@@ -195,6 +197,9 @@ final class ScratchBirdManagerSupport {
 
     @NotNull
     static String containerPath(@NotNull GenericStructContainer container) {
+        if (container instanceof ScratchBirdSchemaNode schemaNode) {
+            return schemaNode.getAuthorityPath();
+        }
         if (container.getSchema() != null) {
             return container.getSchema().getName();
         }
@@ -203,6 +208,12 @@ final class ScratchBirdManagerSupport {
 
     @Nullable
     static String objectPath(@NotNull DBSObject object) {
+        if (object instanceof ScratchBirdTable scratchBirdTable) {
+            return scratchBirdTable.getAuthorityPath();
+        }
+        if (object instanceof ScratchBirdView scratchBirdView) {
+            return scratchBirdView.getAuthorityPath();
+        }
         if (object instanceof GenericTableBase tableBase) {
             return containerPath(tableBase.getContainer());
         }

@@ -197,7 +197,7 @@ in_predicate ::=
 
 in_value_list_or_subquery ::=
       expression ("," expression)*
-    | query_statement ;
+    | query_dml_stmt ;
 ```
 
 Value list:
@@ -236,7 +236,7 @@ where not exists (
 
 ```ebnf
 exists_predicate ::=
-    EXISTS "(" query_statement ")" ;
+    EXISTS "(" query_dml_stmt ")" ;
 ```
 
 `EXISTS` tests whether the subquery returns at least one visible row:
@@ -258,7 +258,7 @@ The subquery may be correlated. Correlation references bind to source descriptor
 
 ```ebnf
 quantified_comparison_predicate ::=
-    expression comparison_operator (ANY | SOME | ALL) "(" query_statement ")" ;
+    expression comparison_operator (ANY | SOME | ALL) "(" query_dml_stmt ")" ;
 ```
 
 Examples:

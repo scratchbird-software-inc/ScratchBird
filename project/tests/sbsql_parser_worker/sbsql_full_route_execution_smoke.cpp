@@ -1511,6 +1511,18 @@ int main(int argc, char** argv) {
     StopProcess(server_pid);
     return EXIT_FAILURE;
   }
+  if (!ExecuteAndExpectResultRows(fd,
+                                  "SELECT d.* FROM sys.parser.dialects AS d",
+                                  "observability.show_catalog",
+                                  1,
+                                  &line)) {
+    std::cerr << "full route did not resolve parser dialect projection with alias under "
+              << work << " last_line=" << line << '\n';
+    ::close(fd);
+    StopProcess(listener_pid);
+    StopProcess(server_pid);
+    return EXIT_FAILURE;
+  }
   if (!WriteAll(fd, "CANCEL CURSOR\n")) {
     ::close(fd);
     StopProcess(listener_pid);

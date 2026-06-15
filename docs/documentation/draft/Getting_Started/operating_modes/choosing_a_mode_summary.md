@@ -2,44 +2,24 @@
 
 ## Purpose
 
-ScratchBird can be used through several process and connection shapes. This page helps you choose the first mode to read, test, or configure.
+Before you configure anything, you need to know which shape fits your application. ScratchBird can run as a library inside your process, as a local service that several programs share, or as a network-accessible server — and those shapes involve meaningfully different components, lifecycle responsibilities, and security considerations.
 
-It is not a sizing guide, benchmark, support statement, or deployment recommendation. The right mode depends on the current build output, target platform, configuration, parser packages, resource files, tests, and the application boundary you intend to use.
+This page orients you to the four operating modes and helps you pick the right one to read first. It is not a sizing guide, benchmark, support statement, or deployment recommendation. The right mode depends on the current build output, target platform, configuration, parser packages, resource files, tests, and the application boundary you intend to use.
 
 ## The Four Shapes
 
 | Mode | Short Description | Main Entry | Network Listener Required | Read More |
 | --- | --- | --- | --- | --- |
-| Embedded engine | The application links to SBcore and uses the engine in its own process. | SBcore library/API | No | [Embedded Engine](embedded_engine.md) |
-| Single-node IPC server | Local clients connect to a shared local server process. | SBsrv IPC endpoint | No | [Single-Node IPC Server](single_node_ipc_server.md) |
-| Standalone server | Clients connect through listener and parser routing. | SBgate and parser packages | Yes | [Standalone Server](standalone_server.md) |
-| Managed group deployment | Multiple installations use a managed front-door convention and shared identity or policy integration. | SBmgr plus local services | Depends on local service shape | [Managed Group Deployment](group_deployment.md) |
+| Embedded engine | The application links to SBcore (the core database engine) and uses the engine in its own process. | SBcore library/API | No | [Embedded Engine](embedded_engine.md) |
+| Single-node IPC server | Local clients connect to SBsrv (the local server process) through a shared IPC endpoint. | SBsrv IPC endpoint | No | [Single-Node IPC Server](single_node_ipc_server.md) |
+| Standalone server | Clients connect through SBgate (the listener and router) and a parser package that handles their protocol. | SBgate and parser packages | Yes | [Standalone Server](standalone_server.md) |
+| Managed group deployment | Multiple installations use SBmgr (the manager front-door) for consistent identity and policy conventions. | SBmgr plus local services | Depends on local service shape | [Managed Group Deployment](group_deployment.md) |
 
 ## Decision Flow
 
-```mermaid
-flowchart TD
-    Start[What boundary should the application use?]
-    SameProcess{Can the application host the engine in-process?}
-    IndependentClients{Do independent local clients need a shared process?}
-    NetworkClients{Do clients need network-facing listener and parser routing?}
-    ManagedIdentity{Do several installations need shared identity or manager-front-door conventions?}
-    Embedded[Embedded engine]
-    IPC[Single-node IPC server]
-    Standalone[Standalone server]
-    Group[Managed group deployment]
-    Recheck[Recheck requirements and current build output]
+The following flowchart starts from the boundary your application needs and works outward. Most new deployments land at embedded or single-node IPC; the more complex shapes add real value only when their specific capabilities are required.
 
-    Start --> SameProcess
-    SameProcess -- yes --> Embedded
-    SameProcess -- no --> IndependentClients
-    IndependentClients -- yes --> IPC
-    IndependentClients -- no --> NetworkClients
-    NetworkClients -- yes --> Standalone
-    NetworkClients -- no --> ManagedIdentity
-    ManagedIdentity -- yes --> Group
-    ManagedIdentity -- no --> Recheck
-```
+![diagram](./choosing_a_mode_summary-1.svg)
 
 ## Quick Recommendations
 
@@ -54,6 +34,8 @@ flowchart TD
 
 ## Comparison Table
 
+The table below summarizes the key differences across modes to help you spot where your requirements fit.
+
 | Area | Embedded Engine | Single-Node IPC Server | Standalone Server | Managed Group Deployment |
 | --- | --- | --- | --- | --- |
 | Process boundary | Same process as application. | Separate local server process. | Listener and server processes. | Manager-front-door convention over local services. |
@@ -66,46 +48,26 @@ flowchart TD
 
 ## What All Modes Share
 
-Every mode still relies on the same engine authority model.
+Regardless of which mode you pick, the same engine authority model applies underneath. The mode changes how a client reaches the engine; it does not move durable object identity, final transaction authority, recovery decisions, or materialized authorization out of SBcore.
 
-```mermaid
-flowchart LR
-    Surface[Selected operating surface]
-    Request[Admitted request]
-    Engine[SBcore]
-    Catalog[UUID catalog]
-    Txn[MGA transaction authority]
-    Storage[Storage]
-    Security[Security and policy]
-    Diagnostic[Message vectors]
-
-    Surface --> Request
-    Request --> Engine
-    Engine --> Catalog
-    Engine --> Txn
-    Engine --> Storage
-    Engine --> Security
-    Engine --> Diagnostic
-```
-
-The mode changes how a client reaches the engine. It does not move durable object identity, final transaction authority, recovery decisions, or materialized authorization out of SBcore.
+![diagram](./choosing_a_mode_summary-2.svg)
 
 ## What To Verify Before Choosing
 
-Before selecting a mode for anything more than exploration, verify:
+Before settling on a mode for anything beyond exploration, confirm these points — discovering a gap after you have started configuring is more disruptive than checking first.
 
-- the required binaries or libraries exist in the build output;
-- required parser packages are staged and registered;
-- resource files are present;
-- configuration files are explicit and valid;
-- authentication and authorization behavior are understood;
-- diagnostics can be collected and redacted;
-- start, stop, attach, detach, and restart tests pass for the target platform;
-- the selected mode has proof coverage for the workflow you need.
+- The required binaries or libraries exist in the build output.
+- Required parser packages are staged and registered.
+- Resource files are present.
+- Configuration files are explicit and valid.
+- Authentication and authorization behavior are understood.
+- Diagnostics can be collected and redacted.
+- Start, stop, attach, detach, and restart tests pass for the target platform.
+- The selected mode has proof coverage for the workflow you need.
 
 ## Conservative Mode Selection
 
-Use the smallest mode that satisfies the application boundary.
+Use the smallest mode that satisfies the application boundary. Adding unnecessary layers increases configuration surface, failure modes, and security exposure without providing benefit.
 
 - Do not add a listener if the application only needs embedded access.
 - Do not expose network-facing routes when local IPC is enough.

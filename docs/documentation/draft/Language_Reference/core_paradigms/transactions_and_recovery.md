@@ -6,7 +6,15 @@ Generation task: `core_paradigms_transactions_and_recovery`
 
 ## Purpose
 
-ScratchBird transaction authority is MGA-native. The engine owns transaction identity, snapshots, row-version visibility, commit finality, rollback behavior, cleanup horizons, and recovery classification. SBsql can request transaction actions and inspect admitted state, but SQL text and client-side state are not finality authority.
+A transaction in ScratchBird is not a client-side concept. The engine's
+Multi-Generation Architecture (MGA) owns every transaction from the moment it
+opens to the moment its outcome becomes durable history. That means the engine
+controls transaction identity, the snapshot that determines what rows a
+transaction can see, how row versions accumulate and expire, commit and rollback
+finality, cleanup horizons, and how an interrupted transaction is classified
+during recovery. SBsql provides the statements to request transaction actions
+and inspect admitted state, but the text of those statements is not itself
+authority — it is a request that the engine may accept, defer, or refuse.
 
 ## Core Invariants
 
@@ -22,23 +30,7 @@ ScratchBird transaction authority is MGA-native. The engine owns transaction ide
 
 ## Transaction Lifecycle
 
-```mermaid
-stateDiagram-v2
-  [*] --> admitted: begin request
-  admitted --> active: identity + snapshot allocated
-  active --> committing: commit requested
-  active --> rolling_back: rollback requested
-  active --> active: savepoint / rollback to savepoint
-  committing --> committed: durable finality accepted
-  committing --> recovery_required: uncertain evidence
-  rolling_back --> rolled_back: rollback evidence accepted
-  rolling_back --> recovery_required: uncertain evidence
-  committed --> [*]
-  rolled_back --> [*]
-  recovery_required --> committed: recovery classifies commit
-  recovery_required --> rolled_back: recovery classifies rollback
-  recovery_required --> fail_closed: operator or policy decision required
-```
+![diagram](./transactions_and_recovery-1.svg)
 
 ## Snapshot Contents
 
@@ -84,8 +76,8 @@ Savepoints are rollback markers inside one transaction. They let a script undo p
 ScratchBird public isolation profiles are documented in [Transaction Control](../syntax_reference/transaction_control.md). At a high level:
 
 - `READ COMMITTED` can see newer committed data at statement boundaries.
+- `READ CONSISTENCY` and `REPEATABLE READ` are also admitted isolation spellings; see Transaction Control for their admitted behavior.
 - `SNAPSHOT` uses a stable transaction snapshot.
-- `SNAPSHOT TABLE STABILITY` adds admitted table-stability behavior.
 - `SERIALIZABLE` requires conflict detection or prevention for the admitted operation set.
 
 All profiles still require MGA row-version visibility, page/filespace validity, and security policy recheck.

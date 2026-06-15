@@ -1,0 +1,1545 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-vector-functional-reference" id="toc-sb-vector-functional-reference">SB Vector Functional
+Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#cosine_distance" id="toc-cosine_distance"><code>cosine_distance</code></a></li>
+<li><a href="#hamming_distance" id="toc-hamming_distance"><code>hamming_distance</code></a></li>
+<li><a href="#inner_product" id="toc-inner_product"><code>inner_product</code></a></li>
+<li><a href="#l2_distance" id="toc-l2_distance"><code>l2_distance</code></a></li>
+<li><a href="#negative_inner_product" id="toc-negative_inner_product"><code>negative_inner_product</code></a></li>
+<li><a href="#subvector" id="toc-subvector"><code>subvector</code></a></li>
+<li><a href="#vector" id="toc-vector"><code>vector</code></a></li>
+<li><a href="#vector_avg" id="toc-vector_avg"><code>vector_avg</code></a></li>
+<li><a href="#vector_cast_float16" id="toc-vector_cast_float16"><code>vector_cast_float16</code></a></li>
+<li><a href="#vector_cast_int8" id="toc-vector_cast_int8"><code>vector_cast_int8</code></a></li>
+<li><a href="#vector_dims" id="toc-vector_dims"><code>vector_dims</code></a></li>
+<li><a href="#vector_l2_normalize" id="toc-vector_l2_normalize"><code>vector_l2_normalize</code></a></li>
+<li><a href="#vector_norm" id="toc-vector_norm"><code>vector_norm</code></a></li>
+<li><a href="#vector_sum" id="toc-vector_sum"><code>vector_sum</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_vector.md -->
+<p><a id="ch-language-reference-functional-reference-sb-vector-md"></a></p>
+<h1 id="sb-vector-functional-reference">SB Vector Functional
+Reference</h1>
+<p>Generation task: <code>sb_vector</code></p>
+<p>Package namespace: <code>sb.vector</code></p>
+<p>Dense vector construction, distance, normalization, dimension, and
+aggregate helpers.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Creates and compares vector values for vector search and analytic
+expressions.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>scalar</td>
+<td style="text-align: right;">14</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="cosine_distance"><code>cosine_distance</code></h3>
+<p><strong>Purpose:</strong> Returns the cosine distance between two
+equal-dimension vectors.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>cosine_distance(vector,vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return cosine distance between non-zero dense vectors as real64;
+descriptor=real64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> cosine_distance(vector(<span class="st">&#39;[1,0]&#39;</span>), vector(<span class="st">&#39;[0,1]&#39;</span>)) <span class="kw">as</span> distance;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.cosine_distance</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-78af-951f-945d34ee1ffb</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_cosine_distance.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_cosine_distance</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.cosine_distance</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-cosine-distance-name;SBSFC014-cosine-distance-null;SBSFC014-cosine-distance-signature;SBSFC014-cosine-distance-zero-refusal</code>.</p>
+<h3 id="hamming_distance"><code>hamming_distance</code></h3>
+<p><strong>Purpose:</strong> Returns the Hamming distance between
+compatible vector or bit-vector values.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>hamming_distance(bit_vector,bit_vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>bit_vector</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>bit_vector</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return differing bit count between equal-dimension bit vectors as
+int64; descriptor=int64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> hamming_distance(vector(<span class="st">&#39;[1,0,1]&#39;</span>), vector(<span class="st">&#39;[1,1,0]&#39;</span>)) <span class="kw">as</span> distance;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.hamming_distance</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-773b-8a09-d06656a63ccf</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_hamming_distance.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_hamming_distance</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.hamming_distance</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-hamming-distance-dimension-refusal;SBSFC014-hamming-distance-name;SBSFC014-hamming-distance-null;SBSFC014-hamming-distance-signature</code>.</p>
+<h3 id="inner_product"><code>inner_product</code></h3>
+<p><strong>Purpose:</strong> Returns the inner product of two
+equal-dimension vectors.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>inner_product(vector,vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return dot product between equal-dimension dense vectors as real64;
+descriptor=real64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> inner_product(vector(<span class="st">&#39;[1,2]&#39;</span>), vector(<span class="st">&#39;[3,4]&#39;</span>)) <span class="kw">as</span> product_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.inner_product</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b97-a032-d398c47b436e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_inner_product.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_inner_product</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.inner_product</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-inner-product-name;SBSFC014-inner-product-null;SBSFC014-inner-product-signature</code>.</p>
+<h3 id="l2_distance"><code>l2_distance</code></h3>
+<p><strong>Purpose:</strong> Returns the Euclidean distance between two
+equal-dimension vectors.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>l2_distance(vector,vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return Euclidean distance between equal-dimension dense vectors as
+real64; descriptor=real64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> l2_distance(vector(<span class="st">&#39;[1,2,3]&#39;</span>), vector(<span class="st">&#39;[1,2,4]&#39;</span>)) <span class="kw">as</span> distance;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.l2_distance</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7dda-a342-4135426035b6</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_l2_distance.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_l2_distance</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.l2_distance</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-l2-distance-dimension-refusal;SBSFC014-l2-distance-name;SBSFC014-l2-distance-null;SBSFC014-l2-distance-signature</code>.</p>
+<h3 id="negative_inner_product"><code>negative_inner_product</code></h3>
+<p><strong>Purpose:</strong> Returns the negative inner product of two
+equal-dimension vectors.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>negative_inner_product(vector,vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return negative dot product between equal-dimension dense vectors as
+real64; descriptor=real64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> negative_inner_product(vector(<span class="st">&#39;[1,2]&#39;</span>), vector(<span class="st">&#39;[3,4]&#39;</span>)) <span class="kw">as</span> score;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.negative_inner_product</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-744d-aaf6-0a5295c07008</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_negative_inner_product.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_negative_inner_product</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.negative_inner_product</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-negative-inner-product-name;SBSFC014-negative-inner-product-null;SBSFC014-negative-inner-product-signature</code>.</p>
+<h3 id="subvector"><code>subvector</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>subvector</code> and
+returns return one-based vector slice by start and length;
+descriptor=dense_vector.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>subvector(vector,start,length)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>start</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>length</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return one-based vector slice by start and length;
+descriptor=dense_vector.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> subvector(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.subvector</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7273-a459-55a3556d74e4</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_subvector.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_subvector</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.subvector</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-subvector-name;SBSFC014-subvector-null;SBSFC014-subvector-range-refusal;SBSFC014-subvector-signature</code>.</p>
+<h3 id="vector"><code>vector</code></h3>
+<p><strong>Purpose:</strong> Constructs or normalizes a vector value
+from descriptor-supported input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>vector(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>construct dense vector from numeric arguments or dense-vector text;
+descriptor=dense_vector.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> vector(<span class="st">&#39;[0.25,0.50,0.75]&#39;</span>) <span class="kw">as</span> embedding;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.vector</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-76a0-a0af-0994b4cc9f31</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_construct.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_construct</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.vector</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-vector-empty-refusal;SBSFC014-vector-null;SBSFC014-vector-signature-constructor;SBSFC014-vector-upper-constructor</code>.</p>
+<h3 id="vector_avg"><code>vector_avg</code></h3>
+<p><strong>Purpose:</strong> Aggregates vectors by averaging
+corresponding dimensions.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>vector_avg(vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one or more descriptor_authoritative dense-vector
+arguments bound by parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation to dense_vector unless
+function-specific vector diagnostic fires before result
+materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return elementwise dense-vector average; descriptor=dense_vector.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain errors use builtin error compatibility
+matrix and the conformance fixtures vector exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> vector_avg(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.vector_avg</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7a7f-a278-dfeae7140aa1</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_avg.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_avg</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.vector_avg</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-vector-avg-name;SBSFC014-vector-avg-null;SBSFC014-vector-avg-signature</code>.</p>
+<h3 id="vector_cast_float16"><code>vector_cast_float16</code></h3>
+<p><strong>Purpose:</strong> Performs the
+<code>vector cast float16</code> vector helper using
+descriptor-validated vector values.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>vector_cast_float16(vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return float16 vector by finite-range half-precision quantization;
+descriptor=float16_vector.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> vector_cast_float16(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.vector_cast_float16</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f37-bc17-0848422018f0</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_cast_float16.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_cast_float16</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.vector_cast_float16</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-vector-cast-float16-name;SBSFC014-vector-cast-float16-null;SBSFC014-vector-cast-float16-overflow-refusal;SBSFC014-vector-cast-float16-signature</code>.</p>
+<h3 id="vector_cast_int8"><code>vector_cast_int8</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>vector cast int8</code>
+vector helper using descriptor-validated vector values.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>vector_cast_int8(vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return int8 vector by rounding and clamping dense-vector elements;
+descriptor=int8_vector.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> vector_cast_int8(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.vector_cast_int8</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-77f0-b4e6-b4c3a7bc3a8c</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_cast_int8.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_cast_int8</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.vector_cast_int8</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-vector-cast-int8-name;SBSFC014-vector-cast-int8-null;SBSFC014-vector-cast-int8-signature</code>.</p>
+<h3 id="vector_dims"><code>vector_dims</code></h3>
+<p><strong>Purpose:</strong> Returns the dimension count of a vector
+value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>vector_dims(vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return vector dimensionality as int64; descriptor=int64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> vector_dims(vector(<span class="st">&#39;[1,2,3]&#39;</span>)) <span class="kw">as</span> dimensions;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.vector_dims</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-79eb-a2b4-d1c4cd23ce0c</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_dims.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_dims</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.vector_dims</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-vector-dims-name;SBSFC014-vector-dims-null;SBSFC014-vector-dims-signature</code>.</p>
+<h3 id="vector_l2_normalize"><code>vector_l2_normalize</code></h3>
+<p><strong>Purpose:</strong> Returns a vector normalized to unit L2
+length.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>vector_l2_normalize(vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return unit-length dense vector with L2 norm 1;
+descriptor=dense_vector.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> vector_l2_normalize(vector(<span class="st">&#39;[3,4]&#39;</span>)) <span class="kw">as</span> unit_vector;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.vector_l2_normalize</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7977-a0a5-75471a393bba</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_l2_normalize.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_l2_normalize</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.vector_l2_normalize</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-vector-l2-normalize-name;SBSFC014-vector-l2-normalize-null;SBSFC014-vector-l2-normalize-signature;SBSFC014-vector-l2-normalize-zero-refusal</code>.</p>
+<h3 id="vector_norm"><code>vector_norm</code></h3>
+<p><strong>Purpose:</strong> Returns the norm of a vector value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>vector_norm(vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative vector arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation unless function-specific
+vector diagnostic fires before result materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return L2 norm of dense vector as real64; descriptor=real64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain/overflow errors use builtin error
+compatibility matrix and the conformance fixtures vector exact fixture
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> vector_norm(vector(<span class="st">&#39;[3,4]&#39;</span>)) <span class="kw">as</span> magnitude;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.vector_norm</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-76c4-b0f0-7dd8729e47ce</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_norm.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_norm</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.vector_norm</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-vector-norm-name;SBSFC014-vector-norm-null;SBSFC014-vector-norm-signature</code>.</p>
+<h3 id="vector_sum"><code>vector_sum</code></h3>
+<p><strong>Purpose:</strong> Aggregates vectors by summing corresponding
+dimensions.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>vector_sum(vector)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>vector</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one or more descriptor_authoritative dense-vector
+arguments bound by parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; vector text and
+element coercions are runtime-validated by vector function family.</li>
+<li>NULL handling: strict null propagation to dense_vector unless
+function-specific vector diagnostic fires before result
+materialization.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>return elementwise dense-vector sum; descriptor=dense_vector.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all vector arguments are constants with
+stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: not text-locale sensitive except for vector text
+parsing diagnostics.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/dimension/domain errors use builtin error compatibility
+matrix and the conformance fixtures vector exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> vector_sum(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.vector.vector_sum</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f59-9fa7-f633e088665e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.vector_sum.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.vector_sum</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sb_engine_functions.vector_sum</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>specialized_vector</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC014-vector-sum-name;SBSFC014-vector-sum-null;SBSFC014-vector-sum-signature</code>.</p>
+</body>
+</html>

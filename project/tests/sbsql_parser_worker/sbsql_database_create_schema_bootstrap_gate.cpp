@@ -289,10 +289,12 @@ void RequireBootstrapSchemas(const std::set<std::string>& paths) {
       "sys.information",
       "sys.catalog_readable",
       "sys.diagnostics",
+      "cluster",
       "users",
       "users.public",
-      "remote",
       "emulated",
+      "remote",
+      "app",
   };
   for (const char* path : required) {
     Require(paths.count(path) == 1, std::string("missing bootstrap schema path ") + path);
@@ -300,7 +302,8 @@ void RequireBootstrapSchemas(const std::set<std::string>& paths) {
   Require(paths.count("sys.information_schema") == 0,
           "sys.information_schema was incorrectly materialized as a schema branch");
   for (const auto& path : paths) {
-    Require(path.rfind("cluster.", 0) != 0, "standalone database create emitted cluster schema path");
+    Require(path == "cluster" || path.rfind("cluster.", 0) != 0,
+            "standalone database create emitted cluster implementation schema path");
   }
 }
 

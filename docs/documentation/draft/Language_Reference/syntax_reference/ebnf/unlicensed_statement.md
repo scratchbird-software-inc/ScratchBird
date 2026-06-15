@@ -19,7 +19,7 @@ unlicensed_statement    ::= unlicensed_token_sequence ;
 
 | Parent Production |
 | --- |
-| refusal_statement |
+| refusal_stmt |
 
 ## Child Productions
 

@@ -8,12 +8,12 @@ Generation task: `ebnf_values_source`
 ## Production
 
 ```ebnf
-values_source           ::= "VALUES" row_value_list | query_statement ;
+insert_source           ::= "VALUES" row_value_list | query_expression ;
 ```
 
 ## Meaning
 
-`values_source` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`insert_source` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 
@@ -26,7 +26,7 @@ values_source           ::= "VALUES" row_value_list | query_statement ;
 
 | Child Production |
 | --- |
-| query_statement |
+| query_expression |
 
 ## Practical Notes
 

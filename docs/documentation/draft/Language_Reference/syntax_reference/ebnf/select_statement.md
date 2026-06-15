@@ -8,7 +8,7 @@ Generation task: `ebnf_select_statement`
 ## Production
 
 ```ebnf
-select_statement        ::= "SELECT" select_modifier? projection_list from_clause? where_clause? group_by_clause? having_clause? window_clause? order_by_clause? limit_clause? ;
+select_statement        ::= "SELECT" set_quantifier? projection_list from_clause? where_clause? group_by_clause? having_clause? window_clause? order_by_clause? limit_clause? ;
 ```
 
 ## Meaning
@@ -19,7 +19,7 @@ select_statement        ::= "SELECT" select_modifier? projection_list from_claus
 
 | Parent Production |
 | --- |
-| query_statement |
+| query_dml_stmt |
 | with_clause |
 
 ## Child Productions
@@ -32,7 +32,7 @@ select_statement        ::= "SELECT" select_modifier? projection_list from_claus
 | limit_clause |
 | order_by_clause |
 | projection_list |
-| select_modifier |
+| set_quantifier |
 | where_clause |
 | window_clause |
 

@@ -71,7 +71,7 @@ replication_option ::=
 
 | Parent production | Purpose |
 | --- | --- |
-| `archive_replication_migration_statement` | Places `REPLICATION` in the administrative data-movement family. |
+| `archive_replication_stmt` | Places `REPLICATION` in the administrative data-movement family. |
 
 ## Admission Notes
 

@@ -1,0 +1,7 @@
+ScratchBird private pre-release bundle.
+
+This bundle is for internal/test distribution only and is not an official
+release. Artifacts in this tree may be replaced before public release approval.
+
+Do not treat files in this tree as production-ready, final, or a stable support
+contract.

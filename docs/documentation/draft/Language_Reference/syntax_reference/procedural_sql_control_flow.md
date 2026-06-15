@@ -10,7 +10,7 @@ Procedural control-flow statements are encoded operations. They are not runtime 
 
 ```ebnf
 procedural_statement    ::= assignment_stmt
-                          | dml_statement
+                          | dml
                           | if_stmt
                           | case_stmt
                           | loop_stmt

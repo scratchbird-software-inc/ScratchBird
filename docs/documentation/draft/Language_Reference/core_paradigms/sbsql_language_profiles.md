@@ -8,11 +8,18 @@ Generation task: `core_paradigms_sbsql_language_profiles`
 
 ## Purpose
 
-SBsql language profiles are parser resources. They can change user-facing
-spellings, phrase order, diagnostics, message vectors, completion prompts, and
-rendered source. They do not change ScratchBird execution authority.
+SBsql is designed so that the _syntax_ a user writes can look different from
+locale to locale while the _work_ the engine executes stays identical. That
+separation is achieved through language profiles.
 
-The core rule is:
+A language profile is a parser resource pack. It contains keyword spellings,
+phrase structures, diagnostic messages, predictive-completion tables, and
+renderer templates for one exact locale (for example `fr-CA` or `en-GB`). When
+a session loads a profile, the parser accepts the localized spellings and
+translates them into a canonical element stream before binding and execution.
+The engine never sees the original locale-specific text.
+
+The core pipeline rule is:
 
 ```text
 localized SBsql source -> canonical element stream -> UUID binding -> SBLR
@@ -20,7 +27,9 @@ localized SBsql source -> canonical element stream -> UUID binding -> SBLR
 
 The engine executes admitted SBLR with UUID identity, descriptors, security
 policy, and MGA transaction authority. It does not execute localized source
-text.
+text. A language profile therefore controls user experience and tooling surface
+only; it cannot change what work the engine authorizes or how it records that
+work.
 
 ## What A Language Profile Can Change
 
@@ -58,23 +67,7 @@ fails, the request is refused in the same way as canonical SBsql.
 The parser normalizes localized source before UUID resolution. It does not
 rewrite the text into English SQL. Instead, it emits a canonical element stream:
 
-```mermaid
-flowchart LR
-    Source[Localized or standard SBsql source]
-    Profile[Language and topology profile]
-    Stream[Canonical element stream]
-    Resolve[Name and descriptor binding]
-    SBLR[SBLR envelope]
-    Admit[Server admission]
-    Engine[SBcore execution]
-
-    Source --> Profile
-    Profile --> Stream
-    Stream --> Resolve
-    Resolve --> SBLR
-    SBLR --> Admit
-    Admit --> Engine
-```
+![diagram](./sbsql_language_profiles-1.svg)
 
 The stream records canonical token IDs, surface IDs, command slots, source
 spans, profile identities, resource hashes, and resolver inputs. That gives the

@@ -548,8 +548,8 @@ ServerListenerOperationResult LaunchListener(ServerListenerProfileRuntime* profi
   const auto control_arg = "--control-dir=" + profile->control_dir;
   const auto runtime_arg = "--runtime-dir=" + profile->runtime_dir;
   const auto bind_arg = "--bind-address=" + profile->bind_host;
-  const std::string ready_min_arg = "--warm-pool-min=1";
-  const std::string ready_max_arg = "--warm-pool-max=2";
+  const std::string ready_min_arg = "--warm-pool-min=2";
+  const std::string ready_max_arg = "--warm-pool-max=8";
   std::vector<std::string> args{
       profile->listener_executable_path,
       "--managed",

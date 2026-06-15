@@ -47,7 +47,7 @@ Prepared and limbo transaction states may appear in recovery and diagnostic surf
 transaction_statement ::=
       begin_transaction
     | set_transaction
-    | commit_transaction
+    | commit_stmt
     | rollback_transaction
     | savepoint_statement
     | lock_table_statement
@@ -89,7 +89,7 @@ set_transaction ::=
 ```
 
 ```ebnf
-commit_transaction ::=
+commit_stmt ::=
     COMMIT (TRANSACTION | WORK)? transaction_completion_option* ;
 
 rollback_transaction ::=
@@ -166,7 +166,7 @@ Attempting to begin a second ordinary transaction while one is active must be re
 | `READ ONLY` | Transaction may read but must refuse ordinary data mutation. Administrative and diagnostic actions still require their own policy. |
 | `READ WRITE` | Transaction may request reads and writes subject to privileges, policy, locks, and storage admission. |
 | `ISOLATION LEVEL READ COMMITTED` | Each statement reads committed data according to the read-committed profile. |
-| `ISOLATION LEVEL READ CONSISTENCY` | Oracle-style consistent read behavior where admitted. |
+| `ISOLATION LEVEL READ CONSISTENCY` | Statement-level consistent read behavior where admitted. |
 | `ISOLATION LEVEL REPEATABLE READ` | Each statement reads a stable consistent snapshot for the transaction. |
 | `ISOLATION LEVEL SNAPSHOT` | Transaction reads through a stable snapshot boundary. |
 | `ISOLATION LEVEL SERIALIZABLE` | Strongest public isolation profile. Conflicts must be detected or refused according to the operation policy. |
@@ -305,7 +305,7 @@ ScratchBird isolation is MGA-based.
 | Isolation | User-Facing Rule |
 | --- | --- |
 | `READ COMMITTED` | A statement sees committed versions according to the read-committed snapshot profile. Later statements may see newer committed data. |
-| `READ CONSISTENCY` | Oracle-style consistent read behavior where admitted; each statement sees a consistent state. |
+| `READ CONSISTENCY` | Statement-level consistent read behavior where admitted; each statement sees a consistent state. |
 | `REPEATABLE READ` | All statements in the transaction see a stable snapshot. |
 | `SNAPSHOT` | All statements in the transaction see through the transaction snapshot, plus the transaction's own writes. |
 | `SERIALIZABLE` | Requires conflict detection or prevention sufficient for serializable behavior under the admitted operation set. |

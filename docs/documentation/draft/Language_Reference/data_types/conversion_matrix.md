@@ -9,21 +9,17 @@ Generation task: `data_types_conversion_matrix`
 
 ## Purpose
 
-The conversion model is a matrix of:
+This page is a quick reference for what the binder does when a value of one
+type must be used where another type is expected. The short version: implicit
+conversion is intentionally narrow — SBsql will not silently widen, truncate, or
+re-encode a value across descriptor-family boundaries. When you need a value in
+a different type, write an explicit `cast(... as ...)` so the conversion is
+visible in the query and testable in isolation.
 
-- source descriptor;
-- target descriptor;
-- conversion class;
-- null behavior;
-- exactness or lossiness;
-- charset and collation rule;
-- precision, scale, timezone, and dimension rule;
-- domain policy;
-- protected-material policy;
-- diagnostic behavior.
-
-Implicit conversion is intentionally narrow. Explicit casts are how scripts
-cross descriptor-family boundaries in a readable and testable way.
+The full picture depends on the combination of source descriptor, target
+descriptor, and conversion class (implicit assignment, explicit cast, try-cast,
+named conversion function, domain validation, or protected release). The tables
+below capture that matrix for the common cases.
 
 ## Conversion Classes
 

@@ -2,59 +2,27 @@
 
 ## Purpose
 
+After reading this page you will understand how ScratchBird thinks about storage, transactions, and what happens when a database is reopened after shutdown or interruption. This matters because the same rules apply regardless of which parser or client tool you use — SBcore (the database engine) owns these decisions, and understanding that boundary will help you write safer scripts and migrations.
+
 ScratchBird stores data through SBcore. Parser packages, client tools, and scripts can request changes, but they do not own storage finality, transaction visibility, or recovery decisions.
 
 This page explains the high-level model for users. It is not a durability certification or crash-safety claim for every build and platform. Read release-specific test results before relying on a deployment for real data.
 
 ## Engine-Owned State
 
-SBcore owns durable database state such as:
+A common misconception is that the SQL text you write, or the session state in a client tool, is the "real" database. It is not. The durable database exists inside SBcore, and that is the authoritative record that persists across session disconnects, process restarts, and recovery events.
 
-- database header and create/open state;
-- filespace metadata;
-- page and row storage;
-- catalog rows;
-- object UUIDs;
-- type and domain descriptors;
-- index metadata and index contents;
-- overflow or large-value storage metadata;
-- transaction inventory;
-- visibility and cleanup state;
-- materialized authorization state;
-- recovery-required or refusal state;
-- support-bundle evidence.
-
-Client-visible SQL text and parser state are not the durable database.
+SBcore owns durable database state such as database header and create/open state, filespace metadata (the descriptions of storage areas the database uses), page and row storage, catalog rows, object UUIDs, type and domain descriptors, index metadata and index contents, overflow or large-value storage metadata, transaction inventory, visibility and cleanup state, materialized authorization state, recovery-required or refusal state, and support-bundle evidence. Client-visible SQL text and parser state are not the durable database.
 
 ## Storage Model At A High Level
 
-```mermaid
-flowchart TB
-    Request[Admitted engine request]
-    Engine[SBcore]
-    Catalog[Catalog metadata]
-    Txn[Transaction inventory]
-    RowStorage[Row and page storage]
-    Overflow[Overflow and large values]
-    Indexes[Index structures]
-    Filespaces[Filespaces]
-    Diagnostics[Diagnostics]
-
-    Request --> Engine
-    Engine --> Catalog
-    Engine --> Txn
-    Engine --> RowStorage
-    Engine --> Overflow
-    Engine --> Indexes
-    Engine --> Filespaces
-    Engine --> Diagnostics
-```
+![diagram](./storage_transactions_and_recovery-1.svg)
 
 The exact on-disk format belongs to implementation and release documentation. The user-facing rule is that SBcore is the component that understands and maintains durable storage.
 
 ## Filespaces
 
-A filespace is a storage area known to the engine. A database can use filespace metadata to describe where durable data lives and how it is organized.
+A filespace is a named storage area known to the engine — it is how SBcore tracks where on disk (or in another storage medium) durable data lives. A database can use filespace metadata to describe multiple storage areas, separate primary data from secondary structures, and control how storage is organized.
 
 At a high level, filespace behavior should answer:
 
@@ -68,32 +36,11 @@ Use the Language Reference for exact filespace commands and supported lifecycle 
 
 ## Transactions
 
-A transaction is a boundary around work. A session can request transaction actions, but the engine owns final visibility.
+A transaction is a boundary around work: changes you make within a transaction either all become durable (commit) or all disappear (rollback). A session can request transaction actions, but the engine owns final visibility — your parser or client tool asks; SBcore decides.
 
-```mermaid
-flowchart TD
-    Begin[Begin transaction]
-    Work[Read and write admitted data]
-    Pending[Pending transaction state]
-    Decision{Finish how?}
-    Commit[Commit]
-    Rollback[Rollback]
-    Visible[Committed state visible by MGA rules]
-    Discarded[Uncommitted outcome discarded]
-    Cleanup[Cleanup when safe]
+![diagram](./storage_transactions_and_recovery-2.svg)
 
-    Begin --> Work
-    Work --> Pending
-    Pending --> Decision
-    Decision -- commit --> Commit
-    Decision -- rollback --> Rollback
-    Commit --> Visible
-    Rollback --> Discarded
-    Visible --> Cleanup
-    Discarded --> Cleanup
-```
-
-ScratchBird documentation refers to the transaction and visibility authority model as MGA. For an end user, the core point is simple: commit, rollback, visibility, and cleanup are engine decisions.
+ScratchBird documentation refers to the transaction and visibility authority model as MGA. MGA governs which committed or uncommitted versions a transaction can see, when cleanup can happen, and how conflicts are resolved. For an end user, the core point is simple: commit, rollback, visibility, and cleanup are engine decisions. See [Understanding MGA](../core_concepts/understanding_mga.md) for a plain-language explanation of how MGA works with analogies.
 
 ## Transaction Actions
 
@@ -113,18 +60,9 @@ Exact syntax and availability are described in the Language Reference.
 
 ## Visibility
 
-Visibility decides which committed or uncommitted versions a transaction can see. It affects:
+Visibility decides which committed or uncommitted versions a transaction can see. This is not an abstract concern: if two sessions are running concurrently, each needs a consistent view of the data — one session should not see half-written rows from another session that has not yet committed. Visibility rules handle this consistently across all parser routes and client tools.
 
-- newly inserted rows;
-- updated rows;
-- deleted rows;
-- catalog objects created or dropped inside transactions;
-- index contents;
-- cleanup decisions;
-- long-running readers;
-- recovery after reopen.
-
-Visibility is not decided by the parser. A parser can ask for work; SBcore determines the transactionally valid view.
+Visibility rules affect newly inserted rows, updated rows, deleted rows, catalog objects created or dropped inside transactions, index contents, cleanup decisions, long-running readers, and recovery after reopen. Visibility is not decided by the parser. A parser can ask for work; SBcore determines the transactionally valid view.
 
 ## Commit And Reopen
 
@@ -149,7 +87,7 @@ This proves more than an in-memory result. It confirms that the selected mode ca
 
 ## Recovery
 
-Recovery is the engine's process for determining a safe state after normal shutdown, interruption, or uncertain durable state.
+Recovery is the engine's process for determining a safe state after normal shutdown, interruption, or uncertain durable state. When a database is reopened, SBcore inspects its own metadata to decide whether the stored state is consistent enough to admit normal work. The goal is to never silently serve data from an inconsistent state — it is safer to refuse access and require operator action than to pretend uncertain data is valid.
 
 Recovery can lead to different outcomes:
 
@@ -177,20 +115,9 @@ That matters for compatibility routes:
 
 ## Diagnostics
 
-Storage and transaction diagnostics should identify the kind of problem without leaking protected material.
+Storage and transaction diagnostics should identify the kind of problem without leaking protected material. The message vector (ScratchBird's structured diagnostic carrier) is what reaches the client or tool when something is refused or fails.
 
-Useful diagnostic categories include:
-
-- database open refused;
-- unsupported filespace operation;
-- storage path unavailable;
-- transaction conflict;
-- transaction state invalid for the command;
-- recovery required;
-- authorization denied;
-- policy denied;
-- unsupported physical operation through a parser route;
-- message vector redacted.
+Useful diagnostic categories include: database open refused, unsupported filespace operation, storage path unavailable, transaction conflict, transaction state invalid for the command, recovery required, authorization denied, policy denied, unsupported physical operation through a parser route, and message vector redacted.
 
 ## What This Page Does Not Claim
 
@@ -207,6 +134,7 @@ Use the current build, tests, and Language Reference for exact behavior.
 
 ## Where To Go Next
 
+- [Understanding MGA](../core_concepts/understanding_mga.md) — plain-language explanation of how MGA transaction visibility works, with analogies
 - [First Database](../using_scratchbird/first_database.md)
 - [Transaction Control](../../Language_Reference/syntax_reference/transaction_control.md)
 - [Filespace](../../Language_Reference/syntax_reference/filespace.md)

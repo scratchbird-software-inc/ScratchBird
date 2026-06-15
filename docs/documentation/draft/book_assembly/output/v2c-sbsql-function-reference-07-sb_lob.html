@@ -1,0 +1,1443 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-lob-functional-reference" id="toc-sb-lob-functional-reference">SB LOB Functional Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#current_row_locator" id="toc-current_row_locator"><code>current_row_locator</code></a></li>
+<li><a href="#lob_append" id="toc-lob_append"><code>lob_append</code></a></li>
+<li><a href="#lob_close" id="toc-lob_close"><code>lob_close</code></a></li>
+<li><a href="#lob_create" id="toc-lob_create"><code>lob_create</code></a></li>
+<li><a href="#lob_locator_to_binary" id="toc-lob_locator_to_binary"><code>lob_locator_to_binary</code></a></li>
+<li><a href="#lob_locator_to_text" id="toc-lob_locator_to_text"><code>lob_locator_to_text</code></a></li>
+<li><a href="#lob_open" id="toc-lob_open"><code>lob_open</code></a></li>
+<li><a href="#lob_read" id="toc-lob_read"><code>lob_read</code></a></li>
+<li><a href="#lob_size" id="toc-lob_size"><code>lob_size</code></a></li>
+<li><a href="#lob_truncate" id="toc-lob_truncate"><code>lob_truncate</code></a></li>
+<li><a href="#lob_write" id="toc-lob_write"><code>lob_write</code></a></li>
+<li><a href="#locator" id="toc-locator"><code>locator</code></a></li>
+<li><a href="#locator_validity" id="toc-locator_validity"><code>locator_validity</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_lob.md -->
+<p><a id="ch-language-reference-functional-reference-sb-lob-md"></a></p>
+<h1 id="sb-lob-functional-reference">SB LOB Functional Reference</h1>
+<p>Generation task: <code>sb_lob</code></p>
+<p>Package namespace: <code>sb.lob</code></p>
+<p>Large-object and locator helpers for bounded LOB access through
+engine-managed handles.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Works with engine-managed large object locators. The locator is
+authority evidence only; the session still needs privileges on the
+object being read or written.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>scalar</td>
+<td style="text-align: right;">13</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="current_row_locator"><code>current_row_locator</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>current row locator</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>current_row_locator</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: no arguments.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>current row locator descriptor.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> current_row_locator(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.locator.current_row</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b96-9888-7749d95abd28</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.locator_current_row.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.locator_current_row</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>current_row_locator</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC055-current-row-locator-marker</code>.</p>
+<h3 id="lob_append"><code>lob_append</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>lob append</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>lob_append(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: data or locator descriptor plus data.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>LOB locator descriptor with appended bytes.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> lob_append(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.lob.append</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-74aa-a021-045a7d62e136</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.lob_append.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.lob_append</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>lob_append</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC055-lob-append-marker</code>.</p>
+<h3 id="lob_close"><code>lob_close</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>lob close</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>lob_close(locator)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>locator</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one locator descriptor.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>LOB locator descriptor in closed state.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> lob_close(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.lob.close</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7a11-a540-e6c1f5bffd0f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.lob_close.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.lob_close</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>lob_close</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC055-lob-close-arg</code>.</p>
+<h3 id="lob_create"><code>lob_create</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>lob create</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>lob_create(class,[media])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>class</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>[media]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: optional class and media type.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>new LOB locator descriptor.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> lob_create(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.lob.create</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7769-9c32-920cb2a44d38</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.lob_create.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.lob_create</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>lob_create</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC055-lob-create-arg</code>.</p>
+<h3 id="lob_locator_to_binary"><code>lob_locator_to_binary</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>lob locator to binary</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>lob_locator_to_binary(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional locator descriptor.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>binary locator payload or empty binary marker.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> lob_locator_to_binary(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.lob.locator_to_binary</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-71a7-8d88-378d891fdecd</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.lob_locator_to_binary.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.lob_locator_to_binary</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>lob_locator_to_binary</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC055-lob-locator-to-binary-marker</code>.</p>
+<h3 id="lob_locator_to_text"><code>lob_locator_to_text</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>lob locator to text</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>lob_locator_to_text(locator)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>locator</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one locator descriptor.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>text locator payload.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> lob_locator_to_text(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.lob.locator_to_text</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-703a-bc67-17bdf02e4614</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.lob_locator_to_text.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.lob_locator_to_text</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>lob_locator_to_text</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC055-lob-locator-to-text-arg</code>.</p>
+<h3 id="lob_open"><code>lob_open</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>lob open</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>lob_open(locator,mode)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>locator</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>mode</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: locator descriptor and mode token.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>LOB locator descriptor in requested open mode.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> lob_open(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.lob.open</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7050-93e3-09da21b5e350</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.lob_open.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.lob_open</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>lob_open</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC055-lob-open-arg</code>.</p>
+<h3 id="lob_read"><code>lob_read</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>lob read</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>lob_read(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: locator descriptor, 1-based offset, and
+non-negative length.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>binary or text slice from locator payload.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> lob_read(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.lob.read</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7873-af4d-bad73e1e5c43</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.lob_read.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.lob_read</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>lob_read</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC055-lob-read-marker</code>.</p>
+<h3 id="lob_size"><code>lob_size</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>lob size</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>lob_size(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional locator descriptor.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>int64 byte count.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> lob_size(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.lob.size</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7617-bb0e-7a9985ff6ecb</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.lob_size.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.lob_size</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>lob_size</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC055-lob-size-marker</code>.</p>
+<h3 id="lob_truncate"><code>lob_truncate</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>lob truncate</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>lob_truncate(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: locator descriptor and non-negative length.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>LOB locator descriptor truncated to length.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> lob_truncate(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.lob.truncate</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-72a7-ba33-d3e216220898</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.lob_truncate.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.lob_truncate</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>lob_truncate</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC055-lob-truncate-marker</code>.</p>
+<h3 id="lob_write"><code>lob_write</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>lob write</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>lob_write(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: locator descriptor, 1-based offset, and data.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>LOB locator descriptor with bytes written at offset.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> lob_write(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.lob.write</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7e0a-b791-07758dd38a0e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.lob_write.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.lob_write</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>lob_write</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC055-lob-write-marker</code>.</p>
+<h3 id="locator"><code>locator</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>locator</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>locator(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: no arguments.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>generic locator descriptor.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="kw">locator</span>(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.locator.locator</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7c6d-89a8-7ef94e5d0d29</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.locator_locator.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.locator_locator</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>locator</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC055-locator-marker</code>.</p>
+<h3 id="locator_validity"><code>locator_validity</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>locator validity</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>locator_validity(locator)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>locator</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one locator descriptor.</li>
+<li>Coercion: LOB locator arguments are bounded JSON descriptors; data
+accepts binary or text scalar values; offsets and lengths are
+int64.</li>
+<li>NULL handling: SQL NULL locator input refuses for required-locator
+operations and returns empty marker values for marker forms.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>boolean locator validity.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for supplied descriptors.</li>
+<li>Side effects: bounded descriptor-only LOB state transition; no
+persistent mutation.</li>
+<li>Collation/charset: text LOB payloads use UTF-8 character descriptor;
+binary payloads use binary descriptor.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR lob.locator runtime
+using bounded in-core descriptor helpers; no parser SQL execution,
+external execution, storage finality, recovery shortcut, cluster
+provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed locator descriptor, non-positive offset,
+negative length, or unsupported open mode refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> locator_validity(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.locator.validity</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-721e-9794-a0b7d2899ba1</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.locator_validity.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.locator_validity</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>locator_validity</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC055-locator-validity-arg</code>.</p>
+</body>
+</html>

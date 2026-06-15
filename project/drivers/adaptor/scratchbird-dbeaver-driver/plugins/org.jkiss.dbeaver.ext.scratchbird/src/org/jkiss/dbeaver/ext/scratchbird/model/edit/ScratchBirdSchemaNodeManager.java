@@ -61,7 +61,10 @@ public class ScratchBirdSchemaNodeManager extends SQLObjectEditor<ScratchBirdSch
     @Override
     public boolean canCreateObject(@NotNull Object container) {
         if (container instanceof ScratchBirdSchemaNode schemaNode) {
-            return schemaNode.isCatalogBacked() && !schemaNode.isClientOnly() && !schemaNode.isDomainBranch();
+            return schemaNode.isCatalogBacked() &&
+                !schemaNode.isClientOnly() &&
+                !schemaNode.isDomainBranch() &&
+                "SCHEMA".equalsIgnoreCase(schemaNode.getObjectType());
         }
         return false;
     }
@@ -71,7 +74,7 @@ public class ScratchBirdSchemaNodeManager extends SQLObjectEditor<ScratchBirdSch
         return object.isCatalogBacked() &&
             !object.isClientOnly() &&
             !object.isScratchBirdSystemPath() &&
-            !isCanonicalRoot(object.getFullPath());
+            !isCanonicalRoot(object.getAuthorityPath());
     }
 
     @Override
@@ -92,7 +95,7 @@ public class ScratchBirdSchemaNodeManager extends SQLObjectEditor<ScratchBirdSch
             scratchBirdSchemaNode.getCatalog() instanceof ScratchBirdCatalog scratchBirdCatalog) {
             catalog = scratchBirdCatalog;
             parentNode = scratchBirdSchemaNode;
-            parentPath = scratchBirdSchemaNode.getFullPath();
+            parentPath = scratchBirdSchemaNode.getAuthorityPath();
         } else {
             throw new DBException("ScratchBird schema branches can only be created under ScratchBird catalog/schema nodes.");
         }
@@ -140,7 +143,7 @@ public class ScratchBirdSchemaNodeManager extends SQLObjectEditor<ScratchBirdSch
     @NotNull
     private static String quotePath(@NotNull ScratchBirdSchemaNode object) {
         StringBuilder builder = new StringBuilder();
-        for (String segment : object.getFullPath().split("\\.")) {
+        for (String segment : object.getAuthorityPath().split("\\.")) {
             if (segment.isEmpty()) {
                 continue;
             }

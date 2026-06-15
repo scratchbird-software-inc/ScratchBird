@@ -238,7 +238,7 @@ Unqualified names bind through the current schema, search path, default root, an
 ## UUID References
 
 ```ebnf
-uuid_ref ::=
+uuid_reference ::=
     UUID string_literal ;
 ```
 
@@ -498,7 +498,7 @@ Tools should not:
 | `regular_identifier` | lexical token | resolver | yes | folded name evidence |
 | `delimited_identifier` | lexical token | resolver | yes | exact name evidence |
 | `localized_name_literal` | lexical token | resolver | yes | localized name evidence |
-| `uuid_ref` | grammar production | resolver | yes | UUID object evidence |
+| `uuid_reference` | grammar production | resolver | yes | UUID object evidence |
 | `literal` | grammar production | expression | yes | descriptor-bound value |
 | `parameter_marker` | grammar production | expression | yes | parameter descriptor |
 | `option_list` | grammar production | statement options | yes | option descriptor list |

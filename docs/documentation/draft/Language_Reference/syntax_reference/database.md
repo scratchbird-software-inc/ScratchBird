@@ -93,7 +93,7 @@ database_lifecycle_statement ::=
       create_database_statement
     | open_database_statement
     | attach_database_statement
-    | use_database_statement
+    | use_database_alias
     | detach_database_statement
     | alter_database_statement
     | maintenance_database_statement
@@ -136,7 +136,7 @@ open_database_statement ::=
 attach_database_statement ::=
     ATTACH DATABASE storage_ref AS database_alias attach_options? ;
 
-use_database_statement ::=
+use_database_alias ::=
       USE DATABASE database_alias
     | USE database_alias ;
 

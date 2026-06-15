@@ -34,6 +34,64 @@ namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
 constexpr std::string_view kLiveRouteAlicePrincipalUuid = "019f0a11-ce00-7000-8000-000000000001";
+constexpr std::string_view kLiveRouteSysarchRoleUuid = "019f0a11-ce00-7000-8000-00000000f001";
+constexpr std::string_view kLiveRoutePublicGroupUuid = "019f0a11-ce00-7000-8000-00000000f101";
+constexpr std::string_view kLiveRouteSysarchMembershipUuid = "019f0a11-ce00-7000-8000-00000000f201";
+constexpr std::string_view kLiveRoutePublicMembershipUuid = "019f0a11-ce00-7000-8000-00000000f202";
+
+const std::vector<std::string>& SysarchRights() {
+  static const std::vector<std::string> rights = {
+      "CONNECT",
+      "VISIBLE",
+      "DISCOVER",
+      "LIST_CHILD",
+      "SELECT",
+      "INSERT",
+      "UPDATE",
+      "DELETE",
+      "EXECUTE",
+      "CREATE",
+      "ALTER",
+      "DROP",
+      "POLICY_ADMIN",
+      "OBS_METRICS_READ_ALL",
+      "OBS_RUNTIME_ALL",
+      "OBS_INDEX_PROFILE_READ",
+      "OBS_MANAGEMENT_INSPECT",
+      "OBS_MANAGEMENT_CONTROL",
+      "OBS_CONFIG_INSPECT",
+      "OBS_CONFIG_CONTROL",
+      "SEC_IDENTITY_ADMIN",
+      "SEC_MEMBERSHIP_ADMIN",
+      "SEC_GRANT_ADMIN",
+      "MGA_TRANSACTION_INSPECT",
+      "MGA_RECOVERY_INSPECT",
+      "MGA_CLEANUP_INSPECT",
+      "MGA_CLEANUP_CONTROL",
+      "AUTH_PROVIDER_ADMIN",
+      "AUDIT_READ",
+      "AUDIT_ADMIN",
+      "SUPPORT_EXPORT",
+      "UDR_TRUST_ADMIN",
+      "UDR_MANAGE",
+      "UDR_INSPECT",
+      "UDR_INVOKE",
+      "BACKUP_CREATE",
+      "BACKUP_RESTORE",
+      "BACKUP_CONTROL",
+      "BACKUP_INSPECT",
+      "EVENT_ADMIN",
+      "EVENT_CREATE",
+      "EVENT_ALTER",
+      "EVENT_DROP",
+      "EVENT_SUBSCRIBE",
+      "EVENT_PUBLISH",
+      "EVENT_DELIVERY_READ",
+      "EVENT_DELIVERY_ACK",
+      "MANAGER_ADMISSION_ADMIN",
+  };
+  return rights;
+}
 
 void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -56,6 +114,30 @@ std::string NewUuid(UuidKind kind) {
   const auto generated = uuid::GenerateEngineIdentityV7(kind, seed);
   if (!generated.ok()) Fail("UUID generation failed");
   return uuid::UuidToString(generated.value.value);
+}
+
+std::string HexText(std::string_view value) {
+  constexpr char kDigits[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(value.size() * 2);
+  for (const unsigned char ch : value) {
+    out.push_back(kDigits[(ch >> 4) & 0x0f]);
+    out.push_back(kDigits[ch & 0x0f]);
+  }
+  return out;
+}
+
+std::string StableGrantUuid(std::size_t index) {
+  std::string suffix = "000000000000";
+  std::string hex;
+  std::size_t value = 0x1000 + index + 1;
+  do {
+    const int digit = static_cast<int>(value & 0x0f);
+    hex.insert(hex.begin(), "0123456789abcdef"[digit]);
+    value >>= 4;
+  } while (value != 0);
+  suffix.replace(suffix.size() - hex.size(), hex.size(), hex);
+  return "019f0a11-ce00-7000-8000-" + suffix;
 }
 
 api::EngineLocalizedName Name(std::string name) {
@@ -200,6 +282,26 @@ void WriteAuthStore(const std::filesystem::path& database_path,
       verifier,
       17,
       "sbsql_example_database_seed");
+  std::ofstream events(database_path.string() + ".sb.security_principal_events", std::ios::app);
+  events << "SBSECPL1\tROLE\t0\t" << kLiveRouteSysarchRoleUuid << '\t'
+         << HexText("sysarch") << '\t' << kLiveRouteAlicePrincipalUuid
+         << "\tactive\t18\t0\n";
+  events << "SBSECPL1\tGROUP\t0\t" << kLiveRoutePublicGroupUuid << '\t'
+         << HexText("PUBLIC") << "\t\tactive\t19\t0\n";
+  events << "SBSECPL1\tMEMBERSHIP\t0\t" << kLiveRouteSysarchMembershipUuid << '\t'
+         << kLiveRouteAlicePrincipalUuid << '\t' << kLiveRouteSysarchRoleUuid
+         << "\trole\t" << kLiveRouteAlicePrincipalUuid << "\t20\t0\n";
+  events << "SBSECPL1\tMEMBERSHIP\t0\t" << kLiveRoutePublicMembershipUuid << '\t'
+         << kLiveRouteAlicePrincipalUuid << '\t' << kLiveRoutePublicGroupUuid
+         << "\tgroup\t" << kLiveRouteAlicePrincipalUuid << "\t21\t0\n";
+  std::size_t grant_index = 0;
+  for (const auto& right : SysarchRights()) {
+    events << "SBSECPL1\tGRANT\t0\t" << StableGrantUuid(grant_index++) << '\t'
+           << kLiveRouteSysarchRoleUuid << "\trole\t\t\t" << right << '\t'
+           << kLiveRouteAlicePrincipalUuid << "\tallow\t"
+           << (22 + grant_index) << "\t0\n";
+  }
+  if (!events) Fail("example database role/group authorization seed write failed");
 }
 
 std::string SchemaUuidForPath(const api::EngineRequestContext& context, const std::string& path) {

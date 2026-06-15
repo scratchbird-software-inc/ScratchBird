@@ -51,8 +51,8 @@ A table named `orders` might hold order rows:
 
 ```sql
 create table app.orders (
-    order_id uint64 not null,
-    account_id uint64 not null,
+    order_id bigint not null,
+    account_id bigint not null,
     status text not null,
     total numeric(18, 2) not null
 );
@@ -69,16 +69,7 @@ That statement is user-facing text. After it is accepted, a database also needs 
 
 The durable database is therefore more than the text statement.
 
-```mermaid
-flowchart LR
-    Text[SQL text] --> Parser[Parser]
-    Parser --> Request[Bound request]
-    Request --> Engine[Engine]
-    Engine --> Catalog[Catalog metadata]
-    Engine --> Storage[Stored data]
-    Engine --> Security[Security policy]
-    Engine --> Txn[Transaction state]
-```
+![diagram](./what_is_a_database-1.svg)
 
 ## Tables, Documents, And Other Shapes
 
@@ -103,15 +94,7 @@ A transaction is a boundary around work.
 
 Within a transaction, a session can make changes that are not yet final. When the transaction commits, the engine makes the outcome visible according to transaction visibility rules. When the transaction rolls back, the engine discards the uncommitted outcome.
 
-```mermaid
-flowchart TD
-    Begin[Begin transaction] --> Work[Read and write data]
-    Work --> Decision{Finish how?}
-    Decision --> Commit[Commit]
-    Decision --> Rollback[Rollback]
-    Commit --> Visible[Changes become visible]
-    Rollback --> Prior[Database keeps prior state]
-```
+![diagram](./what_is_a_database-2.svg)
 
 ScratchBird documentation refers to its transaction authority model as MGA. For a new reader, the practical rule is this: commit, rollback, visibility, cleanup, and recovery are engine decisions. Client tools and parser packages can request transaction actions, but they do not own finality.
 

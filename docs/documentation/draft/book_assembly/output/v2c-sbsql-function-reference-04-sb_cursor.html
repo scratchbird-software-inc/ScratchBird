@@ -1,0 +1,1645 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-cursor-functional-reference" id="toc-sb-cursor-functional-reference">SB Cursor Functional
+Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#current_row_locator" id="toc-current_row_locator"><code>current_row_locator</code></a></li>
+<li><a href="#cursor_active" id="toc-cursor_active"><code>cursor_active</code></a></li>
+<li><a href="#cursor_close" id="toc-cursor_close"><code>cursor_close</code></a></li>
+<li><a href="#cursor_holdability" id="toc-cursor_holdability"><code>cursor_holdability</code></a></li>
+<li><a href="#cursor_lifetime_class" id="toc-cursor_lifetime_class"><code>cursor_lifetime_class</code></a></li>
+<li><a href="#cursor_open" id="toc-cursor_open"><code>cursor_open</code></a></li>
+<li><a href="#cursor_position" id="toc-cursor_position"><code>cursor_position</code></a></li>
+<li><a href="#cursor_scrollability" id="toc-cursor_scrollability"><code>cursor_scrollability</code></a></li>
+<li><a href="#cursor_state" id="toc-cursor_state"><code>cursor_state</code></a></li>
+<li><a href="#cursor_to_rowset" id="toc-cursor_to_rowset"><code>cursor_to_rowset</code></a></li>
+<li><a href="#handle_kind" id="toc-handle_kind"><code>handle_kind</code></a></li>
+<li><a href="#rowset_to_cursor" id="toc-rowset_to_cursor"><code>rowset_to_cursor</code></a></li>
+<li><a href="#stream_close" id="toc-stream_close"><code>stream_close</code></a></li>
+<li><a href="#stream_to_rowset" id="toc-stream_to_rowset"><code>stream_to_rowset</code></a></li>
+<li><a href="#table_value_to_cursor" id="toc-table_value_to_cursor"><code>table_value_to_cursor</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_cursor.md -->
+<p><a id="ch-language-reference-functional-reference-sb-cursor-md"></a></p>
+<h1 id="sb-cursor-functional-reference">SB Cursor Functional
+Reference</h1>
+<p>Generation task: <code>sb_cursor</code></p>
+<p>Package namespace: <code>sb.cursor</code></p>
+<p>Cursor, stream, rowset-handle, and table-value conversion helpers
+used by procedural SQL and streaming execution.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Exposes cursor and stream state to procedural SQL and table-function
+bridges. Handles are scoped to the owning session or routine
+context.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>scalar</td>
+<td style="text-align: right;">15</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="current_row_locator"><code>current_row_locator</code></h3>
+<p><strong>Purpose:</strong> Operates on an engine-managed large-object
+locator for <code>current row locator</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>current_row_locator(cursor)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>cursor</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one cursor descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>locator JSON descriptor for current cursor row.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> current_row_locator(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.current_row_locator</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-70a0-ae1b-b1c57c9b32e7</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_current_row_locator.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_current_row_locator</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>current_row_locator</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC054-current-row-locator-cursor</code>.</p>
+<h3 id="cursor_active"><code>cursor_active</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>cursor active</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>cursor_active(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional cursor name or descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>boolean active state.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> cursor_active(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.active</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7783-a337-566f9fad37d2</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_active.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_active</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>cursor_active</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC054-cursor-active-marker</code>.</p>
+<h3 id="cursor_close"><code>cursor_close</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>cursor close</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>cursor_close(cursor)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>cursor</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one cursor descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>cursor JSON descriptor in closed state.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> cursor_close(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.close</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7c51-8503-c6f3d4045f94</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_close.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_close</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>cursor_close</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC054-cursor-close-arg</code>.</p>
+<h3 id="cursor_holdability"><code>cursor_holdability</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>cursor holdability</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>cursor_holdability(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional cursor descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character holdability token.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> cursor_holdability(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.holdability</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7ca2-a240-a967ab4e34fc</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_holdability.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_holdability</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>cursor_holdability</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC054-cursor-holdability-marker</code>.</p>
+<h3 id="cursor_lifetime_class"><code>cursor_lifetime_class</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>cursor lifetime class</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>cursor_lifetime_class(cursor)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>cursor</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one cursor descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character lifetime token.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> cursor_lifetime_class(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.lifetime_class</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-744e-8752-29a69c6ca5fb</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_lifetime_class.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_lifetime_class</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>cursor_lifetime_class</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC054-cursor-lifetime-class-arg</code>.</p>
+<h3 id="cursor_open"><code>cursor_open</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>cursor open</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>cursor_open(&lt;select&gt;)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>&lt;select&gt;</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li>Descriptor rule: optional select descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>cursor JSON descriptor in open state.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> cursor_open(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.open</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-75d7-b434-542598b842ec</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_open.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_open</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>cursor_open</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC054-cursor-open-select</code>.</p>
+<h3 id="cursor_position"><code>cursor_position</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>cursor position</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>cursor_position(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional cursor descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>int64 cursor position.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> cursor_position(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.position</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7457-b674-79e5e9801f8a</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_position.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_position</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>cursor_position</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC054-cursor-position-marker</code>.</p>
+<h3 id="cursor_scrollability"><code>cursor_scrollability</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>cursor scrollability</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>cursor_scrollability(cursor)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>cursor</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one cursor descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character scrollability token.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> cursor_scrollability(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.scrollability</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7967-8cca-e48403bb663b</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_scrollability.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_scrollability</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>cursor_scrollability</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC054-cursor-scrollability-arg</code>.</p>
+<h3 id="cursor_state"><code>cursor_state</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>cursor state</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>cursor_state(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional cursor descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character state token.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> cursor_state(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.state</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f46-845b-79faabb48810</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_state.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_state</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>cursor_state</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC054-cursor-state-marker</code>.</p>
+<h3 id="cursor_to_rowset"><code>cursor_to_rowset</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>cursor to rowset</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>cursor_to_rowset(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: cursor descriptor and optional non-negative
+max_rows.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>rowset JSON descriptor containing cursor rows.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> cursor_to_rowset(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.to_rowset</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7e9c-9854-eaabf1cab19b</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_to_rowset.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_to_rowset</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>cursor_to_rowset</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC054-cursor-to-rowset-marker</code>.</p>
+<h3 id="handle_kind"><code>handle_kind</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>handle_kind</code> and
+returns character handle-kind token.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>handle_kind(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional handle descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character handle-kind token.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> handle_kind(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.handle.kind</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-78d1-817e-ba6064284df9</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.handle_kind.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.handle_kind</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>handle_kind</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC054-handle-kind-marker</code>.</p>
+<h3 id="rowset_to_cursor"><code>rowset_to_cursor</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>rowset to cursor</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>rowset_to_cursor(rowset)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>rowset</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one rowset descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>cursor JSON descriptor backed by rowset rows.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> rowset_to_cursor(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.rowset_to_cursor</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f64-93a7-b921be1ae581</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_rowset_to_cursor.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_rowset_to_cursor</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>rowset_to_cursor</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC054-rowset-to-cursor-arg</code>.</p>
+<h3 id="stream_close"><code>stream_close</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>stream close</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>stream_close(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional stream descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>stream JSON descriptor in closed state.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> stream_close(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.stream.close</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7883-9e52-f39d10c0e0f3</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.stream_close.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.stream_close</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>stream_close</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC054-stream-close-marker</code>.</p>
+<h3 id="stream_to_rowset"><code>stream_to_rowset</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>stream to rowset</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>stream_to_rowset(stream[,max_rows])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>stream[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>max_rows]</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Descriptor rule: stream descriptor and optional non-negative
+max_rows.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>rowset JSON descriptor containing stream rows.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> stream_to_rowset(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.stream.to_rowset</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-742f-9f33-bad0bf5a0fb1</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.stream_to_rowset.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.stream_to_rowset</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>stream_to_rowset</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC054-stream-to-rowset-args</code>.</p>
+<h3 id="table_value_to_cursor"><code>table_value_to_cursor</code></h3>
+<p><strong>Purpose:</strong> Reads or transforms cursor/stream state for
+<code>table value to cursor</code> behavior.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>table_value_to_cursor(tv)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>tv</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li>Descriptor rule: one table_value descriptor.</li>
+<li>Coercion: cursor, stream, rowset, table_value, and locator arguments
+use bounded JSON execution-handle descriptors; optional max_rows
+arguments are int64 descriptors.</li>
+<li>NULL handling: SQL NULL descriptor input returns SQL NULL for
+descriptor conversion routes; cursor_active(NULL) returns false.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>cursor JSON descriptor backed by table_value rows.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable.</li>
+<li>Determinism: deterministic for supplied descriptor/scalar
+inputs.</li>
+<li>Side effects: bounded descriptor-only state transition for
+close/open helpers; no persistent mutation.</li>
+<li>Collation/charset: descriptor payloads are deterministic UTF-8 JSON
+text; handle attribute values use exact text tokens.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR cursor.stream
+runtime using bounded in-core descriptor helpers; no parser SQL
+execution, external execution, storage scan, cursor backend, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed handle descriptor, wrong descriptor kind, or
+negative max_rows refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> table_value_to_cursor(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.cursor.table_value_to_cursor</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7621-8bcb-dc9af37c15a9</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.cursor_table_value_to_cursor.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.cursor_table_value_to_cursor</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>table_value_to_cursor</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC054-table-value-to-cursor-arg</code>.</p>
+</body>
+</html>

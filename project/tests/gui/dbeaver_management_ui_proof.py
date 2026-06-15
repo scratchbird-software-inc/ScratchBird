@@ -32,6 +32,11 @@ def require(source: str, needle: str, label: str) -> None:
         raise AssertionError(f"{label} missing {needle!r}")
 
 
+def require_java_string(source: str, value: str, label: str) -> None:
+    if value not in source and value.replace('"', '\\"') not in source:
+        raise AssertionError(f"{label} missing {value!r}")
+
+
 def require_regex(source: str, pattern: str, label: str) -> None:
     if re.search(pattern, source, re.MULTILINE | re.DOTALL) is None:
         raise AssertionError(f"{label} missing pattern {pattern!r}")
@@ -67,6 +72,10 @@ def main() -> int:
     object_graph_contract = read(
         MODEL_ROOT
         / "src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdObjectGraphContract.java"
+    )
+    report_catalog = read(
+        MODEL_ROOT
+        / "src/org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdReportCatalog.java"
     )
 
     for slice_id in (
@@ -178,8 +187,10 @@ def main() -> int:
         ("scratchbird.locks", 'SELECT COUNT(*) AS "Locks" FROM sys.locks'),
         ("scratchbird.performance", "SHOW METRICS"),
     ):
-        require(model_xml, dashboard_id, "dashboard declaration")
-        require(model_xml, query, "dashboard query")
+        require(report_catalog, dashboard_id, "dashboard contract declaration")
+        require_java_string(report_catalog, query, "dashboard contract query")
+    if 'extension point="org.jkiss.dbeaver.dashboard"' in model_xml:
+        raise AssertionError("dashboard contract must not register live dashboards before server admission")
     if "sys.performance" in model_xml:
         raise AssertionError("dashboard declarations must not use stale sys.performance placeholder")
 

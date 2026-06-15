@@ -42,23 +42,23 @@ Do not use this statement family for low-level repair, page verification, unsafe
 ## Syntax
 
 ```ebnf
-archive_replication_migration_statement ::=
-      archive_statement
-    | backup_statement
-    | restore_statement
+archive_replication_stmt ::=
+      archive_stmt
+    | backup_stmt
+    | restore_stmt
     | replication_statement
     | migration_statement ;
 ```
 
 ```ebnf
-backup_statement ::=
+backup_stmt ::=
     BACKUP backup_target backup_destination backup_option_list? ;
 
 backup_target ::=
       DATABASE database_ref
     | SCHEMA schema_ref
     | TABLE table_ref
-    | QUERY "(" query_statement ")" ;
+    | QUERY "(" query_dml_stmt ")" ;
 
 backup_destination ::=
       TO STREAM parameter_ref
@@ -85,7 +85,7 @@ backup_option ::=
 ```
 
 ```ebnf
-restore_statement ::=
+restore_stmt ::=
     RESTORE restore_target restore_source restore_option_list? ;
 
 restore_target ::=
@@ -118,7 +118,7 @@ restore_option ::=
 ```
 
 ```ebnf
-archive_statement ::=
+archive_stmt ::=
     ARCHIVE archive_action archive_payload? archive_option_list? ;
 
 archive_action ::=
