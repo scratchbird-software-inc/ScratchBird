@@ -106,6 +106,7 @@ Generated documentation should be treated as technical reference material, not a
 Do not report security-sensitive issues in public issues if the repository provides a private security reporting process.
 
 Security reports should include enough detail to reproduce the issue without including private credentials, production data, private keys, tokens, or sensitive logs.
+Once this project becomes "Public Beta" vs "Code Review Beta" the all bug reports/security reports or functionality reports will be supported using Github's discussion and issue trackers.  The current "no-public-disclosure" policy is due to legal advice, not technical issues.
 
 See `SECURITY.md` for reporting scope and supported-version policy.
 
