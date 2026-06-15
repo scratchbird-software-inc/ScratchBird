@@ -34,7 +34,7 @@ class SBConnectionTransactionModeTest {
         connection.setAutoCommit(true);
 
         assertEquals(0, protocol.commitCalls);
-        assertTrue(protocol.executedSql.stream().anyMatch(sql -> sql.equalsIgnoreCase("SET AUTOCOMMIT ON")));
+        assertFalse(protocol.executedSql.stream().anyMatch(sql -> sql.toUpperCase().contains("AUTOCOMMIT")));
         assertTrue(connection.getAutoCommit());
     }
 
@@ -60,6 +60,7 @@ class SBConnectionTransactionModeTest {
         connection.setAutoCommit(false);
 
         assertEquals(0, protocol.beginCalls);
+        assertFalse(protocol.executedSql.stream().anyMatch(sql -> sql.toUpperCase().contains("AUTOCOMMIT")));
         assertFalse(connection.getAutoCommit());
     }
 
@@ -119,6 +120,7 @@ class SBConnectionTransactionModeTest {
         connection.setAutoCommit(false);
 
         assertEquals(1, protocol.beginCalls);
+        assertFalse(protocol.executedSql.stream().anyMatch(sql -> sql.toUpperCase().contains("AUTOCOMMIT")));
         assertEquals(SBProtocolHandler.ISOLATION_READ_COMMITTED, protocol.lastIsolationLevel);
         assertEquals(SBConnection.READ_COMMITTED_MODE_READ_CONSISTENCY, protocol.lastReadCommittedMode);
     }

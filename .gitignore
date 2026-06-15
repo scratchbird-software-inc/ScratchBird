@@ -38,6 +38,8 @@ CMakeCache.txt
 CMakeFiles/
 CTestTestfile.cmake
 Testing/
+project/drivers/**/.gradle/
+project/drivers/**/build/
 *.o
 *.obj
 *.a

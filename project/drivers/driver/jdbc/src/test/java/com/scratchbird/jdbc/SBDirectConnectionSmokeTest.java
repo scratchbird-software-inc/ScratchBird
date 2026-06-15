@@ -82,4 +82,23 @@ class SBDirectConnectionSmokeTest {
             assertFalse(conn.isClosed());
         }
     }
+
+    @Test
+    void createsSchemaAfterJdbcManagedTransactionModeChange() throws Exception {
+        String url = System.getenv("SCRATCHBIRD_JDBC_URL");
+        assumeTrue(url != null && !url.isBlank(), "SCRATCHBIRD_JDBC_URL is not set");
+
+        String user = System.getenv("SCRATCHBIRD_JDBC_USER");
+        String password = System.getenv("SCRATCHBIRD_JDBC_PASSWORD");
+        String schemaName = "jdbc_direct_schema_" + Long.toUnsignedString(System.nanoTime());
+        try (Connection conn = user == null || user.isBlank()
+                ? DriverManager.getConnection(url)
+                : DriverManager.getConnection(url, user, password == null ? "" : password);
+             Statement stmt = conn.createStatement()) {
+            conn.setAutoCommit(false);
+            assertFalse(conn.getAutoCommit());
+            assertTrue(stmt.execute("CREATE SCHEMA users.public." + schemaName));
+            conn.commit();
+        }
+    }
 }
