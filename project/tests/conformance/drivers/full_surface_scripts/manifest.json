@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "suite_id": "scratchbird.driver.full_surface.v1",
+  "namespace_placeholder": "__SB_NAMESPACE__",
+  "compile_placeholders": [
+    "__SB_NAMESPACE__",
+    "__SB_DRIVER__",
+    "__SB_RUN_ID__",
+    "__SB_ROUTE__",
+    "__SB_PARSER_MODE__",
+    "__SB_PAGE_SIZE__"
+  ],
+  "minimum_language_catalog_counts": {
+    "surface_function": 1317,
+    "surface_operator": 18
+  },
+  "builtin_fixture_minimums": {
+    "fixture_files": 37,
+    "fixture_rows": 1713,
+    "fixture_surface_ids": 1214,
+    "release_function_operator_fixture_surface_ids": 1101,
+    "diagnostic_rows": 163
+  },
+  "required_coverage": [
+    "schema_bootstrap",
+    "all_table_column_type_families",
+    "type_boundaries",
+    "insert",
+    "update",
+    "delete",
+    "merge",
+    "upsert",
+    "on_conflict",
+    "primary_key",
+    "btree_index",
+    "hash_index",
+    "bitmap_index",
+    "partial_index",
+    "covering_index",
+    "expression_index",
+    "descending_index",
+    "json_index",
+    "vector_exact_index",
+    "vector_hnsw_index",
+    "fulltext_index",
+    "inner_join",
+    "left_join",
+    "exists_subquery",
+    "group_by_having",
+    "window_row_number",
+    "recursive_cte",
+    "set_operation",
+    "scalar_functions",
+    "aggregate_functions",
+    "json_functions",
+    "uuid_functions",
+    "vector_functions",
+    "arithmetic_operators",
+    "logical_operators",
+    "comparison_operators",
+    "pattern_operators",
+    "membership_operators",
+    "function_expected_output_fixture_pack",
+    "operator_expected_output_fixture_pack",
+    "function_operator_semantic_oracle_coverage",
+    "mga_begin_commit",
+    "mga_rollback",
+    "mga_savepoint",
+    "large_dataset_load",
+    "metadata_visibility",
+    "authorization_refusal",
+    "optimizer_index_lookup",
+    "optimizer_grouping",
+    "optimizer_join",
+    "optimizer_cte"
+  ],
+  "scripts": [
+    {
+      "script_id": "SBDFS-000",
+      "path": "scripts/000_bootstrap_context.sbsql",
+      "coverage": ["schema_bootstrap"],
+      "assertions": ["SBDFS-000-001", "SBDFS-000-002"]
+    },
+    {
+      "script_id": "SBDFS-010",
+      "path": "scripts/010_datatypes_boundaries.sbsql",
+      "coverage": ["all_table_column_type_families", "type_boundaries"],
+      "assertions": ["SBDFS-010-001", "SBDFS-010-002", "SBDFS-010-003"]
+    },
+    {
+      "script_id": "SBDFS-020",
+      "path": "scripts/020_dml_mutation_returning.sbsql",
+      "coverage": ["insert", "update", "delete", "merge", "upsert", "on_conflict"],
+      "assertions": ["SBDFS-020-001", "SBDFS-020-002", "SBDFS-020-003"]
+    },
+    {
+      "script_id": "SBDFS-030",
+      "path": "scripts/030_index_families_variations.sbsql",
+      "coverage": [
+        "primary_key",
+        "btree_index",
+        "hash_index",
+        "bitmap_index",
+        "partial_index",
+        "covering_index",
+        "expression_index",
+        "descending_index",
+        "json_index",
+        "vector_exact_index",
+        "vector_hnsw_index",
+        "fulltext_index"
+      ],
+      "assertions": ["SBDFS-030-001", "SBDFS-030-002", "SBDFS-030-003"]
+    },
+    {
+      "script_id": "SBDFS-040",
+      "path": "scripts/040_query_joins_window_cte.sbsql",
+      "coverage": [
+        "inner_join",
+        "left_join",
+        "exists_subquery",
+        "group_by_having",
+        "window_row_number",
+        "recursive_cte",
+        "set_operation"
+      ],
+      "assertions": [
+        "SBDFS-040-001",
+        "SBDFS-040-002",
+        "SBDFS-040-003",
+        "SBDFS-040-004",
+        "SBDFS-040-005",
+        "SBDFS-040-006",
+        "SBDFS-040-007"
+      ]
+    },
+    {
+      "script_id": "SBDFS-050",
+      "path": "scripts/050_functions_operators.sbsql",
+      "coverage": [
+        "scalar_functions",
+        "aggregate_functions",
+        "json_functions",
+        "uuid_functions",
+        "vector_functions",
+        "arithmetic_operators",
+        "logical_operators",
+        "comparison_operators",
+        "pattern_operators",
+        "membership_operators"
+      ],
+      "assertions": [
+        "SBDFS-050-001",
+        "SBDFS-050-002",
+        "SBDFS-050-003",
+        "SBDFS-050-004",
+        "SBDFS-050-005",
+        "SBDFS-050-006",
+        "SBDFS-050-007",
+        "SBDFS-050-008",
+        "SBDFS-050-009",
+        "SBDFS-050-010",
+        "SBDFS-050-011",
+        "SBDFS-050-012",
+        "SBDFS-050-013",
+        "SBDFS-050-014",
+        "SBDFS-050-015",
+        "SBDFS-050-016",
+        "SBDFS-050-017",
+        "SBDFS-050-018",
+        "SBDFS-050-019",
+        "SBDFS-050-020",
+        "SBDFS-050-021",
+        "SBDFS-050-022"
+      ]
+    },
+    {
+      "script_id": "SBDFS-055",
+      "path": "scripts/generated/055_builtin_fixture_manifest.sbsql",
+      "generated_from": "project/tests/sbsql_parser_worker/generated/full_surface/*.csv",
+      "coverage": [
+        "function_expected_output_fixture_pack",
+        "operator_expected_output_fixture_pack",
+        "function_operator_semantic_oracle_coverage"
+      ],
+      "assertions": [
+        "SBDFS-055-001",
+        "SBDFS-055-002",
+        "SBDFS-055-003",
+        "SBDFS-055-004"
+      ]
+    },
+    {
+      "script_id": "SBDFS-060",
+      "path": "scripts/060_transaction_mga_visibility.sbsql",
+      "coverage": ["mga_begin_commit", "mga_rollback", "mga_savepoint"],
+      "assertions": ["SBDFS-060-001", "SBDFS-060-002", "SBDFS-060-003"]
+    },
+    {
+      "script_id": "SBDFS-070",
+      "path": "scripts/070_large_dataset_load.sbsql",
+      "coverage": ["large_dataset_load"],
+      "assertions": ["SBDFS-070-001", "SBDFS-070-002", "SBDFS-070-003"]
+    },
+    {
+      "script_id": "SBDFS-080",
+      "path": "scripts/080_metadata_security_authorization.sbsql",
+      "coverage": ["metadata_visibility", "authorization_refusal"],
+      "assertions": ["SBDFS-080-001", "SBDFS-080-002", "SBDFS-080-003", "SBDFS-080-004", "SBDFS-080-005"],
+      "expected_refusals": ["080_metadata_security_authorization.sbsql:6"]
+    },
+    {
+      "script_id": "SBDFS-090",
+      "path": "scripts/090_optimizer_paths.sbsql",
+      "coverage": ["optimizer_index_lookup", "optimizer_grouping", "optimizer_join", "optimizer_cte"],
+      "assertions": ["SBDFS-090-001"]
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "statement_ids": [
+    "080_metadata_security_authorization.sbsql:6"
+  ],
+  "expected_diagnostics": {
+    "080_metadata_security_authorization.sbsql:6": [
+      "SB_AUTH_OBJECT_NOT_VISIBLE",
+      "SECURITY.AUTHORIZATION.DENIED",
+      "SBSQL.NAME_RESOLUTION.NOT_FOUND_OR_NOT_VISIBLE"
+    ]
+  }
+}

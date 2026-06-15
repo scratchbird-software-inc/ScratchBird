@@ -1,0 +1,97 @@
+-- script_id: SBDFS-010
+-- Purpose: table/column/type boundary coverage.
+
+CREATE TABLE __SB_NAMESPACE__.datatype_matrix (
+    id INTEGER PRIMARY KEY,
+    bool_col BOOLEAN,
+    smallint_col SMALLINT,
+    integer_col INTEGER,
+    bigint_col BIGINT,
+    int128_col INT128,
+    decimal_col DECIMAL(38, 10),
+    numeric_col NUMERIC(38, 10),
+    real_col REAL,
+    double_col DOUBLE PRECISION,
+    char_col CHAR(8),
+    varchar_col VARCHAR(128),
+    text_col TEXT,
+    blob_col BLOB,
+    date_col DATE,
+    time_col TIME,
+    timestamp_col TIMESTAMP,
+    timestamptz_col TIMESTAMPTZ,
+    interval_col INTERVAL,
+    uuid_col UUID,
+    json_col JSON,
+    xml_col XML,
+    vector_col VECTOR(3),
+    array_col ARRAY<INTEGER>
+);
+
+INSERT INTO __SB_NAMESPACE__.datatype_matrix (
+    id, bool_col, smallint_col, integer_col, bigint_col, int128_col,
+    decimal_col, numeric_col, real_col, double_col, char_col, varchar_col,
+    text_col, blob_col, date_col, time_col, timestamp_col, timestamptz_col,
+    interval_col, uuid_col, json_col, xml_col, vector_col, array_col
+) VALUES (
+    1, TRUE, -32768, -2147483648, -9223372036854775808,
+    -170141183460469231731687303715884105728,
+    -9999999999999999999999999999.9999999999,
+    -12345678901234567890.1234567890,
+    -3.5, -9.25, 'charmin', 'varchar-min',
+    'text minimum path', X'000102030405',
+    DATE '0001-01-01', TIME '00:00:00',
+    TIMESTAMP '0001-01-01 00:00:00',
+    TIMESTAMPTZ '0001-01-01 00:00:00+00:00',
+    INTERVAL 'P1D',
+    UUID '018f0a2b-0000-7000-9000-000000000001',
+    JSON '{"kind":"min","n":1}',
+    XML '<root kind="min"/>',
+    VECTOR '[0,0,0]',
+    ARRAY[1,2,3]
+);
+
+INSERT INTO __SB_NAMESPACE__.datatype_matrix (
+    id, bool_col, smallint_col, integer_col, bigint_col, int128_col,
+    decimal_col, numeric_col, real_col, double_col, char_col, varchar_col,
+    text_col, blob_col, date_col, time_col, timestamp_col, timestamptz_col,
+    interval_col, uuid_col, json_col, xml_col, vector_col, array_col
+) VALUES (
+    2, FALSE, 32767, 2147483647, 9223372036854775807,
+    170141183460469231731687303715884105727,
+    9999999999999999999999999999.9999999999,
+    12345678901234567890.1234567890,
+    3.5, 9.25, 'charmax', 'varchar-max',
+    'text maximum path', X'fffefdfcfbfa',
+    DATE '9999-12-31', TIME '23:59:59',
+    TIMESTAMP '9999-12-31 23:59:59',
+    TIMESTAMPTZ '9999-12-31 23:59:59+00:00',
+    INTERVAL 'P2D',
+    UUID '018f0a2b-0000-7000-9000-000000000002',
+    JSON '{"kind":"max","n":2}',
+    XML '<root kind="max"/>',
+    VECTOR '[1,2,3]',
+    ARRAY[4,5,6]
+);
+
+INSERT INTO __SB_NAMESPACE__.datatype_matrix (id) VALUES (3);
+
+SELECT 'SBDFS-010-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       3 AS expected_count
+FROM __SB_NAMESPACE__.datatype_matrix;
+
+SELECT 'SBDFS-010-002' AS assertion_id,
+       COUNT(*) AS actual_null_rows,
+       1 AS expected_null_rows
+FROM __SB_NAMESPACE__.datatype_matrix
+WHERE bool_col IS NULL
+  AND integer_col IS NULL
+  AND text_col IS NULL
+  AND uuid_col IS NULL;
+
+SELECT 'SBDFS-010-003' AS assertion_id,
+       CAST(integer_col AS BIGINT) + CAST(smallint_col AS BIGINT) AS actual_cast_sum,
+       -2147516416 AS expected_cast_sum
+FROM __SB_NAMESPACE__.datatype_matrix
+WHERE id = 1;

@@ -1,0 +1,75 @@
+-- script_id: SBDFS-020
+-- Purpose: INSERT, UPDATE, DELETE, MERGE, UPSERT, ON CONFLICT, RETURNING.
+
+CREATE TABLE __SB_NAMESPACE__.dml_accounts (
+    account_id INTEGER PRIMARY KEY,
+    owner_name VARCHAR(64) NOT NULL,
+    balance DECIMAL(18, 2) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    updated_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE __SB_NAMESPACE__.dml_stage (
+    account_id INTEGER PRIMARY KEY,
+    owner_name VARCHAR(64) NOT NULL,
+    balance DECIMAL(18, 2) NOT NULL,
+    status VARCHAR(16) NOT NULL
+);
+
+INSERT INTO __SB_NAMESPACE__.dml_accounts (account_id, owner_name, balance, status) VALUES
+    (1, 'Ada', 100.00, 'open'),
+    (2, 'Grace', 200.00, 'open'),
+    (3, 'Linus', 300.00, 'hold');
+
+INSERT INTO __SB_NAMESPACE__.dml_stage (account_id, owner_name, balance, status) VALUES
+    (2, 'Grace Hopper', 225.00, 'open'),
+    (4, 'Barbara', 400.00, 'open');
+
+UPDATE __SB_NAMESPACE__.dml_accounts
+SET balance = balance + 25.00,
+    updated_count = updated_count + 1
+WHERE account_id = 1;
+
+DELETE FROM __SB_NAMESPACE__.dml_accounts
+WHERE status = 'hold';
+
+MERGE INTO __SB_NAMESPACE__.dml_accounts AS target
+USING __SB_NAMESPACE__.dml_stage AS source
+ON target.account_id = source.account_id
+WHEN MATCHED THEN UPDATE
+    SET owner_name = source.owner_name,
+        balance = source.balance,
+        status = source.status,
+        updated_count = target.updated_count + 1
+WHEN NOT MATCHED THEN INSERT (account_id, owner_name, balance, status, updated_count)
+    VALUES (source.account_id, source.owner_name, source.balance, source.status, 0);
+
+INSERT INTO __SB_NAMESPACE__.dml_accounts (account_id, owner_name, balance, status)
+VALUES (4, 'Barbara Duplicate', 1.00, 'closed')
+ON CONFLICT (account_id) DO NOTHING;
+
+INSERT INTO __SB_NAMESPACE__.dml_accounts (account_id, owner_name, balance, status)
+VALUES (2, 'Grace Updated', 226.00, 'open')
+ON CONFLICT (account_id) DO UPDATE
+SET owner_name = excluded.owner_name,
+    balance = excluded.balance,
+    updated_count = __SB_NAMESPACE__.dml_accounts.updated_count + 1;
+
+UPSERT INTO __SB_NAMESPACE__.dml_accounts (account_id, owner_name, balance, status)
+VALUES (5, 'Katherine', 500.00, 'open');
+
+SELECT 'SBDFS-020-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       4 AS expected_count
+FROM __SB_NAMESPACE__.dml_accounts;
+
+SELECT 'SBDFS-020-002' AS assertion_id,
+       CAST(SUM(balance) AS DECIMAL(18,2)) AS actual_balance,
+       CAST(1251.00 AS DECIMAL(18,2)) AS expected_balance
+FROM __SB_NAMESPACE__.dml_accounts;
+
+SELECT 'SBDFS-020-003' AS assertion_id,
+       owner_name AS actual_owner,
+       'Grace Updated' AS expected_owner
+FROM __SB_NAMESPACE__.dml_accounts
+WHERE account_id = 2;
