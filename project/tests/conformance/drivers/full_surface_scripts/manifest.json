@@ -98,6 +98,10 @@
     "large_dataset_load",
     "metadata_visibility",
     "authorization_refusal",
+    "recursive_group_authorization",
+    "security_grant_matrix",
+    "cross_user_sblr_replay_refusal",
+    "authorization_filtered_resolution",
     "optimizer_index_lookup",
     "optimizer_grouping",
     "optimizer_join",
@@ -238,6 +242,29 @@
       "coverage": ["metadata_visibility", "authorization_refusal"],
       "assertions": ["SBDFS-080-001", "SBDFS-080-002", "SBDFS-080-003", "SBDFS-080-004", "SBDFS-080-005"],
       "expected_refusals": ["080_metadata_security_authorization.sbsql:6"]
+    },
+    {
+      "script_id": "SBDFS-085",
+      "path": "scripts/085_security_authority_group_regression.sbsql",
+      "coverage": [
+        "authorization_refusal",
+        "recursive_group_authorization",
+        "security_grant_matrix",
+        "cross_user_sblr_replay_refusal",
+        "authorization_filtered_resolution"
+      ],
+      "assertions": [
+        "SBDFS-085-001",
+        "SBDFS-085-002",
+        "SBDFS-085-003",
+        "SBDFS-085-004",
+        "SBDFS-085-005",
+        "SBDFS-085-006",
+        "SBDFS-085-007",
+        "SBDFS-085-008",
+        "SBDFS-085-009",
+        "SBDFS-085-010"
+      ]
     },
     {
       "script_id": "SBDFS-090",

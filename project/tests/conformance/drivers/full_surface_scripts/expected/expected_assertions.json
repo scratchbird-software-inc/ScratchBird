@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "assertion_count": 70,
+  "assertion_count": 80,
   "assertion_result_shape": [
     "assertion_id",
     "actual_*",
