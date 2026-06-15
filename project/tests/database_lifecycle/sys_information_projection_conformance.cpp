@@ -62,6 +62,16 @@ bool RowContainsFieldValue(const info::SysInformationProjectionResult& result,
   return false;
 }
 
+std::size_t RequireRowIndex(const info::SysInformationProjectionResult& result,
+                            std::string_view field_name,
+                            std::string_view value,
+                            std::string_view message) {
+  for (std::size_t index = 0; index < result.rows.size(); ++index) {
+    if (Field(result.rows[index], field_name) == value) { return index; }
+  }
+  Fail(message);
+}
+
 void RequireNoUuidColumnsOrValues(const info::SysInformationProjectionResult& result) {
   for (const auto& row : result.rows) {
     for (const auto& field : row.fields) {
@@ -88,7 +98,54 @@ info::SysInformationProjectionContext Context() {
 
 std::vector<info::SysInformationCatalogObjectSource> CatalogObjects() {
   return {
+      {.object_uuid = "schema-sys",
+       .object_class = "schema",
+       .schema_uuid = "",
+       .catalog_generation_id = 1,
+       .created_local_transaction_id = 1},
+      {.object_uuid = "schema-sys-catalog",
+       .object_class = "schema",
+       .schema_uuid = "",
+       .parent_object_uuid = "schema-sys",
+       .catalog_generation_id = 1,
+       .created_local_transaction_id = 1},
+      {.object_uuid = "schema-sys-catalog-readable",
+       .object_class = "schema",
+       .schema_uuid = "",
+       .parent_object_uuid = "schema-sys",
+       .catalog_generation_id = 1,
+       .created_local_transaction_id = 1},
+      {.object_uuid = "table-sys-catalog-identity",
+       .object_class = "table",
+       .schema_uuid = "schema-sys-catalog",
+       .parent_object_uuid = "schema-sys-catalog",
+       .table_type = "SYSTEM TABLE",
+       .catalog_generation_id = 1,
+       .created_local_transaction_id = 1},
+      {.object_uuid = "view-sys-readable-nav-tree",
+       .object_class = "view",
+       .schema_uuid = "schema-sys-catalog-readable",
+       .parent_object_uuid = "schema-sys-catalog-readable",
+       .table_type = "SYSTEM VIEW",
+       .catalog_generation_id = 1,
+       .created_local_transaction_id = 1},
       {.object_uuid = "schema-app",
+       .object_class = "schema",
+       .schema_uuid = "",
+       .catalog_generation_id = 1,
+       .created_local_transaction_id = 1},
+      {.object_uuid = "schema-reporting",
+       .object_class = "schema",
+       .schema_uuid = "",
+       .parent_object_uuid = "schema-app",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "schema-emulated",
+       .object_class = "schema",
+       .schema_uuid = "",
+       .catalog_generation_id = 1,
+       .created_local_transaction_id = 1},
+      {.object_uuid = "schema-remote",
        .object_class = "schema",
        .schema_uuid = "",
        .catalog_generation_id = 1,
@@ -103,6 +160,26 @@ std::vector<info::SysInformationCatalogObjectSource> CatalogObjects() {
        .object_class = "view",
        .schema_uuid = "schema-app",
        .table_type = "VIEW",
+       .catalog_generation_id = 3,
+       .created_local_transaction_id = 3},
+      {.object_uuid = "procedure-refresh-customers",
+       .object_class = "procedure",
+       .schema_uuid = "schema-app",
+       .catalog_generation_id = 3,
+       .created_local_transaction_id = 3},
+      {.object_uuid = "function-customer-score",
+       .object_class = "function",
+       .schema_uuid = "schema-app",
+       .catalog_generation_id = 3,
+       .created_local_transaction_id = 3},
+      {.object_uuid = "package-customer-admin",
+       .object_class = "package",
+       .schema_uuid = "schema-app",
+       .catalog_generation_id = 3,
+       .created_local_transaction_id = 3},
+      {.object_uuid = "sequence-customer-id",
+       .object_class = "sequence",
+       .schema_uuid = "schema-app",
        .catalog_generation_id = 3,
        .created_local_transaction_id = 3},
       {.object_uuid = "table-hidden",
@@ -125,11 +202,119 @@ std::vector<info::SysInformationCatalogObjectSource> CatalogObjects() {
        .catalog_generation_id = 3,
        .created_local_transaction_id = 3,
        .cluster_path = true},
+      {.object_uuid = "user-alice",
+       .object_class = "user",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "group-engineering",
+       .object_class = "group",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "role-sysarch",
+       .object_class = "role",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "membership-alice-engineering-user-group",
+       .object_class = "security_user_group_membership",
+       .schema_uuid = "group-engineering",
+       .parent_object_uuid = "user-alice",
+       .table_type = "group",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "membership-alice-engineering-group-user",
+       .object_class = "security_group_user_membership",
+       .schema_uuid = "user-alice",
+       .parent_object_uuid = "group-engineering",
+       .table_type = "user",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "membership-alice-sysarch-user-role",
+       .object_class = "security_user_role_membership",
+       .schema_uuid = "role-sysarch",
+       .parent_object_uuid = "user-alice",
+       .table_type = "role",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "membership-alice-sysarch-role-user",
+       .object_class = "security_role_user_membership",
+       .schema_uuid = "user-alice",
+       .parent_object_uuid = "role-sysarch",
+       .table_type = "user",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "membership-engineering-sysarch-group-role",
+       .object_class = "security_group_role_membership",
+       .schema_uuid = "role-sysarch",
+       .parent_object_uuid = "group-engineering",
+       .table_type = "role",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "membership-engineering-sysarch-role-group",
+       .object_class = "security_role_group_membership",
+       .schema_uuid = "group-engineering",
+       .parent_object_uuid = "role-sysarch",
+       .table_type = "group",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "grant-alice-select",
+       .object_class = "security_grant",
+       .schema_uuid = "table-customers",
+       .parent_object_uuid = "user-alice",
+       .table_type = "principal",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "policy-default-security",
+       .object_class = "security_policy",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
+      {.object_uuid = "config-general-security",
+       .object_class = "security_configuration",
+       .catalog_generation_id = 2,
+       .created_local_transaction_id = 2},
   };
 }
 
 std::vector<info::SysInformationResolverNameSource> ResolverNames() {
   return {
+      {.object_uuid = "schema-sys",
+       .object_class = "schema",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "sys",
+       .normalized_lookup_key = "SYS",
+       .catalog_generation_id = 1},
+      {.object_uuid = "schema-sys-catalog",
+       .object_class = "schema",
+       .scope_uuid = "schema-sys",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "catalog",
+       .normalized_lookup_key = "CATALOG",
+       .catalog_generation_id = 1},
+      {.object_uuid = "schema-sys-catalog-readable",
+       .object_class = "schema",
+       .scope_uuid = "schema-sys",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "catalog_readable",
+       .normalized_lookup_key = "CATALOG_READABLE",
+       .catalog_generation_id = 1},
+      {.object_uuid = "table-sys-catalog-identity",
+       .object_class = "table",
+       .scope_uuid = "schema-sys-catalog",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "object_identity",
+       .normalized_lookup_key = "OBJECT_IDENTITY",
+       .catalog_generation_id = 1},
+      {.object_uuid = "view-sys-readable-nav-tree",
+       .object_class = "view",
+       .scope_uuid = "schema-sys-catalog-readable",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "navigator_tree",
+       .normalized_lookup_key = "NAVIGATOR_TREE",
+       .catalog_generation_id = 1},
       {.object_uuid = "schema-app",
        .object_class = "schema",
        .language_tag = "en",
@@ -137,6 +322,28 @@ std::vector<info::SysInformationResolverNameSource> ResolverNames() {
        .display_name = "app",
        .raw_name_text = "raw_schema_name_must_not_leak",
        .normalized_lookup_key = "APP",
+       .catalog_generation_id = 1},
+      {.object_uuid = "schema-reporting",
+       .object_class = "schema",
+       .scope_uuid = "schema-app",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "reporting",
+       .normalized_lookup_key = "REPORTING",
+       .catalog_generation_id = 2},
+      {.object_uuid = "schema-emulated",
+       .object_class = "schema",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "emulated",
+       .normalized_lookup_key = "EMULATED",
+       .catalog_generation_id = 1},
+      {.object_uuid = "schema-remote",
+       .object_class = "schema",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "remote",
+       .normalized_lookup_key = "REMOTE",
        .catalog_generation_id = 1},
       {.object_uuid = "table-customers",
        .object_class = "table",
@@ -155,6 +362,38 @@ std::vector<info::SysInformationResolverNameSource> ResolverNames() {
        .display_name = "commandes_ouvertes",
        .raw_name_text = "raw_open_orders_name_must_not_leak",
        .normalized_lookup_key = "COMMANDES_OUVERTES",
+       .catalog_generation_id = 3},
+      {.object_uuid = "procedure-refresh-customers",
+       .object_class = "procedure",
+       .scope_uuid = "schema-app",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "refresh_customers",
+       .normalized_lookup_key = "REFRESH_CUSTOMERS",
+       .catalog_generation_id = 3},
+      {.object_uuid = "function-customer-score",
+       .object_class = "function",
+       .scope_uuid = "schema-app",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "customer_score",
+       .normalized_lookup_key = "CUSTOMER_SCORE",
+       .catalog_generation_id = 3},
+      {.object_uuid = "package-customer-admin",
+       .object_class = "package",
+       .scope_uuid = "schema-app",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "customer_admin",
+       .normalized_lookup_key = "CUSTOMER_ADMIN",
+       .catalog_generation_id = 3},
+      {.object_uuid = "sequence-customer-id",
+       .object_class = "sequence",
+       .scope_uuid = "schema-app",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "customer_id_seq",
+       .normalized_lookup_key = "CUSTOMER_ID_SEQ",
        .catalog_generation_id = 3},
       {.object_uuid = "table-hidden",
        .object_class = "table",
@@ -177,6 +416,78 @@ std::vector<info::SysInformationResolverNameSource> ResolverNames() {
        .name_class = "primary",
        .display_name = "cluster_route",
        .catalog_generation_id = 3},
+      {.object_uuid = "user-alice",
+       .object_class = "user",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "alice",
+       .catalog_generation_id = 2},
+      {.object_uuid = "group-engineering",
+       .object_class = "group",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "engineering",
+       .catalog_generation_id = 2},
+      {.object_uuid = "role-sysarch",
+       .object_class = "role",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "sysarch",
+       .catalog_generation_id = 2},
+      {.object_uuid = "membership-alice-engineering-user-group",
+       .object_class = "security_user_group_membership",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "engineering",
+       .catalog_generation_id = 2},
+      {.object_uuid = "membership-alice-engineering-group-user",
+       .object_class = "security_group_user_membership",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "alice",
+       .catalog_generation_id = 2},
+      {.object_uuid = "membership-alice-sysarch-user-role",
+       .object_class = "security_user_role_membership",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "sysarch",
+       .catalog_generation_id = 2},
+      {.object_uuid = "membership-alice-sysarch-role-user",
+       .object_class = "security_role_user_membership",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "alice",
+       .catalog_generation_id = 2},
+      {.object_uuid = "membership-engineering-sysarch-group-role",
+       .object_class = "security_group_role_membership",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "sysarch",
+       .catalog_generation_id = 2},
+      {.object_uuid = "membership-engineering-sysarch-role-group",
+       .object_class = "security_role_group_membership",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "engineering",
+       .catalog_generation_id = 2},
+      {.object_uuid = "grant-alice-select",
+       .object_class = "security_grant",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "SELECT",
+       .catalog_generation_id = 2},
+      {.object_uuid = "policy-default-security",
+       .object_class = "security_policy",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "default_security_policy",
+       .catalog_generation_id = 2},
+      {.object_uuid = "config-general-security",
+       .object_class = "security_configuration",
+       .language_tag = "en",
+       .name_class = "primary",
+       .display_name = "general_security_configuration",
+       .catalog_generation_id = 2},
   };
 }
 
@@ -243,6 +554,24 @@ std::vector<info::SysInformationFrontendAgentSource> FrontendAgents() {
        .health_state = "healthy",
        .enabled = "YES",
        .policy_name = "default_memory_policy",
+       .catalog_generation_id = 1},
+  };
+}
+
+std::vector<info::SysInformationAgentPolicySource> AgentPolicies() {
+  return {
+      {.agent_uuid = "agent-memory-governor",
+       .agent_ref = "memory_governor",
+       .policy_uuid = "policy-default-memory",
+       .policy_ref = "default_memory_policy",
+       .policy_name = "default_memory_policy",
+       .policy_family = "memory",
+       .version_uuid = "policy-default-memory-v1",
+       .version_ref = "default_memory_policy:v1",
+       .active_state = "active",
+       .validation_state = "valid",
+       .attached_at = "2026-06-01T00:00:00Z",
+       .attached_by = "sysarch",
        .catalog_generation_id = 1},
   };
 }
@@ -347,16 +676,32 @@ void TestBuiltinProjectionDefinitionsValidate() {
       }
     }
   }
-  Require(info::BuiltinSysInformationProjectionDefinitions().size() == 98,
+  Require(info::BuiltinSysInformationProjectionDefinitions().size() == 119,
           "frontend catalog packet local projection count drifted");
-  Require(families["catalog_readable"] == 42,
+  Require(families["catalog_readable"] == 62,
           "catalog_readable frontend packet count drifted");
   Require(families["standard_information_schema"] == 30,
           "information_schema frontend packet count drifted");
   Require(families["scratchbird_extension"] == 16,
           "information extension frontend packet count drifted");
-  Require(families["frontend_projection"] == 10,
+  Require(families["frontend_projection"] == 11,
           "frontend projection packet count drifted");
+  const auto* object_identity = info::FindSysInformationProjectionDefinition(
+      "sys.catalog.object_identity");
+  Require(object_identity != nullptr,
+          "physical sys.catalog.object_identity table projection was not registered");
+  bool has_object_uuid_column = false;
+  for (const auto& column : object_identity->columns) {
+    if (column.column_name == "object_uuid" && column.logical_type == "uuid" &&
+        column.exposes_internal_uuid) {
+      has_object_uuid_column = true;
+      break;
+    }
+  }
+  Require(has_object_uuid_column,
+          "physical sys.catalog.object_identity did not preserve raw UUID column metadata");
+  Require(info::FindSysInformationProjectionDefinition("sys.key_descriptor") != nullptr,
+          "physical sys.key_descriptor table projection was not registered");
 }
 
 void TestAllLocalPacketViewsAreQueryable() {
@@ -393,11 +738,15 @@ void TestTablesProjectionJoinsResolverAndFilters() {
   const auto result = info::BuildSysInformationProjection(
       "sys.information_schema.tables", Context(), CatalogObjects(), ResolverNames());
   RequireOk(result, "tables projection failed");
-  Require(result.rows.size() == 2, "tables projection did not apply security/MGA/cluster filters");
+  Require(result.rows.size() >= 4, "tables projection omitted visible user or system relations");
   Require(RowContainsFieldValue(result, "table_name", "customers"),
           "tables projection did not use default-language resolver fallback");
   Require(RowContainsFieldValue(result, "table_name", "commandes_ouvertes"),
           "tables projection did not use session-language resolver name");
+  Require(RowContainsFieldValue(result, "table_name", "object_identity"),
+          "tables projection omitted visible system catalog table");
+  Require(RowContainsFieldValue(result, "table_name", "navigator_tree"),
+          "tables projection omitted visible system catalog view");
   Require(RowContainsFieldValue(result, "table_schema", "app"),
           "tables projection did not join schema name through resolver");
   Require(!RowContainsFieldValue(result, "table_name", "hidden_table"),
@@ -420,11 +769,23 @@ void TestSchemataProjectionUsesResolver() {
   const auto result = info::BuildSysInformationProjection(
       "sys.information_schema.schemata", Context(), CatalogObjects(), ResolverNames());
   RequireOk(result, "schemata projection failed");
-  Require(result.rows.size() == 1, "schemata projection returned wrong row count");
+  Require(result.rows.size() >= 7, "schemata projection omitted visible physical schemas");
   Require(Field(result.rows.front(), "catalog_name") == "CustomerDB",
           "schemata projection returned wrong catalog display name");
-  Require(Field(result.rows.front(), "schema_name") == "app",
-          "schemata projection did not use resolver-backed schema name");
+  Require(RowContainsFieldValue(result, "schema_name", "sys"),
+          "schemata projection did not use resolver-backed system schema name");
+  Require(RowContainsFieldValue(result, "schema_name", "catalog"),
+          "schemata projection did not use resolver-backed system catalog schema name");
+  Require(RowContainsFieldValue(result, "schema_name", "catalog_readable"),
+          "schemata projection did not use resolver-backed readable catalog schema name");
+  Require(RowContainsFieldValue(result, "schema_name", "app"),
+          "schemata projection did not use resolver-backed root schema name");
+  Require(RowContainsFieldValue(result, "schema_name", "reporting"),
+          "schemata projection did not use resolver-backed child schema name");
+  Require(RowContainsFieldValue(result, "schema_name", "emulated"),
+          "schemata projection hid empty contextual schema metadata");
+  Require(RowContainsFieldValue(result, "schema_name", "remote"),
+          "schemata projection hid empty contextual schema metadata");
   RequireNoUuidColumnsOrValues(result);
 }
 
@@ -486,6 +847,327 @@ void TestReadableCatalogProjectionRows() {
   Require(RowContainsFieldValue(objects, "comment_text", "Customer master data"),
           "catalog_readable objects did not join comments");
   RequireNoUuidColumnsOrValues(objects);
+
+  const auto object_tree = info::BuildSysInformationProjection(
+      "sys.catalog_readable.object_tree",
+      Context(),
+      CatalogObjects(),
+      ResolverNames(),
+      Comments());
+  RequireOk(object_tree, "catalog_readable object tree projection failed");
+  Require(RowContainsFieldValue(object_tree, "object_path", "app"),
+          "catalog_readable object tree omitted root schema path");
+  Require(RowContainsFieldValue(object_tree, "object_path", "app.customers"),
+          "catalog_readable object tree did not build child object path");
+  Require(RowContainsFieldValue(object_tree, "parent_path", "app"),
+          "catalog_readable object tree did not expose parent display path");
+  Require(RowContainsFieldValue(object_tree, "object_kind", "table"),
+          "catalog_readable object tree omitted table object kind");
+  Require(!RowContainsFieldValue(object_tree, "object_name", "hidden_table"),
+          "catalog_readable object tree exposed hidden object");
+  Require(!RowContainsFieldValue(object_tree, "object_name", "future_table"),
+          "catalog_readable object tree ignored MGA catalog generation visibility");
+  RequireNoUuidColumnsOrValues(object_tree);
+
+  const auto navigator_tree = info::BuildSysInformationProjection(
+      "sys.catalog_readable.navigator_tree",
+      Context(),
+      CatalogObjects(),
+      ResolverNames(),
+      Comments(),
+      {},
+      Columns());
+  RequireOk(navigator_tree, "catalog_readable navigator tree projection failed");
+  Require(RowContainsFieldValue(navigator_tree, "node_name", "CustomerDB"),
+          "navigator tree omitted database root node");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "database.management"),
+          "navigator tree omitted management pseudo group");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "database.filespaces"),
+          "navigator tree omitted filespaces pseudo group");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "schema"),
+          "navigator tree omitted physical schema nodes");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "table"),
+          "navigator tree omitted physical table nodes");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "view"),
+          "navigator tree omitted physical view nodes");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.users"),
+          "navigator tree omitted security users pseudo group");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.user"),
+          "navigator tree omitted security user object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.user.groups"),
+          "navigator tree omitted user groups pseudo group");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.user.group"),
+          "navigator tree omitted user group membership object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.user.role"),
+          "navigator tree omitted user role membership object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.user.grant"),
+          "navigator tree omitted user direct grant object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.group"),
+          "navigator tree omitted security group object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.group.user"),
+          "navigator tree omitted group user membership object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.group.role"),
+          "navigator tree omitted group role membership object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.role"),
+          "navigator tree omitted security role object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.role.user"),
+          "navigator tree omitted role user membership object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.role.group"),
+          "navigator tree omitted role group membership object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.policy"),
+          "navigator tree omitted security policy object");
+  Require(RowContainsFieldValue(navigator_tree, "node_role", "security.configuration"),
+          "navigator tree omitted security configuration object");
+  Require(RowContainsFieldValue(navigator_tree, "node_name", "Programmability"),
+          "navigator tree omitted programmability pseudo group");
+  Require(RowContainsFieldValue(navigator_tree, "node_name", "Triggers"),
+          "navigator tree omitted triggers pseudo group");
+  Require(RowContainsFieldValue(navigator_tree, "node_name", "refresh_customers"),
+          "navigator tree omitted procedure under physical or projected branch");
+  Require(RowContainsFieldValue(navigator_tree, "node_name", "customer_score"),
+          "navigator tree omitted function under physical or projected branch");
+  Require(RowContainsFieldValue(navigator_tree, "node_name", "customer_admin"),
+          "navigator tree omitted package under physical or projected branch");
+  Require(RowContainsFieldValue(navigator_tree, "node_name", "customer_id_seq"),
+          "navigator tree omitted sequence under physical or projected branch");
+  Require(!RowContainsFieldValue(navigator_tree, "node_name", "hidden_table"),
+          "navigator tree exposed hidden object");
+  Require(!RowContainsFieldValue(navigator_tree, "node_name", "future_table"),
+          "navigator tree ignored MGA catalog generation visibility");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/emulated"),
+          "navigator tree exposed empty emulated root schema");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/remote"),
+          "navigator tree exposed empty remote root schema");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Security"),
+          "navigator tree exposed security pseudo group at root");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Programmability"),
+          "navigator tree exposed programmability pseudo group at root");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Domains"),
+          "navigator tree exposed domains pseudo group at root");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Jobs"),
+          "navigator tree exposed jobs pseudo group at root");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Diagnostics / Metrics"),
+          "navigator tree exposed diagnostics pseudo group at root");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/Triggers"),
+          "navigator tree exposed triggers pseudo group at root");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/File-spaces"),
+          "navigator tree exposed filespaces pseudo group at root");
+
+  const auto database_index = RequireRowIndex(navigator_tree,
+                                             "node_path",
+                                              "CustomerDB",
+                                              "navigator tree omitted database path");
+  const auto management_index = RequireRowIndex(navigator_tree,
+                                               "node_path",
+                                               "CustomerDB/Management",
+                                               "navigator tree omitted management path");
+  const auto security_user_index = RequireRowIndex(navigator_tree,
+                                                  "node_path",
+                                                  "CustomerDB/Management/Security/users/alice",
+                                                  "navigator tree omitted security user path");
+  const auto security_user_groups_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/users/alice/groups",
+      "navigator tree omitted security user groups path");
+  const auto security_user_group_membership_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/users/alice/groups/engineering",
+      "navigator tree omitted security user group membership path");
+  const auto security_user_role_membership_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/users/alice/roles/sysarch",
+      "navigator tree omitted security user role membership path");
+  const auto security_user_grant_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/users/alice/grants/SELECT",
+      "navigator tree omitted security user direct grant path");
+  const auto security_group_index = RequireRowIndex(navigator_tree,
+                                                   "node_path",
+                                                   "CustomerDB/Management/Security/groups/engineering",
+                                                   "navigator tree omitted security group path");
+  const auto security_group_user_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/groups/engineering/users/alice",
+      "navigator tree omitted security group user membership path");
+  const auto security_group_role_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/groups/engineering/roles/sysarch",
+      "navigator tree omitted security group role membership path");
+  const auto security_group_grants_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/groups/engineering/grants",
+      "navigator tree omitted security group grants path");
+  const auto security_role_index = RequireRowIndex(navigator_tree,
+                                                  "node_path",
+                                                  "CustomerDB/Management/Security/roles/sysarch",
+                                                  "navigator tree omitted security role path");
+  const auto security_role_users_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/roles/sysarch/users",
+      "navigator tree omitted security role users path");
+  const auto security_role_user_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/roles/sysarch/users/alice",
+      "navigator tree omitted security role user membership path");
+  const auto security_role_group_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/roles/sysarch/groups/engineering",
+      "navigator tree omitted security role group membership path");
+  const auto security_policy_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/policies/default_security_policy",
+      "navigator tree omitted security policy path");
+  const auto security_configuration_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Security/configurations/general_security_configuration",
+      "navigator tree omitted security configuration path");
+  Require(security_user_index < security_user_groups_index &&
+              security_user_groups_index < security_user_group_membership_index &&
+              security_user_index < security_user_role_membership_index &&
+              security_user_index < security_user_grant_index &&
+              security_group_index < security_group_user_index &&
+              security_group_index < security_group_role_index &&
+              security_group_index < security_group_grants_index &&
+              security_role_index < security_role_users_index &&
+              security_role_users_index < security_role_user_index &&
+              security_role_index < security_role_group_index &&
+              security_policy_index < security_configuration_index,
+          "navigator tree did not parent security management paths correctly");
+  const auto db_triggers_index = RequireRowIndex(navigator_tree,
+                                                "node_path",
+                                                "CustomerDB/Management/Triggers",
+                                                "navigator tree omitted database triggers path");
+  const auto filespaces_index = RequireRowIndex(navigator_tree,
+                                               "node_path",
+                                               "CustomerDB/Management/File-spaces",
+                                               "navigator tree omitted filespaces path");
+  const auto app_index = RequireRowIndex(navigator_tree,
+                                        "node_path",
+                                        "CustomerDB/app",
+                                        "navigator tree omitted app schema path");
+  Require(database_index < management_index && management_index < db_triggers_index &&
+              db_triggers_index < filespaces_index &&
+              filespaces_index < app_index,
+          "navigator tree did not emit database folders in standard order");
+
+  const auto sys_index = RequireRowIndex(navigator_tree,
+                                        "node_path",
+                                        "CustomerDB/sys",
+                                        "navigator tree omitted sys physical root path");
+  const auto sys_catalog_index = RequireRowIndex(navigator_tree,
+                                                "node_path",
+                                                "CustomerDB/sys/catalog",
+                                                "navigator tree omitted sys catalog physical child path");
+  const auto sys_catalog_table_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/sys/catalog/object_identity",
+      "navigator tree omitted sys catalog physical table path");
+  const auto sys_catalog_readable_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/sys/catalog_readable",
+      "navigator tree omitted sys catalog_readable physical child path");
+  const auto sys_catalog_readable_view_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/sys/catalog_readable/navigator_tree",
+      "navigator tree omitted sys catalog_readable physical view path");
+  Require(sys_index < sys_catalog_index && sys_catalog_index < sys_catalog_table_index &&
+              sys_index < sys_catalog_readable_index &&
+              sys_catalog_readable_index < sys_catalog_readable_view_index,
+          "navigator tree did not parent sys physical children directly");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/sys/Schemas"),
+          "navigator tree grouped physical sys children under a pseudo Schemas folder");
+  Require(!RowContainsFieldValue(navigator_tree, "node_path", "CustomerDB/app/Schemas"),
+          "navigator tree grouped physical app children under a pseudo Schemas folder");
+
+  const auto reporting_index = RequireRowIndex(navigator_tree,
+                                              "node_path",
+                                              "CustomerDB/app/reporting",
+                                              "navigator tree omitted direct child schema path");
+  const auto table_index = RequireRowIndex(navigator_tree,
+                                          "node_path",
+                                          "CustomerDB/app/customers",
+                                          "navigator tree omitted direct table path");
+  const auto view_index = RequireRowIndex(navigator_tree,
+                                         "node_path",
+                                         "CustomerDB/app/commandes_ouvertes",
+                                         "navigator tree omitted direct view path");
+  Require(!RowContainsFieldValue(navigator_tree,
+                                 "node_path",
+                                 "CustomerDB/app/Tables/customers/Columns"),
+          "navigator tree grouped physical table children under a pseudo Tables folder");
+  Require(app_index < reporting_index && reporting_index < table_index &&
+              table_index < view_index,
+          "navigator tree did not emit direct physical schema children in standard order");
+
+  const auto programmability_index = RequireRowIndex(navigator_tree,
+                                                    "node_path",
+                                                    "CustomerDB/Management/Programmability",
+                                                    "navigator tree omitted root programmability path");
+  const auto programmability_procedures_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Programmability/procedures",
+      "navigator tree omitted root programmability procedures group");
+  const auto& programmability = navigator_tree.rows[programmability_procedures_index];
+  const std::string programmability_node_id = Field(programmability, "node_id");
+  const auto procedure_index = RequireRowIndex(navigator_tree,
+                                              "node_path",
+                                              "CustomerDB/Management/Programmability/procedures/refresh_customers",
+                                              "navigator tree omitted projected procedure path");
+  const auto programmability_functions_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Programmability/functions",
+      "navigator tree omitted root programmability functions group");
+  const auto function_index = RequireRowIndex(navigator_tree,
+                                             "node_path",
+                                             "CustomerDB/Management/Programmability/functions/customer_score",
+                                             "navigator tree omitted projected function path");
+  const auto programmability_packages_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Programmability/packages",
+      "navigator tree omitted root programmability packages group");
+  const auto package_index = RequireRowIndex(navigator_tree,
+                                            "node_path",
+                                            "CustomerDB/Management/Programmability/packages/customer_admin",
+                                            "navigator tree omitted projected package path");
+  const auto programmability_sequences_index = RequireRowIndex(
+      navigator_tree,
+      "node_path",
+      "CustomerDB/Management/Programmability/sequences",
+      "navigator tree omitted root programmability sequences group");
+  const auto sequence_index = RequireRowIndex(navigator_tree,
+                                             "node_path",
+                                             "CustomerDB/Management/Programmability/sequences/customer_id_seq",
+                                             "navigator tree omitted projected sequence path");
+  Require(Field(navigator_tree.rows[procedure_index], "parent_node_id") == programmability_node_id,
+          "navigator tree did not parent procedure under projected programmability procedures");
+  Require(programmability_index < programmability_procedures_index &&
+              programmability_procedures_index < procedure_index &&
+              procedure_index < programmability_functions_index &&
+              programmability_functions_index < function_index &&
+              function_index < programmability_packages_index &&
+              programmability_packages_index < package_index &&
+              package_index < programmability_sequences_index &&
+              programmability_sequences_index < sequence_index,
+          "navigator tree did not order projected programmability groups and children");
+  RequireNoUuidColumnsOrValues(navigator_tree);
 
   const auto relations = info::BuildSysInformationProjection(
       "sys.catalog_readable.relations",
@@ -566,6 +1248,62 @@ void TestSettingsAgentsAndProtectedMaterialRows() {
           "catalog_readable settings did not project redaction state");
   RequireNoUuidColumnsOrValues(settings);
 
+  const auto configuration_settings = info::BuildSysInformationProjection(
+      "sys.configuration.settings",
+      Context(),
+      {},
+      {},
+      {},
+      {},
+      {},
+      Settings());
+  RequireOk(configuration_settings, "sys.configuration settings projection failed");
+  Require(RowContainsFieldValue(configuration_settings, "setting_name", "metadata.visibility.strict_mode"),
+          "sys.configuration settings did not project setting name");
+  Require(RowContainsFieldValue(configuration_settings, "effective_state", "security_redacted"),
+          "sys.configuration settings did not project effective state");
+
+  const auto configuration_effective_settings = info::BuildSysInformationProjection(
+      "sys.configuration.effective_settings",
+      Context(),
+      {},
+      {},
+      {},
+      {},
+      {},
+      Settings());
+  RequireOk(configuration_effective_settings, "sys.configuration effective settings projection failed");
+  Require(RowContainsFieldValue(configuration_effective_settings, "resolved_from", "engine:runtime_secret"),
+          "sys.configuration effective settings did not project resolution source");
+
+  const auto configuration_profiles = info::BuildSysInformationProjection(
+      "sys.configuration.profiles",
+      Context(),
+      {},
+      {});
+  RequireOk(configuration_profiles, "sys.configuration profiles projection failed");
+
+  const auto configuration_policy_bindings = info::BuildSysInformationProjection(
+      "sys.configuration.policy_bindings",
+      Context(),
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      {},
+      AgentPolicies());
+  RequireOk(configuration_policy_bindings, "sys.configuration policy bindings projection failed");
+  Require(RowContainsFieldValue(configuration_policy_bindings, "policy_uuid", "policy-default-memory"),
+          "sys.configuration policy bindings did not project policy UUID");
+  Require(RowContainsFieldValue(configuration_policy_bindings, "binding_state", "active"),
+          "sys.configuration policy bindings did not project binding state");
+
   const auto agents = info::BuildSysInformationProjection(
       "sys.frontend.agents",
       Context(),
@@ -621,6 +1359,60 @@ void TestSettingsAgentsAndProtectedMaterialRows() {
   RequireNoUuidColumnsOrValues(versions);
 }
 
+void TestParserDialectProjectionRows() {
+  const auto dialects = info::BuildSysInformationProjection(
+      "sys.parser.dialects",
+      Context(),
+      {},
+      {});
+  RequireOk(dialects, "parser dialect projection failed");
+  Require(RowContainsFieldValue(dialects, "dialect_name", "SBsql"),
+          "parser dialect projection omitted SBsql");
+  Require(RowContainsFieldValue(dialects, "compatibility_state", "supported"),
+          "parser dialect projection did not advertise supported SBsql state");
+  RequireNoUuidColumnsOrValues(dialects);
+}
+
+void TestSessionRoleProjectionRows() {
+  auto context = Context();
+  context.principal_name = "alice";
+  context.principal_uuid = "principal-alice";
+  context.requested_role_name = "sysarch";
+  context.active_role_name = "sysarch";
+  context.active_role_uuid = "role-sysarch";
+  context.effective_role_names.push_back("sysarch");
+  context.effective_role_uuids.push_back("role-sysarch");
+  context.effective_group_uuids.push_back("group-public");
+
+  const auto enabled_roles = info::BuildSysInformationProjection(
+      "sys.information.enabled_roles",
+      context,
+      {},
+      {});
+  RequireOk(enabled_roles, "enabled roles projection failed");
+  Require(RowContainsFieldValue(enabled_roles, "role_name", "sysarch"),
+          "enabled roles projection omitted active sysarch role");
+  Require(RowContainsFieldValue(enabled_roles, "is_default", "YES"),
+          "enabled roles projection did not mark active role as default");
+  Require(RowContainsFieldValue(enabled_roles, "enabled_by", "requested_role"),
+          "enabled roles projection did not record requested role source");
+  RequireNoUuidColumnsOrValues(enabled_roles);
+
+  const auto applicable_roles = info::BuildSysInformationProjection(
+      "sys.information.applicable_roles",
+      context,
+      {},
+      {});
+  RequireOk(applicable_roles, "applicable roles projection failed");
+  Require(RowContainsFieldValue(applicable_roles, "grantee", "alice"),
+          "applicable roles projection omitted effective user");
+  Require(RowContainsFieldValue(applicable_roles, "role_name", "sysarch"),
+          "applicable roles projection omitted sysarch membership");
+  Require(RowContainsFieldValue(applicable_roles, "is_grantable", "NO"),
+          "applicable roles projection did not mark membership non-grantable");
+  RequireNoUuidColumnsOrValues(applicable_roles);
+}
+
 void TestMissingNameStrictModeFailsClosed() {
   auto objects = CatalogObjects();
   objects.push_back({.object_uuid = "table-no-visible-name",
@@ -666,6 +1458,8 @@ int main() {
   TestReadableCatalogProjectionRows();
   TestInformationColumnsProjectionRows();
   TestSettingsAgentsAndProtectedMaterialRows();
+  TestParserDialectProjectionRows();
+  TestSessionRoleProjectionRows();
   TestMissingNameStrictModeFailsClosed();
   TestClusterAndUnsupportedPathsFailClosed();
   return EXIT_SUCCESS;

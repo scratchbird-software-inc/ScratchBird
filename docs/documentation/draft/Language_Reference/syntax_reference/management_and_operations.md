@@ -27,15 +27,15 @@ Common operation families include:
 ## Statement Families
 
 ```ebnf
-management_statement ::=
+management_stmt ::=
       show_management
-    | alter_management
-    | config_statement
-    | support_bundle_statement ;
+    | maintenance_stmt
+    | config_stmt
+    | support_stmt ;
 
 observability_statement ::=
-      show_statement
-    | explain_statement ;
+      show_stmt
+    | explain_stmt ;
 ```
 
 SBsql is context sensitive. `SHOW`, `ALTER MANAGEMENT`, `CONFIG`, `SUPPORT BUNDLE`, and `EXPLAIN` words are command words inside their statement families and should not be treated as globally reserved identifiers outside those contexts.
@@ -102,7 +102,7 @@ Inspection targets are deliberately broad because operational users need to answ
 `ALTER MANAGEMENT` requests operational control over runtime targets. These commands require stronger privileges than inspection.
 
 ```ebnf
-alter_management ::=
+maintenance_stmt ::=
     ALTER MANAGEMENT management_target management_action management_filter? management_option_list? ;
 ```
 
@@ -140,7 +140,7 @@ Forced operations must fail closed when they would risk corruption, lose protect
 `CONFIG` statements validate, inspect, and reload configuration.
 
 ```ebnf
-config_statement ::=
+config_stmt ::=
       CONFIG SHOW config_target? config_option_list?
     | CONFIG VALIDATE config_target? config_option_list?
     | CONFIG RELOAD config_target? config_option_list?
@@ -174,7 +174,7 @@ Configuration rules:
 Support bundles collect authorized diagnostic evidence for troubleshooting. They must be redacted, manifest-driven, and reproducible enough for support work without exposing secrets or protected material.
 
 ```ebnf
-support_bundle_statement ::=
+support_stmt ::=
     SUPPORT BUNDLE support_bundle_action support_bundle_target? support_bundle_option_list? ;
 ```
 

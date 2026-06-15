@@ -1,0 +1,2859 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-crypto-functional-reference" id="toc-sb-crypto-functional-reference">SB Crypto Functional
+Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#argon2" id="toc-argon2"><code>argon2</code></a></li>
+<li><a href="#armor" id="toc-armor"><code>armor</code></a></li>
+<li><a href="#armor_binary" id="toc-armor_binary"><code>armor_binary</code></a></li>
+<li><a href="#bcrypt" id="toc-bcrypt"><code>bcrypt</code></a></li>
+<li><a href="#blake2b" id="toc-blake2b"><code>blake2b</code></a></li>
+<li><a href="#blake3" id="toc-blake3"><code>blake3</code></a></li>
+<li><a href="#crypt" id="toc-crypt"><code>crypt</code></a></li>
+<li><a href="#crypt_password_salt" id="toc-crypt_password_salt"><code>crypt_password_salt</code></a></li>
+<li><a href="#dearmor" id="toc-dearmor"><code>dearmor</code></a></li>
+<li><a href="#dearmor_text" id="toc-dearmor_text"><code>dearmor_text</code></a></li>
+<li><a href="#gen_random_bytes" id="toc-gen_random_bytes"><code>gen_random_bytes</code></a></li>
+<li><a href="#gen_random_bytes_n" id="toc-gen_random_bytes_n"><code>gen_random_bytes_n</code></a></li>
+<li><a href="#gen_random_uuid" id="toc-gen_random_uuid"><code>gen_random_uuid</code></a></li>
+<li><a href="#gen_salt" id="toc-gen_salt"><code>gen_salt</code></a></li>
+<li><a href="#gen_salt_algo" id="toc-gen_salt_algo"><code>gen_salt_algo</code></a></li>
+<li><a href="#hmac" id="toc-hmac"><code>hmac</code></a></li>
+<li><a href="#hmac_value_key_algo" id="toc-hmac_value_key_algo"><code>hmac_value_key_algo</code></a></li>
+<li><a href="#pgcrypto" id="toc-pgcrypto"><code>pgcrypto</code></a></li>
+<li><a href="#pgp_pub_decrypt" id="toc-pgp_pub_decrypt"><code>pgp_pub_decrypt</code></a></li>
+<li><a href="#pgp_pub_encrypt" id="toc-pgp_pub_encrypt"><code>pgp_pub_encrypt</code></a></li>
+<li><a href="#pgp_sym_decrypt" id="toc-pgp_sym_decrypt"><code>pgp_sym_decrypt</code></a></li>
+<li><a href="#pgp_sym_encrypt" id="toc-pgp_sym_encrypt"><code>pgp_sym_encrypt</code></a></li>
+<li><a href="#scrypt" id="toc-scrypt"><code>scrypt</code></a></li>
+<li><a href="#sha3_256" id="toc-sha3_256"><code>sha3_256</code></a></li>
+<li><a href="#sha3_512" id="toc-sha3_512"><code>sha3_512</code></a></li>
+<li><a href="#xxhash64" id="toc-xxhash64"><code>xxhash64</code></a></li>
+<li><a href="#xxhash64_value_seed" id="toc-xxhash64_value_seed"><code>xxhash64_value_seed</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_crypto.md -->
+<p><a id="ch-language-reference-functional-reference-sb-crypto-md"></a></p>
+<h1 id="sb-crypto-functional-reference">SB Crypto Functional
+Reference</h1>
+<p>Generation task: <code>sb_crypto</code></p>
+<p>Package namespace: <code>sb.crypto</code></p>
+<p>Cryptographic, hashing, random-value, armor, and bounded encryption
+helper functions.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Executes bounded cryptographic helper work inside the engine runtime.
+These functions do not grant secret access by themselves; statements
+still require descriptor, policy, and privilege admission.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>scalar</td>
+<td style="text-align: right;">27</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="argon2"><code>argon2</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>argon2</code> and returns
+dependency-unavailable diagnostic.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>argon2(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: provider-gated password/hash inputs.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>dependency-unavailable diagnostic.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>provider-gated row refuses with
+SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> argon2(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.argon2</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7efc-b382-c6063ea9c79e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_argon2.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_argon2</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>argon2</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC057-argon2-provider-refuses</code>.</p>
+<h3 id="armor"><code>armor</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>armor</code> and returns
+deterministic ScratchBird ASCII armor text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>armor(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one text or binary value.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>deterministic ScratchBird ASCII armor text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> armor(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.armor</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-74ec-bbd9-4ae6d355fd05</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_armor.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_armor</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>armor</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-armor-text</code>.</p>
+<h3 id="armor_binary"><code>armor_binary</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>armor_binary</code> and
+returns deterministic ScratchBird ASCII armor text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>armor(binary)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>binary</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one binary value.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>deterministic ScratchBird ASCII armor text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> armor_binary(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.armor_binary</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-77be-91e5-aeeac55d9b74</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_armor_binary.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_armor_binary</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>armor_binary</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-armor-binary</code>.</p>
+<h3 id="bcrypt"><code>bcrypt</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>bcrypt</code> and returns
+dependency-unavailable diagnostic.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>bcrypt(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: provider-gated password/hash inputs.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>dependency-unavailable diagnostic.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>provider-gated row refuses with
+SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> bcrypt(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.bcrypt</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f76-b620-8f7df70d8e21</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_bcrypt.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_bcrypt</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>bcrypt</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC057-bcrypt-provider-refuses</code>.</p>
+<h3 id="blake2b"><code>blake2b</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>blake2b</code> and returns
+openSSL EVP BLAKE2b-512 hex text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>blake2b(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: zero or one text/binary value.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>OpenSSL EVP BLAKE2b-512 hex text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> blake2b(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.blake2b</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-748d-902f-4c382da1b5c4</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_blake2b.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_blake2b</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>blake2b</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-blake2b-digest</code>.</p>
+<h3 id="blake3"><code>blake3</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>blake3</code> and returns
+dependency-unavailable diagnostic.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>blake3(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: provider-gated text/binary input.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>dependency-unavailable diagnostic.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>provider-gated row refuses with
+SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> blake3(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.blake3</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7445-ae37-ff1d4dd2b543</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_blake3.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_blake3</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>blake3</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC057-blake3-provider-refuses</code>.</p>
+<h3 id="crypt"><code>crypt</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>crypt</code> and returns
+dependency-unavailable diagnostic.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>crypt(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: provider-gated password/hash inputs.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>dependency-unavailable diagnostic.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>provider-gated row refuses with
+SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> crypt(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.crypt</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7245-8496-182b6c947da2</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_crypt.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_crypt</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>crypt</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC057-crypt-provider-refuses</code>.</p>
+<h3 id="crypt_password_salt"><code>crypt_password_salt</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>crypt_password_salt</code>
+and returns dependency-unavailable diagnostic.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>crypt(password,salt)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>password</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>salt</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: password and salt.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>dependency-unavailable diagnostic.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>provider-gated row refuses with
+SBSQL.FUNCTION.DEPENDENCY_UNAVAILABLE.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> crypt_password_salt(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.crypt_password_salt</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7bc4-a953-87f55445bf3d</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_crypt_password_salt.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_crypt_password_salt</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>crypt_password_salt</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC057-crypt-password-salt-provider-refuses</code>.</p>
+<h3 id="dearmor"><code>dearmor</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>dearmor</code> and returns
+binary payload bytes.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>dearmor(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one ScratchBird armor/base64 text.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>binary payload bytes.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> dearmor(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.dearmor</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-79d8-898d-abd8629b348c</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_dearmor.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_dearmor</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>dearmor</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-dearmor-armor</code>.</p>
+<h3 id="dearmor_text"><code>dearmor_text</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>dearmor_text</code> and
+returns binary payload bytes.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>dearmor(text)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>text</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one ScratchBird armor/base64 text.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>binary payload bytes.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> dearmor_text(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.dearmor_text</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7d35-8581-6f080dd3fdca</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_dearmor_text.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_dearmor_text</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>dearmor_text</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-dearmor-base64</code>.</p>
+<h3 id="gen_random_bytes"><code>gen_random_bytes</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>gen_random_bytes</code> and
+returns binary random bytes.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>gen_random_bytes(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: optional bounded byte count.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>binary random bytes.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> gen_random_bytes(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.gen_random_bytes</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7c39-a9f4-ac2b7f953aa4</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_gen_random_bytes.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_gen_random_bytes</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>gen_random_bytes</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC057-gen-random-bytes-default</code>.</p>
+<h3 id="gen_random_bytes_n"><code>gen_random_bytes_n</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>gen_random_bytes_n</code>
+and returns binary random bytes.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>gen_random_bytes(n)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>n</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li>Descriptor rule: bounded byte count.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>binary random bytes.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> gen_random_bytes_n(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.gen_random_bytes_n</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7fd1-9f51-e0fbf6fb2b05</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_gen_random_bytes_n.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_gen_random_bytes_n</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>gen_random_bytes_n</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-gen-random-bytes-n</code>.</p>
+<h3 id="gen_random_uuid"><code>gen_random_uuid</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>gen_random_uuid</code> and
+returns uuid text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>gen_random_uuid(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: no arguments.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>uuid text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> gen_random_uuid(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.gen_random_uuid</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7615-ba9c-4da476322745</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_gen_random_uuid.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_gen_random_uuid</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>gen_random_uuid</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-gen-random-uuid</code>.</p>
+<h3 id="gen_salt"><code>gen_salt</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>gen_salt</code> and returns
+deterministic bf salt descriptor.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>gen_salt(value_1, value_2)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>value_1</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value_2</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: zero or two bounded salt arguments.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>deterministic bf salt descriptor.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> gen_salt(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.gen_salt</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7d06-9aa1-b20c2b865445</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_gen_salt.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_gen_salt</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>gen_salt</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-gen-salt-default</code>.</p>
+<h3 id="gen_salt_algo"><code>gen_salt_algo</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>gen_salt_algo</code> and
+returns deterministic md5/bf salt descriptor.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>gen_salt(algo[,rounds])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>algo[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>rounds]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: algorithm and optional rounds.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>deterministic md5/bf salt descriptor.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> gen_salt_algo(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.gen_salt_algo</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-798e-9bf8-4e9d1e8a050e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_gen_salt_algo.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_gen_salt_algo</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>gen_salt_algo</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-gen-salt-md5</code>.</p>
+<h3 id="hmac"><code>hmac</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>hmac</code> and returns
+marker or OpenSSL HMAC hex text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>hmac(value_1, value_2, value_3)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>value_1</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value_2</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value_3</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: zero or three value/key/algorithm arguments.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>marker or OpenSSL HMAC hex text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> hmac(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.hmac</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-763a-8f17-c4b8f7b287bc</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_hmac.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_hmac</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>hmac</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-hmac-marker</code>.</p>
+<h3 id="hmac_value_key_algo"><code>hmac_value_key_algo</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>hmac_value_key_algo</code>
+and returns openSSL HMAC hex text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>hmac(text\|binary,key,algo)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>text\|binary</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>key</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li><code>algo</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: value, key, and algorithm.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>OpenSSL HMAC hex text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> hmac_value_key_algo(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.hmac_value_key_algo</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7879-8721-bdbd655a9290</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_hmac_value_key_algo.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_hmac_value_key_algo</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>hmac_value_key_algo</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-hmac-sha256</code>.</p>
+<h3 id="pgcrypto"><code>pgcrypto</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>pgcrypto</code> and returns
+compatibility envelope marker.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>pgcrypto(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: no arguments.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>compatibility envelope marker.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> pgcrypto(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.pgcrypto</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-725d-94c8-999bca25ec17</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_pgcrypto.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_pgcrypto</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>pgcrypto</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-pgcrypto-marker</code>.</p>
+<h3 id="pgp_pub_decrypt"><code>pgp_pub_decrypt</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>pgp_pub_decrypt</code> and
+returns decrypted character payload.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>pgp_pub_decrypt(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: ScratchBird pub envelope and key.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>decrypted character payload.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> pgp_pub_decrypt(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.pgp_pub_decrypt</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-77a1-b3d5-ea26727ce8d8</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_pgp_pub_decrypt.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_pgp_pub_decrypt</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>pgp_pub_decrypt</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-pgp-pub-decrypt</code>.</p>
+<h3 id="pgp_pub_encrypt"><code>pgp_pub_encrypt</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>pgp_pub_encrypt</code> and
+returns bounded ScratchBird pub envelope text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>pgp_pub_encrypt(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: value and public key descriptor.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>bounded ScratchBird pub envelope text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> pgp_pub_encrypt(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.pgp_pub_encrypt</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7dd4-968c-1dd3cc62b20c</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_pgp_pub_encrypt.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_pgp_pub_encrypt</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>pgp_pub_encrypt</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-pgp-pub-encrypt</code>.</p>
+<h3 id="pgp_sym_decrypt"><code>pgp_sym_decrypt</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>pgp_sym_decrypt</code> and
+returns decrypted character payload.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>pgp_sym_decrypt(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: ScratchBird sym envelope and key.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>decrypted character payload.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> pgp_sym_decrypt(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.pgp_sym_decrypt</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7307-b5fa-143dc6de25d0</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_pgp_sym_decrypt.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_pgp_sym_decrypt</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>pgp_sym_decrypt</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-pgp-sym-decrypt</code>.</p>
+<h3 id="pgp_sym_encrypt"><code>pgp_sym_encrypt</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>pgp_sym_encrypt</code> and
+returns bounded ScratchBird sym envelope text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>pgp_sym_encrypt(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: value and symmetric key.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>bounded ScratchBird sym envelope text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> pgp_sym_encrypt(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.pgp_sym_encrypt</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-765b-b72e-a39ab95aade5</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_pgp_sym_encrypt.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_pgp_sym_encrypt</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>pgp_sym_encrypt</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-pgp-sym-encrypt</code>.</p>
+<h3 id="scrypt"><code>scrypt</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>scrypt</code> and returns
+openSSL EVP_PBE_scrypt hex text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>scrypt(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: password, salt, and optional bounded
+parameters.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>OpenSSL EVP_PBE_scrypt hex text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> scrypt(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.scrypt</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7ea8-b7b5-9b4deee60808</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_scrypt.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_scrypt</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>scrypt</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-scrypt</code>.</p>
+<h3 id="sha3_256"><code>sha3_256</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>sha3_256</code> and returns
+openSSL SHA3-256 hex text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>sha3_256(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: zero or one text/binary value.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>OpenSSL SHA3-256 hex text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> sha3_256(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.sha3_256</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-702e-b9a5-28aa6b997f82</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_sha3_256.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_sha3_256</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sha3_256</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-sha3-256</code>.</p>
+<h3 id="sha3_512"><code>sha3_512</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>sha3_512</code> and returns
+openSSL SHA3-512 hex text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>sha3_512(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: zero or one text/binary value.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>OpenSSL SHA3-512 hex text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb25"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> sha3_512(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.sha3_512</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f5e-8666-07a0756c9405</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_sha3_512.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_sha3_512</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>sha3_512</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-sha3-512</code>.</p>
+<h3 id="xxhash64"><code>xxhash64</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>xxhash64</code> and returns
+uint64 xxhash64 value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xxhash64(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: zero or one text/binary value.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>uint64 xxhash64 value.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xxhash64(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.xxhash64</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-73ad-b373-adec35c35f74</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_xxhash64.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_xxhash64</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xxhash64</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-xxhash64</code>.</p>
+<h3 id="xxhash64_value_seed"><code>xxhash64_value_seed</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>xxhash64_value_seed</code>
+and returns uint64 xxhash64 value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xxhash64(text\|binary[,seed])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>text\|binary[</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li><code>seed]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: text/binary value and optional uint64 seed.</li>
+<li>Coercion: bounded text/binary/uint64 argument coercion through SBLR
+scalar values only.</li>
+<li>NULL handling: NULL inputs preserve SQL NULL for value-returning
+helpers; provider-gated rows fail closed before data disclosure.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>uint64 xxhash64 value.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile_value for random-byte/uuid helpers;
+stable_statement for deterministic crypto descriptors.</li>
+<li>Determinism: deterministic under fixture random/uuid overrides;
+random helpers use OpenSSL RAND otherwise.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for returned character
+descriptors; binary payloads are byte-stable.</li>
+<li>Timezone: not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR crypto.hash runtime
+using OpenSSL EVP/RAND/HMAC/scrypt where locally available, in-core
+xxhash64, deterministic ScratchBird armor/dearmor, and bounded
+ScratchBird PGP envelopes that do not claim OpenPGP compatibility; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed armor/envelope, unsupported algorithm, or
+out-of-budget request refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb27"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xxhash64_value_seed(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.crypto.xxhash64_value_seed</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7677-96ef-016bc0a5d9c5</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.crypto_xxhash64_value_seed.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.crypto_xxhash64_value_seed</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xxhash64_value_seed</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC057-xxhash64-seed</code>.</p>
+</body>
+</html>

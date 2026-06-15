@@ -221,15 +221,15 @@ When those routes return a rowset, they may be consumed by `WITH`, a derived tab
 ## Syntax Productions
 
 ```ebnf
-query_statement         ::= select_statement | with_statement | values_statement | nosql_query_statement ;
+query_dml_stmt          ::= select_statement | with_clause | values_stmt | nosql_query_statement ;
 ```
 
 ```ebnf
-select_statement        ::= "SELECT" select_modifier? projection_list from_clause? where_clause? group_by_clause? having_clause? window_clause? order_by_clause? limit_clause? ;
+select_statement        ::= "SELECT" set_quantifier? projection_list from_clause? where_clause? group_by_clause? having_clause? window_clause? order_by_clause? limit_clause? ;
 ```
 
 ```ebnf
-select_modifier         ::= "ALL" | "DISTINCT" ;
+set_quantifier          ::= "ALL" | "DISTINCT" ;
 ```
 
 ```ebnf

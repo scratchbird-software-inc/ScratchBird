@@ -196,6 +196,7 @@ final class ScratchBirdSchemaTreeBuilder {
         private final Map<String, Node> children = new LinkedHashMap<>();
         private boolean terminal;
         private boolean catalogBacked;
+        private boolean clientOnly;
         @NotNull
         private ScratchBirdObjectPath objectPath;
         @NotNull
@@ -233,7 +234,7 @@ final class ScratchBirdSchemaTreeBuilder {
         }
 
         boolean isClientOnly() {
-            return !catalogBacked && ScratchBirdNamespaceSemantics.isMetricsPath(fullPath);
+            return clientOnly;
         }
 
         @NotNull
@@ -247,7 +248,11 @@ final class ScratchBirdSchemaTreeBuilder {
         }
 
         void mark(@NotNull ScratchBirdCatalogObjectReference reference, boolean terminal) {
+            if (!terminal && this.terminal && clientOnly && !reference.clientOnly() && !reference.hasCatalogIdentity()) {
+                return;
+            }
             this.catalogBacked = this.catalogBacked || reference.catalogBacked();
+            this.clientOnly = this.clientOnly || reference.clientOnly();
             this.terminal = this.terminal || terminal;
             if (terminal || !objectPath.hasCatalogIdentity()) {
                 this.objectPath = ScratchBirdObjectPath.fromCatalogReference(reference);

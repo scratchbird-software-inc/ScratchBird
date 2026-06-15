@@ -2,13 +2,15 @@
 
 ## Purpose
 
-This page gives a safe path for creating or opening a first ScratchBird database. It is written as an orientation guide rather than a fixed command transcript because command names, binary locations, configuration defaults, and release packaging can vary by build target.
+Creating your first ScratchBird database is less about running a single command and more about verifying that several things work together: the right build output, the right operating mode, the right resource files, and a working transaction cycle. This page gives you a safe path through that verification.
 
-The goal of a first database is modest: prove that the selected build can create or open a database, connect through the intended mode, run a small transaction, return diagnostics, and shut down cleanly.
+The goal is modest but meaningful: prove that the selected build can create or open a database, connect through the intended mode, run a small transaction, return diagnostics, and shut down cleanly. Everything that comes after — schema design, compatibility parsers, administration — builds on this foundation.
+
+This page is an orientation guide rather than a fixed command transcript, because command names, binary locations, configuration defaults, and release packaging can vary by build target.
 
 ## Before You Start
 
-Confirm these items before creating a database:
+Before creating a database, confirm these items. Each one affects whether your first test works, and discovering a gap mid-test is more disruptive than checking first.
 
 | Item | Why It Matters |
 | --- | --- |
@@ -23,62 +25,40 @@ Do not create first-test databases in directories that also hold release binarie
 
 ## Choose A Mode
 
-ScratchBird can be approached through more than one mode. Pick one path for the first test instead of mixing them.
+ScratchBird can be approached through more than one mode. For a first test, pick one path and follow it all the way through rather than mixing modes.
 
 | Mode | First-Test Shape | Use When |
 | --- | --- | --- |
-| Embedded engine | Application or test tool opens SBcore directly. | You are validating library embedding or an application-local database. |
-| Single-node IPC server | Local client talks to SBsrv. | Several local clients need one server process without a network listener. |
-| Standalone server | Client enters through SBgate and parser routing. | You are validating network-facing listener and parser behavior. |
-| Managed group deployment | Client enters through SBmgr, then listener and parser routing. | You need managed entry points and shared identity or policy integration. |
+| Embedded engine | Application or test tool opens SBcore (the core database engine) directly. | You are validating library embedding or an application-local database. |
+| Single-node IPC server | Local client talks to SBsrv (the local server process). | Several local clients need one server process without a network listener. |
+| Standalone server | Client enters through SBgate (the listener and router) and parser routing. | You are validating network-facing listener and parser behavior. |
+| Managed group deployment | Client enters through SBmgr (the manager front-door), then listener and parser routing. | You need managed entry points and shared identity or policy integration. |
 
 For a first user workflow, the single-node IPC or standalone server modes are often easiest to reason about because they show a clear client/server boundary. Embedded tests are better when the application itself is the product boundary.
 
 ## First Database Flow
 
-```mermaid
-flowchart TD
-    Output[Locate build output]
-    Resources[Verify resources and config]
-    Mode[Choose one operating mode]
-    Start[Start required runtime process]
-    Create[Create or open test database]
-    Connect[Connect with SBsql]
-    Schema[Create schema and table]
-    Work[Insert, query, and commit]
-    Negative[Test one controlled failure]
-    Stop[Detach and stop cleanly]
-    Review[Review diagnostics and logs]
+The flow below shows a safe sequence. Each step builds on the previous one, so work through them in order rather than jumping ahead to the SQL.
 
-    Output --> Resources
-    Resources --> Mode
-    Mode --> Start
-    Start --> Create
-    Create --> Connect
-    Connect --> Schema
-    Schema --> Work
-    Work --> Negative
-    Negative --> Stop
-    Stop --> Review
-```
+![diagram](./first_database-1.svg)
 
 ## Pick A Test Database Name
 
 Use a name that clearly identifies the database as disposable, for example:
 
-- `scratchbird_getting_started`;
-- `first_database_test`;
-- `sbsql_smoke_test`.
+- `scratchbird_getting_started`
+- `first_database_test`
+- `sbsql_smoke_test`
 
 Keep the database in a temporary test location until you know how the selected operating mode handles database paths, configuration, identity, and cleanup.
 
 ## Create Or Open The Database
 
-The exact command depends on the selected binary and mode. The operation should establish:
+The exact command depends on the selected binary and mode. Whatever that command is, the operation should establish:
 
 - database file or database resource location;
 - initial catalog;
-- initial filespace;
+- initial filespace (the physical file organization backing the database);
 - initial character set and collation behavior;
 - security and policy baseline;
 - parser route for the first session;
@@ -88,7 +68,7 @@ In a first test, avoid advanced options. Do not test backup, restore, repair, im
 
 ## First SBsql Workload
 
-Once connected with SBsql, run a small transaction that exercises names, types, inserts, selects, and commit.
+Once connected with SBsql (ScratchBird's native command language), run a small transaction that exercises names, types, inserts, selects, and commit. The example below uses native SBsql syntax with standard types.
 
 ```sql
 create schema app;
@@ -112,13 +92,11 @@ order by note_id;
 commit;
 ```
 
-This example uses native SBsql. If a release changes spelling, available types, or built-in function names, follow the Language Reference for that release.
+This example exercises table creation, column descriptors, scalar datatypes, a named constraint, schema-qualified name resolution, and a transaction commit. If a release changes spelling, available types, or built-in function names, follow the Language Reference for that release.
 
 ## Verify A Controlled Refusal
 
-A first database test should include one intentional failure. The goal is not to break the system; the goal is to confirm that invalid work returns a controlled diagnostic.
-
-Example:
+A first database test should include one intentional failure. The goal is not to break the system; it is to confirm that invalid work returns a controlled diagnostic rather than a confusing crash or silent success.
 
 ```sql
 select *
@@ -135,7 +113,7 @@ Expected behavior:
 
 ## Confirm The Database Reopens
 
-After the first transaction:
+After the first transaction, verify that the data was actually written to durable storage, not just held in memory. This rules out a silent failure in the commit or reopen path.
 
 1. Detach the client.
 2. Stop the server process if the selected mode uses one.
@@ -152,7 +130,7 @@ from app.notes
 order by note_id;
 ```
 
-The point is to prove that the database did not only work in memory during the first session.
+If the rows are not present, check whether the transaction was committed, whether the same database was reopened, and whether the current schema is the one you expect.
 
 ## What Success Looks Like
 
@@ -193,6 +171,8 @@ When the first test is complete:
 - do not delete shared resource files from the output tree.
 
 ## Where To Go Next
+
+With the database working, the natural next step is to explore the SQL language more fully. [First SBsql Session](first_sbsql_session.md) walks through a guided session covering schema context, transaction control, and how to read diagnostics.
 
 - [First SBsql Session](first_sbsql_session.md)
 - [Schemas, Objects, And Names](schemas_objects_and_names.md)

@@ -10,6 +10,7 @@
 #include <openssl/ssl.h>
 
 #include <arpa/inet.h>
+#include <atomic>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -320,6 +321,23 @@ bool RunSbwpTlsProbe(int port) {
   return true;
 }
 
+bool RunConcurrentSbwpTlsProbes(int port, int count) {
+  std::atomic<int> passed{0};
+  std::vector<std::thread> threads;
+  threads.reserve(static_cast<std::size_t>(count));
+  for (int i = 0; i < count; ++i) {
+    threads.emplace_back([port, &passed] {
+      if (RunSbwpTlsProbe(port)) {
+        passed.fetch_add(1, std::memory_order_relaxed);
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  return passed.load(std::memory_order_relaxed) == count;
+}
+
 bool PlaintextRefused(int port) {
   int fd = -1;
   for (int i = 0; i < 120; ++i) {
@@ -424,6 +442,7 @@ int main(int argc, char** argv) {
     if (!ok) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
+  ok = ok && RunConcurrentSbwpTlsProbes(port, 4);
   ::kill(pid, SIGTERM);
   int status = 0;
   for (int i = 0; i < 120; ++i) {

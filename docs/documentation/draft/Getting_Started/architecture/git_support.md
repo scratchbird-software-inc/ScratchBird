@@ -2,33 +2,51 @@
 
 ## Purpose
 
-ScratchBird documentation uses Git-oriented workflows to describe how database-related source assets can be reviewed, versioned, tested, and reproduced alongside application code.
+After reading this page you will understand what kinds of database-related files belong in a Git repository, what does not belong there, and — crucially — why Git and the database engine are different systems that should not be confused with each other.
+
+Git is a natural fit for the source assets you write and review before running them against a database: scripts, fixtures, configuration templates, and expected results. What Git cannot do is replace the database. It does not own transaction history, catalog state, backup durability, authorization, or recovery decisions. This page describes the boundary between those two worlds.
 
 Git is useful for managing scripts, configuration templates, fixtures, expected results, and documentation. Git does not replace database backups, recovery, transaction history, authorization, support bundles, or engine-owned catalog state.
 
+ScratchBird also provides a distinct, opt-in capability — **external Git catalog versioning** — that lets you export a snapshot of the catalog into a form an external Git repository can track, diff the live catalog against a tracked snapshot, and produce a rollback *plan*. This is a controlled review-and-versioning convenience, **not** a change of authority: Git never executes against the database, and applying a planned change still flows through the engine's authorized catalog API. That capability is described in its own section below; the rest of this page covers the everyday source-control workflow.
+
 ## The Core Distinction
 
-```mermaid
-flowchart LR
-    Repo[Git repository]
-    Scripts[Reviewed scripts and fixtures]
-    Runner[SBsql or tool runner]
-    Parser[Parser and binder]
-    Engine[SBcore]
-    Catalog[Durable catalog state]
-    Data[Durable data]
-    Diagnostics[Diagnostics and proof results]
-
-    Repo --> Scripts
-    Scripts --> Runner
-    Runner --> Parser
-    Parser --> Engine
-    Engine --> Catalog
-    Engine --> Data
-    Engine --> Diagnostics
-```
+![diagram](./git_support-1.svg)
 
 Git tracks the request material and expected proof artifacts. SBcore owns the durable result after admitted execution.
+
+## External Git Catalog Versioning
+
+Beyond tracking hand-written scripts, ScratchBird can export the **catalog itself** as a set of content-hashed artifacts that an external Git repository can version, review, and diff over time. This lets a team keep a Git-tracked history of catalog structure and compare or reconcile a live database against a committed snapshot — while the engine remains the sole authority over what actually changes.
+
+This capability is **opt-in and policy-gated**. The engine refuses external-git operations unless the request carries `external_git_policy:enabled` (or `allow_external_git_versioning:true`); without it the operation is refused with `external_git_policy_required`.
+
+### What The Engine Provides
+
+| Operation | Surface | Role |
+| --- | --- | --- |
+| `EXPORT CATALOG ARTIFACT` | SBsql statement (requires `right.catalog_read`) | Exports catalog objects as `sb.catalog.artifact.v1` rows, recorded under `sys.catalog.artifacts`. |
+| `IMPORT CATALOG ARTIFACT` | SBsql statement (requires `right.catalog_mutate`) | Applies an authorized catalog artifact through the engine — the only admitted way to *apply* a change. |
+| Export external Git snapshot | Engine artifact API / SBLR opcode `artifact.external_git.export_snapshot` | Emits a `sb.external_git.catalog_snapshot.v1` manifest plus one content-hashed object row per catalog object. |
+| Diff external Git snapshot | SBLR opcode `artifact.external_git.diff_snapshot` | Compares the live catalog to a candidate snapshot, classifying each object as `unchanged`, `modified`, `added_in_candidate`, or `removed_from_candidate`. |
+| Plan external Git rollback | SBLR opcode `artifact.external_git.rollback_plan` | Produces a rollback *plan* (actions such as `restore_current_catalog_artifact`, `reject_candidate_only_object_until_authorized_catalog_create`, or `no_action_required`) — it does not apply anything. |
+
+The three `external_git.*` operations are exposed through the engine artifact API and SBLR opcodes, not as typed SBsql statements; the `EXPORT`/`IMPORT CATALOG ARTIFACT` statements are the SBsql-level entry points. Each object row carries a stable `content_hash`; the engine recomputes it and rejects a snapshot whose supplied hash does not match (`external_git_snapshot_hash_mismatch`), is missing object identity (`external_git_snapshot_object_required`), or repeats a UUID (`external_git_snapshot_duplicate_uuid`).
+
+### The Authority Boundary (Why This Is Safe)
+
+Every external-git result carries explicit authority evidence, and the boundary is enforced, not advisory:
+
+- `external_git_versioning` = `convenience_snapshot_review_only` — versioning and review only.
+- `git_runtime_authority` = `false` and `external_git_repository_authority` = `false` — Git never executes and is never an authority.
+- `catalog_runtime_authority` = `ScratchBird_catalog_api` and `mga_transaction_authority` = `local_mga_transaction_inventory` — the engine catalog API and MGA keep authority.
+- A diff row is marked `requires_authorized_catalog_import` = `true`, and the rollback apply route is `authorized_catalog_api_not_git_repository` — to actually apply a reconciliation you use `IMPORT CATALOG ARTIFACT` through the engine, never a direct Git apply.
+- Any attempt to claim direct authority — `git_runtime_authority:true`, `external_git_direct_authority:true`, or `external_git_direct_apply:true` — is refused with `external_git_authority_forbidden`.
+
+In short: Git can hold a versioned, diffable history of your catalog and you can plan a rollback from it, but the engine is the only thing that ever changes the database, through its authorized, MGA-governed catalog API. Object identity in these artifacts is UUID-based (`identity_authority` = `uuid`), so a snapshot tracks durable identity rather than just names.
+
+For the operator workflow and the full operation/format reference, see the Operations and Administration and Language Reference manuals linked at the end of this page.
 
 ## What Belongs In Git
 
@@ -90,7 +108,7 @@ This is only an example layout. The important rule is to keep source material se
 
 ## Migration Scripts
 
-A migration script is a reviewed request to change the database. It is not the durable change by itself.
+A migration script is a reviewed request to change the database. It is not the durable change by itself — the change only becomes durable after the script is executed and the engine commits the transaction. This distinction matters because two teams could have identical migration scripts yet end up with databases that differ in catalog identity, UUID assignments, or row contents depending on the history of each database.
 
 A good migration workflow records:
 
@@ -150,9 +168,9 @@ Good template behavior:
 
 ## Git And Database Identity
 
-ScratchBird uses UUID-backed catalog identity. Git tracks text files.
+ScratchBird uses UUID-backed catalog identity. Git tracks text files. These are fundamentally different things, and confusing them leads to subtle problems in migrations and dependency tracking.
 
-That means:
+Concretely:
 
 - a script can request `create table app.notes`;
 - the engine creates or modifies durable catalog objects;

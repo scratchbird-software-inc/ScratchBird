@@ -20,32 +20,7 @@ ScratchBird is built around a small number of boundaries:
 
 The result is a system where several client surfaces can exist without making any one client language the engine itself.
 
-```mermaid
-flowchart TB
-    Client[Client or tool]
-    Manager[Optional manager entry point]
-    Listener[Listener and parser route]
-    Parser[Parser package]
-    SBLR[SBLR request]
-    Engine[SBcore engine authority]
-    Catalog[UUID catalog and descriptors]
-    Security[Authentication, grants, and policy]
-    Txn[MGA transaction state]
-    Storage[Storage and filespaces]
-    Diagnostics[Message vectors and diagnostics]
-
-    Client --> Manager
-    Client --> Listener
-    Manager --> Listener
-    Listener --> Parser
-    Parser --> SBLR
-    SBLR --> Engine
-    Engine --> Catalog
-    Engine --> Security
-    Engine --> Txn
-    Engine --> Storage
-    Engine --> Diagnostics
-```
+![diagram](./how_scratchbird_implements_a_cde-1.svg)
 
 ## Main Components
 
@@ -81,24 +56,7 @@ The engine owns:
 
 Parser packages can request work, but they do not own durable identity, final transaction state, storage recovery, or security authority.
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Parser
-    participant Engine
-    participant Catalog
-    participant Transaction
-    participant Storage
-
-    User->>Parser: Command or protocol request
-    Parser->>Parser: Parse, bind visible names, apply parser rules
-    Parser->>Engine: Submit bound SBLR request
-    Engine->>Catalog: Resolve UUID-backed object descriptors
-    Engine->>Transaction: Check visibility and transaction state
-    Engine->>Storage: Execute admitted read or write
-    Engine-->>Parser: Result or message vector
-    Parser-->>User: Client-shaped response
-```
+![diagram](./how_scratchbird_implements_a_cde-2.svg)
 
 ## Parser Separation
 
@@ -157,23 +115,7 @@ This is important for compatibility and security:
 - catalog projection objects can expose selected metadata without giving the user direct access outside the sandbox;
 - object names can be resolved relative to the session instead of requiring one global flat namespace.
 
-```mermaid
-flowchart TB
-    Root[/Database Root/]
-    System[System Branch]
-    Security[Security Branch]
-    App[Application Branch]
-    Workarea[Compatibility Workarea]
-    Catalog[Catalog Projection Objects]
-    UserObjects[User Tables, Views, Routines]
-
-    Root --> System
-    Root --> Security
-    Root --> App
-    App --> Workarea
-    Workarea --> Catalog
-    Workarea --> UserObjects
-```
+![diagram](./how_scratchbird_implements_a_cde-3.svg)
 
 The exact objects visible to a session depend on parser route, authentication, authorization, policy, and schema root.
 
@@ -218,17 +160,7 @@ ScratchBird can be used through several operating modes. The correct mode depend
 | Standalone server | Client -> SBgate -> parser -> SBcore | Network clients use listener and parser routing. |
 | Managed group deployment | Client -> SBmgr -> SBgate -> parser -> SBcore | Local installations need a managed front door and shared identity or policy integration. |
 
-```mermaid
-flowchart LR
-    EmbeddedApp[Embedded application] --> Core1[SBcore]
-    LocalClient[Local client] --> IPC[SBsrv]
-    IPC --> Core2[SBcore]
-    NetworkClient[Network client] --> Gate[SBgate]
-    Gate --> Parser[Parser package]
-    Parser --> Core3[SBcore]
-    ManagedClient[Managed client] --> Manager[SBmgr]
-    Manager --> Gate
-```
+![diagram](./how_scratchbird_implements_a_cde-4.svg)
 
 Read the operating-mode pages before choosing a deployment shape.
 

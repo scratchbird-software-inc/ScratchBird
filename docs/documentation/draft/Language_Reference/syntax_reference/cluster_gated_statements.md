@@ -51,11 +51,11 @@ A cluster distributed query is different. It lets a cluster-aware authority plan
 ## Syntax
 
 ```ebnf
-private_cluster_statement ::=
+cluster_stmt ::=
       show_cluster
-    | alter_cluster
-    | create_cluster
-    | drop_cluster ;
+    | alter_cluster_stmt
+    | create_cluster_stmt
+    | drop_cluster_stmt ;
 ```
 
 ```ebnf
@@ -78,7 +78,7 @@ cluster_target ::=
 ```
 
 ```ebnf
-create_cluster ::=
+create_cluster_stmt ::=
     CREATE CLUSTER cluster_ref cluster_create_payload? ;
 
 cluster_create_payload ::=
@@ -90,7 +90,7 @@ cluster_create_payload ::=
 ```
 
 ```ebnf
-alter_cluster ::=
+alter_cluster_stmt ::=
     ALTER CLUSTER cluster_ref cluster_action cluster_option_list? ;
 
 cluster_action ::=
@@ -112,7 +112,7 @@ cluster_action ::=
 ```
 
 ```ebnf
-drop_cluster ::=
+drop_cluster_stmt ::=
     DROP CLUSTER cluster_ref drop_cluster_option_list? ;
 
 drop_cluster_option_list ::=
@@ -147,19 +147,7 @@ SBsql is context sensitive. Cluster words are command words inside this statemen
 
 Cluster statement execution is admitted in stages.
 
-```mermaid
-flowchart TD
-  A[Parse SBsql cluster statement] --> B[Bind names, parameters, session, and result descriptors]
-  B --> C[Classify as cluster operation]
-  C --> D{Build admits cluster routing?}
-  D -- no --> E[Return unsupported message vector]
-  D -- yes --> F[Inspect provider boundary]
-  F --> G{Provider handshake accepted?}
-  G -- no --> H[Return unlicensed or fail-closed message vector]
-  G -- yes --> I{Operation admitted by provider?}
-  I -- no --> J[Return unsupported operation message vector]
-  I -- yes --> K[Route to provider boundary]
-```
+![diagram](./cluster_gated_statements-1.svg)
 
 The public compile/link stub reaches the provider boundary but does not execute cluster behavior. It returns fail-closed diagnostics such as `SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY` and reports that route admission is not allowed.
 

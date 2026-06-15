@@ -199,7 +199,7 @@ Element policy matters for:
 ### Positive Integer
 
 ```sql
-create domain app.positive_int as int64
+create domain app.positive_int as bigint
   not null
   check (value > 0);
 

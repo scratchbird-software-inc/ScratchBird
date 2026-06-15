@@ -51,18 +51,7 @@ A practical reading rule follows from this:
 
 ## Authority Boundaries
 
-```mermaid
-flowchart LR
-    A[SBsql text] --> B[Parser]
-    B --> C[Binder]
-    C --> D[SBLR envelope]
-    D --> E[Server admission]
-    E --> F[Engine execution]
-    F --> G[MGA transaction inventory]
-    F --> H[Catalog and storage]
-    F --> I[Security and policy]
-    F --> J[Result envelope]
-```
+![diagram](./intro_and_mga-1.svg)
 
 | Layer | Owns | Does Not Own |
 | --- | --- | --- |
@@ -80,24 +69,7 @@ version set admitted by its snapshot and security context. Writers create new
 versions or retire existing versions; they do not overwrite the meaning of
 already-visible data for existing snapshots.
 
-```mermaid
-sequenceDiagram
-    participant T1 as Transaction A
-    participant T2 as Transaction B
-    participant E as Engine
-    participant M as MGA Inventory
-    T1->>E: begin snapshot
-    E->>M: allocate transaction identity
-    T2->>E: begin snapshot
-    E->>M: allocate transaction identity
-    T1->>E: update row
-    E->>E: create new row version
-    T2->>E: read row
-    E->>M: check snapshot visibility
-    E-->>T2: return version visible to Transaction B
-    T1->>E: commit
-    E->>M: publish commit finality
-```
+![diagram](./intro_and_mga-2.svg)
 
 The important user-facing effects are:
 
@@ -329,23 +301,23 @@ statement               ::= native_statement
 ```
 
 ```ebnf
-native_statement        ::= query_statement
-                          | dml_statement
-                          | ddl_statement
+native_statement        ::= query_dml_stmt
+                          | dml
+                          | ddl_catalog
                           | transaction_statement
-                          | security_statement
-                          | policy_statement
+                          | dcl_security_stmt
+                          | policy_stmt
                           | observability_statement
-                          | management_statement
-                          | acceleration_statement
-                          | archive_replication_migration_statement
-                          | nosql_statement
+                          | management_stmt
+                          | acceleration_stmt
+                          | archive_replication_stmt
+                          | multi_model_op_stmt
                           | cluster_gated_statement ;
 ```
 
 ```ebnf
 transaction_statement   ::= begin_transaction
-                          | commit_transaction
+                          | commit_stmt
                           | rollback_transaction
                           | savepoint_statement
                           | set_transaction

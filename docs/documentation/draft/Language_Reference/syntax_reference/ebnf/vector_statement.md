@@ -47,7 +47,7 @@ vector_metric_clause ::=
 
 | Parent Production |
 | --- |
-| nosql_statement |
+| multi_model_op_stmt |
 
 ## Child Productions
 

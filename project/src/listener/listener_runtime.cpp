@@ -150,6 +150,14 @@ int SendFlagsNoSignal() {
 #endif
 }
 
+#ifndef _WIN32
+bool SetCloseOnExec(ListenerRuntimeSocketHandle fd) {
+  const int flags = ::fcntl(fd, F_GETFD, 0);
+  if (flags < 0) return false;
+  return ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
+}
+#endif
+
 bool WaitForReadableSocket(ListenerRuntimeSocketHandle fd, std::uint32_t timeout_ms) {
 #ifdef _WIN32
   fd_set read_set;
@@ -691,6 +699,13 @@ ListenerRuntimeResult ListenerRuntime::BindManagementSocket(ListenerRuntimeSocke
     CloseFd(fd);
     return {2, MakeMessageVectorSet({MakeDiagnostic("LISTENER.MANAGEMENT_SOCKET_LISTEN_FAILED", "ERROR", "management socket listen failed", "sb_listener.management", {{"error", SocketErrorString(LastSocketErrorCode())}})})};
   }
+#ifndef _WIN32
+  if (!SetCloseOnExec(fd)) {
+    const int close_error = LastSocketErrorCode();
+    CloseFd(fd);
+    return {2, MakeMessageVectorSet({MakeDiagnostic("LISTENER.MANAGEMENT_SOCKET_CLOEXEC_FAILED", "ERROR", "management socket close-on-exec guard failed", "sb_listener.management", {{"error", SocketErrorString(close_error)}})})};
+  }
+#endif
   *out_fd = static_cast<ListenerRuntimeSocketHandle>(fd);
   metrics_.Increment("sys.metrics.listener.management_socket_binds_total");
   return {0, MakeMessageVectorSet({})};
@@ -760,6 +775,14 @@ ListenerRuntimeResult ListenerRuntime::BindNetworkSocket(ListenerRuntimeSocketHa
       CloseFd(fd);
       continue;
     }
+#ifndef _WIN32
+    if (!SetCloseOnExec(fd)) {
+      last_errno = LastSocketErrorCode();
+      last_step = "cloexec";
+      CloseFd(fd);
+      continue;
+    }
+#endif
     const bool bound_ipv6_dual_stack = ai->ai_family == AF_INET6 && require_dual_stack;
     ::freeaddrinfo(resolved);
     *out_fd = static_cast<ListenerRuntimeSocketHandle>(fd);
@@ -848,6 +871,9 @@ void ListenerRuntime::AcceptLoop(ListenerRuntimeSocketHandle listen_fd) {
       ListenerRuntimeSocketHandle client_fd = ::accept(listen_fd, reinterpret_cast<sockaddr*>(&client), &len);
 #endif
       if (client_fd >= 0) {
+#ifndef _WIN32
+        (void)SetCloseOnExec(client_fd);
+#endif
         const auto connection_id = next_connection_id_.fetch_add(1, std::memory_order_relaxed);
         last_accept_sequence_.store(connection_id, std::memory_order_release);
         last_accept_stage_.store(static_cast<std::uint32_t>(AcceptLoopStage::kAccepted), std::memory_order_release);

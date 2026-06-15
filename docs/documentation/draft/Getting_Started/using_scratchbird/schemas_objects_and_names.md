@@ -2,9 +2,11 @@
 
 ## Purpose
 
-ScratchBird users work with names, but the engine stores durable identity separately from those names. This page explains how to think about schemas, objects, qualified names, current schema, home schema, compatibility workareas, and recursive schema trees.
+In most databases, a name is how you find a thing. In ScratchBird, names are user-facing labels, but the engine stores durable identity separately — objects are tracked by UUID-backed catalog entries, not just by the text you type. That distinction matters the moment you rename an object, work through a compatibility parser, or write a migration script.
 
-For complete syntax, use the Language Reference. This page is the end-user orientation.
+This page explains how to think about schemas, objects, qualified names, current schema, home schema, compatibility workareas, and recursive schema trees. For complete syntax, use the Language Reference. This page is the end-user orientation.
+
+This page continues the tutorial arc from [First SBsql Session](first_sbsql_session.md), where you created a schema and a table. Now you will understand why those names worked the way they did.
 
 ## Names Are User-Facing Labels
 
@@ -15,57 +17,31 @@ select note_id, note_text
 from app.notes;
 ```
 
-In that example:
-
-- `app` is a schema name;
-- `notes` is an object name inside that schema;
-- `app.notes` is a qualified name.
-
-The engine does not rely only on text names for durable identity. Objects are represented by catalog identity, descriptors, parent schema identity, grants, and transaction visibility.
+In that example, `app` is a schema name, `notes` is an object name inside that schema, and `app.notes` is a qualified name. The engine does not rely only on text names for durable identity — objects are represented by catalog identity, descriptors, parent schema identity, grants, and transaction visibility.
 
 ## Durable Identity
 
-ScratchBird uses UUID-backed catalog identity for durable database objects.
+ScratchBird uses UUID-backed catalog identity for durable database objects. Understanding this distinction prevents confusion when names change but references should not.
 
-That distinction matters because a visible name can change:
+A visible name can change:
 
 - an object can be renamed;
 - an object can be displayed through a parser-specific catalog projection;
 - a session can resolve an unqualified name through a current schema;
-- a compatibility workarea can make one schema branch look like the client-visible root;
+- a compatibility workarea (the namespace root presented to a compatibility client) can make one schema branch look like the client-visible root;
 - a dependency can continue to point at the same object after a rename.
 
 Durable identity lets the engine answer the deeper question: "Which object is this?" Names answer the user-facing question: "How does this session spell it?"
 
 ## Recursive Schema Tree
 
-ScratchBird schemas can contain child schemas and database objects. This creates a schema tree rather than one flat namespace.
+ScratchBird schemas can contain child schemas and database objects. This creates a schema tree rather than one flat namespace. A path through the tree gives context — `app.sales.orders` and `app.archive.orders` are different objects even though both end with `orders`.
 
-```mermaid
-flowchart TB
-    Root[/Database root/]
-    System[System schema branch]
-    Security[Security schema branch]
-    App[app]
-    Sales[sales]
-    Archive[archive]
-    Notes[notes table]
-    Orders[orders table]
-
-    Root --> System
-    Root --> Security
-    Root --> App
-    App --> Notes
-    App --> Sales
-    Sales --> Orders
-    App --> Archive
-```
-
-A path through the tree gives context. For example, `app.sales.orders` and `app.archive.orders` can be different objects even though both end with `orders`.
+![diagram](./schemas_objects_and_names-1.svg)
 
 ## Schema Context
 
-A session can have several schema-related concepts.
+A session can have several schema-related concepts at once. The relationship between them is what determines how an unqualified name like `notes` resolves to a specific object.
 
 | Concept | Meaning |
 | --- | --- |
@@ -80,7 +56,7 @@ The exact variables and commands used to inspect these values are described in t
 
 ## Current Schema
 
-The current schema is the default location for unqualified object names.
+The current schema is the default location for unqualified object names. Knowing your current schema is essential before running any statement that relies on unqualified names.
 
 ```sql
 show schema path;
@@ -91,18 +67,18 @@ from notes;
 
 If the current schema is `app` and `notes` is visible in `app`, the unqualified name can resolve to `app.notes`. The command used to change the current schema is release-specific; consult the Language Reference for the current build.
 
-Unqualified names are convenient in scripts, but they can also hide mistakes. When writing administrative scripts, migrations, or examples intended for other users, prefer qualified names where clarity matters.
+Unqualified names are convenient in interactive sessions, but they can also hide mistakes. When writing administrative scripts, migrations, or examples intended for other users, prefer qualified names where clarity matters.
 
 ## Qualified Names
 
-A qualified name includes path information.
+A qualified name includes path information, which makes it clear where the object is expected to live regardless of session schema state.
 
 ```sql
 select note_id, note_text
 from app.notes;
 ```
 
-Qualified names make examples easier to read because they show where the object is expected to live. In a recursive schema tree, deeper paths may be used where supported:
+In a recursive schema tree, deeper paths may be used where supported:
 
 ```sql
 select order_id, order_status
@@ -113,7 +89,7 @@ The binder still has to resolve the visible path to a real object identity. A qu
 
 ## Name Resolution
 
-Name resolution is the process of turning user-visible text into engine object identity.
+Name resolution is the process of turning user-visible text into engine object identity. Understanding the steps helps you predict where a name lookup will fail and why.
 
 At a high level, name resolution considers:
 
@@ -126,37 +102,13 @@ At a high level, name resolution considers:
 7. grants, policy, and object visibility;
 8. transaction visibility for recently created, changed, or dropped objects.
 
-```mermaid
-flowchart TD
-    Name[Text name in statement]
-    Parser[Parser route]
-    Identity[Session identity]
-    Root[Visible root]
-    Current[Current schema or search path]
-    Catalog[Catalog lookup]
-    Security[Grant and policy check]
-    Txn[Transaction visibility]
-    Object[Resolved object UUID]
-    Refusal[Diagnostic refusal]
-
-    Name --> Parser
-    Parser --> Identity
-    Identity --> Root
-    Root --> Current
-    Current --> Catalog
-    Catalog --> Security
-    Security --> Txn
-    Txn --> Object
-    Catalog --> Refusal
-    Security --> Refusal
-    Txn --> Refusal
-```
+![diagram](./schemas_objects_and_names-2.svg)
 
 If any step fails, the result should be a diagnostic rather than an accidental lookup outside the intended scope.
 
 ## Common Object Types
 
-End users will commonly encounter these object categories:
+End users will commonly encounter these object categories. Not every parser route exposes every object category in the same way; native SBsql is the reference language for ScratchBird object administration.
 
 | Object Type | What It Represents |
 | --- | --- |
@@ -178,74 +130,29 @@ End users will commonly encounter these object categories:
 | Role and privilege | Security objects that describe who can do what. |
 | Comment | User-facing descriptive metadata attached to an object. |
 
-Not every parser route exposes every object category in the same way. Native SBsql is the reference language for ScratchBird object administration.
-
 ## Object Lifecycle
 
-Most schema objects have a lifecycle:
+Most schema objects follow a lifecycle from creation through use to eventual removal. Some object types also support `recreate`, `create or alter`, refresh, attach, detach, validate, or other object-specific actions. The object page in the Language Reference is the authoritative place for supported lifecycle syntax.
 
-```mermaid
-flowchart LR
-    Create[Create]
-    Alter[Alter]
-    Rename[Rename]
-    Comment[Comment]
-    Show[Show or describe]
-    Use[Use in queries or routines]
-    Drop[Drop]
-
-    Create --> Alter
-    Alter --> Rename
-    Rename --> Comment
-    Comment --> Show
-    Show --> Use
-    Use --> Drop
-```
-
-Some object types also support `recreate`, `create or alter`, refresh, attach, detach, validate, or other object-specific actions. The object page in the Language Reference is the authoritative place for supported lifecycle syntax.
+![diagram](./schemas_objects_and_names-3.svg)
 
 ## Comments And Descriptions
 
-Comments are descriptive metadata. They help tools and users understand objects, but they do not grant access and they do not change object identity.
+Comments are descriptive metadata. They help tools and users understand objects, but they do not grant access and do not change object identity.
 
-Use comments for:
-
-- purpose;
-- ownership notes;
-- migration context;
-- operational warnings;
-- column meaning;
-- expected units for values.
-
-Avoid putting secrets, passwords, tokens, or protected operational details in comments.
+Use comments for purpose, ownership notes, migration context, operational warnings, column meaning, and expected units for values. Avoid putting secrets, passwords, tokens, or protected operational details in comments.
 
 ## Compatibility Workareas
 
 A compatibility parser session normally sees a workarea as its root. That means a client can experience the connected workarea as "the database" even though ScratchBird may store it as a branch inside a larger recursive schema tree.
 
-```mermaid
-flowchart TB
-    FullRoot[/Full ScratchBird database/]
-    NativeAdmin[Authorized native administration]
-    Workarea[Client-visible workarea root]
-    ClientCatalog[Compatibility catalog projection]
-    ClientObjects[Client tables, views, routines]
-    Outside[Objects outside workarea]
+![diagram](./schemas_objects_and_names-4.svg)
 
-    FullRoot --> NativeAdmin
-    FullRoot --> Workarea
-    Workarea --> ClientCatalog
-    Workarea --> ClientObjects
-    FullRoot --> Outside
-```
-
-The client cannot simply name `Outside` and access it. If a catalog projection shows selected metadata, that projection is an object with its own authority. It is not proof that the connected user can directly query the underlying object.
+The client cannot simply name `Outside` and access it. If a catalog projection shows selected metadata, that projection is an object with its own authority — it is not proof that the connected user can directly query the underlying object.
 
 ## Case, Quoting, And Identifiers
 
-Identifier behavior can vary by parser route. Native SBsql is intended to remain context-sensitive with as few reserved words as practical, but scripts should still be written carefully.
-
-General guidance:
+Identifier behavior can vary by parser route. Native SBsql is intended to remain context-sensitive with as few reserved words as practical, but scripts should still be written carefully:
 
 - use clear object names;
 - avoid names that differ only by case;
@@ -256,18 +163,7 @@ General guidance:
 
 ## Object Defaults Can Be Parser-Specific
 
-Two parser routes can expose similar object concepts while applying different defaults. Examples include:
-
-- index null behavior;
-- identifier folding;
-- default schema selection;
-- default datatype precision;
-- string literal handling;
-- generated name formatting;
-- catalog projection rows;
-- diagnostic wording.
-
-The engine still owns the durable object. The parser is responsible for mapping its client-facing defaults into an explicit engine request.
+Two parser routes can expose similar object concepts while applying different defaults. Examples include index null behavior, identifier folding, default schema selection, default datatype precision, string literal handling, generated name formatting, catalog projection rows, and diagnostic wording. The engine still owns the durable object; the parser is responsible for mapping its client-facing defaults into an explicit engine request.
 
 ## Practical Naming Guidance
 
@@ -302,6 +198,8 @@ database_root
 That tree separates application data, audit records, and policy-related objects. The exact layout for a real application depends on authorization, operational needs, and migration strategy.
 
 ## Where To Go Next
+
+This completes the core tutorial arc: you have created a database, worked through a session, and now understand how names and objects relate to each other. The next topic in depth is how compatibility parsers work and what it means for a ScratchBird database to expose a reference-system surface — read [Reference-System Compatibility](reference_system_compatibility.md) for that.
 
 - [First SBsql Session](first_sbsql_session.md)
 - [Reference-System Compatibility](reference_system_compatibility.md)

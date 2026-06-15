@@ -321,17 +321,19 @@ void RequireSchemas(const std::vector<DecodedRecord>& records) {
       "sys.information",
       "sys.metrics",
       "sys.security",
+      "cluster",
       "users",
       "users.public",
-      "remote",
       "emulated",
+      "remote",
+      "app",
   };
   for (const auto& path : required) {
     Require(paths.count(path) == 1, std::string("missing bootstrap schema path ") + path);
   }
   for (const auto& path : paths) {
-    Require(path != "cluster" && path.rfind("cluster.", 0) != 0,
-            "standalone database create emitted a cluster schema");
+    Require(path == "cluster" || path.rfind("cluster.", 0) != 0,
+            "standalone database create emitted a cluster implementation schema");
     Require(path != "sys.information_schema",
             "legacy information_schema synonym was created as a second schema branch");
   }

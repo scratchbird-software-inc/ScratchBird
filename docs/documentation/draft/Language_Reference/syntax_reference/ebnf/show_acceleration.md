@@ -19,7 +19,7 @@ show_acceleration       ::= "SHOW" ("LLVM" | "NATIVE" "COMPILE" | "AOT" "ARTIFAC
 
 | Parent Production |
 | --- |
-| acceleration_statement |
+| acceleration_stmt |
 
 ## Child Productions
 

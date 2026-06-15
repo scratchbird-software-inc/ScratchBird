@@ -34,6 +34,10 @@ using scratchbird::core::platform::UuidKind;
 constexpr scratchbird::core::platform::u64 kDriverFixtureCreationMillis = 1767225600000ull;
 constexpr scratchbird::core::platform::u32 kDriverFixturePageSize = 16384;
 constexpr std::string_view kAlicePrincipalUuid = "019f0a11-ce00-7000-8000-000000000001";
+constexpr std::string_view kSysarchRoleUuid = "019f0a11-ce00-7000-8000-00000000f001";
+constexpr std::string_view kPublicGroupUuid = "019f0a11-ce00-7000-8000-00000000f101";
+constexpr std::string_view kAliceSysarchMembershipUuid = "019f0a11-ce00-7000-8000-00000000f201";
+constexpr std::string_view kAlicePublicMembershipUuid = "019f0a11-ce00-7000-8000-00000000f202";
 constexpr std::string_view kAliceVerifier =
     "089e32c34d07ddd119e129bbae2686a6416acab332b050f1e6a352d856a22d2c";
 constexpr std::string_view kAliceVerifierFingerprint =
@@ -170,7 +174,7 @@ std::string HexText(std::string_view value) {
 std::string StableGrantUuid(std::size_t index) {
   std::string suffix = "000000000000";
   std::string hex;
-  std::size_t value = index + 1;
+  std::size_t value = 0x1000 + index + 1;
   do {
     const int digit = static_cast<int>(value & 0x0f);
     hex.insert(hex.begin(), "0123456789abcdef"[digit]);
@@ -478,10 +482,21 @@ void WriteAuthStore(const Args& args) {
   events << "SBSECPL1\tPRINCIPAL\t0\t" << kAlicePrincipalUuid << '\t'
          << HexText("alice") << "\tuser\tactive\t"
          << HexText(kAliceVerifierFingerprint) << "\t1\t0\n";
-  std::size_t generation = 2;
+  events << "SBSECPL1\tROLE\t0\t" << kSysarchRoleUuid << '\t'
+         << HexText("sysarch") << '\t' << kAlicePrincipalUuid
+         << "\tactive\t2\t0\n";
+  events << "SBSECPL1\tGROUP\t0\t" << kPublicGroupUuid << '\t'
+         << HexText("PUBLIC") << "\t\tactive\t3\t0\n";
+  events << "SBSECPL1\tMEMBERSHIP\t0\t" << kAliceSysarchMembershipUuid << '\t'
+         << kAlicePrincipalUuid << '\t' << kSysarchRoleUuid
+         << "\trole\t" << kAlicePrincipalUuid << "\t4\t0\n";
+  events << "SBSECPL1\tMEMBERSHIP\t0\t" << kAlicePublicMembershipUuid << '\t'
+         << kAlicePrincipalUuid << '\t' << kPublicGroupUuid
+         << "\tgroup\t" << kAlicePrincipalUuid << "\t5\t0\n";
+  std::size_t generation = 6;
   for (std::size_t index = 0; index < SysarchRights().size(); ++index, ++generation) {
     events << "SBSECPL1\tGRANT\t0\t" << StableGrantUuid(index) << '\t'
-           << kAlicePrincipalUuid << "\tprincipal\t\t\t"
+           << kSysarchRoleUuid << "\trole\t\t\t"
            << SysarchRights()[index] << '\t'
            << kAlicePrincipalUuid << "\tallow\t"
            << generation << "\t0\n";

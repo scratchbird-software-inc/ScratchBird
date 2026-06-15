@@ -19,7 +19,7 @@ unsupported_statement   ::= unsupported_token_sequence ;
 
 | Parent Production |
 | --- |
-| refusal_statement |
+| refusal_stmt |
 
 ## Child Productions
 

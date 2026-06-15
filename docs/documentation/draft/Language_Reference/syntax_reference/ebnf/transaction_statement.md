@@ -11,9 +11,11 @@ Generation task: `ebnf_transaction_statement`
 transaction_statement   ::= begin_transaction | commit_stmt | rollback_stmt | savepoint_stmt | set_transaction_stmt | show_transaction_runtime ;
 ```
 
+<!-- Fragment dispatcher: transaction_statement has no registry id of its own; it is a grammar-level dispatcher for the transaction control production family. -->
+
 ## Meaning
 
-`transaction_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`transaction_statement` is an SBsql grammar fragment dispatcher. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 Full user-facing semantics for transaction boundaries, autocommit, isolation, savepoints, locking, runtime inspection, and recovery-facing states are documented in [../transaction_control.md](../transaction_control.md).
 

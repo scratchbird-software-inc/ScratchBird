@@ -25,8 +25,14 @@
 package org.jkiss.dbeaver.ext.scratchbird.model.edit;
 
 import org.jkiss.code.NotNull;
+import org.jkiss.dbeaver.ext.generic.GenericConstants;
 import org.jkiss.dbeaver.ext.generic.edit.GenericTableManager;
+import org.jkiss.dbeaver.ext.generic.model.GenericStructContainer;
 import org.jkiss.dbeaver.ext.generic.model.GenericTableBase;
+import org.jkiss.dbeaver.model.edit.DBECommandContext;
+import org.jkiss.dbeaver.model.runtime.DBRProgressMonitor;
+
+import java.util.Map;
 
 public class ScratchBirdTableManager extends GenericTableManager {
 
@@ -35,8 +41,7 @@ public class ScratchBirdTableManager extends GenericTableManager {
         if (!ScratchBirdManagerSupport.isScratchBirdContainer(container)) {
             return super.canCreateObject(container);
         }
-        return ScratchBirdManagerSupport.canCreateRegularSqlObject(container) &&
-            super.canCreateObject(container);
+        return ScratchBirdManagerSupport.canCreateRegularSqlObject(container);
     }
 
     @Override
@@ -46,5 +51,26 @@ public class ScratchBirdTableManager extends GenericTableManager {
         }
         return ScratchBirdManagerSupport.canDeleteObject(object) &&
             super.canDeleteObject(object);
+    }
+
+    @Override
+    protected GenericTableBase createDatabaseObject(
+        @NotNull DBRProgressMonitor monitor,
+        @NotNull DBECommandContext context,
+        Object container,
+        Object copyFrom,
+        @NotNull Map<String, Object> options
+    ) {
+        if (!(container instanceof GenericStructContainer structContainer) ||
+            !ScratchBirdManagerSupport.isScratchBirdDataSource(structContainer.getDataSource())) {
+            return super.createDatabaseObject(monitor, context, container, copyFrom, options);
+        }
+
+        String tableName = getNewChildName(monitor, structContainer, BASE_TABLE_NAME);
+        return structContainer.getDataSource().getMetaModel().createTableOrViewImpl(
+            structContainer,
+            tableName,
+            GenericConstants.TABLE_TYPE_TABLE,
+            null);
     }
 }

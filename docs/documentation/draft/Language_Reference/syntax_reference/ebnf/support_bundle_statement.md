@@ -18,7 +18,7 @@ support_bundle_action ::=
     | "DROP" ;
 
 support_bundle_target ::=
-      uuid_ref
+      uuid_reference
     | identifier
     | "CURRENT" "DATABASE"
     | "CURRENT" "SESSION" ;
@@ -43,13 +43,13 @@ support_bundle_option ::=
 
 | Parent Production |
 | --- |
-| management_statement |
+| management_stmt |
 
 ## Child Productions
 
 | Child Production |
 | --- |
-| uuid_ref |
+| uuid_reference |
 | identifier |
 | option |
 

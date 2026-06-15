@@ -99,6 +99,7 @@ struct ServerSessionRecord {
   std::array<std::uint8_t, 16> effective_user_uuid{};
   std::string principal_claim;
   std::string provider_family;
+  std::string requested_role_name;
   std::string database_path;
   std::string database_uuid;
   std::string attach_mode = "read_write";
@@ -148,6 +149,7 @@ struct ServerSessionRecord {
   std::array<std::uint8_t, 16> protocol_session_id{};
   std::array<std::uint8_t, 16> authkey_id{};
   std::array<std::uint8_t, 16> active_role_uuid{};
+  std::vector<std::array<std::uint8_t, 16>> effective_role_uuids;
   std::vector<std::array<std::uint8_t, 16>> effective_group_uuids;
   std::uint64_t session_binding_generation = 0;
   std::uint64_t session_binding_control_sequence = 0;
@@ -316,6 +318,7 @@ struct AuthHandoffPayload {
   std::string principal_claim;
   std::string credential_evidence;
   std::string application_name;
+  std::string requested_role;
   bool credential_evidence_present = false;
   bool credential_invalid = false;
   bool mfa_required = false;

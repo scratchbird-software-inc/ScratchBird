@@ -50,6 +50,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class ScratchBirdCatalog extends GenericCatalog {
@@ -59,9 +60,17 @@ public class ScratchBirdCatalog extends GenericCatalog {
     private List<ScratchBirdSchemaNode> schemaTree;
     @Nullable
     private String databaseUuid;
+    @Nullable
+    private String databaseDisplayName;
 
     public ScratchBirdCatalog(@NotNull GenericDataSource dataSource, @NotNull String catalogName) {
         super(dataSource, catalogName);
+    }
+
+    @NotNull
+    @Override
+    public String getName() {
+        return CommonUtils.isEmpty(databaseDisplayName) ? super.getName() : databaseDisplayName;
     }
 
     @Association
@@ -73,6 +82,12 @@ public class ScratchBirdCatalog extends GenericCatalog {
     }
 
     private void buildSchemaTree(@NotNull DBRProgressMonitor monitor) throws DBException {
+        List<ScratchBirdCatalogObjectReference> catalogReferences = loadCatalogObjectReferences(monitor);
+        if (catalogReferences.isEmpty()) {
+            schemaTree = Collections.emptyList();
+            return;
+        }
+
         Collection<GenericSchema> schemas = getSchemas(monitor);
 
         List<String> schemaPaths = new ArrayList<>();
@@ -99,13 +114,6 @@ public class ScratchBirdCatalog extends GenericCatalog {
 
         if (schemaPaths.isEmpty()) {
             loadMetadataSchemas(monitor, schemaPaths, schemasByPath);
-        }
-
-        List<ScratchBirdCatalogObjectReference> catalogReferences = loadCatalogObjectReferences(monitor);
-        if (catalogReferences.isEmpty()) {
-            for (String schemaPath : schemaPaths) {
-                catalogReferences.add(ScratchBirdCatalogObjectReference.syntheticSchema(schemaPath));
-            }
         }
 
         List<ScratchBirdSchemaTreeBuilder.Node> tree = ScratchBirdSchemaTreeBuilder.buildFromCatalog(catalogReferences);
@@ -159,57 +167,165 @@ public class ScratchBirdCatalog extends GenericCatalog {
     ) {
         List<ScratchBirdCatalogObjectReference> references = new ArrayList<>();
         try {
-            executeCatalogObjectQuery(
-                monitor,
-                "WITH RECURSIVE schema_tree AS ( " +
-                    "SELECT r.database_id, r.object_id, r.parent_object_id, r.object_type, r.schema_path, r.full_path, r.object_name, 0 AS depth " +
-                    "FROM sys.catalog.object_resolver r " +
-                    "WHERE r.object_type = 'SCHEMA' " +
-                    "AND (r.parent_object_id IS NULL OR NOT EXISTS ( " +
-                    "SELECT 1 FROM sys.catalog.object_resolver p " +
-                    "WHERE p.object_id = r.parent_object_id AND p.object_type = 'SCHEMA')) " +
-                    "UNION ALL " +
-                    "SELECT c.database_id, c.object_id, c.parent_object_id, c.object_type, c.schema_path, c.full_path, c.object_name, schema_tree.depth + 1 AS depth " +
-                    "FROM sys.catalog.object_resolver c " +
-                    "JOIN schema_tree ON c.parent_object_id = schema_tree.object_id " +
-                    "WHERE c.object_type = 'SCHEMA' " +
-                    ") " +
-                    "SELECT database_id, object_id, parent_object_id, object_type, schema_path, full_path, object_name " +
-                    "FROM schema_tree " +
-                    "ORDER BY depth, full_path",
-                references);
+            executeNavigatorTreeQuery(monitor, references);
             return references;
         } catch (SQLException | DBException e) {
-            log.debug("ScratchBird recursive object resolver tree is not available yet", e);
-        }
-
-        references.clear();
-        try {
-            executeCatalogObjectQuery(
-                monitor,
-                "SELECT database_id, object_id, parent_object_id, object_type, schema_path, full_path, object_name " +
-                    "FROM sys.catalog.object_resolver " +
-                    "WHERE object_type = 'SCHEMA' " +
-                    "ORDER BY full_path",
-                references);
-            return references;
-        } catch (SQLException | DBException e) {
-            log.debug("ScratchBird object resolver parent UUID metadata is not available yet", e);
-        }
-
-        references.clear();
-        try {
-            executeCatalogObjectQuery(
-                monitor,
-                "SELECT NULL AS database_id, object_id, NULL AS parent_object_id, object_type, schema_path, full_path, object_name " +
-                    "FROM sys.catalog.object_resolver " +
-                    "WHERE object_type = 'SCHEMA' " +
-                    "ORDER BY full_path",
-                references);
-        } catch (SQLException | DBException e) {
-            log.debug("ScratchBird object resolver is not available for navigator UUID metadata", e);
+            log.warn("ScratchBird readable navigator tree is required for first-release navigation", e);
         }
         return references;
+    }
+
+    private void executeNavigatorTreeQuery(
+        @NotNull DBRProgressMonitor monitor,
+        @NotNull List<ScratchBirdCatalogObjectReference> references
+    ) throws SQLException, DBException {
+        String query = "SELECT node_id, parent_node_id, object_id, parent_object_id, node_path, node_name, " +
+            "node_role, object_kind, object_path, schema_path " +
+            "FROM sys.catalog_readable.navigator_tree";
+        try (JDBCSession session = DBUtils.openMetaSession(monitor, this, "Load ScratchBird navigator tree");
+             JDBCPreparedStatement statement = session.prepareStatement(query);
+             JDBCResultSet resultSet = statement.executeQuery()) {
+            while (resultSet.next()) {
+                String nodeRole = JDBCUtils.safeGetString(resultSet, "node_role");
+                String nodeName = JDBCUtils.safeGetString(resultSet, "node_name");
+                String objectKind = JDBCUtils.safeGetString(resultSet, "object_kind");
+                if ("database".equalsIgnoreCase(nodeRole)) {
+                    if (isUsableDatabaseDisplayName(nodeName)) {
+                        databaseDisplayName = nodeName;
+                    }
+                    continue;
+                }
+                if (!isNavigatorDisplayRole(nodeRole, objectKind)) {
+                    continue;
+                }
+
+                String fullPath = navigatorDisplayPath(nodeRole, objectKind, nodeName, resultSet);
+                if (CommonUtils.isEmpty(fullPath) || ScratchBirdNamespaceSemantics.isMetricsPath(fullPath)) {
+                    continue;
+                }
+
+                ScratchBirdCatalogObjectReference reference;
+                String objectType = navigatorObjectType(nodeRole, objectKind);
+                String objectId = JDBCUtils.safeGetString(resultSet, "object_id");
+                String authorityPath = navigatorAuthorityPath(fullPath, resultSet);
+                if (CommonUtils.isNotEmpty(objectId) && !isNavigatorFolder(objectKind)) {
+                    reference = ScratchBirdCatalogObjectReference.catalogObject(
+                        databaseUuid,
+                        objectId,
+                        JDBCUtils.safeGetString(resultSet, "parent_object_id"),
+                        objectType,
+                        fullPath,
+                        authorityPath,
+                        CommonUtils.isEmpty(nodeName) ? leafName(fullPath) : nodeName);
+                } else {
+                    reference = ScratchBirdCatalogObjectReference.clientOnly(
+                        fullPath,
+                        objectType);
+                }
+                if (reference.hasCatalogIdentity()) {
+                    cacheAuthorizedReference(reference);
+                }
+                references.add(reference);
+            }
+        }
+    }
+
+    private static boolean isNavigatorDisplayRole(@Nullable String nodeRole, @Nullable String objectKind) {
+        if ("database".equalsIgnoreCase(nodeRole)) {
+            return false;
+        }
+        return CommonUtils.isNotEmpty(nodeRole) || CommonUtils.isNotEmpty(objectKind);
+    }
+
+    private static boolean isUsableDatabaseDisplayName(@Nullable String value) {
+        if (CommonUtils.isEmpty(value)) {
+            return false;
+        }
+        return !value.toLowerCase(Locale.ENGLISH)
+            .matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    }
+
+    @NotNull
+    private static String navigatorDisplayPath(
+        @Nullable String nodeRole,
+        @Nullable String objectKind,
+        @Nullable String nodeName,
+        @NotNull JDBCResultSet resultSet
+    ) {
+        if ("schema".equalsIgnoreCase(objectKind)) {
+            String nodePath = navigatorPathFromNodePath(JDBCUtils.safeGetString(resultSet, "node_path"));
+            if (CommonUtils.isNotEmpty(nodePath)) {
+                return nodePath;
+            }
+            String objectPath = JDBCUtils.safeGetString(resultSet, "object_path");
+            if (CommonUtils.isNotEmpty(objectPath)) {
+                return objectPath;
+            }
+            String schemaPath = JDBCUtils.safeGetString(resultSet, "schema_path");
+            if (CommonUtils.isNotEmpty(schemaPath)) {
+                return schemaPath;
+            }
+            return CommonUtils.isEmpty(nodeName) ? "" : nodeName;
+        }
+        if (nodeRole != null && nodeRole.startsWith("database.")) {
+            String nodePath = navigatorPathFromNodePath(JDBCUtils.safeGetString(resultSet, "node_path"));
+            if (CommonUtils.isNotEmpty(nodePath)) {
+                return nodePath;
+            }
+            return CommonUtils.isEmpty(nodeName) ? "" : nodeName;
+        }
+        if (nodeRole != null && nodeRole.startsWith("security.")) {
+            String nodePath = navigatorPathFromNodePath(JDBCUtils.safeGetString(resultSet, "node_path"));
+            if (CommonUtils.isNotEmpty(nodePath)) {
+                return nodePath;
+            }
+            return "Security." + (CommonUtils.isEmpty(nodeName) ? "" : nodeName);
+        }
+        String nodePath = navigatorPathFromNodePath(JDBCUtils.safeGetString(resultSet, "node_path"));
+        if (CommonUtils.isNotEmpty(nodePath)) {
+            return nodePath;
+        }
+        return CommonUtils.isEmpty(nodeName) ? "" : nodeName;
+    }
+
+    @NotNull
+    private static String navigatorObjectType(@Nullable String nodeRole, @Nullable String objectKind) {
+        if (CommonUtils.isNotEmpty(objectKind) && !isNavigatorFolder(objectKind)) {
+            return objectKind.toUpperCase(Locale.ENGLISH);
+        }
+        return CommonUtils.isEmpty(nodeRole)
+            ? "NAVIGATOR"
+            : nodeRole.toUpperCase(Locale.ENGLISH);
+    }
+
+    private static boolean isNavigatorFolder(@Nullable String objectKind) {
+        return "folder".equalsIgnoreCase(objectKind);
+    }
+
+    @NotNull
+    private static String navigatorAuthorityPath(@NotNull String fullPath, @NotNull JDBCResultSet resultSet) {
+        String objectPath = JDBCUtils.safeGetString(resultSet, "object_path");
+        if (CommonUtils.isNotEmpty(objectPath)) {
+            return objectPath;
+        }
+        String schemaPath = JDBCUtils.safeGetString(resultSet, "schema_path");
+        if (CommonUtils.isNotEmpty(schemaPath)) {
+            return schemaPath;
+        }
+        return fullPath;
+    }
+
+    @NotNull
+    private static String navigatorPathFromNodePath(@Nullable String nodePath) {
+        if (CommonUtils.isEmpty(nodePath)) {
+            return "";
+        }
+        String trimmed = nodePath.trim();
+        int firstSeparator = trimmed.indexOf('/');
+        if (firstSeparator >= 0) {
+            trimmed = trimmed.substring(firstSeparator + 1);
+        }
+        return trimmed.replace('/', '.');
     }
 
     private void executeCatalogObjectQuery(
@@ -223,9 +339,19 @@ public class ScratchBirdCatalog extends GenericCatalog {
             while (resultSet.next()) {
                 String fullPath = JDBCUtils.safeGetString(resultSet, "full_path");
                 if (CommonUtils.isEmpty(fullPath)) {
+                    fullPath = JDBCUtils.safeGetString(resultSet, "object_path");
+                }
+                if (CommonUtils.isEmpty(fullPath)) {
                     fullPath = JDBCUtils.safeGetString(resultSet, "schema_path");
                 }
                 if (CommonUtils.isEmpty(fullPath) || ScratchBirdNamespaceSemantics.isMetricsPath(fullPath)) {
+                    continue;
+                }
+                String objectType = JDBCUtils.safeGetString(resultSet, "object_type");
+                if (CommonUtils.isEmpty(objectType)) {
+                    objectType = JDBCUtils.safeGetString(resultSet, "object_kind");
+                }
+                if (CommonUtils.isNotEmpty(objectType) && !"schema".equalsIgnoreCase(objectType)) {
                     continue;
                 }
                 String objectName = JDBCUtils.safeGetString(resultSet, "object_name");
@@ -279,13 +405,49 @@ public class ScratchBirdCatalog extends GenericCatalog {
             source.getObjectPath(),
             source.getObjectType());
         ScratchBirdSchema backing = schemasByPath.get(source.getFullPath());
-        if (source.isCatalogBacked() && (backing != null || source.isTerminal())) {
-            node.setBackingSchema(backing == null ? new ScratchBirdSchema(getDataSource(), this, source.getFullPath()) : backing);
+        if (backing == null) {
+            backing = schemasByPath.get(source.getObjectPath().authorityPath());
+        }
+        if ("SCHEMA".equalsIgnoreCase(source.getObjectType()) &&
+                source.isCatalogBacked() &&
+                (backing != null || source.isTerminal())) {
+            node.setBackingSchema(backing == null
+                ? new ScratchBirdSchema(getDataSource(), this, source.getObjectPath().authorityPath())
+                : backing);
         }
         for (ScratchBirdSchemaTreeBuilder.Node child : source.getChildren()) {
+            if (isNavigatorPhysicalTable(child)) {
+                node.addNavigatorPhysicalTable(
+                    child.getName(),
+                    navigatorRelationType(child.getObjectType(), "TABLE"),
+                    child.getObjectPath());
+                continue;
+            }
+            if (isNavigatorView(child)) {
+                node.addNavigatorView(
+                    child.getName(),
+                    navigatorRelationType(child.getObjectType(), "VIEW"),
+                    child.getObjectPath());
+                continue;
+            }
             node.addChild(inflateTree(child, node, schemasByPath));
         }
         return node;
+    }
+
+    private static boolean isNavigatorPhysicalTable(@NotNull ScratchBirdSchemaTreeBuilder.Node source) {
+        return "TABLE".equalsIgnoreCase(source.getObjectType()) ||
+            "SYSTEM TABLE".equalsIgnoreCase(source.getObjectType());
+    }
+
+    private static boolean isNavigatorView(@NotNull ScratchBirdSchemaTreeBuilder.Node source) {
+        return "VIEW".equalsIgnoreCase(source.getObjectType()) ||
+            "SYSTEM VIEW".equalsIgnoreCase(source.getObjectType());
+    }
+
+    @NotNull
+    private static String navigatorRelationType(@Nullable String objectType, @NotNull String fallback) {
+        return CommonUtils.isEmpty(objectType) ? fallback : objectType.toUpperCase(Locale.ENGLISH);
     }
 
     @Nullable

@@ -122,22 +122,18 @@
 
             <treeInjection path="generic/catalog/schema" remove="true"/>
             <treeInjection path="generic/catalog">
-                <folder type="org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode" label="%tree.schemas.node.name" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg" description="%tree.schemas.node.tip">
-                    <items label="#schema" path="schema" property="schemaTree" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg" optional="true">
+                <items label="#schema" path="schema" property="schemaTree" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg" optional="true">
                         <icon if="object.domainBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_domains.svg"/>
                         <icon if="object.metricsBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_metrics.svg"/>
                         <icon if="object.scratchBirdSystemPath" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_system.svg"/>
 
-                        <folder type="org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode" label="%tree.schemas.node.name" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg" description="%tree.schemas.node.tip" visibleIf="object.schemaBranchesFolderVisible">
-                            <items label="#schema" path="schema" property="childSchemas" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg" recursive="../..">
-                                <icon if="object.domainBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_domains.svg"/>
-                                <icon if="object.metricsBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_metrics.svg"/>
-                                <icon if="object.scratchBirdSystemPath" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_system.svg"/>
-                            </items>
-                        </folder>
+                        <items label="#schema" path="schema" property="childSchemas" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_namespace.svg" recursive="..">
+                            <icon if="object.domainBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_domains.svg"/>
+                            <icon if="object.metricsBranch" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_metrics.svg"/>
+                            <icon if="object.scratchBirdSystemPath" icon="platform:/plugin/org.jkiss.dbeaver.ext.scratchbird/icons/tree/sb_system.svg"/>
+                        </items>
 
-                        <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTable" label="%tree.tables.node.name" icon="#folder_table" description="%tree.tables.node.tip" visibleIf="object.tableFoldersVisible">
-                            <items label="%tree.table.node.name" path="table" property="physicalTables" icon="#table">
+                        <items label="%tree.table.node.name" path="table" property="physicalTables" icon="#table" visibleIf="object.tableFoldersVisible">
                                 <icon if="object.externalTable" icon="#table_external"/>
                                 <icon if="object.abstractTable" icon="#table_alias"/>
                                 <icon if="object.sharedTable" icon="#table_shared"/>
@@ -168,16 +164,13 @@
                                 <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableTrigger" label="%tree.triggers.node.name" icon="#triggers" description="%tree.triggers.node.tip" visibleIf="object.dataSource.metaModel.supportsTriggers(object.dataSource)">
                                     <items label="%tree.trigger.node.name" path="trigger" property="triggers" icon="#trigger"/>
                                 </folder>
-                            </items>
-                        </folder>
+                        </items>
 
-                        <folder type="org.jkiss.dbeaver.ext.generic.model.GenericView" label="%tree.tviews.node.name" icon="#folder_view" description="%tree.tviews.node.tip" visibleIf="object.viewFoldersVisible &amp;&amp; object.dataSource.metaModel.supportsViews(object.dataSource)">
-                            <items label="%tree.tview.node.name" path="view" property="views" icon="#view">
+                        <items label="%tree.tview.node.name" path="view" property="views" icon="#view" visibleIf="object.viewFoldersVisible &amp;&amp; object.dataSource.metaModel.supportsViews(object.dataSource)">
                                 <folder type="org.jkiss.dbeaver.ext.generic.model.GenericTableColumn" label="%tree.columns.node.name" icon="#columns" description="View columns">
                                     <items label="%tree.column.node.name" path="attribute" property="attributes" icon="#column"/>
                                 </folder>
-                            </items>
-                        </folder>
+                        </items>
 
                         <items label="%tree.uni_key.node.name" path="uniqueKey" property="constraints" icon="#unique-key" visibleIf="object.constraintFoldersVisible &amp;&amp; object.dataSource.info.supportsTableConstraints()">
                             <items label="%tree.uni_key.columns.node.name" itemLabel="%tree.column.node.name" path="column" property="attributeReferences" navigable="false" inline="true"/>
@@ -214,8 +207,7 @@
                             <items label="%tree.trigger.node.name" path="tableTrigger" property="tableTriggers" icon="#trigger"/>
                         </folder>
 
-                    </items>
-                </folder>
+                </items>
             </treeInjection>
 
             <drivers managable="true">
@@ -225,7 +217,7 @@
                     icon="icons/scratchbird_icon.png"
                     iconBig="icons/scratchbird_icon_big.png"
                     class="com.scratchbird.jdbc.SBDriver"
-                    sampleURL="jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true&amp;metadata_fixture_catalog=driver_test"
+                    sampleURL="jdbc:scratchbird://{host}[:{port}]/{database}?sslmode=require&amp;binary_transfer=true"
                     defaultPort="3092"
                     webURL="https://scratchbird.com/"
                     description="ScratchBird JDBC driver"
@@ -242,7 +234,7 @@
                     <property name="application_name" value="dbeaver"/>
                     <property name="protocol" value="native"/>
                     <property name="compression" value="off"/>
-                    <property name="metadata_fixture_catalog" value="driver_test"/>
+                    <property name="metadata_fixture_catalog" value=""/>
                     <parameter name="omit-catalog-name" value="true"/>
                     <parameter name="omit-single-catalog" value="false"/>
                     <parameter name="supports-views" value="true"/>
@@ -282,7 +274,7 @@
                         <property id="dormant_id" label="Dormant Id" type="string"/>
                         <property id="dormant_reattach_token" label="Dormant Reattach Token" type="string" features="secured,password"/>
                         <property id="metadataExpandSchemaParents" label="Expand Parent Schema Rows" type="boolean" defaultValue="false"/>
-                        <property id="metadata_fixture_catalog" label="Metadata Fixture Catalog" type="string" defaultValue="driver_test"/>
+                        <property id="metadata_fixture_catalog" label="Metadata Fixture Catalog" type="string" defaultValue=""/>
                     </propertyGroup>
                     <propertyGroup label="ScratchBird Driver Tuning">
                         <property id="connect_timeout" label="Connect Timeout Seconds" type="integer" defaultValue="30"/>

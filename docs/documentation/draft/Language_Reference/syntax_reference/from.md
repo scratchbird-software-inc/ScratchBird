@@ -34,7 +34,7 @@ relation_reference ::=
     qualified_name table_alias? ;
 
 derived_table ::=
-    "(" query_statement ")" table_alias column_alias_list? ;
+    "(" query_dml_stmt ")" table_alias column_alias_list? ;
 
 table_function_reference ::=
     TABLE "(" function_call ")" table_alias? column_alias_list? ;

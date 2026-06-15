@@ -67,6 +67,48 @@ final class ScratchBirdQualifiedNames {
     }
 
     @NotNull
+    static String qualifyAuthorityPath(@Nullable String authorityPath) {
+        StringBuilder builder = new StringBuilder();
+        if (authorityPath != null) {
+            for (String segment : authorityPath.split("\\.")) {
+                if (segment == null || segment.isBlank()) {
+                    continue;
+                }
+                if (builder.length() > 0) {
+                    builder.append('.');
+                }
+                builder.append(quoteIdentifier(segment));
+            }
+        }
+        return builder.toString();
+    }
+
+    @NotNull
+    static String joinPath(@Nullable String parentPath, @Nullable String objectName) {
+        StringBuilder builder = new StringBuilder();
+        if (parentPath != null && !parentPath.isBlank()) {
+            builder.append(parentPath.trim());
+        }
+        if (objectName != null && !objectName.isBlank()) {
+            if (builder.length() > 0) {
+                builder.append('.');
+            }
+            builder.append(objectName.trim());
+        }
+        return builder.toString();
+    }
+
+    @NotNull
+    static String parentPath(@Nullable String authorityPath) {
+        if (authorityPath == null) {
+            return "";
+        }
+        String trimmed = authorityPath.trim();
+        int separator = trimmed.lastIndexOf('.');
+        return separator < 0 ? "" : trimmed.substring(0, separator);
+    }
+
+    @NotNull
     private static String quoteIdentifier(@Nullable String identifier) {
         if (identifier == null) {
             return "";

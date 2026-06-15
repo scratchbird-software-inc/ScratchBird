@@ -4,7 +4,7 @@ This page is part of the SBsql Language Reference Manual. It explains the user-f
 
 Generation task: `syntax_reference_policy_mask_rls_lifecycle`
 
-Related pages: [Security And Privilege Statements](security_and_privilege_statements.md), [Security And Sandboxing](../core_paradigms/security_and_sandboxing.md), [Table Lifecycle](table.md), [View Lifecycle](view.md), [Domain Lifecycle](domain.md), [Trigger Lifecycle](trigger.md), [Transaction Control](transaction_control.md), [Protected Material Policy Binding](../catalog_reference/sys_catalog_protected_material_policy_binding.md), and [Refusal Vectors](refusal_vectors.md).
+Related pages: [Security And Privilege Statements](security_and_privilege_statements.md), [Security And Sandboxing](../core_paradigms/security_and_sandboxing.md), [Table Lifecycle](table.md), [View Lifecycle](view.md), [Domain Lifecycle](domain.md), [Trigger Lifecycle](trigger.md), [Transaction Control](transaction_control.md), [Protected Material Policy Binding](../catalog_reference/sys_security_protected_material_policy_binding.md), and [Refusal Vectors](refusal_vectors.md).
 
 ## Purpose
 
@@ -462,7 +462,7 @@ Protected material requires release policy. Ordinary `SELECT`, `SHOW`, `DESCRIBE
 
 ```sql
 select *
-from sys.catalog.protected_material_policy_binding
+from sys.security.protected_material_policy_binding
 limit 20;
 ```
 

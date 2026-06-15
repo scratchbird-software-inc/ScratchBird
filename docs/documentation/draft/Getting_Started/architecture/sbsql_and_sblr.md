@@ -2,7 +2,9 @@
 
 ## Purpose
 
-SBsql is the native ScratchBird command language. SBLR is the bound request representation submitted toward engine authority after parsing and binding.
+After reading this page you will understand what SBsql is, what happens to your statements before they reach the engine, and why the text you write is not the same thing as the durable record the database keeps.
+
+SBsql is the native ScratchBird command language. SBLR (the Bound Request form) is the structured, engine-facing representation of an accepted and name-resolved statement — it is what the parser hands off to SBcore (the engine) after it finishes parsing and binding. You write SBsql; the engine receives SBLR.
 
 The practical rule is:
 
@@ -16,7 +18,7 @@ This page explains the relationship at a high level. Use the Language Reference 
 
 ## Where SBsql Fits
 
-SBsql is intended to be the native user language for ScratchBird.
+SBsql is intended to be the native user language for ScratchBird. Rather than copying the exact syntax of another database system, it is designed to express ScratchBird concepts — like the recursive schema tree, UUID catalog identity, MGA (the engine's transaction and visibility authority model), and workarea sandboxing — directly and without workarounds.
 
 SBsql can be used for:
 
@@ -33,7 +35,7 @@ Native SBsql should express ScratchBird concepts directly instead of copying a r
 
 ## Where SBLR Fits
 
-SBLR is not ordinary end-user SQL. It is the structured request form emitted after a parser accepts and binds a request.
+SBLR is not ordinary end-user SQL. It is the structured request form emitted after a parser accepts and binds a request. Think of it as the stage where user-facing names (like `app.notes`) have been resolved to their durable catalog identities and where parser-specific defaults have been made explicit — so that SBcore can execute the work without having to know anything about which parser produced it.
 
 SBLR carries information such as:
 
@@ -51,39 +53,21 @@ Users normally do not write SBLR directly in an interactive session.
 
 ## Statement Pipeline
 
-```mermaid
-flowchart LR
-    Text[SBsql text]
-    Tokens[Lex and tokenize]
-    Parse[Parse]
-    AST[Statement tree]
-    Bind[Bind names, types, parameters, policy context]
-    SBLR[SBLR request]
-    Admit[Engine admission]
-    Execute[Execution]
-    Result[Rows, status, or message vector]
-
-    Text --> Tokens
-    Tokens --> Parse
-    Parse --> AST
-    AST --> Bind
-    Bind --> SBLR
-    SBLR --> Admit
-    Admit --> Execute
-    Execute --> Result
-```
+![diagram](./sbsql_and_sblr-1.svg)
 
 Each stage can refuse the request. For example, parsing can reject malformed syntax, binding can reject an invisible name, and engine admission can reject unauthorized work.
 
 ## Example: Create A Table
 
+The examples below show how the same text you type is translated into engine-owned metadata. The original SQL text is source material; the catalog — not the text — is what persists after the transaction commits.
+
 An SBsql statement might look like this:
 
 ```sql
 create table app.notes (
-    note_id uint64 not null,
+    note_id bigint not null,
     note_text text not null,
-    created_at timestamp with time zone not null,
+    created_at timestamptz not null,
     constraint pk_notes primary key (note_id)
 );
 ```
@@ -140,23 +124,7 @@ Practical guidance:
 
 Native SBsql is not the only possible parser source. A compatibility parser can accept its own client language or protocol and lower accepted work to the same engine authority model.
 
-```mermaid
-flowchart TB
-    SBsql[SBsql parser]
-    Compat[Compatibility parser]
-    SBLR[SBLR request surface]
-    Engine[SBcore]
-    Catalog[Catalog, descriptors, policy]
-    Txn[MGA transactions]
-    Storage[Storage]
-
-    SBsql --> SBLR
-    Compat --> SBLR
-    SBLR --> Engine
-    Engine --> Catalog
-    Engine --> Txn
-    Engine --> Storage
-```
+![diagram](./sbsql_and_sblr-2.svg)
 
 This lets parser packages preserve their client-facing syntax and defaults without becoming independent engines.
 
@@ -167,7 +135,7 @@ binding and SBLR lowering.
 
 ## Diagnostics
 
-SBsql and SBLR participate in structured diagnostics.
+SBsql and SBLR participate in structured diagnostics. When something goes wrong, the message vector (ScratchBird's structured diagnostic carrier) identifies which stage refused the request and why.
 
 | Stage | Example Diagnostic |
 | --- | --- |

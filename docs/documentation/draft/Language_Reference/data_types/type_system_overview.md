@@ -8,36 +8,31 @@ Generation task: `data_types_type_system_overview`
 
 ## Purpose
 
-SBsql values are descriptor-bound. A textual type name, literal, cast,
-parameter marker, column definition, routine argument, stream frame, or result
-column is resolved into a descriptor before engine execution. The descriptor
-controls representation, comparison, ordering, hashing, indexing, null
-behavior, collation, character set, temporal precision, timezone behavior,
-storage admission, overflow behavior, policy, and result rendering.
+When you write a type name in SBsql — whether as a column definition, a cast,
+a parameter, or a literal — the parser does not pass that text to the engine.
+It resolves the spelling into a _descriptor_: a structured, engine-bound
+description of how the value should be represented, compared, ordered, hashed,
+indexed, stored, and rendered. The engine then works from the descriptor, not
+from the original text. This is why behavior is consistent regardless of which
+spelling or alias you used.
 
-The type system separates carriers from domains:
+The type system distinguishes two layers:
 
-- a carrier descriptor defines how a value is represented and operated on;
-- a domain is a named policy layer over a carrier or another domain;
-- a descriptor-bound expression can preserve a domain, erase a domain, or bind
-  to a new domain only when an operation policy says so.
+- a _carrier descriptor_ defines the base representation and operations for a
+  value (for example: a 64-bit signed integer, or UTF-8 text with a specific
+  collation);
+- a _domain_ is a named policy layer over a carrier or another domain — it can
+  add null rules, constraints, and rounding policy without changing the
+  underlying carrier.
 
-The engine receives descriptor identity through SBLR. It does not infer type
-behavior from SQL text after binding.
+A descriptor-bound expression can preserve a domain, erase a domain, or bind
+to a new domain only when an operation policy says so. The engine receives
+descriptor identity through SBLR and does not infer type behavior from SQL text
+after binding.
 
 ## Descriptor Binding Flow
 
-```mermaid
-flowchart TD
-    A[Type spelling, literal, parameter, column, or expression] --> B[Parse]
-    B --> C[Resolve type/domain name]
-    C --> D[Bind carrier descriptor]
-    D --> E[Apply domain and policy layers]
-    E --> F[Derive expression or row descriptor]
-    F --> G[Lower descriptor table into SBLR]
-    G --> H[Server admission]
-    H --> I[Engine execution and result rendering]
-```
+![diagram](./type_system_overview-1.svg)
 
 Descriptor binding happens before execution. If a descriptor cannot be resolved
 or a value cannot fit the descriptor, the statement returns a diagnostic rather

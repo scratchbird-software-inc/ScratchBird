@@ -8,12 +8,14 @@ Generation task: `ebnf_security_statement`
 ## Production
 
 ```ebnf
-security_statement      ::= create_identity | alter_identity | drop_identity | grant_stmt | revoke_stmt | show_security ;
+dcl_security_stmt       ::= create_principal_stmt | alter_principal_stmt | drop_principal_stmt | grant_stmt | revoke_stmt | show_security_policy ;
 ```
+
+<!-- Fragment dispatcher: dcl_security_stmt is the registered security family dispatcher (SBSQL registry). -->
 
 ## Meaning
 
-`security_statement` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`dcl_security_stmt` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 
@@ -25,11 +27,12 @@ security_statement      ::= create_identity | alter_identity | drop_identity | g
 
 | Child Production |
 | --- |
-| alter_identity |
-| create_identity |
-| drop_identity |
+| alter_principal_stmt |
+| create_principal_stmt |
+| drop_principal_stmt |
 | grant_stmt |
 | revoke_stmt |
+| show_security_policy |
 
 ## Practical Notes
 

@@ -80,6 +80,10 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     private final String objectType;
     @NotNull
     private final Map<String, ScratchBirdSchemaNode> childSchemas = new LinkedHashMap<>();
+    @NotNull
+    private final Map<String, ScratchBirdTable> navigatorPhysicalTables = new LinkedHashMap<>();
+    @NotNull
+    private final Map<String, ScratchBirdView> navigatorViews = new LinkedHashMap<>();
 
     public ScratchBirdSchemaNode(
         @NotNull GenericDataSource dataSource,
@@ -125,11 +129,27 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         this.clientOnly = clientOnly;
         this.objectPath = objectPath;
         this.objectType = objectType;
-        this.querySchema = new ScratchBirdSchema(dataSource, ownerCatalog, fullPath);
+        this.querySchema = new ScratchBirdSchema(dataSource, ownerCatalog, objectPath.authorityPath());
     }
 
     void addChild(@NotNull ScratchBirdSchemaNode child) {
         childSchemas.putIfAbsent(child.getName(), child);
+    }
+
+    void addNavigatorPhysicalTable(
+        @NotNull String tableName,
+        @NotNull String tableType,
+        @NotNull ScratchBirdObjectPath objectPath
+    ) {
+        navigatorPhysicalTables.putIfAbsent(tableName, new ScratchBirdTable(this, tableName, tableType, null, objectPath));
+    }
+
+    void addNavigatorView(
+        @NotNull String viewName,
+        @NotNull String viewType,
+        @NotNull ScratchBirdObjectPath objectPath
+    ) {
+        navigatorViews.putIfAbsent(viewName, new ScratchBirdView(this, viewName, viewType, null, objectPath));
     }
 
     void setBackingSchema(@NotNull ScratchBirdSchema backingSchema) {
@@ -146,97 +166,103 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         return fullPath;
     }
 
+    @NotNull
     @Property(viewable = true, order = 2)
+    public String getAuthorityPath() {
+        return objectPath.authorityPath();
+    }
+
+    @Property(viewable = true, order = 3)
     public boolean isCatalogBacked() {
         return catalogBacked;
     }
 
-    @Property(viewable = true, order = 3)
+    @Property(viewable = true, order = 4)
     public boolean isClientOnly() {
         return clientOnly;
     }
 
-    @Property(viewable = true, order = 4)
+    @Property(viewable = true, order = 5)
     public boolean isMetricsBranch() {
         return ScratchBirdNamespaceSemantics.isMetricsPath(fullPath);
     }
 
-    @Property(viewable = true, order = 5)
+    @Property(viewable = true, order = 6)
     public boolean isDomainBranch() {
         return ScratchBirdNamespaceSemantics.isDomainPath(fullPath);
     }
 
-    @Property(viewable = true, order = 6)
+    @Property(viewable = true, order = 7)
     public boolean isScratchBirdSystemPath() {
-        return ScratchBirdNamespaceSemantics.isSystemPath(fullPath);
+        return ScratchBirdNamespaceSemantics.isSystemPath(getAuthorityPath());
     }
 
-    @Property(viewable = true, order = 7)
+    @Property(viewable = true, order = 8)
     public boolean isSchemaBranchesFolderVisible() {
         return catalogBacked && !clientOnly && !isDomainBranch();
     }
 
-    @Property(viewable = true, order = 8)
+    @Property(viewable = true, order = 9)
     public boolean isObjectFoldersVisible() {
         return isObjectContainerBranch();
     }
 
-    @Property(viewable = true, order = 9)
+    @Property(viewable = true, order = 10)
     public boolean isTableFoldersVisible() {
         return isObjectContainerBranch() && !isDomainBranch();
     }
 
-    @Property(viewable = true, order = 10)
+    @Property(viewable = true, order = 11)
     public boolean isViewFoldersVisible() {
         return isTableFoldersVisible();
     }
 
-    @Property(viewable = true, order = 11)
+    @Property(viewable = true, order = 12)
     public boolean isConstraintFoldersVisible() {
         return isTableFoldersVisible();
     }
 
-    @Property(viewable = true, order = 12)
+    @Property(viewable = true, order = 13)
     public boolean isIndexFoldersVisible() {
         return isTableFoldersVisible();
     }
 
-    @Property(viewable = true, order = 13)
+    @Property(viewable = true, order = 14)
     public boolean isSequenceFoldersVisible() {
         return isTableFoldersVisible();
     }
 
-    @Property(viewable = true, order = 14)
+    @Property(viewable = true, order = 15)
     public boolean isDataTypesFolderVisible() {
         return isDomainBranch();
     }
 
     @Nullable
-    @Property(viewable = true, optional = true, order = 15)
+    @Property(viewable = true, optional = true, order = 16)
     public String getDatabaseUuid() {
         return objectPath.databaseUuid();
     }
 
     @Nullable
-    @Property(viewable = true, optional = true, order = 16)
+    @Property(viewable = true, optional = true, order = 17)
     public String getObjectUuid() {
         return objectPath.objectUuid();
     }
 
     @Nullable
-    @Property(viewable = true, optional = true, order = 17)
+    @Property(viewable = true, optional = true, order = 18)
     public String getParentUuid() {
         return objectPath.parentUuid();
     }
 
     @NotNull
-    @Property(viewable = true, order = 18)
+    @Property(viewable = true, order = 19)
     public String getObjectType() {
         return objectType;
     }
 
     @NotNull
-    @Property(viewable = true, order = 19)
+    @Property(viewable = true, order = 20)
     public String getIdentityStatus() {
         return objectPath.identityStatus();
     }
@@ -296,6 +322,13 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         if (!tables.isEmpty()) {
             return tables;
         }
+        if (hasNavigatorRelations()) {
+            List<GenericTableBase> navigatorTables = new ArrayList<>();
+            navigatorTables.addAll(navigatorPhysicalTables.values());
+            navigatorTables.addAll(navigatorViews.values());
+            getTableCache().setCache(navigatorTables);
+            return navigatorTables;
+        }
         return loadAndCacheMetadataTables(monitor);
     }
 
@@ -308,6 +341,10 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         if (table != null) {
             return table;
         }
+        if (hasNavigatorRelations()) {
+            getTables(monitor);
+            return getTableCache().getCachedObject(name);
+        }
         loadAndCacheMetadataTables(monitor);
         return getTableCache().getCachedObject(name);
     }
@@ -316,6 +353,9 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     public List<? extends GenericTable> getPhysicalTables(@NotNull DBRProgressMonitor monitor) throws DBException {
         if (!isTableFoldersVisible()) {
             return Collections.emptyList();
+        }
+        if (!navigatorPhysicalTables.isEmpty()) {
+            return new ArrayList<>(navigatorPhysicalTables.values());
         }
         List<GenericTable> physicalTables = new ArrayList<>();
         for (GenericTableBase table : getTables(monitor)) {
@@ -330,6 +370,9 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     public List<? extends GenericView> getViews(@NotNull DBRProgressMonitor monitor) throws DBException {
         if (!isViewFoldersVisible()) {
             return Collections.emptyList();
+        }
+        if (!navigatorViews.isEmpty()) {
+            return new ArrayList<>(navigatorViews.values());
         }
         List<GenericView> views = new ArrayList<>();
         for (GenericTableBase table : getTables(monitor)) {
@@ -404,7 +447,14 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
         if (clientOnly || !catalogBacked || isDomainBranch()) {
             return false;
         }
-        return "sys".equals(fullPath) || childSchemas.isEmpty();
+        if (!"SCHEMA".equalsIgnoreCase(objectType)) {
+            return false;
+        }
+        return hasNavigatorRelations() || "sys".equals(getAuthorityPath()) || childSchemas.isEmpty();
+    }
+
+    private boolean hasNavigatorRelations() {
+        return !navigatorPhysicalTables.isEmpty() || !navigatorViews.isEmpty();
     }
 
     @NotNull
@@ -440,7 +490,7 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     private List<GenericTableBase> loadMetadataPhysicalTables(@NotNull DBRProgressMonitor monitor) {
         List<GenericTableBase> tables = new ArrayList<>();
         try (JDBCSession session = DBUtils.openMetaSession(monitor, this, "Load ScratchBird JDBC metadata tables");
-             ResultSet resultSet = session.getMetaData().getTables(null, fullPath, "%", PHYSICAL_TABLE_TYPES)) {
+             ResultSet resultSet = session.getMetaData().getTables(null, getAuthorityPath(), "%", PHYSICAL_TABLE_TYPES)) {
             while (resultSet.next()) {
                 String tableName = resultSet.getString("TABLE_NAME");
                 if (tableName == null || tableName.isEmpty()) {
@@ -458,7 +508,7 @@ public class ScratchBirdSchemaNode extends GenericObjectContainer implements DBS
     private List<GenericTableBase> loadMetadataViews(@NotNull DBRProgressMonitor monitor) {
         List<GenericTableBase> views = new ArrayList<>();
         try (JDBCSession session = DBUtils.openMetaSession(monitor, this, "Load ScratchBird JDBC metadata views");
-             ResultSet resultSet = session.getMetaData().getTables(null, fullPath, "%", VIEW_TYPES)) {
+             ResultSet resultSet = session.getMetaData().getTables(null, getAuthorityPath(), "%", VIEW_TYPES)) {
             while (resultSet.next()) {
                 String viewName = resultSet.getString("TABLE_NAME");
                 if (viewName == null || viewName.isEmpty()) {

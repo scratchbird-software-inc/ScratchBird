@@ -32,13 +32,13 @@ Both forms still bind descriptors, enforce authorization, and execute under MGA 
 ## Statement Families
 
 ```ebnf
-nosql_statement ::=
-      document_statement
-    | kv_statement
-    | graph_statement
-    | vector_statement
-    | search_statement
-    | timeseries_statement ;
+multi_model_op_stmt ::=
+      document_op_stmt
+    | keyvalue_op_stmt
+    | graph_op_stmt
+    | vector_op_stmt
+    | fulltext_search_query
+    | time_series_op_stmt ;
 ```
 
 SBsql is context sensitive. `DOCUMENT`, `KV`, `GRAPH`, `VECTOR`, `SEARCH`, and `TIMESERIES` are command words inside this statement family. They should not be treated as globally reserved identifiers outside this context.
@@ -102,7 +102,7 @@ Names, keys, paths, metrics, query text, patterns, timestamps, and options are p
 Document statements operate on descriptor-bound document containers or document-bearing rowsets.
 
 ```ebnf
-document_statement ::=
+document_op_stmt ::=
     DOCUMENT document_action document_target document_payload? return_clause? statement_option_list? ;
 
 document_action ::=
@@ -172,7 +172,7 @@ Document semantics:
 Key-value statements operate on descriptor-bound key spaces. Keys, values, versions, expiration, and optional collection behavior are explicit descriptors.
 
 ```ebnf
-kv_statement ::=
+keyvalue_op_stmt ::=
     KV kv_action kv_target kv_payload? return_clause? statement_option_list? ;
 
 kv_action ::=
@@ -241,7 +241,7 @@ Key-value semantics:
 Graph statements operate on graph descriptors, node descriptors, edge descriptors, path descriptors, and property descriptors.
 
 ```ebnf
-graph_statement ::=
+graph_op_stmt ::=
     GRAPH graph_action graph_target graph_payload? return_clause? statement_option_list? ;
 
 graph_action ::=
@@ -306,7 +306,7 @@ Graph semantics:
 Vector statements operate on vector-bearing descriptors and vector index evidence.
 
 ```ebnf
-vector_statement ::=
+vector_op_stmt ::=
     VECTOR vector_action vector_target vector_payload? return_clause? statement_option_list? ;
 
 vector_action ::=
@@ -369,7 +369,7 @@ Vector semantics:
 Search statements operate on descriptor-bound search indexes or search projections.
 
 ```ebnf
-search_statement ::=
+fulltext_search_query ::=
     SEARCH search_target search_payload return_clause? statement_option_list? ;
 
 search_target ::=
@@ -412,7 +412,7 @@ Search semantics:
 Time-series statements operate on timestamped samples, events, buckets, rollups, and retention policies.
 
 ```ebnf
-timeseries_statement ::=
+time_series_op_stmt ::=
     TIMESERIES timeseries_action timeseries_target timeseries_payload? return_clause? statement_option_list? ;
 
 timeseries_action ::=

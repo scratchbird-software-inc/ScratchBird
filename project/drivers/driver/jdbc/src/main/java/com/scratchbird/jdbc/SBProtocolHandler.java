@@ -121,6 +121,7 @@ public class SBProtocolHandler {
     private static final int PROTOCOL_MAGIC = 0x50574253;
     private static final int PROTOCOL_VERSION_MAJOR = 1;
     private static final int PROTOCOL_VERSION_MINOR = 1;
+    private static final int PROTOCOL_VERSION = 0x0101;
     private static final int HEADER_SIZE = 40;
     private static final int MAX_MESSAGE_SIZE = 1024 * 1024 * 1024;
     private static final int MANAGER_PROTOCOL_MAGIC = 0x42444253;
@@ -221,6 +222,7 @@ public class SBProtocolHandler {
 
     private static final long FEATURE_COMPRESSION = 1L << 0;
     private static final long FEATURE_STREAMING = 1L << 1;
+    private static final int CONNECT_VALUE_TEXT = 0x01;
 
     private static final int QUERY_FLAG_DESCRIBE_ONLY = 0x01;
     private static final int QUERY_FLAG_NO_PORTAL = 0x02;
@@ -1030,8 +1032,7 @@ public class SBProtocolHandler {
                 case MSG_NEGOTIATE_VERSION:
                     continue;
                 case MSG_PARAMETER_STATUS: {
-                    ParameterStatus status = parseParameterStatus(msg.payload);
-                    handleParameterStatus(status);
+                    handleParameterStatusPayload(msg.payload);
                     continue;
                 }
                 case MSG_AUTH_REQUEST: {
@@ -1264,8 +1265,7 @@ public class SBProtocolHandler {
                     continue;
                 }
                 case MSG_PARAMETER_STATUS: {
-                    ParameterStatus status = parseParameterStatus(msg.payload);
-                    handleParameterStatus(status);
+                    handleParameterStatusPayload(msg.payload);
                     continue;
                 }
                 case MSG_READY: {
@@ -1298,6 +1298,12 @@ public class SBProtocolHandler {
             } catch (NumberFormatException ignore) {
                 // Ignore invalid txn id.
             }
+        }
+    }
+
+    private void handleParameterStatusPayload(byte[] payload) throws SQLException {
+        for (ParameterStatus status : parseParameterStatuses(payload)) {
+            handleParameterStatus(status);
         }
     }
 
@@ -1404,7 +1410,7 @@ public class SBProtocolHandler {
     private boolean handleAsyncMessage(ProtocolMessage msg) throws SQLException {
         switch (msg.type) {
             case MSG_PARAMETER_STATUS: {
-                handleParameterStatus(parseParameterStatus(msg.payload));
+                handleParameterStatusPayload(msg.payload);
                 return true;
             }
             case MSG_NOTIFICATION: {
@@ -1714,30 +1720,51 @@ public class SBProtocolHandler {
     }
 
     private byte[] buildStartupPayload(long features, Map<String, String> params) {
-        byte[] paramBytes = buildParamList(params);
-        ByteBuffer buf = ByteBuffer.allocate(2 + 2 + 8 + paramBytes.length).order(ByteOrder.LITTLE_ENDIAN);
-        buf.put((byte) PROTOCOL_VERSION_MAJOR);
-        buf.put((byte) PROTOCOL_VERSION_MINOR);
-        buf.putShort((short) 0);
-        buf.putLong(features);
-        buf.put(paramBytes);
-        return buf.array();
-    }
-
-    private byte[] buildParamList(Map<String, String> params) {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ByteArrayOutputStream paramBytes = new ByteArrayOutputStream();
         try {
             for (Map.Entry<String, String> entry : params.entrySet()) {
-                out.write(entry.getKey().getBytes(StandardCharsets.UTF_8));
-                out.write(0);
-                out.write(entry.getValue().getBytes(StandardCharsets.UTF_8));
-                out.write(0);
+                putLengthPrefixedString(paramBytes, entry.getKey());
+                paramBytes.write(ByteBuffer.allocate(2)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putShort((short) CONNECT_VALUE_TEXT)
+                    .array());
+                byte[] value = entry.getValue().getBytes(StandardCharsets.UTF_8);
+                paramBytes.write(ByteBuffer.allocate(4)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putInt(value.length)
+                    .array());
+                paramBytes.write(value);
             }
-            out.write(0);
         } catch (IOException e) {
             // ByteArrayOutputStream does not throw
         }
-        return out.toByteArray();
+
+        byte[] encodedParams = paramBytes.toByteArray();
+        ByteBuffer buf = ByteBuffer
+            .allocate(88 + encodedParams.length)
+            .order(ByteOrder.LITTLE_ENDIAN);
+        buf.putShort((short) PROTOCOL_VERSION);
+        buf.putShort((short) PROTOCOL_VERSION);
+        buf.putInt(0);
+        buf.putLong(features);
+        buf.putLong(0);
+        buf.putLong(0);
+        buf.put(new byte[16]);
+        buf.put(new byte[16]);
+        buf.put(new byte[16]);
+        buf.putInt(params.size());
+        buf.put(encodedParams);
+        buf.putInt(0);
+        return buf.array();
+    }
+
+    private void putLengthPrefixedString(ByteArrayOutputStream out, String value) throws IOException {
+        byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+        out.write(ByteBuffer.allocate(4)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(encoded.length)
+            .array());
+        out.write(encoded);
     }
 
     private byte[] buildQueryPayload(String sql, int flags, int maxRows, int timeoutMs) {
@@ -2302,19 +2329,70 @@ public class SBProtocolHandler {
         return new AuthOk(sessionId, serverInfo);
     }
 
-    private ParameterStatus parseParameterStatus(byte[] payload) {
+    private List<ParameterStatus> parseParameterStatuses(byte[] payload) throws SQLException {
         if (payload.length < 8) {
-            return new ParameterStatus("", "");
+            return Collections.emptyList();
         }
+
+        int count = ByteBuffer.wrap(payload, 0, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
+        if (count > 0 && count <= 256) {
+            try {
+                List<ParameterStatus> statuses = new ArrayList<>(count);
+                int offset = 4;
+                for (int i = 0; i < count; i++) {
+                    if (offset + 4 > payload.length) {
+                        throw new IllegalArgumentException("parameter status name length truncated");
+                    }
+                    int nameLen = ByteBuffer.wrap(payload, offset, 4)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .getInt();
+                    offset += 4;
+                    if (nameLen < 0 || offset + nameLen + 7 > payload.length) {
+                        throw new IllegalArgumentException("parameter status name truncated");
+                    }
+                    String name = new String(payload, offset, nameLen, StandardCharsets.UTF_8);
+                    offset += nameLen;
+
+                    // P1 parameter status entries carry value_type:uint16 and flags:uint8.
+                    offset += 3;
+                    int valueLen = ByteBuffer.wrap(payload, offset, 4)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .getInt();
+                    offset += 4;
+                    if (valueLen < 0 || offset + valueLen > payload.length) {
+                        throw new IllegalArgumentException("parameter status value truncated");
+                    }
+                    String value = new String(payload, offset, valueLen, StandardCharsets.UTF_8);
+                    offset += valueLen;
+                    statuses.add(new ParameterStatus(name, value));
+                }
+                if (offset == payload.length) {
+                    return statuses;
+                }
+            } catch (IllegalArgumentException ignored) {
+                // Fall through to the older single key/value payload shape.
+            }
+        }
+
         ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
         int nameLen = buf.getInt();
+        if (nameLen < 0 || nameLen > buf.remaining()) {
+            throw createSQLException("Parameter status name length invalid", "08P01");
+        }
         byte[] nameBytes = new byte[nameLen];
         buf.get(nameBytes);
+        if (buf.remaining() < 4) {
+            throw createSQLException("Parameter status value length truncated", "08P01");
+        }
         int valueLen = buf.getInt();
+        if (valueLen < 0 || valueLen > buf.remaining()) {
+            throw createSQLException("Parameter status value length invalid", "08P01");
+        }
         byte[] valueBytes = new byte[valueLen];
         buf.get(valueBytes);
-        return new ParameterStatus(new String(nameBytes, StandardCharsets.UTF_8),
-            new String(valueBytes, StandardCharsets.UTF_8));
+        return Collections.singletonList(new ParameterStatus(
+            new String(nameBytes, StandardCharsets.UTF_8),
+            new String(valueBytes, StandardCharsets.UTF_8)));
     }
 
     private List<Integer> parseParameterDescription(byte[] payload) throws SQLException {
@@ -2363,6 +2441,16 @@ public class SBProtocolHandler {
     }
 
     private ReadyStatus parseReady(byte[] payload) {
+        if (payload.length >= 76
+                && (payload[56] == 0x49
+                    || payload[56] == 0x54
+                    || payload[56] == 0x45
+                    || payload[56] == 0x52
+                    || payload[56] == 0x41)) {
+            long txn = ByteBuffer.wrap(payload, 48, 8).order(ByteOrder.LITTLE_ENDIAN).getLong();
+            byte status = (payload[56] == 0x54 || payload[56] == 0x45) ? (byte) 1 : (byte) 0;
+            return new ReadyStatus(status, txn, txn);
+        }
         if (payload.length < 20) {
             return new ReadyStatus((byte) 0, 0, 0);
         }

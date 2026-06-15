@@ -64,7 +64,7 @@ After parsing, the binder must resolve:
 
 | Parent production | Purpose |
 | --- | --- |
-| `dml_statement` | Places `UPDATE` in the data manipulation statement family. |
+| `data_change_stmt` | Places `UPDATE` in the data manipulation statement family. |
 | `merge_matched_action` | Supplies the update action inside `MERGE`. |
 | `conflict_action` | Supplies the conflict update action inside `UPSERT`. |
 

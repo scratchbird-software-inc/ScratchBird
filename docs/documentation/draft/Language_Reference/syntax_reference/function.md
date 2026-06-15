@@ -41,16 +41,16 @@ Function lifecycle is not text storage alone. The executable representation must
 
 ```ebnf
 function_lifecycle_statement ::=
-      create_function
-    | alter_function
+      create_function_stmt
+    | alter_routine_stmt
     | rename_function
     | recreate_function
     | comment_on_function
     | show_function
     | describe_function
-    | drop_function ;
+    | drop_routine_stmt ;
 
-create_function ::=
+create_function_stmt ::=
     CREATE FUNCTION function_ref function_parameter_list?
     RETURNS function_return_descriptor
     function_attribute_list?

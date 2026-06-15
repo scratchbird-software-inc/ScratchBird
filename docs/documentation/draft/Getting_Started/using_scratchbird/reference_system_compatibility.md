@@ -2,45 +2,23 @@
 
 ## Purpose
 
-ScratchBird can expose compatibility surfaces through reference-system emulation
-parser packages. A compatibility parser is a standalone parser and protocol
-adapter for one client family. It lets a client speak the language and protocol
-shape that parser is built to understand while ScratchBird keeps storage,
-transactions, identity, security, and recovery inside the ScratchBird engine.
+ScratchBird can serve clients that speak the language and protocol of another database system, through a compatibility parser package. This matters when you have existing applications, tools, or workflows built for another system and you want them to connect to a ScratchBird database without being rewritten.
 
-Compatibility is scoped. The presence of a parser package means there is a route for that client family; it does not mean every command, tool behavior, catalog row, wire-protocol edge case, or administrative feature from that source ecosystem is complete in the current build.
+A compatibility parser is a standalone adapter for one client family. It lets a client speak that parser's language and protocol shape while ScratchBird keeps storage, transactions, identity, security, and recovery inside the ScratchBird engine. The key word is "scoped": the presence of a parser package means there is a route for that client family; it does not mean every command, tool behavior, catalog row, wire-protocol edge case, or administrative feature from that source ecosystem is complete in the current build.
+
+This page should be read after [Schemas, Objects, And Names](schemas_objects_and_names.md), because compatibility parsers surface a workarea as the client-visible root — which only makes sense once you understand the recursive schema tree.
 
 ## The Compatibility Model
 
-A compatibility parser sits between a client and SBcore.
+A compatibility parser sits between a client and SBcore (the core database engine). The parser is responsible for accepting the client surface; the engine remains responsible for durable authority.
 
-```mermaid
-flowchart LR
-    Client[Compatible client or tool]
-    Parser[Matching compatibility parser]
-    SBLR[Bound SBLR request]
-    Engine[SBcore]
-    Catalog[ScratchBird catalog]
-    Txn[MGA transaction authority]
-    Storage[ScratchBird storage]
-    Result[Client-shaped result or diagnostic]
-
-    Client --> Parser
-    Parser --> SBLR
-    SBLR --> Engine
-    Engine --> Catalog
-    Engine --> Txn
-    Engine --> Storage
-    Engine --> Result
-    Result --> Parser
-    Parser --> Client
-```
-
-The parser is responsible for accepting the client surface. The engine remains responsible for durable authority.
+![diagram](./reference_system_compatibility-1.svg)
 
 ## What The Parser Owns
 
-A compatibility parser can own client-facing behavior such as:
+A compatibility parser can own client-facing behavior. Understanding this boundary helps you know what to test per-parser and what remains consistent across all parsers.
+
+Parser-owned behavior includes:
 
 - protocol negotiation for its client family;
 - syntax accepted by that parser;
@@ -49,22 +27,13 @@ A compatibility parser can own client-facing behavior such as:
 - catalog projections that make ScratchBird metadata visible in the expected shape;
 - diagnostic rendering for that client family;
 - logical backup, restore, replication, or import/export streams where those surfaces are implemented and admitted by policy;
-- mapping accepted work into SBLR.
+- mapping accepted work into SBLR (the internal representation passed to the engine).
 
-The parser does not own:
-
-- final transaction authority;
-- storage recovery;
-- durable catalog identity;
-- authorization finality;
-- object UUID assignment;
-- cleanup and garbage collection decisions;
-- page format interpretation outside the engine;
-- low-level repair or verification authority.
+The parser does not own final transaction authority, storage recovery, durable catalog identity, authorization finality, object UUID assignment, cleanup and garbage collection decisions, page format interpretation outside the engine, or low-level repair or verification authority.
 
 ## Parser Isolation
 
-Each compatibility parser is isolated from the others.
+Each compatibility parser is isolated from the others. This separation is intentional — it keeps compatibility behavior explicit and prevents a client from accidentally entering a different dialect.
 
 | Rule | Meaning |
 | --- | --- |
@@ -74,11 +43,9 @@ Each compatibility parser is isolated from the others.
 | Parser-local defaults | Object defaults, name folding, null handling, index defaults, and diagnostics are parser-specific where implemented. |
 | Engine authority remains shared | Once accepted and lowered, engine execution still uses ScratchBird catalog, security, transaction, and storage rules. |
 
-This separation is intentional. It keeps compatibility behavior explicit and prevents a client from accidentally entering a different dialect.
-
 ## Compatibility Areas
 
-Compatibility may involve many independent surfaces. A parser can be strong in one area and incomplete in another, so documentation and proof should be read by surface.
+Compatibility is not a single thing — a parser can be strong in one area and incomplete in another. Read compatibility claims by specific surface rather than treating "has a parser package" as blanket compatibility.
 
 | Area | What To Check |
 | --- | --- |
@@ -96,37 +63,23 @@ Compatibility may involve many independent surfaces. A parser can be strong in o
 
 ## Sandboxed Workareas
 
-A compatibility client normally connects to a compatibility workarea. That
-workarea is the root of the namespace the client can see.
+A compatibility client normally connects to a compatibility workarea (the namespace root visible to the client). That workarea is the root of the namespace the client can see. Objects outside the workarea are not directly accessible to the client, even if a catalog projection displays selected metadata about them.
 
-```mermaid
-flowchart TB
-    Root[/ScratchBird database root/]
-    Admin[Authorized SBsql administration]
-    Workarea[Compatibility workarea root]
-    Catalog[Compatibility catalog projections]
-    Objects[User objects visible to client]
-    Hidden[Objects outside client sandbox]
+![diagram](./reference_system_compatibility-2.svg)
 
-    Root --> Admin
-    Root --> Workarea
-    Workarea --> Catalog
-    Workarea --> Objects
-    Root --> Hidden
-```
-
-The client should not be able to spell a path outside its sandbox and read arbitrary objects. Some catalog projection objects may display selected metadata from outside the sandbox when the projection object itself has been granted that authority. That does not give the user unrestricted direct access outside the workarea.
+Some catalog projection objects may display selected metadata from outside the sandbox when the projection object itself has been granted that authority. That does not give the user unrestricted direct access outside the workarea.
 
 ## Logical Streams And File Access
 
-Compatibility commands that move data require careful handling.
+Compatibility commands that move data require careful handling. The key distinction is between logical remote streams and server-local or physical storage operations.
 
-Allowed by design when implemented and admitted by policy:
+Allowed by design when implemented and policy admits it:
 
-- remote logical backup streams for the connected compatibility database;
-- remote logical restore streams that contain metadata and data operations;
-- partial logical export or import streams where the parser and engine support them;
-- CDC, replication, or ETL streams through the parser's UDR bridge where implemented.
+- a client sends a logical restore stream;
+- a client receives a logical backup stream;
+- a tool imports rows or records through an admitted route;
+- a tool exports rows or records through an admitted route;
+- a parser-support routine streams logical CDC or ETL records.
 
 Denied or restricted by design:
 
@@ -135,13 +88,13 @@ Denied or restricted by design:
 - low-level repair, verification, or page maintenance through compatibility parser routes;
 - operations targeting objects outside the connected workarea without explicit engine authority.
 
-The key distinction is logical remote stream versus server-local or physical storage access. A logical stream can be interpreted as client work. A physical page copy or repair command attempts to bypass engine authority.
+A logical stream can be interpreted as client work. A physical page copy or repair command attempts to bypass engine authority.
 
 ## Refusals Are Compatibility Behavior
 
-A compatibility parser should fail clearly when behavior is not admitted.
+A compatibility parser that fails clearly on unsupported behavior is doing its job correctly. A parser that silently accepts unsupported commands and returns success without doing the work is a defect, not a feature.
 
-Common refusal classes include:
+Common refusal classes:
 
 - syntax not accepted by the selected parser;
 - feature unsupported by the parser;
@@ -153,11 +106,9 @@ Common refusal classes include:
 - missing capability for CDC, replication, import, export, or migration;
 - ambiguous ordering or transaction grouping in a stream.
 
-A controlled refusal is preferable to pretending that a feature succeeded.
-
 ## Reading Compatibility Claims
 
-When evaluating a parser, look for proof of the exact surface you need:
+When evaluating a parser, look for proof of the exact surface you need rather than inferences from directory names or package manifests.
 
 1. The parser package exists in the build output.
 2. The parser can be configured and selected.
@@ -165,9 +116,11 @@ When evaluating a parser, look for proof of the exact surface you need:
 4. The SQL or protocol surface you need is implemented.
 5. Type, index, transaction, and catalog behavior match the parser's documented compatibility target.
 6. The behavior is covered by reference-system regression tests or parser proof gates.
-7. Unsupported cases return the documented message vector.
+7. Unsupported cases return the documented message vector (a structured diagnostic record).
 
 Do not infer readiness from file names, directory names, or generated manifests alone.
+
+For procedures to configure and test compatibility parsers, see the full [Operations Administration](../../Operations_Administration/operating_modes_runbook.md) chapters.
 
 ## Where To Go Next
 

@@ -51,34 +51,34 @@ Policy, masking, and row-level security lifecycle statements are documented in [
 ## Syntax
 
 ```ebnf
-security_statement ::=
-      create_identity_statement
-    | alter_identity_statement
-    | drop_identity_statement
-    | grant_statement
-    | revoke_statement
+dcl_security_stmt ::=
+      create_principal_stmt
+    | alter_principal_stmt
+    | drop_principal_stmt
+    | grant_stmt
+    | revoke_stmt
     | set_role_statement
     | show_security_statement
     | describe_security_statement ;
 ```
 
 ```ebnf
-create_identity_statement ::=
+create_principal_stmt ::=
     CREATE (USER | ROLE | GROUP) principal_name identity_option* ;
 
-alter_identity_statement ::=
+alter_principal_stmt ::=
     ALTER (USER | ROLE | GROUP) principal_ref alter_identity_action+ ;
 
-drop_identity_statement ::=
+drop_principal_stmt ::=
     DROP (USER | ROLE | GROUP) principal_ref (RESTRICT | CASCADE)? ;
 ```
 
 ```ebnf
-grant_statement ::=
+grant_stmt ::=
       GRANT privilege_list ON grant_target TO grantee_list grant_option*
     | GRANT role_list TO grantee_list role_grant_option* ;
 
-revoke_statement ::=
+revoke_stmt ::=
       REVOKE revoke_option* privilege_list ON grant_target FROM grantee_list revoke_behavior?
     | REVOKE revoke_option* role_list FROM grantee_list revoke_behavior? ;
 ```

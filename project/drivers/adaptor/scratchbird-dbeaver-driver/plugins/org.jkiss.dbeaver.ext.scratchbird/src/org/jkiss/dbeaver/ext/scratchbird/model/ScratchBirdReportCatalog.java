@@ -35,6 +35,18 @@ import java.util.Map;
 
 public final class ScratchBirdReportCatalog {
 
+    public static final String DASHBOARD_SESSIONS_ID = "scratchbird.sessions";
+    public static final String DASHBOARD_SESSIONS_QUERY =
+        "SELECT COUNT(*) AS \"Sessions\" FROM sys.sessions";
+    public static final String DASHBOARD_TRANSACTIONS_ID = "scratchbird.transactions";
+    public static final String DASHBOARD_TRANSACTIONS_QUERY =
+        "SELECT COUNT(*) AS \"Transactions\" FROM sys.transactions";
+    public static final String DASHBOARD_LOCKS_ID = "scratchbird.locks";
+    public static final String DASHBOARD_LOCKS_QUERY =
+        "SELECT COUNT(*) AS \"Locks\" FROM sys.locks";
+    public static final String DASHBOARD_PERFORMANCE_ID = "scratchbird.performance";
+    public static final String DASHBOARD_PERFORMANCE_QUERY = "SHOW METRICS";
+
     public static final List<String> METRICS_BRANCHES = List.of(
         "health-scorecards",
         "workload-and-sql",

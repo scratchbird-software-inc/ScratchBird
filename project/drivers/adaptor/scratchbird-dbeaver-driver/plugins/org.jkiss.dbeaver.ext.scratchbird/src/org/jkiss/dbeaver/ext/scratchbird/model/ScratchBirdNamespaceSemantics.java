@@ -40,11 +40,20 @@ public final class ScratchBirdNamespaceSemantics {
     public static final String METRICS_ROOT = "metrics";
 
     private static final List<String> ROOT_DISPLAY_ORDER = List.of(
+        "security",
+        "programmability",
+        "domains",
+        "agents",
+        "jobs",
+        "diagnostics / metrics",
+        "triggers",
+        "file-spaces",
         "sys",
         "users",
-        "cluster",
         "emulated",
         "remote",
+        "app",
+        "cluster",
         "data",
         METRICS_ROOT
     );

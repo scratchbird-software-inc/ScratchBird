@@ -8,12 +8,14 @@ Generation task: `ebnf_set_query`
 ## Production
 
 ```ebnf
-set_query               ::= query_statement set_operator query_statement ;
+query_expression        ::= query_term ( set_op query_term )* ;
 ```
+
+<!-- Fragment dispatcher: query_expression is the registered production for set-operation queries (SBSQL registry). -->
 
 ## Meaning
 
-`set_query` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`query_expression` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 
@@ -23,8 +25,8 @@ No parent production reference was detected in the grammar text.
 
 | Child Production |
 | --- |
-| query_statement |
-| set_operator |
+| query_term |
+| set_op |
 
 ## Practical Notes
 

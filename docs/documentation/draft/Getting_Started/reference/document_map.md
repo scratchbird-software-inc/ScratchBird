@@ -38,6 +38,7 @@ Read these pages in order if you are evaluating ScratchBird for the first time.
 | [What Is A Database?](../core_concepts/what_is_a_database.md) | Plain-language explanation of durable data, metadata, transactions, identity, and why a database is more than a file. |
 | [What Is A Convergent Data Engine?](../core_concepts/what_is_a_convergent_data_engine.md) | Explanation of the CDE category and the difference between shared engine authority and one universal syntax. |
 | [How ScratchBird Implements A CDE](../core_concepts/how_scratchbird_implements_a_cde.md) | ScratchBird-specific overview of SBcore, parsers, SBLR, recursive schema, sandboxing, resources, operating modes, and refusal behavior. |
+| [Understanding MGA](../core_concepts/understanding_mga.md) | Plain-language explanation of Multi-Generational Architecture: transactions, snapshots, non-destructive change, cleanup, and how it differs from write-ahead logging. |
 
 ## Operating Modes
 

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#functional-reference-index" id="toc-functional-reference-index">Functional Reference Index</a>
+<ul>
+<li><a href="#packages" id="toc-packages">Packages</a></li>
+<li><a href="#entry-format" id="toc-entry-format">Entry Format</a></li>
+<li><a href="#cross-references" id="toc-cross-references">Cross
+References</a></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/index.md -->
+<p><a id="ch-language-reference-functional-reference-index-md"></a></p>
+<h1 id="functional-reference-index">Functional Reference Index</h1>
+<p>The functional reference documents SBsql built-in operations by
+package namespace. Each package page gives the operation name, purpose,
+accepted call forms, parameter rules, return rule, behavior, error
+handling, example usage, and technical binding information.</p>
+<p>These pages describe the SBsql language surface. They do not grant
+privileges and they do not bypass schema sandboxing, descriptor checks,
+policy admission, or MGA transaction authority.</p>
+<p>Technical identifiers such as SBLR symbols, AST class names, UUIDs,
+entrypoints, optimizer notes, and conformance markers are diagnostic
+trace fields. They connect the documented surface to implementation
+evidence; they are not independent user contracts or release-support
+claims.</p>
+<h2 id="packages">Packages</h2>
+<table>
+<colgroup>
+<col style="width: 23%" />
+<col style="width: 23%" />
+<col style="width: 30%" />
+<col style="width: 23%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Package</th>
+<th>File</th>
+<th style="text-align: right;">Records</th>
+<th>Scope</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>sb.core</code></td>
+<td>sb_core.md (SBsql Functions — SB Core Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">605</td>
+<td>Core scalar, aggregate, window, session, catalog, diagnostic, and
+language helper surfaces used by ordinary SBsql expressions and
+procedural SQL.</td>
+</tr>
+<tr class="even">
+<td><code>sb.crypto</code></td>
+<td>sb_crypto.md (SBsql Functions — SB Crypto Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">27</td>
+<td>Cryptographic, hashing, random-value, armor, and bounded encryption
+helper functions.</td>
+</tr>
+<tr class="odd">
+<td><code>sb.cursor</code></td>
+<td>sb_cursor.md (SBsql Functions — SB Cursor Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">15</td>
+<td>Cursor, stream, rowset-handle, and table-value conversion helpers
+used by procedural SQL and streaming execution.</td>
+</tr>
+<tr class="even">
+<td><code>sb.fn.diagnostic</code></td>
+<td>sb_diagnostic.md (SBsql Functions — SB Diagnostic Functional
+Reference, page XXX)</td>
+<td style="text-align: right;">1</td>
+<td>Statement and procedural diagnostic helpers, including row-count
+context.</td>
+</tr>
+<tr class="odd">
+<td><code>sb.json</code></td>
+<td>sb_json.md (SBsql Functions — SB JSON Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">44</td>
+<td>JSON and JSONB construction, extraction, path, aggregation, and
+table-shaping helpers.</td>
+</tr>
+<tr class="even">
+<td><code>sb.lob</code></td>
+<td>sb_lob.md (SBsql Functions — SB LOB Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">13</td>
+<td>Large-object and locator helpers for bounded LOB access through
+engine-managed handles.</td>
+</tr>
+<tr class="odd">
+<td><code>sb.operator</code></td>
+<td>sb_operator.md (SBsql Functions — SB Operator Functional Reference,
+page XXX)</td>
+<td style="text-align: right;">24</td>
+<td>Operator functions for arithmetic, comparison, boolean, pattern,
+JSON, array, and vector-like operator spellings.</td>
+</tr>
+<tr class="even">
+<td><code>sb.scalar</code> (range)</td>
+<td>sb_range.md (SBsql Functions — SB Range Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">9</td>
+<td>Range-boundary and containment helpers for descriptor-backed range
+values; registered under <code>sb.scalar.range_*</code>.</td>
+</tr>
+<tr class="odd">
+<td><code>sb.regex</code></td>
+<td>sb_regex.md (SBsql Functions — SB Regex Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">12</td>
+<td>Regular expression matching, search, counting, replacement, and
+split helpers.</td>
+</tr>
+<tr class="even">
+<td><code>sb.rowset</code></td>
+<td>sb_rowset.md (SBsql Functions — SB Rowset Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">16</td>
+<td>Rowset, set-returning, table-value, multiset, and series
+construction helpers.</td>
+</tr>
+<tr class="odd">
+<td><code>sb.spatial</code></td>
+<td>sb_spatial.md (SBsql Functions — SB Spatial Functional Reference,
+page XXX)</td>
+<td style="text-align: right;">93</td>
+<td>Bounded spatial geometry helpers for WKT, narrow GeoJSON, point WKB
+text, predicates, measurements, and construction.</td>
+</tr>
+<tr class="even">
+<td><code>sb.temporal</code></td>
+<td>sb_temporal.md (SBsql Functions — SB Temporal Functional Reference,
+page XXX)</td>
+<td style="text-align: right;">39</td>
+<td>Date, time, timestamp, interval, timezone, and temporal context
+helpers.</td>
+</tr>
+<tr class="odd">
+<td><code>sb.timeseries</code></td>
+<td>sb_timeseries.md (SBsql Functions — SB Timeseries Functional
+Reference, page XXX)</td>
+<td style="text-align: right;">1</td>
+<td>Time-series bucketing, interpolation, downsampling, and aggregate
+helper surfaces.</td>
+</tr>
+<tr class="even">
+<td><code>sb.uuid</code></td>
+<td>sb_uuid.md (SBsql Functions — SB UUID Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">10</td>
+<td>UUID generation, parsing, inspection, and timestamp extraction
+helpers.</td>
+</tr>
+<tr class="odd">
+<td><code>sb.vector</code></td>
+<td>sb_vector.md (SBsql Functions — SB Vector Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">14</td>
+<td>Dense vector construction, distance, normalization, dimension, and
+aggregate helpers.</td>
+</tr>
+<tr class="even">
+<td><code>sb.xml</code></td>
+<td>sb_xml.md (SBsql Functions — SB XML Functional Reference, page
+XXX)</td>
+<td style="text-align: right;">20</td>
+<td>Bounded XML construction, query, serialization, validation, and
+XML-to-row helpers.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="entry-format">Entry Format</h2>
+<p>Each package entry follows the same structure:</p>
+<ul>
+<li><code>Purpose</code>: user-facing intent of the operation.</li>
+<li><code>Call Forms</code>: accepted function or operator
+spelling.</li>
+<li><code>Parameters</code>: argument names or roles plus
+descriptor/coercion rules.</li>
+<li><code>Returns</code>: descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, determinism, side-effect,
+collation, timezone, and security notes.</li>
+<li><code>Errors</code>: message-vector and refusal behavior.</li>
+<li><code>Example</code>: representative SBsql use.</li>
+<li><code>Technical Details</code>: SBLR, AST, entrypoint, UUID,
+optimizer, and cost metadata for diagnostics.</li>
+</ul>
+<h2 id="cross-references">Cross References</h2>
+<ul>
+<li>Operators (SBsql Language Reference — Syntax, page XXX) explains
+symbolic operator precedence and result typing.</li>
+<li>Operator Type Result Matrix (SBsql Language Reference — Syntax, page
+XXX) gives type-result details for operator families.</li>
+<li>Type System Overview (SBsql Language Reference — Foundations, Data
+Types, and Catalog, page XXX) explains descriptors, domains, coercion,
+and NULL behavior.</li>
+<li>Procedural SQL (SBsql Language Reference — Syntax, page XXX)
+explains routine use of diagnostics, cursors, and function calls.</li>
+</ul>
+</body>
+</html>

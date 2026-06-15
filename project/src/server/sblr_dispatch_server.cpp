@@ -13,6 +13,7 @@
 #include "sblr_admission.hpp"
 
 #include "backup_archive/backup_archive_api.hpp"
+#include "catalog/sys_information_projection.hpp"
 #include "crud_support/crud_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "transaction/transaction_api.hpp"
@@ -951,6 +952,9 @@ engine_api::EngineRequestContext ArchiveReplicationEngineContext(
                                     : session.database_uuid;
   context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
   context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
+  if (!sbps::IsZeroUuid(session.active_role_uuid)) {
+    context.current_role_uuid.canonical = UuidBytesToText(session.active_role_uuid);
+  }
   context.transaction_uuid.canonical = session.transaction_uuid;
   context.statement_uuid.canonical = UuidBytesToText(request_uuid);
   context.local_transaction_id = session.local_transaction_id;
@@ -1944,10 +1948,149 @@ bool EqualsAsciiInsensitive(std::string_view lhs, std::string_view rhs) {
   return true;
 }
 
-bool TargetsServerVirtualSysVersion(std::string_view encoded) {
-  const std::string target_uuid = JsonTextField(encoded, "target_object_uuid").value_or(
-      TextLineValue(encoded, "target_object_uuid").value_or(""));
-  return EqualsAsciiInsensitive(target_uuid, "b4a0fd27-e19b-7719-9105-5882443ee2bc");
+std::array<std::uint8_t, 16> ServerVirtualSyntheticUuid(std::string_view normalized_name) {
+  std::uint64_t hash = 14695981039346656037ull;
+  for (const unsigned char ch : normalized_name) {
+    hash ^= static_cast<std::uint64_t>(ch);
+    hash *= 1099511628211ull;
+  }
+  std::array<std::uint8_t, 16> uuid{};
+  for (int i = 0; i < 8; ++i) {
+    uuid[static_cast<std::size_t>(i)] =
+        static_cast<std::uint8_t>((hash >> (i * 8)) & 0xffu);
+    uuid[static_cast<std::size_t>(8 + i)] =
+        static_cast<std::uint8_t>(((hash ^ 0xa5a5a5a5a5a5a5a5ull) >> (i * 8)) & 0xffu);
+  }
+  uuid[6] = static_cast<std::uint8_t>((uuid[6] & 0x0fu) | 0x70u);
+  uuid[8] = static_cast<std::uint8_t>((uuid[8] & 0x3fu) | 0x80u);
+  return uuid;
+}
+
+std::string ServerVirtualProjectionFromName(std::string value) {
+  for (char& ch : value) {
+    if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+  }
+  if (value == "sys.version") { return "sys.version"; }
+  if (value == "sys.catalog" ||
+      value == "sys.catalog_readable.object_tree") {
+    return "sys.catalog_readable.object_tree";
+  }
+  const std::string canonical = engine_api::SysInformationCanonicalViewPath(value);
+  if (engine_api::FindSysInformationProjectionDefinition(canonical) != nullptr) {
+    return canonical;
+  }
+  return {};
+}
+
+bool ContainsAsciiInsensitive(std::string_view haystack, std::string_view needle) {
+  if (needle.empty() || needle.size() > haystack.size()) return false;
+  for (std::size_t offset = 0; offset + needle.size() <= haystack.size(); ++offset) {
+    if (EqualsAsciiInsensitive(haystack.substr(offset, needle.size()), needle)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string ServerVirtualProjectionFromUuid(std::string_view target_uuid) {
+  if (target_uuid.empty()) { return {}; }
+  if (EqualsAsciiInsensitive(
+          target_uuid,
+          "b4a0fd27-e19b-7719-9105-5882443ee2bc")) {
+    return "sys.version";
+  }
+  if (EqualsAsciiInsensitive(
+          target_uuid,
+          UuidBytesToText(ServerVirtualSyntheticUuid("sys.version")))) {
+    return "sys.version";
+  }
+  if (EqualsAsciiInsensitive(
+          target_uuid,
+          UuidBytesToText(ServerVirtualSyntheticUuid("sys.catalog")))) {
+    return "sys.catalog_readable.object_tree";
+  }
+  for (const auto& definition : engine_api::BuiltinSysInformationProjectionDefinitions()) {
+    if (EqualsAsciiInsensitive(
+            target_uuid,
+            UuidBytesToText(ServerVirtualSyntheticUuid(definition.view_path)))) {
+      return definition.view_path;
+    }
+    static constexpr std::string_view kCanonicalPrefix = "sys.information.";
+    if (definition.view_path.rfind(kCanonicalPrefix, 0) == 0) {
+      const std::string legacy_alias =
+          "sys.information_schema." + definition.view_path.substr(kCanonicalPrefix.size());
+      if (EqualsAsciiInsensitive(
+              target_uuid,
+              UuidBytesToText(ServerVirtualSyntheticUuid(legacy_alias)))) {
+        return definition.view_path;
+      }
+    }
+  }
+  return {};
+}
+
+std::string ServerVirtualProjectionForTarget(std::string_view encoded) {
+  constexpr std::string_view kUuidFields[] = {
+      "target_object_uuid",
+      "source_relation_uuid",
+      "relation_uuid",
+      "object_uuid"};
+  for (const auto field : kUuidFields) {
+    const std::string target_uuid = JsonTextField(encoded, field).value_or(
+        TextLineValue(encoded, field).value_or(""));
+    if (target_uuid.empty()) { continue; }
+    if (const std::string projection = ServerVirtualProjectionFromUuid(target_uuid);
+        !projection.empty()) {
+      return projection;
+    }
+  }
+
+  if (ContainsAsciiInsensitive(encoded, "b4a0fd27-e19b-7719-9105-5882443ee2bc")) {
+    return "sys.version";
+  }
+  for (const std::string_view virtual_name : {"sys.version", "sys.catalog"}) {
+    const std::string virtual_uuid =
+        UuidBytesToText(ServerVirtualSyntheticUuid(virtual_name));
+    if (!ContainsAsciiInsensitive(encoded, virtual_uuid)) { continue; }
+    if (const std::string projection = ServerVirtualProjectionFromUuid(virtual_uuid);
+        !projection.empty()) {
+      return projection;
+    }
+  }
+  for (const auto& definition : engine_api::BuiltinSysInformationProjectionDefinitions()) {
+    const std::string virtual_uuid =
+        UuidBytesToText(ServerVirtualSyntheticUuid(definition.view_path));
+    if (ContainsAsciiInsensitive(encoded, virtual_uuid)) { return definition.view_path; }
+    static constexpr std::string_view kCanonicalPrefix = "sys.information.";
+    if (definition.view_path.rfind(kCanonicalPrefix, 0) == 0) {
+      const std::string legacy_alias =
+          "sys.information_schema." + definition.view_path.substr(kCanonicalPrefix.size());
+      const std::string alias_uuid =
+          UuidBytesToText(ServerVirtualSyntheticUuid(legacy_alias));
+      if (ContainsAsciiInsensitive(encoded, alias_uuid)) { return definition.view_path; }
+    }
+  }
+
+  constexpr std::string_view kNameFields[] = {
+      "target_name",
+      "target_object_name",
+      "target_object_path",
+      "source_relation",
+      "source_relation_name",
+      "source_relation_path",
+      "object_path",
+      "relation_path"};
+  for (const auto field : kNameFields) {
+    const std::string target_name = JsonTextField(encoded, field).value_or(
+        TextLineValue(encoded, field).value_or(""));
+    if (target_name.empty()) { continue; }
+    if (const std::string projection = ServerVirtualProjectionFromName(target_name);
+        !projection.empty()) {
+      return projection;
+    }
+  }
+
+  return {};
 }
 
 scratchbird::engine::SblrOperationFamily PublicAbiFamilyForServerFamily(std::string_view family) {
@@ -2106,6 +2249,16 @@ std::string EngineEvidenceValue(const engine_api::EngineApiResult& result,
   return {};
 }
 
+std::string JoinUuidList(const std::vector<std::array<std::uint8_t, 16>>& values) {
+  std::string out;
+  for (const auto& value : values) {
+    if (sbps::IsZeroUuid(value)) { continue; }
+    if (!out.empty()) { out.push_back(';'); }
+    out += UuidBytesToText(value);
+  }
+  return out;
+}
+
 void ApplyBeginTransactionResultToSession(
     const engine_api::EngineBeginTransactionResult& result,
     ServerSessionRecord* session) {
@@ -2135,6 +2288,9 @@ engine_api::EngineRequestContext ReplacementTransactionContext(
   context.current_monotonic_ns = CurrentMonotonicNsText();
   context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
   context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
+  if (!sbps::IsZeroUuid(session.active_role_uuid)) {
+    context.current_role_uuid.canonical = UuidBytesToText(session.active_role_uuid);
+  }
   context.application_name = session.application_name;
   context.security_context_present = true;
   context.cluster_authority_available = false;
@@ -2522,12 +2678,18 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
                                          std::string_view encoded,
                                          std::string_view operation_id,
                                          std::string_view operation_family) {
-  if (LooksLikeBinarySblrEnvelope(encoded)) return std::string(encoded);
   std::string_view dispatch_operation_id = operation_id;
   std::string_view dispatch_operation_family = operation_family;
-  if (operation_id == "dml.select_rows" && TargetsServerVirtualSysVersion(encoded)) {
+  const std::string virtual_projection = ServerVirtualProjectionForTarget(encoded);
+  if (LooksLikeBinarySblrEnvelope(encoded) && virtual_projection.empty()) {
+    return std::string(encoded);
+  }
+  if (operation_id == "dml.select_rows" && virtual_projection == "sys.version") {
     dispatch_operation_id = "observability.show_version";
     dispatch_operation_family = "sblr.management.report.v3";
+  } else if (operation_id == "dml.select_rows" && !virtual_projection.empty()) {
+    dispatch_operation_id = "observability.show_catalog";
+    dispatch_operation_family = "sblr.catalog.introspect.v3";
   }
   const char* opcode = PublicAbiOpcodeForOperation(dispatch_operation_id);
   if (opcode == nullptr) return std::string(encoded);
@@ -2557,6 +2719,31 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
                                 dispatch_operation_family == "sblr.replication.consumer.v3"
                             ? "requires_cluster_authority=true\n"
                             : "requires_cluster_authority=false\n";
+  if (!virtual_projection.empty()) {
+    operation_envelope += "operand=text\tprojection\t";
+    operation_envelope += EscapeOperationOperandField(virtual_projection);
+    operation_envelope += "\n";
+    operation_envelope += "operand=text\tcatalog_projection\t";
+    operation_envelope += EscapeOperationOperandField(virtual_projection);
+    operation_envelope += "\n";
+  }
+  auto append_session_operand = [&operation_envelope](std::string_view name,
+                                                      const std::string& value) {
+    if (value.empty()) { return; }
+    operation_envelope += "operand=text\t";
+    operation_envelope += name;
+    operation_envelope += "\t";
+    operation_envelope += EscapeOperationOperandField(value);
+    operation_envelope += "\n";
+  };
+  append_session_operand("principal_name", session.principal_claim);
+  append_session_operand("requested_role_name", session.requested_role_name);
+  append_session_operand("active_role_name", session.requested_role_name);
+  if (!sbps::IsZeroUuid(session.active_role_uuid)) {
+    append_session_operand("current_role_uuid", UuidBytesToText(session.active_role_uuid));
+  }
+  append_session_operand("effective_role_uuid_set", JoinUuidList(session.effective_role_uuids));
+  append_session_operand("effective_group_uuid_set", JoinUuidList(session.effective_group_uuids));
   if (const auto savepoint_name = SavepointOperandForDispatch(encoded, dispatch_operation_id)) {
     operation_envelope += "savepoint_name=";
     operation_envelope += EscapeOperationOperandField(*savepoint_name);

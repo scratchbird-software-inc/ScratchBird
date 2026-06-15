@@ -2,39 +2,24 @@
 
 ## Purpose
 
-Single-node IPC server mode uses a local server process, SBsrv, for clients on the same machine. It is the mode to evaluate when more than one local client needs a shared engine process but the deployment does not need a network listener.
+Single-node IPC server mode solves a specific problem: you have several local clients that all need to share one database, but you do not want or need a network-facing listener. SBsrv (the local server process) runs on the same machine and accepts connections from local clients through an IPC endpoint — a local communication channel that stays on-machine.
 
-The defining boundary is local IPC: clients are outside the engine process, but they are still local to the machine.
+This is the mode to evaluate when moving up from embedded mode because you need a process boundary between clients and the engine, or because multiple local programs need to share database access concurrently.
+
+**Who this is for:** developers with several local tools or services sharing one database, operators who want service-style lifecycle management without network exposure.
+
+**How it differs from adjacent modes:** unlike Embedded Engine, the engine runs in a separate process rather than inside the client — client crashes do not terminate the server. Unlike Standalone Server, there is no network listener; clients must be on the same machine.
 
 ## High-Level Shape
 
-```mermaid
-flowchart LR
-    ClientA[Local client A]
-    ClientB[Local client B]
-    ClientC[Local automation]
-    IPC[Local IPC endpoint]
-    Server[SBsrv]
-    Engine[SBcore]
-    DB[(Database files)]
-    Diagnostics[Logs and message vectors]
-
-    ClientA --> IPC
-    ClientB --> IPC
-    ClientC --> IPC
-    IPC --> Server
-    Server --> Engine
-    Engine --> DB
-    Server --> Diagnostics
-    Engine --> Diagnostics
-```
+![diagram](./single_node_ipc_server-1.svg)
 
 ## What This Mode Is For
 
-Use this page when you are evaluating:
+Single-node IPC server mode is the right starting point when you are evaluating:
 
-- local multi-client access;
-- a process boundary between applications and the engine;
+- local multi-client access to a shared engine;
+- a process boundary between client applications and SBcore;
 - local automation that should not embed SBcore directly;
 - service-style lifecycle management on one machine;
 - smoke tests that need attach, detach, and restart behavior;
@@ -43,6 +28,8 @@ Use this page when you are evaluating:
 This mode is not a remote access mode. If a client needs to connect through a network-facing listener or parser route, read [Standalone Server](standalone_server.md).
 
 ## Component Responsibilities
+
+Each component has a defined role. Understanding those roles helps you know where to look when something goes wrong.
 
 | Component | Responsibility In This Mode |
 | --- | --- |
@@ -54,43 +41,24 @@ This mode is not a remote access mode. If a client needs to connect through a ne
 
 ## Request Flow
 
-```mermaid
-sequenceDiagram
-    participant Client as Local client
-    participant IPC as IPC endpoint
-    participant Server as SBsrv
-    participant Engine as SBcore
-    participant Database as Database files
+The following sequence shows a typical attach-work-detach cycle so you can reason about which component handles each step.
 
-    Server->>Engine: initialize engine with configuration
-    Engine->>Database: create or open database
-    Client->>IPC: attach
-    IPC->>Server: local attach request
-    Server->>Engine: authenticate and open session
-    Engine-->>Server: session admitted or refused
-    Server-->>Client: attach result
-    Client->>Server: database request
-    Server->>Engine: execute admitted work
-    Engine-->>Server: result or message vector
-    Server-->>Client: response
-    Client->>Server: detach
-    Server->>Engine: close session
-```
+![diagram](./single_node_ipc_server-2.svg)
 
 ## Parser Behavior
 
-Single-node IPC mode may expose different local request surfaces depending on build and configuration. A local client might use native SBsql, a direct local API, or another configured parser route.
+Single-node IPC mode may expose different local request surfaces depending on build and configuration. A local client might use native SBsql (ScratchBird's native command language), a direct local API, or another configured parser route.
 
-The same rules still apply:
+The same rules still apply regardless of which surface is used:
 
-- parser packages accept and lower client syntax;
+- parser packages accept and lower client syntax to internal representations;
 - SBcore owns durable authority;
 - unsupported or denied behavior should return a controlled diagnostic;
 - parser availability must be proven by the current build and tests.
 
 ## First Local IPC Smoke Test
 
-A useful first test should prove:
+A first IPC test proves that the server lifecycle and client attach/detach cycle work end to end before you build anything more complex on top.
 
 1. SBsrv starts with the intended configuration.
 2. Required resource files are available.
@@ -106,18 +74,16 @@ A useful first test should prove:
 
 ## Local Isolation
 
-The server process gives isolation that embedded mode does not:
+The server process provides isolation that embedded mode does not have — but that isolation is local process isolation, not network security or a replacement for authentication and authorization.
 
-- client crashes do not automatically terminate the server process;
-- the engine lifecycle can be supervised separately from clients;
-- multiple clients can use a shared local service boundary;
-- diagnostics can be collected by the server process.
-
-That isolation is local process isolation. It is not network security, remote routing, or a replacement for authentication and authorization.
+- Client crashes do not automatically terminate the server process.
+- The engine lifecycle can be supervised separately from clients.
+- Multiple clients can use a shared local service boundary.
+- Diagnostics can be collected centrally by the server process.
 
 ## Configuration Checklist
 
-Before using this mode, verify:
+Before using this mode, verify these items are explicitly set rather than assumed:
 
 - IPC endpoint location and permissions;
 - database path and storage permissions;
@@ -131,7 +97,7 @@ Before using this mode, verify:
 
 ## Diagnostics To Expect
 
-Useful diagnostics in this mode include:
+Knowing what normal failure messages look like helps you distinguish configuration problems from software defects. Useful diagnostics in this mode include:
 
 - configuration validation errors;
 - IPC endpoint unavailable or permission denied;
@@ -145,8 +111,6 @@ Useful diagnostics in this mode include:
 
 ## What This Mode Does Not Provide
 
-Single-node IPC server mode does not automatically provide:
-
 - network listener access;
 - parser pool management for network clients;
 - remote client compatibility;
@@ -155,7 +119,13 @@ Single-node IPC server mode does not automatically provide:
 - automatic backup or repair behavior;
 - proof that every parser package is available.
 
-Use the standalone server page when listener and parser routing are part of the requirement.
+## When To Choose Another Mode
+
+If you need clients to connect over a network, or if you are testing a compatibility parser that requires listener and parser routing, read [Standalone Server](standalone_server.md) instead.
+
+If several installations need to share identity conventions and consistent policy admission, read [Managed Group Deployment](group_deployment.md).
+
+For hands-on startup and configuration procedure, see the [Operating Modes Runbook](../../Operations_Administration/operating_modes_runbook.md).
 
 ## Where To Go Next
 

@@ -19,7 +19,7 @@ rename_object_stmt      ::= "RENAME" object_kind object_ref "TO" name_part ;
 
 | Parent Production |
 | --- |
-| ddl_statement |
+| ddl_relational_stmt |
 
 ## Child Productions
 

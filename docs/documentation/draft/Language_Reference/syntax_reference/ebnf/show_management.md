@@ -39,7 +39,7 @@ management_target ::=
 
 management_filter ::=
       identifier
-    | uuid_ref
+    | uuid_reference
     | "WITH" option_list ;
 ```
 
@@ -51,14 +51,14 @@ management_filter ::=
 
 | Parent Production |
 | --- |
-| management_statement |
+| management_stmt |
 
 ## Child Productions
 
 | Child Production |
 | --- |
 | identifier |
-| uuid_ref |
+| uuid_reference |
 | option_list |
 | show_option_list |
 

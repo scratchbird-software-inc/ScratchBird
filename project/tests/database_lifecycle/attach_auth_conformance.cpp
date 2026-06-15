@@ -42,6 +42,20 @@ constexpr std::string_view kWrongVerifier =
     "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 constexpr std::string_view kAlicePrincipalUuid =
     "019e108d-1700-7000-8000-0000000007aa";
+constexpr std::string_view kSysarchRoleUuid =
+    "019e108d-1700-7000-8000-0000000007a1";
+constexpr std::string_view kPublicGroupUuid =
+    "019e108d-1700-7000-8000-0000000007a2";
+constexpr std::string_view kAliceSysarchMembershipUuid =
+    "019e108d-1700-7000-8000-0000000007b1";
+constexpr std::string_view kAlicePublicMembershipUuid =
+    "019e108d-1700-7000-8000-0000000007b2";
+constexpr std::string_view kSysarchConnectGrantUuid =
+    "019e108d-1700-7000-8000-0000000007c1";
+constexpr std::string_view kSysarchSelectGrantUuid =
+    "019e108d-1700-7000-8000-0000000007c2";
+constexpr std::string_view kAliceConnectDenyGrantUuid =
+    "019e108d-1700-7000-8000-0000000007d1";
 
 struct AuthFixture {
   std::array<std::uint8_t, 16> connection_uuid{};
@@ -70,6 +84,17 @@ void PutString(std::vector<std::uint8_t>* out, std::string_view value) {
   out->insert(out->end(), value.begin(), value.end());
 }
 
+std::string HexText(std::string_view value) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(value.size() * 2);
+  for (const unsigned char ch : value) {
+    out.push_back(kHex[(ch >> 4u) & 0x0fu]);
+    out.push_back(kHex[ch & 0x0fu]);
+  }
+  return out;
+}
+
 bool HasDiagnostic(const SessionOperationResult& result, std::string_view code) {
   for (const auto& diagnostic : result.diagnostics) {
     if (diagnostic.code == code) return true;
@@ -84,6 +109,16 @@ bool PayloadContains(const SessionOperationResult& result, std::string_view need
 
 bool Contains(std::string_view text, std::string_view needle) {
   return text.find(needle) != std::string_view::npos;
+}
+
+void PrintDiagnostics(const SessionOperationResult& result) {
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << diagnostic.code << ": " << diagnostic.safe_message;
+    for (const auto& field : diagnostic.fields) {
+      std::cerr << " " << field.key << "=" << field.value;
+    }
+    std::cerr << '\n';
+  }
 }
 
 std::string FinalityState(const ServerSessionRegistry& registry, const sbps::Frame& frame) {
@@ -136,6 +171,36 @@ void WriteAuthStore(const std::filesystem::path& database_path,
       "DBLC-007");
 }
 
+void AppendRoleGroupAuthorizationStore(const std::filesystem::path& database_path) {
+  std::ofstream events(database_path.string() + ".sb.security_principal_events", std::ios::app);
+  events << "SBSECPL1\tROLE\t0\t" << kSysarchRoleUuid << '\t'
+         << HexText("sysarch") << '\t' << kAlicePrincipalUuid
+         << "\tactive\t8\t0\n";
+  events << "SBSECPL1\tGROUP\t0\t" << kPublicGroupUuid << '\t'
+         << HexText("PUBLIC") << "\t\tactive\t9\t0\n";
+  events << "SBSECPL1\tMEMBERSHIP\t0\t" << kAliceSysarchMembershipUuid << '\t'
+         << kAlicePrincipalUuid << '\t' << kSysarchRoleUuid
+         << "\trole\t" << kAlicePrincipalUuid << "\t10\t0\n";
+  events << "SBSECPL1\tMEMBERSHIP\t0\t" << kAlicePublicMembershipUuid << '\t'
+         << kAlicePrincipalUuid << '\t' << kPublicGroupUuid
+         << "\tgroup\t" << kAlicePrincipalUuid << "\t11\t0\n";
+  events << "SBSECPL1\tGRANT\t0\t" << kSysarchConnectGrantUuid << '\t'
+         << kSysarchRoleUuid << "\trole\t\t\tCONNECT\t"
+         << kAlicePrincipalUuid << "\tallow\t12\t0\n";
+  events << "SBSECPL1\tGRANT\t0\t" << kSysarchSelectGrantUuid << '\t'
+         << kSysarchRoleUuid << "\trole\t\t\tSELECT\t"
+         << kAlicePrincipalUuid << "\tallow\t13\t0\n";
+  Require(static_cast<bool>(events), "DBLC-007 role/group authorization seed write failed");
+}
+
+void AppendAliceConnectDeny(const std::filesystem::path& database_path) {
+  std::ofstream events(database_path.string() + ".sb.security_principal_events", std::ios::app);
+  events << "SBSECPL1\tGRANT\t0\t" << kAliceConnectDenyGrantUuid << '\t'
+         << kAlicePrincipalUuid << "\tprincipal\t\t\tCONNECT\t"
+         << kAlicePrincipalUuid << "\tdeny\t90\t0\n";
+  Require(static_cast<bool>(events), "DBLC-007 durable deny seed write failed");
+}
+
 HostedEngineState MakeEngineState(const std::filesystem::path& database_path,
                                   HostedDatabaseState state = HostedDatabaseState::kOpen) {
   HostedEngineState engine_state;
@@ -161,8 +226,7 @@ std::string Evidence(std::string_view principal, std::string_view verifier) {
   return scratchbird::tests::database_lifecycle::DurableLocalPasswordEvidence(
       principal,
       kAlicePrincipalUuid,
-      verifier,
-      "right:CONNECT");
+      verifier);
 }
 
 std::vector<std::uint8_t> AuthPayload(const std::array<std::uint8_t, 16>& connection_uuid,
@@ -170,7 +234,8 @@ std::vector<std::uint8_t> AuthPayload(const std::array<std::uint8_t, 16>& connec
                                       std::string_view requested_database = "default",
                                       std::string_view verifier = kVerifier,
                                       bool credential_invalid = false,
-                                      std::string_view requested_language = "en") {
+                                      std::string_view requested_language = "en",
+                                      std::string_view requested_role = "") {
   std::vector<std::uint8_t> out;
   PutUuid(&out, connection_uuid);
   out.push_back(1);
@@ -182,6 +247,8 @@ std::vector<std::uint8_t> AuthPayload(const std::array<std::uint8_t, 16>& connec
   PutString(&out, requested_database);
   PutString(&out, requested_language);
   PutString(&out, Evidence(principal, verifier));
+  PutString(&out, "database_lifecycle_attach_auth_conformance");
+  PutString(&out, requested_role);
   return out;
 }
 
@@ -213,7 +280,8 @@ AuthFixture Authenticate(ServerSessionRegistry* registry,
                          const HostedEngineState& engine_state,
                          std::string_view principal = "alice",
                          std::string_view requested_database = "default",
-                         std::string_view requested_language = "en") {
+                         std::string_view requested_language = "en",
+                         std::string_view requested_role = "") {
   AuthFixture fixture;
   fixture.connection_uuid = sbps::MakeUuidV7Bytes();
   fixture.frame = MakeFrame(sbps::MessageType::kAuthHandoff,
@@ -222,7 +290,8 @@ AuthFixture Authenticate(ServerSessionRegistry* registry,
                                         requested_database,
                                         kVerifier,
                                         false,
-                                        requested_language),
+                                        requested_language,
+                                        requested_role),
                             fixture.connection_uuid);
   const auto result = scratchbird::server::HandleAuthHandoff(registry, engine_state, fixture.frame);
   if (!result.accepted) {
@@ -267,8 +336,9 @@ void RequireDblcDenied(const SessionOperationResult& result, std::string_view me
 void TestAcceptedAuthAttach(const std::filesystem::path& database_path) {
   ServerSessionRegistry registry;
   const auto engine_state = MakeEngineState(database_path);
-  auto auth = Authenticate(&registry, engine_state);
+  auto auth = Authenticate(&registry, engine_state, "alice", "default", "en", "sysarch");
   auto attach = Attach(&registry, engine_state, auth, std::string(kDatabaseUuid), "read_write");
+  if (!attach.accepted) PrintDiagnostics(attach);
   Require(attach.accepted, "valid auth plus attach was rejected");
   Require(registry.channel_state == ServerChannelState::kReady, "attach did not move channel to ready");
   Require(registry.sessions_by_uuid.size() == 1, "attach did not create exactly one session");
@@ -297,6 +367,15 @@ void TestAcceptedAuthAttach(const std::filesystem::path& database_path) {
           "session did not carry resource version identity");
   Require(session.local_transaction_id != 0, "attach did not admit the required active transaction");
   Require(!session.transaction_uuid.empty(), "attach did not bind the active transaction UUID");
+  Require(scratchbird::server::UuidBytesToText(session.active_role_uuid) == kSysarchRoleUuid,
+          "session did not activate requested sysarch role");
+  Require(session.effective_role_uuids.size() == 1,
+          "session did not materialize sysarch effective role");
+  Require(session.effective_group_uuids.size() == 1,
+          "session did not materialize PUBLIC effective group");
+  Require(scratchbird::server::UuidBytesToText(session.effective_group_uuids.front()) ==
+              kPublicGroupUuid,
+          "session did not materialize expected PUBLIC group");
   Require(PayloadContains(attach, "accepted"), "attach result did not report accepted outcome");
   const auto status = scratchbird::server::SessionRegistryStatusJson(registry);
   Require(Contains(status, "\"language_profile_id\":\"sbsql.builtin.recovery.en\""),
@@ -305,6 +384,10 @@ void TestAcceptedAuthAttach(const std::filesystem::path& database_path) {
           "session status omitted language tag");
   Require(Contains(status, "\"common_resource_hash\":\"builtin.common.sbsql.v1\""),
           "session status omitted common resource hash");
+  Require(Contains(status, "\"effective_role_count\":1"),
+          "session status omitted effective role count");
+  Require(Contains(status, "\"effective_group_count\":1"),
+          "session status omitted effective group count");
 }
 
 void TestNonDefaultLanguageContextIdentity() {
@@ -505,10 +588,9 @@ void TestLifecycleAndAuthorizationFences(const std::filesystem::path& database_p
             "restricted-open attach did not explain the lifecycle fence");
   }
   {
+    AppendAliceConnectDeny(database_path);
     ServerSessionRegistry registry;
     auto auth = Authenticate(&registry, MakeEngineState(database_path));
-    const auto key = scratchbird::server::UuidBytesToText(auth.auth_context_uuid);
-    registry.auth_contexts_by_uuid[key].engine_authorization_trace_tags.push_back("deny:CONNECT");
     auto result = Attach(&registry, MakeEngineState(database_path), auth);
     RequireDblcDenied(result, "engine authorization denial was accepted");
     Require(HasDiagnostic(result, "SECURITY.AUTHORIZATION.DENIED"),
@@ -545,6 +627,7 @@ int main() {
   const auto database_path = temp_dir / "dblc007_attach_auth.sbdb";
   CreateOpenDatabase(database_path);
   WriteAuthStore(database_path);
+  AppendRoleGroupAuthorizationStore(database_path);
 
   TestAcceptedAuthAttach(database_path);
   TestNonDefaultLanguageContextIdentity();

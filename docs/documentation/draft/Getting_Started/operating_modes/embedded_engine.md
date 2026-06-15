@@ -2,35 +2,23 @@
 
 ## Purpose
 
-Embedded mode means an application uses the ScratchBird Engine, SBcore, inside the application's own process. There is no separate server process between the application and the engine, and no network listener is required for that application to reach the database.
+Embedded mode is the simplest deployment shape: your application links directly to SBcore (the core database engine) and the engine runs inside the same process. There is no separate server to start, no network listener to configure, and no IPC endpoint to manage. If you are building an application where a single program owns the database, or if you want the most direct path to understanding the engine itself, embedded mode is usually the right place to start.
 
 This page explains the shape, responsibilities, and boundaries of embedded mode. It does not claim that every API, platform, or feature is available in every build.
 
+**Who this is for:** developers embedding a database into an application, test authors who need direct engine access, and anyone who wants to understand SBcore before adding server-shaped complexity.
+
+**How it differs from adjacent modes:** unlike Single-Node IPC Server, there is no separate server process — the application itself is the process boundary. Unlike Standalone Server, there is no network listener or parser pool.
+
 ## High-Level Shape
 
-```mermaid
-flowchart LR
-    App[Application process]
-    API[Embedded API or native request path]
-    Engine[SBcore]
-    Catalog[Catalog and descriptors]
-    Txn[MGA transaction state]
-    Storage[(Database files)]
-    Diagnostics[Message vectors]
-
-    App --> API
-    API --> Engine
-    Engine --> Catalog
-    Engine --> Txn
-    Engine --> Storage
-    Engine --> Diagnostics
-```
+![diagram](./embedded_engine-1.svg)
 
 The application and engine share one process boundary. That is the defining characteristic of embedded mode.
 
 ## What Embedded Mode Is For
 
-Embedded mode is a fit to evaluate when:
+Embedded mode is a fit to evaluate when the application can own the full database lifecycle. More specifically, it suits situations where:
 
 - one application owns the database lifecycle;
 - the application can manage attach, detach, open, close, and shutdown behavior;
@@ -43,7 +31,7 @@ Embedded mode is often the easiest way to understand the engine itself because f
 
 ## What The Application Owns
 
-In embedded mode, the application carries responsibilities that a server process would otherwise centralize.
+In embedded mode, the application carries responsibilities that a server process would otherwise centralize. Understanding these responsibilities up front prevents surprises during testing.
 
 | Responsibility | Embedded Reading |
 | --- | --- |
@@ -52,16 +40,16 @@ In embedded mode, the application carries responsibilities that a server process
 | Authentication | The application must use the configured identity model correctly for the embedded route. |
 | Authorization | The engine still enforces authorization, but the application must not bypass the intended session model. |
 | Transactions | The application must begin, commit, roll back, and close transaction scopes intentionally. |
-| Diagnostics | Message vectors and errors are returned to the application and must be logged or presented safely. |
+| Diagnostics | Message vectors (structured diagnostic records) and errors are returned to the application and must be logged or presented safely. |
 | Resource cleanup | The application must detach sessions and close databases cleanly. |
 
 ## Engine Authority Still Applies
 
-Embedded mode does not mean the application owns database finality. SBcore remains responsible for:
+Embedded mode does not mean the application owns database finality. SBcore remains responsible for all durable decisions regardless of how it was reached:
 
 - durable catalog identity;
 - descriptor validation;
-- storage and filespace state;
+- storage and filespace (the physical file organization backing a database) state;
 - transaction finality and visibility;
 - recovery decisions;
 - index maintenance;
@@ -75,31 +63,16 @@ The application can request work. The engine admits, executes, or refuses that w
 An embedded application can use different request styles depending on what the build exposes:
 
 - a direct embedded API surface;
-- native SBsql through SBParser;
+- native SBsql through the SBsql parser (the native ScratchBird command language parser);
 - another configured parser route if the application intentionally embeds that route.
 
-The important boundary remains the same: SQL text or protocol-shaped input must be parsed and lowered before engine execution. Raw text is not durable engine authority.
+The important boundary remains the same: SQL text or protocol-shaped input must be parsed and lowered to an internal representation before engine execution. Raw text is not durable engine authority.
 
-```mermaid
-flowchart TB
-    App[Application]
-    Direct[Direct engine API request]
-    Text[SBsql text or parser input]
-    Parser[Parser package]
-    SBLR[SBLR request]
-    Engine[SBcore authority]
-
-    App --> Direct
-    App --> Text
-    Text --> Parser
-    Parser --> SBLR
-    Direct --> Engine
-    SBLR --> Engine
-```
+![diagram](./embedded_engine-2.svg)
 
 ## First Embedded Smoke Test
 
-A useful first embedded test should prove:
+A useful first embedded test validates the full lifecycle from open to close. Work through these steps in order:
 
 1. The application can locate SBcore and required resources.
 2. The application can create or open a disposable database.
@@ -111,7 +84,7 @@ A useful first embedded test should prove:
 8. A controlled invalid request returns a diagnostic.
 9. The application detaches and exits cleanly.
 
-The test should use a disposable database path until lifecycle behavior is understood.
+Use a disposable database path until lifecycle behavior is understood. Do not run first tests against databases that contain real work.
 
 ## Operational Boundaries
 
@@ -126,7 +99,7 @@ The test should use a disposable database path until lifecycle behavior is under
 
 ## What Embedded Mode Does Not Provide
 
-Embedded mode does not automatically provide:
+It is worth being explicit about what embedded mode does not give you, so that moving to a more complex mode later is a deliberate choice rather than a surprise:
 
 - network client access;
 - a listener;
@@ -137,15 +110,15 @@ Embedded mode does not automatically provide:
 - shared identity conventions across multiple installations;
 - automatic operational packaging.
 
-Use another mode when those boundaries are required.
-
 ## When To Choose Another Mode
 
-Consider [Single-Node IPC Server](single_node_ipc_server.md) when several local clients need a shared service process.
+Consider [Single-Node IPC Server](single_node_ipc_server.md) when several local clients need a shared service process — it adds a process boundary between clients and the engine without requiring a network listener.
 
-Consider [Standalone Server](standalone_server.md) when clients must connect through listener and parser routing.
+Consider [Standalone Server](standalone_server.md) when clients must connect through listener and parser routing, such as when testing a compatibility parser or accepting network connections.
 
 Consider [Managed Group Deployment](group_deployment.md) when several installations need consistent manager-mediated entry and shared identity or policy conventions.
+
+For hands-on configuration and startup procedure, see the [Operating Modes Runbook](../../Operations_Administration/operating_modes_runbook.md).
 
 ## Where To Go Next
 

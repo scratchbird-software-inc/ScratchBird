@@ -14,14 +14,18 @@
 #include "engine_host.hpp"
 #include "security/authentication_api.hpp"
 #include "security/authorization_api.hpp"
+#include "security/security_model.hpp"
+#include "security/security_principal_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstring>
 #include <ctime>
 #include <iomanip>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string_view>
 
@@ -489,6 +493,10 @@ engine_api::EngineTrustMode TrustModeForSession(const ServerSessionRecord& sessi
                                      : engine_api::EngineTrustMode::server_isolated;
 }
 
+bool IsZeroUuidBytes(const std::array<std::uint8_t, 16>& uuid);
+bool ContainsUuid(const std::vector<std::array<std::uint8_t, 16>>& values,
+                  const std::array<std::uint8_t, 16>& target);
+
 void AddMaterializedSessionGrant(engine_api::EngineMaterializedAuthorizationContext* authorization,
                                  const engine_api::EngineUuid& principal_uuid,
                                  std::string tag,
@@ -513,6 +521,282 @@ void AddMaterializedSessionGrant(engine_api::EngineMaterializedAuthorizationCont
   authorization->grants.push_back(std::move(grant));
 }
 
+std::string LowerAscii(std::string value) {
+  for (char& ch : value) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  return value;
+}
+
+std::string NormalizeAuthorizationSubjectKind(std::string kind) {
+  kind = LowerAscii(std::move(kind));
+  if (kind.empty() || kind == "user" || kind == "service" ||
+      kind == "system_actor") {
+    return "principal";
+  }
+  return kind;
+}
+
+std::string NormalizeRoleName(std::string value) {
+  value = LowerAscii(std::move(value));
+  return value;
+}
+
+bool IsUuidTextPresent(std::string_view value) {
+  return value.size() == 36 && value[8] == '-' && value[13] == '-' &&
+         value[18] == '-' && value[23] == '-';
+}
+
+void AddUniqueUuidBytes(std::vector<std::array<std::uint8_t, 16>>* values,
+                        const std::array<std::uint8_t, 16>& uuid) {
+  if (values == nullptr || IsZeroUuidBytes(uuid) || ContainsUuid(*values, uuid)) return;
+  values->push_back(uuid);
+}
+
+void AddUniqueTraceTag(std::vector<std::string>* tags, std::string tag) {
+  if (tags == nullptr || tag.empty()) return;
+  if (std::find(tags->begin(), tags->end(), tag) == tags->end()) {
+    tags->push_back(std::move(tag));
+  }
+}
+
+std::string UuidSetHash(std::string_view prefix,
+                        const std::vector<std::array<std::uint8_t, 16>>& values) {
+  std::vector<std::string> texts;
+  texts.reserve(values.size());
+  for (const auto& value : values) {
+    if (!IsZeroUuidBytes(value)) texts.push_back(UuidBytesToText(value));
+  }
+  std::sort(texts.begin(), texts.end());
+  std::ostringstream out;
+  out << prefix << '/' << texts.size();
+  for (const auto& text : texts) out << ':' << text;
+  return out.str();
+}
+
+std::string InferLifecycleSubjectKind(
+    const engine_api::EngineSecurityPrincipalLifecycleState& state,
+    const std::string& uuid) {
+  for (const auto& role : state.roles) {
+    if (role.role_uuid == uuid) return "role";
+  }
+  for (const auto& group : state.groups) {
+    if (group.group_uuid == uuid) return "group";
+  }
+  return "principal";
+}
+
+bool LifecycleStateHasDurableSubjects(
+    const engine_api::EngineSecurityPrincipalLifecycleState& state) {
+  return !state.principals.empty() || !state.roles.empty() ||
+         !state.groups.empty() || !state.memberships.empty() ||
+         !state.grants.empty();
+}
+
+engine_api::DurableAuthorizationState DurableAuthorizationStateFromLifecycle(
+    const engine_api::EngineSecurityPrincipalLifecycleState& lifecycle,
+    const ServerSessionRecord& session,
+    const engine_api::EngineRequestContext& context) {
+  engine_api::DurableAuthorizationState state;
+  state.authority_uuid = context.database_uuid;
+  state.security_epoch =
+      context.security_epoch == 0 ? std::max<std::uint64_t>(1, lifecycle.security_generation)
+                                  : context.security_epoch;
+  state.policy_epoch =
+      session.policy_generation == 0
+          ? std::max<std::uint64_t>(1, lifecycle.policy_generation)
+          : session.policy_generation;
+  state.catalog_generation_id =
+      context.catalog_generation_id == 0 ? std::max<std::uint64_t>(1, session.catalog_generation)
+                                         : context.catalog_generation_id;
+
+  for (const auto& principal : lifecycle.principals) {
+    if (principal.deleted || principal.lifecycle_state != "active") continue;
+    engine_api::DurableAuthorizationPrincipalRecord record;
+    record.principal_uuid.canonical = principal.principal_uuid;
+    record.principal_kind = "principal";
+    record.active = true;
+    record.security_epoch = state.security_epoch;
+    state.principals.push_back(std::move(record));
+  }
+  for (const auto& role : lifecycle.roles) {
+    if (role.deleted || role.lifecycle_state != "active") continue;
+    engine_api::DurableAuthorizationRoleRecord record;
+    record.role_uuid.canonical = role.role_uuid;
+    record.active = true;
+    record.security_epoch = state.security_epoch;
+    state.roles.push_back(std::move(record));
+  }
+  for (const auto& group : lifecycle.groups) {
+    if (group.deleted || group.lifecycle_state != "active") continue;
+    engine_api::DurableAuthorizationGroupRecord record;
+    record.group_uuid.canonical = group.group_uuid;
+    record.active = true;
+    record.security_epoch = state.security_epoch;
+    state.groups.push_back(std::move(record));
+  }
+  for (const auto& membership : lifecycle.memberships) {
+    if (membership.revoked || membership.member_principal_uuid.empty() ||
+        membership.container_uuid.empty()) {
+      continue;
+    }
+    engine_api::DurableAuthorizationMembershipRecord record;
+    record.member_uuid.canonical = membership.member_principal_uuid;
+    record.member_kind = InferLifecycleSubjectKind(lifecycle,
+                                                   membership.member_principal_uuid);
+    record.parent_uuid.canonical = membership.container_uuid;
+    record.parent_kind = NormalizeAuthorizationSubjectKind(membership.container_kind);
+    if (record.parent_kind == "principal") {
+      record.parent_kind = InferLifecycleSubjectKind(lifecycle, membership.container_uuid);
+    }
+    record.active = true;
+    record.security_epoch = state.security_epoch;
+    state.memberships.push_back(std::move(record));
+  }
+  for (const auto& grant : lifecycle.grants) {
+    if (grant.revoked || grant.privilege.empty()) continue;
+    engine_api::DurableAuthorizationGrantRecord record;
+    record.grant_uuid.canonical = grant.grant_uuid;
+    record.subject_uuid.canonical = grant.grantee_uuid;
+    record.subject_kind = NormalizeAuthorizationSubjectKind(grant.grantee_kind);
+    record.target_uuid.canonical = grant.target_object_uuid;
+    record.right = grant.privilege;
+    record.deny = LowerAscii(grant.grant_effect) == "deny";
+    record.active = true;
+    record.security_epoch = state.security_epoch;
+    state.grants.push_back(std::move(record));
+  }
+  return state;
+}
+
+engine_api::EngineRequestContext DurableProjectionContextForSession(
+    const ServerSessionRecord& session) {
+  engine_api::EngineRequestContext context;
+  context.trust_mode = TrustModeForSession(session);
+  context.database_path = session.database_path;
+  context.database_uuid.canonical = session.database_uuid;
+  context.principal_uuid.canonical = UuidBytesToText(session.effective_user_uuid);
+  context.session_uuid.canonical = UuidBytesToText(session.session_uuid);
+  context.security_context_present = true;
+  context.catalog_generation_id = session.catalog_generation == 0 ? 1 : session.catalog_generation;
+  context.security_epoch = session.security_epoch == 0 ? 1 : session.security_epoch;
+  context.resource_epoch = session.resource_epoch == 0 ? 1 : session.resource_epoch;
+  context.name_resolution_epoch =
+      session.name_resolution_epoch == 0 ? 1 : session.name_resolution_epoch;
+  return context;
+}
+
+engine_api::DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationForSession(
+    const ServerSessionRecord& session,
+    const engine_api::EngineRequestContext& context,
+    engine_api::EngineSecurityPrincipalLifecycleState* lifecycle_state = nullptr) {
+  engine_api::DurableAuthorizationMaterializeResult result;
+  const auto loaded = engine_api::LoadSecurityPrincipalLifecycleState(context);
+  if (!loaded.ok || !LifecycleStateHasDurableSubjects(loaded.state)) return result;
+  if (lifecycle_state != nullptr) *lifecycle_state = loaded.state;
+  const auto durable_state =
+      DurableAuthorizationStateFromLifecycle(loaded.state, session, context);
+  engine_api::DurableAuthorizationMaterializeRequest request;
+  request.principal_uuid = context.principal_uuid;
+  request.observed_security_epoch = context.security_epoch;
+  request.observed_policy_epoch = session.policy_generation;
+  request.observed_catalog_generation_id = context.catalog_generation_id;
+  return engine_api::MaterializeDurableAuthorizationContext(durable_state, request);
+}
+
+bool EffectiveSubjectContains(const engine_api::EngineMaterializedAuthorizationContext& context,
+                              const std::string& subject_uuid,
+                              std::string_view subject_kind) {
+  for (const auto& subject : context.effective_subjects) {
+    if (subject.subject_uuid.canonical == subject_uuid &&
+        subject.subject_kind == subject_kind) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string ResolveRequestedRoleUuid(
+    const engine_api::EngineSecurityPrincipalLifecycleState& lifecycle,
+    std::string_view requested_role) {
+  if (requested_role.empty()) return {};
+  if (IsUuidTextPresent(requested_role)) return std::string(requested_role);
+  const std::string wanted = NormalizeRoleName(std::string(requested_role));
+  for (const auto& role : lifecycle.roles) {
+    if (role.deleted || role.lifecycle_state != "active") continue;
+    if (NormalizeRoleName(role.role_name) == wanted) return role.role_uuid;
+  }
+  return {};
+}
+
+bool ApplyDurableAuthorizationProjectionToSession(ServerSessionRecord* session,
+                                                  std::string* rejection_detail) {
+  if (session == nullptr) return true;
+  const auto context = DurableProjectionContextForSession(*session);
+  engine_api::EngineSecurityPrincipalLifecycleState lifecycle;
+  const auto materialized =
+      MaterializeDurableAuthorizationForSession(*session, context, &lifecycle);
+  if (!LifecycleStateHasDurableSubjects(lifecycle)) {
+    if (!session->requested_role_name.empty() && rejection_detail != nullptr) {
+      *rejection_detail = "requested_role_unavailable";
+    }
+    return session->requested_role_name.empty();
+  }
+  if (!materialized.ok) {
+    if (rejection_detail != nullptr) {
+      *rejection_detail = materialized.diagnostics.empty()
+                              ? "durable_authorization_context_unavailable"
+                              : materialized.diagnostics.front().detail;
+    }
+    return false;
+  }
+
+  std::vector<std::array<std::uint8_t, 16>> roles;
+  std::vector<std::array<std::uint8_t, 16>> groups;
+  for (const auto& subject : materialized.context.effective_subjects) {
+    if (subject.subject_kind == "role") {
+      AddUniqueUuidBytes(&roles, TextToUuid(subject.subject_uuid.canonical));
+    } else if (subject.subject_kind == "group") {
+      AddUniqueUuidBytes(&groups, TextToUuid(subject.subject_uuid.canonical));
+    }
+  }
+  session->effective_role_uuids = roles;
+  session->effective_group_uuids = groups;
+
+  if (!session->requested_role_name.empty()) {
+    const std::string requested_uuid =
+        ResolveRequestedRoleUuid(lifecycle, session->requested_role_name);
+    if (requested_uuid.empty()) {
+      if (rejection_detail != nullptr) *rejection_detail = "requested_role_not_found";
+      return false;
+    }
+    if (!EffectiveSubjectContains(materialized.context, requested_uuid, "role")) {
+      if (rejection_detail != nullptr) *rejection_detail = "requested_role_not_granted";
+      return false;
+    }
+    session->active_role_uuid = TextToUuid(requested_uuid);
+  } else if (roles.size() == 1) {
+    session->active_role_uuid = roles.front();
+  } else if (!IsZeroUuidBytes(session->active_role_uuid) &&
+             !ContainsUuid(roles, session->active_role_uuid)) {
+    session->active_role_uuid = {};
+  }
+
+  session->role_set_hash = UuidSetHash("roles", session->effective_role_uuids);
+  session->group_set_hash = UuidSetHash("groups", session->effective_group_uuids);
+  for (const auto& role : session->effective_role_uuids) {
+    AddUniqueTraceTag(&session->engine_authorization_trace_tags,
+                      "role_uuid:" + UuidBytesToText(role));
+  }
+  for (const auto& group : session->effective_group_uuids) {
+    AddUniqueTraceTag(&session->engine_authorization_trace_tags,
+                      "group_uuid:" + UuidBytesToText(group));
+  }
+  AddUniqueTraceTag(&session->engine_authorization_trace_tags,
+                    "server.session.durable_role_group_projection");
+  return true;
+}
+
 engine_api::EngineMaterializedAuthorizationContext MaterializeSessionAuthorizationContext(
     const ServerSessionRecord& session,
     const engine_api::EngineRequestContext& context) {
@@ -528,6 +812,15 @@ engine_api::EngineMaterializedAuthorizationContext MaterializeSessionAuthorizati
       authorization.policy_epoch == 0 ||
       authorization.catalog_generation_id == 0) {
     return authorization;
+  }
+
+  const auto durable = MaterializeDurableAuthorizationForSession(session, context);
+  if (durable.ok &&
+      (!durable.context.grants.empty() || durable.context.effective_subjects.size() > 1)) {
+    auto durable_context = durable.context;
+    durable_context.evidence_tags.push_back(
+        "server.session.durable_authorization_context");
+    return durable_context;
   }
 
   engine_api::EngineAuthorizationSubject principal;
@@ -577,6 +870,9 @@ engine_api::EngineRequestContext EngineContextForSession(const ServerSessionReco
   context.security_epoch = session.security_epoch;
   context.resource_epoch = session.resource_epoch;
   context.name_resolution_epoch = session.name_resolution_epoch;
+  if (!IsZeroUuidBytes(session.active_role_uuid)) {
+    context.current_role_uuid.canonical = UuidBytesToText(session.active_role_uuid);
+  }
   PopulateEngineLanguageContextFromSession(session, &context.language_context);
   context.trace_tags = session.engine_authorization_trace_tags;
   context.trace_tags.push_back("sb_server.session_registry");
@@ -654,6 +950,9 @@ std::optional<AuthHandoffPayload> DecodeAuthPayload(const std::vector<std::uint8
     return std::nullopt;
   }
   if (offset < payload.size() && !ReadString(payload, &offset, &auth.application_name)) {
+    return std::nullopt;
+  }
+  if (offset < payload.size() && !ReadString(payload, &offset, &auth.requested_role)) {
     return std::nullopt;
   }
   return auth;
@@ -778,6 +1077,17 @@ std::vector<std::uint8_t> EncodeAttachResultPayload(const std::string& outcome,
   PutU64(&out, session == nullptr ? 0 : session->snapshot_visible_through_local_transaction_id);
   PutString(&out, session == nullptr ? "" : session->transaction_uuid);
   PutString(&out, session == nullptr ? "" : session->transaction_timestamp);
+  if (session == nullptr) {
+    PutU32(&out, 0);
+    PutUuid(&out, {});
+    PutU32(&out, 0);
+  } else {
+    PutU32(&out, static_cast<std::uint32_t>(session->effective_role_uuids.size()));
+    for (const auto& role : session->effective_role_uuids) PutUuid(&out, role);
+    PutUuid(&out, session->active_role_uuid);
+    PutU32(&out, static_cast<std::uint32_t>(session->effective_group_uuids.size()));
+    for (const auto& group : session->effective_group_uuids) PutUuid(&out, group);
+  }
   return out;
 }
 
@@ -2249,6 +2559,7 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
   }
   session.principal_claim = decoded->principal_claim;
   session.application_name = decoded->application_name;
+  session.requested_role_name = decoded->requested_role;
   session.provider_family = auth_request.provider_family;
   session.database_path = FirstOpenDatabasePath(engine_state);
   session.database_uuid = FirstOpenDatabaseUuid(engine_state);
@@ -2264,6 +2575,22 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
                                              auth_result.connection_security_context.policy_epoch);
   session.engine_authorization_trace_tags =
       auth_result.connection_security_context.authorization_trace_tags;
+  std::string role_group_projection_rejection;
+  if (!ApplyDurableAuthorizationProjectionToSession(&session,
+                                                    &role_group_projection_rejection)) {
+    const std::string detail = role_group_projection_rejection.empty()
+                                   ? "requested_role_rejected"
+                                   : role_group_projection_rejection;
+    result.diagnostics.push_back(AuthDiagnostic("SECURITY.ROLE_INVALID",
+                                                "Requested role could not be activated.",
+                                                detail));
+    AddAttachAdmissionDenied(&result.diagnostics, "auth_handoff", detail);
+    result.payload = EncodeAuthResultPayload("rejected", nullptr, detail);
+    result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+    registry->channel_state = ServerChannelState::kFailed;
+    RecordFinality(registry, request, {}, {}, "auth_handoff", "rejected", detail);
+    return result;
+  }
   registry->auth_contexts_by_uuid[AuthContextKey(session.auth_context_uuid)] = session;
   result.session_uuid = session.session_uuid;
   result.payload = EncodeAuthResultPayload("accepted", &session);
@@ -2491,6 +2818,28 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
   session.database_path = database->database_path;
   session.database_uuid = database->database_uuid;
   ApplyDatabaseHealthToSession(&session, *database);
+  std::string role_group_projection_rejection;
+  if (!ApplyDurableAuthorizationProjectionToSession(&session,
+                                                    &role_group_projection_rejection)) {
+    const std::string detail = role_group_projection_rejection.empty()
+                                   ? "requested_role_rejected"
+                                   : role_group_projection_rejection;
+    result.diagnostics.push_back(AuthDiagnostic("SECURITY.ROLE_INVALID",
+                                                "Requested role could not be activated for attach.",
+                                                detail));
+    AddAttachAdmissionDenied(&result.diagnostics, "attach_database", detail);
+    result.payload = EncodeAttachResultPayload("rejected", nullptr, detail);
+    result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+    registry->channel_state = ServerChannelState::kFailed;
+    RecordFinality(registry,
+                   request,
+                   session.session_uuid,
+                   session.auth_context_uuid,
+                   "attach_database",
+                   "rejected",
+                   detail);
+    return result;
+  }
   engine_api::EngineAuthorizeRequest authorize;
   authorize.context = EngineContextForSession(session, engine_state, request);
   authorize.required_right = "CONNECT";
@@ -2936,6 +3285,8 @@ ServerSessionBindingControlResult ApplyServerSessionBindingReport(
   session.protocol_session_id = report.protocol_session_id;
   session.authkey_id = report.authkey_id;
   session.active_role_uuid = report.active_role_id;
+  session.effective_role_uuids.clear();
+  AddUniqueUuidBytes(&session.effective_role_uuids, report.active_role_id);
   session.effective_group_uuids = report.effective_group_ids;
   if (!IsZeroUuidBytes(report.transaction_uuid)) {
     session.transaction_uuid = UuidBytesToText(report.transaction_uuid);
@@ -2992,6 +3343,7 @@ ServerSessionBindingControlResult ClearServerSessionBinding(
   session.protocol_session_id = {};
   session.authkey_id = {};
   session.active_role_uuid = {};
+  session.effective_role_uuids.clear();
   session.effective_group_uuids.clear();
   session.session_binding_generation += 1;
   session.session_binding_control_sequence = authority.sequence;
@@ -3157,7 +3509,8 @@ std::string SessionRegistryStatusJson(const ServerSessionRegistry& registry) {
         << "\",\"protocol_session_id\":\"" << UuidBytesToText(session.protocol_session_id)
         << "\",\"authkey_id\":\"" << UuidBytesToText(session.authkey_id)
         << "\",\"active_role_id\":\"" << UuidBytesToText(session.active_role_uuid)
-        << "\",\"effective_group_count\":" << session.effective_group_uuids.size()
+        << "\",\"effective_role_count\":" << session.effective_role_uuids.size()
+        << ",\"effective_group_count\":" << session.effective_group_uuids.size()
         << ",\"session_binding_generation\":" << session.session_binding_generation
         << ",\"session_binding_control_sequence\":"
         << session.session_binding_control_sequence

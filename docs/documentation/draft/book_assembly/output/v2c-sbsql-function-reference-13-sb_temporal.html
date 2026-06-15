@@ -1,0 +1,4014 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-temporal-functional-reference" id="toc-sb-temporal-functional-reference">SB Temporal Functional
+Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#add_months" id="toc-add_months"><code>add_months</code></a></li>
+<li><a href="#age" id="toc-age"><code>age</code></a></li>
+<li><a href="#age_in_days" id="toc-age_in_days"><code>age_in_days</code></a></li>
+<li><a href="#age_in_months" id="toc-age_in_months"><code>age_in_months</code></a></li>
+<li><a href="#age_in_years" id="toc-age_in_years"><code>age_in_years</code></a></li>
+<li><a href="#clock_timestamp" id="toc-clock_timestamp"><code>clock_timestamp</code></a></li>
+<li><a href="#current_date" id="toc-current_date"><code>current_date</code></a></li>
+<li><a href="#current_time" id="toc-current_time"><code>current_time</code></a></li>
+<li><a href="#current_timestamp" id="toc-current_timestamp"><code>current_timestamp</code></a></li>
+<li><a href="#date_add" id="toc-date_add"><code>date_add</code></a></li>
+<li><a href="#date_bin" id="toc-date_bin"><code>date_bin</code></a></li>
+<li><a href="#date_diff" id="toc-date_diff"><code>date_diff</code></a></li>
+<li><a href="#date_part" id="toc-date_part"><code>date_part</code></a></li>
+<li><a href="#date_sub" id="toc-date_sub"><code>date_sub</code></a></li>
+<li><a href="#date_trunc" id="toc-date_trunc"><code>date_trunc</code></a></li>
+<li><a href="#day_name" id="toc-day_name"><code>day_name</code></a></li>
+<li><a href="#dow" id="toc-dow"><code>dow</code></a></li>
+<li><a href="#doy" id="toc-doy"><code>doy</code></a></li>
+<li><a href="#epoch" id="toc-epoch"><code>epoch</code></a></li>
+<li><a href="#from_unixtime" id="toc-from_unixtime"><code>from_unixtime</code></a></li>
+<li><a href="#isodow" id="toc-isodow"><code>isodow</code></a></li>
+<li><a href="#last_day" id="toc-last_day"><code>last_day</code></a></li>
+<li><a href="#localtime" id="toc-localtime"><code>localtime</code></a></li>
+<li><a href="#localtimestamp" id="toc-localtimestamp"><code>localtimestamp</code></a></li>
+<li><a href="#make_date" id="toc-make_date"><code>make_date</code></a></li>
+<li><a href="#make_interval" id="toc-make_interval"><code>make_interval</code></a></li>
+<li><a href="#make_time" id="toc-make_time"><code>make_time</code></a></li>
+<li><a href="#make_timestamp" id="toc-make_timestamp"><code>make_timestamp</code></a></li>
+<li><a href="#make_timestamptz" id="toc-make_timestamptz"><code>make_timestamptz</code></a></li>
+<li><a href="#month_name" id="toc-month_name"><code>month_name</code></a></li>
+<li><a href="#months_between" id="toc-months_between"><code>months_between</code></a></li>
+<li><a href="#next_day" id="toc-next_day"><code>next_day</code></a></li>
+<li><a href="#now" id="toc-now"><code>now</code></a></li>
+<li><a href="#quarter" id="toc-quarter"><code>quarter</code></a></li>
+<li><a href="#statement_timestamp" id="toc-statement_timestamp"><code>statement_timestamp</code></a></li>
+<li><a href="#timeofday" id="toc-timeofday"><code>timeofday</code></a></li>
+<li><a href="#timezone" id="toc-timezone"><code>timezone</code></a></li>
+<li><a href="#transaction_timestamp" id="toc-transaction_timestamp"><code>transaction_timestamp</code></a></li>
+<li><a href="#week" id="toc-week"><code>week</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_temporal.md -->
+<p><a id="ch-language-reference-functional-reference-sb-temporal-md"></a></p>
+<h1 id="sb-temporal-functional-reference">SB Temporal Functional
+Reference</h1>
+<p>Generation task: <code>sb_temporal</code></p>
+<p>Package namespace: <code>sb.temporal</code></p>
+<p>Date, time, timestamp, interval, timezone, and temporal context
+helpers.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Creates, extracts, converts, and reads temporal values using session
+and descriptor temporal rules.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>scalar</td>
+<td style="text-align: right;">39</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="add_months"><code>add_months</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>add_months</code> and
+returns date shifted by whole months with end-of-month clamp semantics;
+descriptor=date.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>add_months(date,n)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>date</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>n</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>date shifted by whole months with end-of-month clamp semantics;
+descriptor=date.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">add_months</span>(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.add_months</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-7040-8a00-000000000040</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_add_months.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_add_months</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_add_months</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-add_months-clamp;SBSFC012-add_months-null;SBSFC012-add_months-pos</code>.</p>
+<h3 id="age"><code>age</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>age</code> and returns
+interval text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>age(timestamp[,timestamp])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>timestamp[</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>timestamp]</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Descriptor rule: timestamp and optional comparison timestamp.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>interval text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> age(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.age</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7e4e-91a1-6f7ddbbfc8b4</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_age.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_age</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>age</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-age-signature</code>.</p>
+<h3 id="age_in_days"><code>age_in_days</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>age_in_days</code> and
+returns int64 complete days.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>age_in_days(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: timestamp and optional comparison timestamp.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>int64 complete days.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> age_in_days(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.age_in_days</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7ee9-a83b-1b127ee5d637</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_age_in_days.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_age_in_days</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>age_in_days</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-age-in-days</code>.</p>
+<h3 id="age_in_months"><code>age_in_months</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>age_in_months</code> and
+returns int64 complete months.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>age_in_months(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: timestamp and optional comparison timestamp.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>int64 complete months.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> age_in_months(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.age_in_months</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b1f-9b1f-a783c31821ba</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_age_in_months.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_age_in_months</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>age_in_months</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-age-in-months</code>.</p>
+<h3 id="age_in_years"><code>age_in_years</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>age_in_years</code> and
+returns int64 complete years.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>age_in_years(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: timestamp and optional comparison timestamp.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>int64 complete years.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> age_in_years(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.age_in_years</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f51-ad71-634cb7fb593c</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_age_in_years.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_age_in_years</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>age_in_years</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-age-in-years</code>.</p>
+<h3 id="clock_timestamp"><code>clock_timestamp</code></h3>
+<p><strong>Purpose:</strong> Returns a volatile clock timestamp from the
+execution context.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>clock_timestamp()</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li>This function takes no arguments.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>current timestamp provider value from SBLR execution context;
+descriptor=timestamp_tz.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile.</li>
+<li>Determinism: not foldable; value is supplied by
+statement/session/transaction execution context or volatile time
+provider.</li>
+<li>Side effects: volatile_time_read.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: timestamp context read from SBLR execution
+context only.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> clock_timestamp() <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.clock_timestamp</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7290-a2c2-a59b23103c09</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.clock_timestamp.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.clock_timestamp</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>clock_timestamp</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-clock-timestamp-context</code>.</p>
+<h3 id="current_date"><code>current_date</code></h3>
+<p><strong>Purpose:</strong> Reads the current <code>date</code> value
+from the session or statement context.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>current_date</code></li>
+<li>Syntax category: <code>keyword_or_function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>current date in session timezone.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_per_transaction.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">current_date</span>(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.current_date</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-783b-adda-0bc068736641</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>keyword_or_function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_current_date.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_current_date</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_current_date</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>BIF-CONF-3f4f0afa2a2c</code>.</p>
+<h3 id="current_time"><code>current_time</code></h3>
+<p><strong>Purpose:</strong> Reads the current <code>time</code> value
+from the session or statement context.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>current_time[(precision)]</code></li>
+<li>Syntax category: <code>keyword_or_function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>precision</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>current time in session timezone.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_per_transaction.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> current_time(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.current_time</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-73da-80a1-68fe1d19a070</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>keyword_or_function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_current_time.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_current_time</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_current_time</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>BIF-CONF-a678fa486fe5</code>.</p>
+<h3 id="current_timestamp"><code>current_timestamp</code></h3>
+<p><strong>Purpose:</strong> Returns the current statement or
+transaction timestamp according to the selected temporal form.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>current_timestamp[(precision)]</code></li>
+<li>Syntax category: <code>keyword_or_function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>precision</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>transaction-stable timestamp by default; statement-stable only by
+external dialect profile.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_per_transaction.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">current_timestamp</span>(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.current_timestamp</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-7e69-bb23-613f117660a1</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>keyword_or_function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_current_timestamp.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_current_timestamp</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_current_timestamp</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>BIF-CONF-ba41340ab776</code>.</p>
+<h3 id="date_add"><code>date_add</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>date_add</code> and returns
+date or timestamp text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>date_add(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: date or timestamp and ISO-like interval.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>date or timestamp text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> date_add(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.date_add</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-72f5-8bd5-2bfc9336a0e3</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_date_add.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_date_add</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>date_add</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-date-add-bare</code>.</p>
+<h3 id="date_bin"><code>date_bin</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>date_bin</code> and returns
+timestamp text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>date_bin(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: positive day/time stride, source timestamp, and
+origin timestamp.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>timestamp text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> date_bin(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.date_bin</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-74d7-9498-1b5f90313b22</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_date_bin.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_date_bin</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>date_bin</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-date-bin-bare</code>.</p>
+<h3 id="date_diff"><code>date_diff</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>date_diff</code> and
+returns int64 difference.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>date_diff(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: part, start timestamp, and end timestamp.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>int64 difference.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> date_diff(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.date_diff</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7043-9028-c46010757c70</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_date_diff.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_date_diff</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>date_diff</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-date-diff-bare</code>.</p>
+<h3 id="date_part"><code>date_part</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>date_part</code> and
+returns extract temporal part as numeric.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>date_part(part,timestamp)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>part</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>timestamp</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>extract temporal part as numeric.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable_or_timezone_stable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> date_part(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.date_part</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-7156-bba9-1aa94c5a9826</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_date_part.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_date_part</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_date_part</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>BIF-CONF-27f7ecb4d7d5;SBSFC012-extract-epoch;SBSFC012-extract-generic-year;SBSFC012-extract-part-temporal;SBSFC012-special-extract-year</code>.</p>
+<h3 id="date_sub"><code>date_sub</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>date_sub</code> and returns
+date or timestamp text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>date_sub(date\|timestamp,interval)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>date\|timestamp</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li><code>interval</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: date or timestamp and ISO-like interval.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the the
+conformance fixtures fixture arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>date or timestamp text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: UTC epoch arithmetic only for epoch/date_sub fixture rows;
+other rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal text, unsupported locale, or
+sequence increment errors use canonical SBLR diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> date_sub(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.date_sub</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7e61-bd15-cdcef4c6db03</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_date_sub.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_date_sub</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>date_sub</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC059-date-sub-signature</code>.</p>
+<h3 id="date_trunc"><code>date_trunc</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>date_trunc</code> and
+returns truncate temporal value to part.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>date_trunc(part,timestamp)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>part</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>timestamp</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>truncate temporal value to part.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable_or_timezone_stable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> date_trunc(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.date_trunc</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-7b13-a963-4628df379b25</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_date_trunc.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_date_trunc</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_date_trunc</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>BIF-CONF-42a9dd60ab91</code>.</p>
+<h3 id="day_name"><code>day_name</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>day_name</code> and returns
+character weekday name.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>day_name(date[,locale])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>date[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>locale]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: date and optional English locale.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character weekday name.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> day_name(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.day_name</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f1f-a8cb-7121827fb5ba</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_day_name.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_day_name</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>day_name</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-day-name</code>.</p>
+<h3 id="dow"><code>dow</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>dow</code> and returns
+day-of-week number extracted from date/timestamp argument;
+descriptor=int64.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>dow(date)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>date</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>day-of-week number extracted from date/timestamp argument;
+descriptor=int64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> dow(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.dow</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-703b-8a00-00000000003b</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_dow.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_dow</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_dow</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-dow-bare-alias;SBSFC012-dow-null;SBSFC012-dow-pos</code>.</p>
+<h3 id="doy"><code>doy</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>doy</code> and returns
+day-of-year number extracted from date/timestamp argument;
+descriptor=int64.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>doy(date)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>date</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>day-of-year number extracted from date/timestamp argument;
+descriptor=int64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> doy(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.doy</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-703c-8a00-00000000003c</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_doy.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_doy</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_doy</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-doy-bare-alias;SBSFC012-doy-null;SBSFC012-doy-pos</code>.</p>
+<h3 id="epoch"><code>epoch</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>epoch</code> and returns
+int64 Unix epoch seconds.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>epoch(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one ISO-like temporal value.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>int64 Unix epoch seconds.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> epoch(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.epoch</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7285-8cb0-cc140ac2e632</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_epoch.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_epoch</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>epoch</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-epoch</code>.</p>
+<h3 id="from_unixtime"><code>from_unixtime</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>from_unixtime</code> and
+returns timestamp_tz text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>from_unixtime(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: int64 Unix epoch seconds.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>timestamp_tz text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> from_unixtime(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.from_unixtime</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7458-b42c-f33748dac341</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_from_unixtime.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_from_unixtime</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>from_unixtime</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-from-unixtime-bare</code>.</p>
+<h3 id="isodow"><code>isodow</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>isodow</code> and returns
+iSO day-of-week number extracted from date/timestamp argument;
+descriptor=int64.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>isodow(date)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>date</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>ISO day-of-week number extracted from date/timestamp argument;
+descriptor=int64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> isodow(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.isodow</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-703e-8a00-00000000003e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_isodow.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_isodow</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_isodow</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-isodow-bare-alias;SBSFC012-isodow-null;SBSFC012-isodow-pos</code>.</p>
+<h3 id="last_day"><code>last_day</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>last_day</code> and returns
+last calendar day of the input month; descriptor=date.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>last_day(date)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>date</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>last calendar day of the input month; descriptor=date.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">last_day</span>(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.last_day</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-7041-8a00-000000000041</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_last_day.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_last_day</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_last_day</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-last_day-leap;SBSFC012-last_day-null;SBSFC012-last_day-pos</code>.</p>
+<h3 id="localtime"><code>localtime</code></h3>
+<p><strong>Purpose:</strong> Returns the current local time value
+according to session temporal rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>localtime</code></li>
+<li>Syntax category: <code>keyword_or_function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>local time value derived from current timestamp context;
+descriptor=time.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_per_statement.</li>
+<li>Determinism: not foldable; value is supplied by
+statement/session/transaction execution context or volatile time
+provider.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: timestamp context read from SBLR execution
+context only.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> localtime(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.localtime</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f3f-97d7-dfbe123123cd</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>keyword_or_function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.localtime.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.localtime</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>localtime</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC012-localtime-context</code>.</p>
+<h3 id="localtimestamp"><code>localtimestamp</code></h3>
+<p><strong>Purpose:</strong> Returns the current local timestamp value
+according to session temporal rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>localtimestamp</code></li>
+<li>Syntax category: <code>keyword_or_function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>local timestamp value derived from current timestamp context without
+timezone suffix; descriptor=timestamp.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_per_statement.</li>
+<li>Determinism: not foldable; value is supplied by
+statement/session/transaction execution context or volatile time
+provider.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: timestamp context read from SBLR execution
+context only.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">localtimestamp</span>(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.localtimestamp</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-76e6-a33a-9f40d998a302</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>keyword_or_function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.localtimestamp.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.localtimestamp</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>localtimestamp</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-localtimestamp-context</code>.</p>
+<h3 id="make_date"><code>make_date</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>make_date</code> and
+returns date constructed from year/month/day integer arguments;
+descriptor=date.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>make_date(year,month,day)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>year</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>month</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>day</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>date constructed from year/month/day integer arguments;
+descriptor=date.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb25"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> make_date(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.make_date</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-7015-8a00-000000000015</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_make_date.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_make_date</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_make_date</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-make_date-null;SBSFC012-make_date-pos;SBSFC012-make_date-stale-signature</code>.</p>
+<h3 id="make_interval"><code>make_interval</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>make_interval</code> and
+returns interval text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>make_interval([years[,months[,...]]])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>[years[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>months[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>...]]]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: up to seven int64 interval components.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>interval text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> make_interval(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.make_interval</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7ac7-aef0-879a6f98ec79</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_make_interval.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_make_interval</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>make_interval</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC058-make-interval-signature</code>.</p>
+<h3 id="make_time"><code>make_time</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>make_time</code> and
+returns time constructed from hour/minute/second integer arguments;
+descriptor=time.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>make_time(hour,minute,second)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>hour</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>minute</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>second</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>time constructed from hour/minute/second integer arguments;
+descriptor=time.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb27"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> make_time(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.make_time</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-7016-8a00-000000000016</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_make_time.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_make_time</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_make_time</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-make_time-null;SBSFC012-make_time-pos;SBSFC012-make_time-stale-signature</code>.</p>
+<h3 id="make_timestamp"><code>make_timestamp</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>make_timestamp</code> and
+returns timestamp constructed from date/time or integer date-time parts;
+descriptor=timestamp.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>make_timestamp(year,month,day,hour,minute,second)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>year</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>month</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>day</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li><code>hour</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>minute</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>second</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>timestamp constructed from date/time or integer date-time parts;
+descriptor=timestamp.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb28"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> make_timestamp(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.make_timestamp</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-7017-8a00-000000000017</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_make_timestamp.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_make_timestamp</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_make_timestamp</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-make_timestamp-null;SBSFC012-make_timestamp-pos;SBSFC012-make_timestamp-stale-sixint;SBSFC012-make_timestamp-stale-sixint-arity;SBSFC012-make_timestamp-stale-sixint-null;SBSFC012-make_timestamp-stale-sixint-type</code>.</p>
+<h3 id="make_timestamptz"><code>make_timestamptz</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>make_timestamptz</code> and
+returns timestamp with timezone constructed from date/time and optional
+timezone text; descriptor=timestamp_tz.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>make_timestamptz(...,timezone)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li><code>timezone</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>timestamp with timezone constructed from date/time and optional
+timezone text; descriptor=timestamp_tz.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb29"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> make_timestamptz(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.make_timestamptz</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-7018-8a00-000000000018</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_make_timestamptz.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_make_timestamptz</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_make_timestamptz</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-make_timestamptz-default;SBSFC012-make_timestamptz-null;SBSFC012-make_timestamptz-with_tz</code>.</p>
+<h3 id="month_name"><code>month_name</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>month_name</code> and
+returns character month name.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>month_name(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: date and optional English locale.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>character month name.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb30"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> month_name(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.month_name</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-701f-b179-c1df989dad05</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_month_name.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_month_name</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>month_name</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-month-name</code>.</p>
+<h3 id="months_between"><code>months_between</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>months_between</code> and
+returns real64 month delta.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>months_between(value_1, value_2)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>value_1</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value_2</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: two date values.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>real64 month delta.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb31"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">months_between</span>(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.months_between</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7d12-9208-a5c602a4a418</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_months_between.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_months_between</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>months_between</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-months-between-bare</code>.</p>
+<h3 id="next_day"><code>next_day</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>next_day</code> and returns
+date text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>next_day(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: date and English weekday.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>date text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb32"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">next_day</span>(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.next_day</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7e72-a696-1c258d52a978</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_next_day.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_next_day</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>next_day</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-next-day-bare</code>.</p>
+<h3 id="now"><code>now</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>now</code> and returns
+transaction-stable timestamp by default.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>now()</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li>This function takes no arguments.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>transaction-stable timestamp by default.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_per_transaction.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb33"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> now() <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.now</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-7654-add6-ca942f8e7000</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_now.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_now</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_now</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>BIF-CONF-981fa51fefda</code>.</p>
+<h3 id="quarter"><code>quarter</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>quarter</code> and returns
+calendar quarter number extracted from date/timestamp argument;
+descriptor=int64.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>quarter(date)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>date</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>calendar quarter number extracted from date/timestamp argument;
+descriptor=int64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb34"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> quarter(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.quarter</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-703d-8a00-00000000003d</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_quarter.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_quarter</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_quarter</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-quarter-bare-alias;SBSFC012-quarter-null;SBSFC012-quarter-pos</code>.</p>
+<h3 id="statement_timestamp"><code>statement_timestamp</code></h3>
+<p><strong>Purpose:</strong> Returns the timestamp captured for the
+current statement.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>statement_timestamp</code></li>
+<li>Syntax category: <code>keyword_or_function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>statement-start timestamp from SBLR execution context;
+descriptor=timestamp_tz.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_per_statement.</li>
+<li>Determinism: not foldable; value is supplied by
+statement/session/transaction execution context or volatile time
+provider.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: timestamp context read from SBLR execution
+context only.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb35"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> statement_timestamp(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.statement_timestamp</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-75ff-bc93-ef6201c8284d</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>keyword_or_function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.statement_timestamp.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.statement_timestamp</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>statement_timestamp</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-statement-timestamp-context</code>.</p>
+<h3 id="timeofday"><code>timeofday</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>timeofday</code> and
+returns current timestamp provider value rendered as character text;
+descriptor=character.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>timeofday()</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li>This function takes no arguments.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>current timestamp provider value rendered as character text;
+descriptor=character.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: volatile.</li>
+<li>Determinism: not foldable; value is supplied by
+statement/session/transaction execution context or volatile time
+provider.</li>
+<li>Side effects: volatile_time_read.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: timestamp context read from SBLR execution
+context only.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb36"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> timeofday() <span class="kw">as</span> result_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.timeofday</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7878-bebd-292b497534e9</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.timeofday.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.timeofday</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>timeofday</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC012-timeofday-context</code>.</p>
+<h3 id="timezone"><code>timezone</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>timezone</code> and returns
+timestamp_tz text.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>timezone(zone,timestamp)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>zone</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>timestamp</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Descriptor rule: UTC/GMT or numeric offset zone and timestamp.</li>
+<li>Coercion: bounded descriptor-to-SBLR scalar coercion for the fixture
+arguments only.</li>
+<li>NULL handling: SQL NULL propagates through the SBLR scalar runtime
+for nullable value arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>timestamp_tz text.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_statement.</li>
+<li>Determinism: deterministic for the the conformance fixtures fixture
+inputs except sequence advancement state.</li>
+<li>Side effects: none; no mutation or transaction finality change.</li>
+<li>Collation/charset: UTF-8/unicode_root for character descriptors;
+regex rows use the bounded C++ regex route.</li>
+<li>Timezone: numeric offset or UTC/GMT only for timezone rows; other
+rows are not timezone-sensitive.</li>
+<li>Security and authority: executes inside the SBLR expression runtime
+using in-core scalar helpers and the existing SBLR sequence runtime; no
+parser SQL execution, external execution, storage finality, recovery
+shortcut, cluster provider authority, or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, malformed regex/temporal/numeric text, unsupported
+timezone, or sequence current-state errors use canonical SBLR
+diagnostics.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb37"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb37-1"><a href="#cb37-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> timezone(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.timezone</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-70f8-b4bb-84a07686bdb7</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_timezone.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_timezone</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>timezone</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC058-timezone-signature</code>.</p>
+<h3 id="transaction_timestamp"><code>transaction_timestamp</code></h3>
+<p><strong>Purpose:</strong> Returns the timestamp captured for the
+current transaction.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>transaction_timestamp</code></li>
+<li>Syntax category: <code>keyword_or_function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>transaction-start timestamp from SBLR execution context when
+transaction context is present; descriptor=timestamp_tz.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: stable_per_transaction.</li>
+<li>Determinism: not foldable; value is supplied by
+statement/session/transaction execution context or volatile time
+provider.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: transaction timestamp context read from SBLR
+execution context only.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb38"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb38-1"><a href="#cb38-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> transaction_timestamp(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.transaction_timestamp</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7187-b4d0-c11a728bef26</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>keyword_or_function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.transaction_timestamp.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.transaction_timestamp</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>transaction_timestamp</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-transaction-timestamp-context</code>.</p>
+<h3 id="week"><code>week</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>week</code> and returns iSO
+week number extracted from date/timestamp argument;
+descriptor=int64.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>week(date)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>date</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative arguments bound by
+parser/lowering route.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless context provider returns typed null as
+specified by the conformance fixtures fixture evidence.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>ISO week number extracted from date/timestamp argument;
+descriptor=int64.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable when all arguments are constants with stable
+descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+character semantics apply; otherwise not applicable.</li>
+<li>Timezone: session timezone/current timestamp context where temporal
+conversion requires it; otherwise not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/domain/context errors use builtin error compatibility
+matrix and the conformance fixtures exact fixture evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb39"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb39-1"><a href="#cb39-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> week(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.temporal.week</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-703f-8a00-00000000003f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.temporal_week.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.temporal_week</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>temporal_week</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC012-week-bare-alias;SBSFC012-week-null;SBSFC012-week-pos</code>.</p>
+</body>
+</html>

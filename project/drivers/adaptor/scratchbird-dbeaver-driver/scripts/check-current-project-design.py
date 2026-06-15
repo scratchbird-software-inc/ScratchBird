@@ -75,6 +75,73 @@ SCHEMA_NODE_MANAGER_SOURCE = (
     / "edit"
     / "ScratchBirdSchemaNodeManager.java"
 )
+TABLE_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdTable.java"
+)
+VIEW_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdView.java"
+)
+QUALIFIED_NAMES_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "ScratchBirdQualifiedNames.java"
+)
+MANAGER_SUPPORT_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "edit"
+    / "ScratchBirdManagerSupport.java"
+)
+TABLE_MANAGER_SOURCE = (
+    ROOT
+    / "plugins"
+    / "org.jkiss.dbeaver.ext.scratchbird"
+    / "src"
+    / "org"
+    / "jkiss"
+    / "dbeaver"
+    / "ext"
+    / "scratchbird"
+    / "model"
+    / "edit"
+    / "ScratchBirdTableManager.java"
+)
 
 REQUIRED_DRIVER_PROPERTIES = {
     "connect_timeout",
@@ -181,8 +248,8 @@ def require_plugin_surface() -> int:
         return fail("sample JDBC URL must expose host and database placeholders")
     if "binary_transfer=true" not in sample_url:
         return fail("sample JDBC URL must use canonical binary_transfer key")
-    if "metadata_fixture_catalog=driver_test" not in sample_url:
-        return fail("sample JDBC URL must select the driver_test metadata fixture for local beta testing")
+    if "metadata_fixture_catalog" in sample_url:
+        return fail("sample JDBC URL must use live metadata by default")
 
     driver_properties = set()
     for param in driver.findall("parameter"):
@@ -201,8 +268,8 @@ def require_plugin_surface() -> int:
     for required in ("connect_timeout", "socket_timeout", "binary_transfer", "protocol", "compression", "metadata_fixture_catalog"):
         if required not in default_names:
             return fail(f"driver default property missing {required}")
-    if driver.find("property[@name='metadata_fixture_catalog']").get("value") != "driver_test":
-        return fail("driver metadata_fixture_catalog default must be driver_test for local beta testing")
+    if driver.find("property[@name='metadata_fixture_catalog']").get("value") != "":
+        return fail("driver metadata_fixture_catalog default must be empty for live metadata")
     for stale in ("connectTimeout", "socketTimeout", "binaryTransfer"):
         if stale in default_names:
             return fail(f"driver default property still uses stale alias {stale}")
@@ -237,16 +304,25 @@ def require_plugin_surface() -> int:
         return fail("plugin.xml still references removed sys.performance surface")
 
     required_tree_tokens = (
-        '<folder type="org.jkiss.dbeaver.ext.scratchbird.model.ScratchBirdSchemaNode"',
+        '<treeInjection path="generic/catalog">\n                <items label="#schema" path="schema" property="schemaTree"',
+        '<items label="#schema" path="schema" property="childSchemas"',
+        'recursive=".."',
+        '<items label="%tree.table.node.name" path="table" property="physicalTables"',
+        '<items label="%tree.tview.node.name" path="view" property="views"',
+    )
+    for token in required_tree_tokens:
+        if token not in plugin_text:
+            return fail(f"plugin.xml missing DBeaver navigator container token {token!r}")
+    blocked_tree_tokens = (
         'label="%tree.schemas.node.name"',
         'visibleIf="object.schemaBranchesFolderVisible"',
         'recursive="../.."',
         '<folder type="org.jkiss.dbeaver.ext.generic.model.GenericTable"',
         '<folder type="org.jkiss.dbeaver.ext.generic.model.GenericView"',
     )
-    for token in required_tree_tokens:
-        if token not in plugin_text:
-            return fail(f"plugin.xml missing DBeaver navigator container token {token!r}")
+    for token in blocked_tree_tokens:
+        if token in plugin_text:
+            return fail(f"plugin.xml still groups physical navigator children with {token!r}")
     return 0
 
 
@@ -256,10 +332,19 @@ def require_schema_node_metadata_fallback() -> int:
         "return super.getTables(monitor);",
         "return super.getTable(monitor, name);",
         "getTableCache().setCache(tables);",
-        "session.getMetaData().getTables(null, fullPath, \"%\", PHYSICAL_TABLE_TYPES)",
-        "session.getMetaData().getTables(null, fullPath, \"%\", VIEW_TYPES)",
+        "navigatorPhysicalTables",
+        "navigatorViews",
+        "addNavigatorPhysicalTable",
+        "addNavigatorView",
+        "hasNavigatorRelations()",
+        "getTableCache().setCache(navigatorTables);",
+        "if (hasNavigatorRelations()) {\n            getTables(monitor);",
+        "session.getMetaData().getTables(null, getAuthorityPath(), \"%\", PHYSICAL_TABLE_TYPES)",
+        "session.getMetaData().getTables(null, getAuthorityPath(), \"%\", VIEW_TYPES)",
         "new ScratchBirdTable(this, tableName",
         "new ScratchBirdView(this, viewName",
+        "new ScratchBirdTable(this, tableName, tableType, null, objectPath)",
+        "new ScratchBirdView(this, viewName, viewType, null, objectPath)",
         "loadMetadataPhysicalTables(monitor)",
         "loadMetadataViews(monitor)",
         "public boolean isSchemaBranchesFolderVisible()",
@@ -285,16 +370,36 @@ def require_collapsed_catalog_schema_tree() -> int:
     return 0
 
 
-def require_recursive_catalog_tree_query() -> int:
+def require_readable_catalog_tree_query() -> int:
     source = CATALOG_SOURCE.read_text(encoding="utf-8")
     required_tokens = (
-        "WITH RECURSIVE schema_tree AS",
-        "JOIN schema_tree ON c.parent_object_id = schema_tree.object_id",
-        "ORDER BY depth, full_path",
+        "FROM sys.catalog_readable.navigator_tree",
+        "executeNavigatorTreeQuery",
+        "databaseDisplayName",
+        "navigatorAuthorityPath",
+        "navigatorPathFromNodePath",
+        "nodeRole != null && nodeRole.startsWith(\"database.\")",
+        "return nodePath;",
+        "ScratchBirdCatalogObjectReference.catalogObject",
+        "isNavigatorPhysicalTable",
+        "isNavigatorView",
+        "node.addNavigatorPhysicalTable",
+        "node.addNavigatorView",
+        "child.getObjectPath()",
+        "ScratchBird readable navigator tree is required for first-release navigation",
+        "schemaTree = Collections.emptyList();",
     )
     for token in required_tokens:
         if token not in source:
-            return fail(f"catalog recursive schema tree query missing {token!r}")
+            return fail(f"catalog readable schema tree query missing {token!r}")
+    blocked_tokens = (
+        "ORDER BY depth, sort_group, sort_ordinal",
+        "FROM sys.catalog_readable.object_tree",
+        "FROM sys.catalog.object_resolver",
+    )
+    for token in blocked_tokens:
+        if token in source:
+            return fail(f"catalog readable schema tree query still has physical-tree fallback token {token!r}")
     return 0
 
 
@@ -311,14 +416,67 @@ def require_schema_node_manager_nested_create_policy() -> int:
     return 0
 
 
+def require_system_metadata_visible_in_navigator() -> int:
+    for path in (TABLE_SOURCE, VIEW_SOURCE):
+        source = path.read_text(encoding="utf-8")
+        if "public boolean isSystem()" not in source or "return false;" not in source:
+            return fail(f"{path.relative_to(ROOT)} must keep ScratchBird sys metadata visible in DBeaver")
+    return 0
+
+
+def require_authority_path_action_context() -> int:
+    qualified_names_source = QUALIFIED_NAMES_SOURCE.read_text(encoding="utf-8")
+    for token in (
+        "static String qualifyAuthorityPath",
+        "static String joinPath",
+        "static String parentPath",
+    ):
+        if token not in qualified_names_source:
+            return fail(f"qualified-name authority helper missing {token!r}")
+
+    for path in (TABLE_SOURCE, VIEW_SOURCE):
+        source = path.read_text(encoding="utf-8")
+        for token in (
+            "ScratchBirdObjectPath objectPath",
+            "qualifyAuthorityPath(objectPath.authorityPath())",
+            "public String getAuthorityPath()",
+            "public String getAuthoritySchemaPath()",
+            "objectPath.identityStatus()",
+        ):
+            if token not in source:
+                return fail(f"{path.relative_to(ROOT)} missing authority context token {token!r}")
+
+    support_source = MANAGER_SUPPORT_SOURCE.read_text(encoding="utf-8")
+    for token in (
+        "container instanceof ScratchBirdSchemaNode schemaNode",
+        "return schemaNode.getAuthorityPath();",
+        "object instanceof ScratchBirdTable scratchBirdTable",
+        "object instanceof ScratchBirdView scratchBirdView",
+    ):
+        if token not in support_source:
+            return fail(f"manager support missing authority context token {token!r}")
+
+    table_manager_source = TABLE_MANAGER_SOURCE.read_text(encoding="utf-8")
+    for token in (
+        "return ScratchBirdManagerSupport.canCreateRegularSqlObject(container);",
+        "GenericConstants.TABLE_TYPE_TABLE",
+        "createTableOrViewImpl",
+    ):
+        if token not in table_manager_source:
+            return fail(f"table manager missing ScratchBird create-context token {token!r}")
+    return 0
+
+
 def main() -> int:
     for check in (
         require_no_stale_paths,
         require_plugin_surface,
         require_schema_node_metadata_fallback,
         require_collapsed_catalog_schema_tree,
-        require_recursive_catalog_tree_query,
+        require_readable_catalog_tree_query,
         require_schema_node_manager_nested_create_policy,
+        require_system_metadata_visible_in_navigator,
+        require_authority_path_action_context,
     ):
         result = check()
         if result != 0:

@@ -85,7 +85,7 @@ In a simple `SELECT`, ordering and row limiting appear after filtering, grouping
 
 ```ebnf
 select_statement ::=
-    "SELECT" select_modifier? projection_list
+    "SELECT" set_quantifier? projection_list
     from_clause?
     where_clause?
     group_by_clause?

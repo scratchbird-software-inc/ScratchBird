@@ -139,7 +139,7 @@ SBsql is context sensitive. Words such as `schema`, `authorization`, `under`, `v
 A schema reference resolves either by UUID or by qualified name:
 
 ```ebnf
-schema_ref ::= uuid_ref | qualified_name ;
+schema_ref ::= uuid_reference | qualified_name ;
 ```
 
 Qualified schema names are recursive paths through the schema tree:

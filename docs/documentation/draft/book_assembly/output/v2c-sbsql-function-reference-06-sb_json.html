@@ -1,0 +1,4550 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-json-functional-reference" id="toc-sb-json-functional-reference">SB JSON Functional Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#json_agg" id="toc-json_agg"><code>json_agg</code></a></li>
+<li><a href="#json_agg-1" id="toc-json_agg-1"><code>json_agg</code></a></li>
+<li><a href="#json_object_agg" id="toc-json_object_agg"><code>json_object_agg</code></a></li>
+<li><a href="#json_object_agg-1" id="toc-json_object_agg-1"><code>json_object_agg</code></a></li>
+<li><a href="#jsonb_agg" id="toc-jsonb_agg"><code>jsonb_agg</code></a></li>
+<li><a href="#array_to_json" id="toc-array_to_json"><code>array_to_json</code></a></li>
+<li><a href="#json_array_elements" id="toc-json_array_elements"><code>json_array_elements</code></a></li>
+<li><a href="#json_array_elements_text" id="toc-json_array_elements_text"><code>json_array_elements_text</code></a></li>
+<li><a href="#json_array_length" id="toc-json_array_length"><code>json_array_length</code></a></li>
+<li><a href="#json_build_array" id="toc-json_build_array"><code>json_build_array</code></a></li>
+<li><a href="#json_build_object" id="toc-json_build_object"><code>json_build_object</code></a></li>
+<li><a href="#json_each" id="toc-json_each"><code>json_each</code></a></li>
+<li><a href="#json_each_text" id="toc-json_each_text"><code>json_each_text</code></a></li>
+<li><a href="#json_exists" id="toc-json_exists"><code>json_exists</code></a></li>
+<li><a href="#json_extract" id="toc-json_extract"><code>json_extract</code></a></li>
+<li><a href="#json_insert" id="toc-json_insert"><code>json_insert</code></a></li>
+<li><a href="#json_object" id="toc-json_object"><code>json_object</code></a></li>
+<li><a href="#json_object_keys" id="toc-json_object_keys"><code>json_object_keys</code></a></li>
+<li><a href="#json_object_text_array" id="toc-json_object_text_array"><code>json_object_text_array</code></a></li>
+<li><a href="#json_query" id="toc-json_query"><code>json_query</code></a></li>
+<li><a href="#json_remove" id="toc-json_remove"><code>json_remove</code></a></li>
+<li><a href="#json_replace" id="toc-json_replace"><code>json_replace</code></a></li>
+<li><a href="#json_set" id="toc-json_set"><code>json_set</code></a></li>
+<li><a href="#json_table" id="toc-json_table"><code>json_table</code></a></li>
+<li><a href="#json_typeof" id="toc-json_typeof"><code>json_typeof</code></a></li>
+<li><a href="#json_value" id="toc-json_value"><code>json_value</code></a></li>
+<li><a href="#jsonb_array_length" id="toc-jsonb_array_length"><code>jsonb_array_length</code></a></li>
+<li><a href="#jsonb_build_array" id="toc-jsonb_build_array"><code>jsonb_build_array</code></a></li>
+<li><a href="#jsonb_build_object" id="toc-jsonb_build_object"><code>jsonb_build_object</code></a></li>
+<li><a href="#jsonb_insert" id="toc-jsonb_insert"><code>jsonb_insert</code></a></li>
+<li><a href="#jsonb_object" id="toc-jsonb_object"><code>jsonb_object</code></a></li>
+<li><a href="#jsonb_object_keys" id="toc-jsonb_object_keys"><code>jsonb_object_keys</code></a></li>
+<li><a href="#jsonb_path_exists" id="toc-jsonb_path_exists"><code>jsonb_path_exists</code></a></li>
+<li><a href="#jsonb_path_match" id="toc-jsonb_path_match"><code>jsonb_path_match</code></a></li>
+<li><a href="#jsonb_path_query" id="toc-jsonb_path_query"><code>jsonb_path_query</code></a></li>
+<li><a href="#jsonb_path_query_array" id="toc-jsonb_path_query_array"><code>jsonb_path_query_array</code></a></li>
+<li><a href="#jsonb_path_query_first" id="toc-jsonb_path_query_first"><code>jsonb_path_query_first</code></a></li>
+<li><a href="#jsonb_pretty" id="toc-jsonb_pretty"><code>jsonb_pretty</code></a></li>
+<li><a href="#jsonb_set" id="toc-jsonb_set"><code>jsonb_set</code></a></li>
+<li><a href="#jsonb_strip_nulls" id="toc-jsonb_strip_nulls"><code>jsonb_strip_nulls</code></a></li>
+<li><a href="#jsonb_typeof" id="toc-jsonb_typeof"><code>jsonb_typeof</code></a></li>
+<li><a href="#row_to_json" id="toc-row_to_json"><code>row_to_json</code></a></li>
+<li><a href="#to_json" id="toc-to_json"><code>to_json</code></a></li>
+<li><a href="#to_jsonb" id="toc-to_jsonb"><code>to_jsonb</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_json.md -->
+<p><a id="ch-language-reference-functional-reference-sb-json-md"></a></p>
+<h1 id="sb-json-functional-reference">SB JSON Functional Reference</h1>
+<p>Generation task: <code>sb_json</code></p>
+<p>Package namespace: <code>sb.json</code></p>
+<p>JSON and JSONB construction, extraction, path, aggregation, and
+table-shaping helpers.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Constructs, inspects, modifies, and aggregates JSON values under
+descriptor-aware JSON rules.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>aggregate</td>
+<td style="text-align: right;">5</td>
+</tr>
+<tr class="even">
+<td>scalar</td>
+<td style="text-align: right;">39</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="json_agg"><code>json_agg</code></h3>
+<p><strong>Purpose:</strong> Aggregates input rows into a JSON
+array.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_agg(...)</code></li>
+<li>Syntax category: <code>aggregate_function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative aggregate arguments bound
+by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix.</li>
+<li>NULL handling: aggregate-specific NULL handling follows the SBLR
+aggregate/window runtime and row evidence fixtures.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_agg aggregate result as implemented by
+the SBLR aggregate/window runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for stable MGA snapshot input and
+deterministic parser-provided ordering where required.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+comparable or text aggregate states when applicable.</li>
+<li>Timezone: not applicable unless temporal argument descriptors
+require it.</li>
+<li>Security and authority: none unless source expressions read
+session/security/system metadata.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>aggregate arity/type/domain errors use the aggregate/window runtime
+diagnostic vector.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_agg(order_id <span class="kw">order</span> <span class="kw">by</span> order_id) <span class="kw">from</span> app.orders <span class="kw">group</span> <span class="kw">by</span> account_id;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.aggregate.json_agg</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-76b7-8855-aa3a860b130f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>aggregate</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>aggregate_function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.aggregate_json_agg.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.aggregate.aggregate_json_agg</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>aggregate_json_agg</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>aggregate_state</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC015_AGGREGATE_WINDOW_FIXTURES</code>.</p>
+<h3 id="json_agg-1"><code>json_agg</code></h3>
+<p><strong>Purpose:</strong> Aggregates input rows into a JSON
+array.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_agg(expr ORDER BY expr)</code></li>
+<li>Syntax category:
+<code>aggregate_call, aggregate_order_by_when_allowed</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>expr ORDER BY expr</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li>Descriptor rule: descriptor_authoritative aggregate arguments bound
+by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix.</li>
+<li>NULL handling: aggregate-specific NULL handling follows the SBLR
+aggregate/window runtime and row evidence fixtures.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_agg aggregate result as implemented by
+the SBLR aggregate/window runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for stable MGA snapshot input and
+deterministic parser-provided ordering where required.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+comparable or text aggregate states when applicable.</li>
+<li>Timezone: not applicable unless temporal argument descriptors
+require it.</li>
+<li>Security and authority: none unless source expressions read
+session/security/system metadata.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>aggregate arity/type/domain errors use the aggregate/window runtime
+diagnostic vector.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_agg(order_id <span class="kw">order</span> <span class="kw">by</span> order_id) <span class="kw">from</span> app.orders <span class="kw">group</span> <span class="kw">by</span> account_id;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.aggregate.json_agg</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-7021-8a00-000000000023</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>aggregate</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>aggregate_call, aggregate_order_by_when_allowed</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.aggregate_json_agg.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.aggregate.aggregate_json_agg</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>aggregate_json_agg</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>aggregate_state</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC015_AGGREGATE_WINDOW_FIXTURES</code>.</p>
+<h3 id="json_object_agg"><code>json_object_agg</code></h3>
+<p><strong>Purpose:</strong> Aggregates key/value input rows into a JSON
+object.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_object_agg(...)</code></li>
+<li>Syntax category: <code>aggregate_function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative aggregate arguments bound
+by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix.</li>
+<li>NULL handling: aggregate-specific NULL handling follows the SBLR
+aggregate/window runtime and row evidence fixtures.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_object_agg aggregate result as
+implemented by the SBLR aggregate/window runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for stable MGA snapshot input and
+deterministic parser-provided ordering where required.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+comparable or text aggregate states when applicable.</li>
+<li>Timezone: not applicable unless temporal argument descriptors
+require it.</li>
+<li>Security and authority: none unless source expressions read
+session/security/system metadata.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>aggregate arity/type/domain errors use the aggregate/window runtime
+diagnostic vector.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_object_agg(order_id, status) <span class="kw">from</span> app.orders <span class="kw">group</span> <span class="kw">by</span> account_id;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.aggregate.json_object_agg</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7d2c-8833-cde197e21a7f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>aggregate</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>aggregate_function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.aggregate_json_object_agg.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.aggregate.aggregate_json_object_agg</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>aggregate_json_object_agg</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>aggregate_state</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC015_AGGREGATE_WINDOW_FIXTURES</code>.</p>
+<h3 id="json_object_agg-1"><code>json_object_agg</code></h3>
+<p><strong>Purpose:</strong> Aggregates key/value input rows into a JSON
+object.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_object_agg(key,value ORDER BY expr)</code></li>
+<li>Syntax category:
+<code>aggregate_call, aggregate_order_by_when_allowed</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>key</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li><code>value ORDER BY expr</code>: Bound using the declared
+descriptor rules for this overload.</li>
+<li>Descriptor rule: descriptor_authoritative aggregate arguments bound
+by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix.</li>
+<li>NULL handling: aggregate-specific NULL handling follows the SBLR
+aggregate/window runtime and row evidence fixtures.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_object_agg aggregate result as
+implemented by the SBLR aggregate/window runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for stable MGA snapshot input and
+deterministic parser-provided ordering where required.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for
+comparable or text aggregate states when applicable.</li>
+<li>Timezone: not applicable unless temporal argument descriptors
+require it.</li>
+<li>Security and authority: none unless source expressions read
+session/security/system metadata.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>aggregate arity/type/domain errors use the aggregate/window runtime
+diagnostic vector.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_object_agg(order_id, status) <span class="kw">from</span> app.orders <span class="kw">group</span> <span class="kw">by</span> account_id;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.aggregate.json_object_agg</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f001-7021-8a00-000000000024</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>aggregate</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>aggregate_call, aggregate_order_by_when_allowed</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.aggregate_json_object_agg.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.aggregate.aggregate_json_object_agg</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>aggregate_json_object_agg</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>aggregate_state</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC015_AGGREGATE_WINDOW_FIXTURES</code>.</p>
+<h3 id="jsonb_agg"><code>jsonb_agg</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>agg</code> JSON helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_agg(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: zero or more scalar harness arguments.</li>
+<li>Coercion: JSON document inputs are bounded UTF-8 document scalars;
+scalar inputs are converted through the existing JSON literal conversion
+rules.</li>
+<li>NULL handling: zero supplied rows in the scalar harness returns an
+empty JSON array.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>json_document array with SQL NULL arguments represented as JSON
+null.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied JSON/scalar inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: JSON text is emitted as UTF-8 json_document with
+deterministic key/order preservation for supplied arguments.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR nosql.document
+runtime using bounded in-core JSON helpers; no parser SQL, external
+execution, storage scan, recovery shortcut, cluster provider authority,
+or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, invalid pretty flag, or malformed text-array
+json_object input refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_agg(amount) <span class="kw">as</span> result_value <span class="kw">from</span> app.orders <span class="kw">group</span> <span class="kw">by</span> account_id;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_agg</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-769f-9eac-f2622414c13f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>aggregate</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_jsonb_agg.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_jsonb_agg</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_agg</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC052-jsonb-agg</code>.</p>
+<h3 id="array_to_json"><code>array_to_json</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>array_to_json</code> and
+returns json_document array.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>array_to_json(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: one JSON array/document, array-like descriptor, or
+scalar argument.</li>
+<li>Coercion: JSON document inputs are bounded UTF-8 document scalars;
+scalar inputs are converted through the existing JSON literal conversion
+rules.</li>
+<li>NULL handling: SQL NULL input returns SQL NULL json_document.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>json_document array.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied JSON/scalar inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: JSON text is emitted as UTF-8 json_document with
+deterministic key/order preservation for supplied arguments.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR nosql.document
+runtime using bounded in-core JSON helpers; no parser SQL, external
+execution, storage scan, recovery shortcut, cluster provider authority,
+or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, invalid pretty flag, or malformed text-array
+json_object input refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> array_to_json(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.array_to_json</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b62-a578-bf3c272ee775</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_array_to_json.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_array_to_json</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>array_to_json</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC052-array-to-json</code>.</p>
+<h3 id="json_array_elements"><code>json_array_elements</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>array elements</code>
+JSON helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_array_elements(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_array_elements JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_array_elements(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.array_elements</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7766-9c2a-b4fb9b51cf4a</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_array_elements.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_array_elements</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_array_elements</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_array_elements_text"><code>json_array_elements_text</code></h3>
+<p><strong>Purpose:</strong> Performs the
+<code>array elements text</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_array_elements_text(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_array_elements_text JSON/document
+scalar result as implemented by the SBLR document expression
+runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_array_elements_text(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.array_elements_text</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-71c1-af8c-5fa2c2706299</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_array_elements_text.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_array_elements_text</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_array_elements_text</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_array_length"><code>json_array_length</code></h3>
+<p><strong>Purpose:</strong> Returns the number of elements in a JSON
+array.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_array_length(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_array_length JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_array_length(<span class="fu">cast</span>(<span class="st">&#39;[1,2,3]&#39;</span> <span class="kw">as</span> json_document)) <span class="kw">as</span> item_count;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.array_length</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019e18f0-1300-7007-9f01-000000000013</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_array_length.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_array_length</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_array_length</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_build_array"><code>json_build_array</code></h3>
+<p><strong>Purpose:</strong> Builds a JSON array from the supplied
+arguments.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_build_array(args...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>args...</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_build_array JSON/document scalar result
+as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_build_array(<span class="dv">1</span>, <span class="dv">2</span>, <span class="dv">3</span>) <span class="kw">as</span> document_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.build_array</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019e18f0-1300-7008-9f01-000000000013</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_build_array.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_build_array</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_build_array</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_build_object"><code>json_build_object</code></h3>
+<p><strong>Purpose:</strong> Builds a JSON object from alternating key
+and value arguments.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_build_object(k1,v1,...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>k1</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li><code>v1</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li><code>...</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_build_object JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_build_object(<span class="st">&#39;name&#39;</span>, <span class="st">&#39;Ada&#39;</span>, <span class="st">&#39;active&#39;</span>, <span class="kw">true</span>) <span class="kw">as</span> document_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.build_object</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019e18f0-1300-7009-9f01-000000000013</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_build_object.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_build_object</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_build_object</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_each"><code>json_each</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>each</code> JSON helper
+under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_each(document)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_each JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_each(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.each</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f4b-bc9c-e5514af42232</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_each.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_each</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_each</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_each_text"><code>json_each_text</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>each text</code> JSON
+helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_each_text(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_each_text JSON/document scalar result
+as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_each_text(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.each_text</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7781-ac0e-16252382545b</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_each_text.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_each_text</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_each_text</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_exists"><code>json_exists</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>exists</code> JSON
+helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_exists(document,jsonpath)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>jsonpath</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_exists JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_exists(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.exists</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019e18f0-1300-7001-9f01-000000000013</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_exists.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_exists</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_exists</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_extract"><code>json_extract</code></h3>
+<p><strong>Purpose:</strong> Extracts a JSON value using a
+descriptor-supported path or key.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_extract(document,path)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>path</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>JSON/path extraction.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_extract(<span class="fu">cast</span>(<span class="st">&#39;{&quot;name&quot;:&quot;Ada&quot;}&#39;</span> <span class="kw">as</span> json_document), <span class="st">&#39;$.name&#39;</span>) <span class="kw">as</span> extracted_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.extract</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-7e24-878d-0b67cc0acc2f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_extract.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_extract</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_extract</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>BIF-CONF-049c83c28e29;SBSFC013-json-extract-canonical</code>.</p>
+<h3 id="json_insert"><code>json_insert</code></h3>
+<p><strong>Purpose:</strong> Returns JSON with a value inserted where
+the path is absent.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_insert(document,path,value)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>path</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_insert JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_insert(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.insert</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-77f8-afca-320e3246bd12</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_insert.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_insert</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_insert</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_object"><code>json_object</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>object</code> JSON
+helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_object(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_object JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_object(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.object</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7069-9983-2ef3fb6e5c81</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_object.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_object</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_object</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_object_keys"><code>json_object_keys</code></h3>
+<p><strong>Purpose:</strong> Returns object keys from a JSON object
+value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_object_keys(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_object_keys JSON/document scalar result
+as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_object_keys(<span class="fu">cast</span>(<span class="st">&#39;{&quot;name&quot;:&quot;Ada&quot;}&#39;</span> <span class="kw">as</span> json_document)) <span class="kw">as</span> key_name;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.object_keys</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-70b8-8258-c6287a9048e5</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_object_keys.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_object_keys</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_object_keys</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_object_text_array"><code>json_object_text_array</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>object text array</code>
+JSON helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_object(text[][,text[]])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>text[][</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>text[]]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: one even-length text array or matching key and
+value text arrays.</li>
+<li>Coercion: JSON document inputs are bounded UTF-8 document scalars;
+scalar inputs are converted through the existing JSON literal conversion
+rules.</li>
+<li>NULL handling: SQL NULL text-array input returns SQL NULL
+json_document.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>json_document object.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied JSON/scalar inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: JSON text is emitted as UTF-8 json_document with
+deterministic key/order preservation for supplied arguments.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR nosql.document
+runtime using bounded in-core JSON helpers; no parser SQL, external
+execution, storage scan, recovery shortcut, cluster provider authority,
+or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, invalid pretty flag, or malformed text-array
+json_object input refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_object_text_array(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.object_text_array</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7ca5-b599-7ba03c7f2c8d</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_object_text_array.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_object_text_array</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_object_text_array</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC052-json-object-text-arrays</code>.</p>
+<h3 id="json_query"><code>json_query</code></h3>
+<p><strong>Purpose:</strong> Evaluates a JSON query/path expression and
+returns JSON output.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_query(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_query JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_query(<span class="fu">cast</span>(<span class="st">&#39;{&quot;items&quot;:[1,2]}&#39;</span> <span class="kw">as</span> json_document), <span class="st">&#39;$.items&#39;</span>) <span class="kw">as</span> items_json;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.query</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019e18f0-1300-7003-9f01-000000000013</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_query.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_query</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_query</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_remove"><code>json_remove</code></h3>
+<p><strong>Purpose:</strong> Returns JSON with a path removed.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_remove(document,path)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>path</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_remove JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_remove(<span class="fu">cast</span>(<span class="st">&#39;{&quot;debug&quot;:true,&quot;name&quot;:&quot;Ada&quot;}&#39;</span> <span class="kw">as</span> json_document), <span class="st">&#39;$.debug&#39;</span>) <span class="kw">as</span> cleaned_json;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.remove</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019e18f0-1300-7005-9f01-000000000013</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_remove.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_remove</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_remove</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_replace"><code>json_replace</code></h3>
+<p><strong>Purpose:</strong> Returns JSON with a value replaced where
+the path exists.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_replace(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_replace JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb22"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_replace(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.replace</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019e18f0-1300-7006-9f01-000000000013</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_replace.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_replace</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_replace</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_set"><code>json_set</code></h3>
+<p><strong>Purpose:</strong> Returns JSON with a value set at a
+path.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_set(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_set JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb23"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_set(<span class="fu">cast</span>(<span class="st">&#39;{&quot;name&quot;:&quot;Ada&quot;}&#39;</span> <span class="kw">as</span> json_document), <span class="st">&#39;$.active&#39;</span>, <span class="kw">true</span>) <span class="kw">as</span> updated_json;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.set</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019e18f0-1300-7004-9f01-000000000013</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_set.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_set</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_set</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="json_table"><code>json_table</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>table</code> JSON helper
+under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>JSON_TABLE(document,jsonpathCOLUMNS(...))</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>jsonpathCOLUMNS(...)</code>: Bound using the declared
+descriptor rules for this overload.</li>
+<li>Descriptor rule: document and SQL/JSON path descriptor.</li>
+<li>Coercion: JSON document inputs are bounded UTF-8 document scalars;
+scalar inputs are converted through the existing JSON literal conversion
+rules.</li>
+<li>NULL handling: SQL NULL document or path returns SQL NULL
+json_document.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>json_document descriptor payload with zero or more bounded column
+descriptors.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied JSON/scalar inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: JSON text is emitted as UTF-8 json_document with
+deterministic key/order preservation for supplied arguments.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR nosql.document
+runtime using bounded in-core JSON helpers; no parser SQL, external
+execution, storage scan, recovery shortcut, cluster provider authority,
+or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, invalid pretty flag, or malformed text-array
+json_object input refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb24"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_table(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.table</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7800-af0a-cb636c6fb514</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_table.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_table</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_table</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC052-json-table-document-jsonpath</code>.</p>
+<h3 id="json_typeof"><code>json_typeof</code></h3>
+<p><strong>Purpose:</strong> Returns the JSON type name for a JSON
+value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>json_typeof(value)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>value</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Coercion: use descriptor implicit cast matrix; reject ambiguous
+external dialect-profile coercion unless profile gate allows it.</li>
+<li>NULL handling: strict unless noted by function-specific
+semantics.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>JSON type classifier.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset where
+string semantics apply.</li>
+<li>Timezone: session timezone for temporal forms; not applicable
+otherwise.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/overflow/domain errors use builtin error compatibility
+matrix.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb25"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb25-1"><a href="#cb25-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_typeof(<span class="fu">cast</span>(<span class="st">&#39;{&quot;name&quot;:&quot;Ada&quot;}&#39;</span> <span class="kw">as</span> json_document)) <span class="kw">as</span> json_kind;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.typeof</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019de5fc-2400-7d02-adb4-da4a6570dc6e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_typeof.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_typeof</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_typeof</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>BIF-CONF-a427e7c340cb;SBSFC013-json-typeof-canonical</code>.</p>
+<h3 id="json_value"><code>json_value</code></h3>
+<p><strong>Purpose:</strong> Evaluates a JSON query/path expression and
+returns a scalar value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>JSON_VALUE(doc,path[PASSING...][RETURNING...][ONEMPTY][ONERROR])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>doc</code>: Bound using the declared descriptor rules for this
+overload.</li>
+<li><code>path[PASSING...][RETURNING...][ONEMPTY][ONERROR]</code>: Bound
+using the declared descriptor rules for this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative json_value JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb26"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> json_value(<span class="fu">cast</span>(<span class="st">&#39;{&quot;name&quot;:&quot;Ada&quot;}&#39;</span> <span class="kw">as</span> json_document), <span class="st">&#39;$.name&#39;</span>) <span class="kw">as</span> name_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.value</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019e18f0-1300-7002-9f01-000000000013</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_value.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_value</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>json_value</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_array_length"><code>jsonb_array_length</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>array length</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_array_length(document)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_array_length JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb27"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_array_length(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_array_length</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-789c-bede-bf3de23f5365</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_array_length.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_array_length</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_array_length</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_build_array"><code>jsonb_build_array</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>build array</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_build_array(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_build_array JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb28"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_build_array(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_build_array</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-794b-af4b-ef5ded9604c6</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_build_array.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_build_array</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_build_array</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_build_object"><code>jsonb_build_object</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>build object</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_build_object(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_build_object JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb29"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_build_object(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_build_object</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7bd9-9a2b-4e7fa4678978</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_build_object.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_build_object</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_build_object</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_insert"><code>jsonb_insert</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>insert</code> JSON helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_insert(document,path,value[,insert_after])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>path</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>insert_after]</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_insert JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb30"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb30-1"><a href="#cb30-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_insert(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_insert</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-73b2-93d0-ac97321ecaaf</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_insert.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_insert</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_insert</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_object"><code>jsonb_object</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>object</code> JSON helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_object(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_object JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb31"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_object(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_object</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-724d-a766-7e894b545539</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_object.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_object</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_object</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_object_keys"><code>jsonb_object_keys</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>object keys</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_object_keys(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_object_keys JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb32"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_object_keys(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_object_keys</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-77d0-b41e-8377357107cb</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_object_keys.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_object_keys</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_object_keys</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_path_exists"><code>jsonb_path_exists</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>path exists</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_path_exists(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_path_exists JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb33"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_path_exists(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_path_exists</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7ea2-9bcc-674a1eb9a59b</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_path_exists.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_path_exists</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_path_exists</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_path_match"><code>jsonb_path_match</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>path match</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_path_match(document,jsonpath[,vars])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>jsonpath[</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>vars]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_path_match JSON/document scalar result
+as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb34"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb34-1"><a href="#cb34-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_path_match(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_path_match</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-742b-a0b9-608e0e2e5c90</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_path_match.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_path_match</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_path_match</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_path_query"><code>jsonb_path_query</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>path query</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_path_query(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_path_query JSON/document scalar result
+as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb35"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb35-1"><a href="#cb35-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_path_query(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_path_query</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f6b-afdc-960616319c88</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_path_query.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_path_query</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_path_query</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_path_query_array"><code>jsonb_path_query_array</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>path query array</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_path_query_array(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_path_query_array JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb36"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb36-1"><a href="#cb36-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_path_query_array(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_path_query_array</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7525-830b-255572ed5a0f</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_path_query_array.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_path_query_array</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_path_query_array</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_path_query_first"><code>jsonb_path_query_first</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>path query first</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_path_query_first(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_path_query_first JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb37"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb37-1"><a href="#cb37-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_path_query_first(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_path_query_first</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7432-8ac5-75c7e22f4d15</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_path_query_first.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_path_query_first</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_path_query_first</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_pretty"><code>jsonb_pretty</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>pretty</code> JSON helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_pretty(document)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_pretty JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb38"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb38-1"><a href="#cb38-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_pretty(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_pretty</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b1b-b1d7-013acfdcb345</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_pretty.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_pretty</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_pretty</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_set"><code>jsonb_set</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>set</code> JSON helper under descriptor-aware JSON rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_set(document,path,value[,create_missing])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>document</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>path</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>value[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>create_missing]</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_set JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb39"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb39-1"><a href="#cb39-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_set(value_1, value_2, value_3) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_set</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7655-ae18-a53f11c240f5</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_set.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_set</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_set</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_strip_nulls"><code>jsonb_strip_nulls</code></h3>
+<p><strong>Purpose:</strong> Performs the JSONB form of the
+<code>strip nulls</code> JSON helper under descriptor-aware JSON
+rules.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_strip_nulls(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_strip_nulls JSON/document scalar
+result as implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb40"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb40-1"><a href="#cb40-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_strip_nulls(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_strip_nulls</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-72dd-bab3-ac7237116ff6</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_strip_nulls.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_strip_nulls</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_strip_nulls</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="jsonb_typeof"><code>jsonb_typeof</code></h3>
+<p><strong>Purpose:</strong> Returns the JSONB type name for a JSON
+value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>jsonb_typeof(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative jsonb_typeof JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb41"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb41-1"><a href="#cb41-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> jsonb_typeof(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.jsonb_typeof</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019e18f0-1300-7010-9f01-000000000013</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.jsonb_typeof.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.jsonb_typeof</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>jsonb_typeof</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="row_to_json"><code>row_to_json</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>row_to_json</code> and
+returns json_document object, optionally pretty rendered.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>row_to_json(row[,pretty])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>row[</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>pretty]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: row/object argument plus optional
+boolean-compatible pretty flag.</li>
+<li>Coercion: JSON document inputs are bounded UTF-8 document scalars;
+scalar inputs are converted through the existing JSON literal conversion
+rules.</li>
+<li>NULL handling: SQL NULL row input returns SQL NULL json_document;
+SQL NULL pretty flag refuses as invalid input.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>json_document object, optionally pretty rendered.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic for supplied JSON/scalar inputs.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: JSON text is emitted as UTF-8 json_document with
+deterministic key/order preservation for supplied arguments.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: executes inside the SBLR nosql.document
+runtime using bounded in-core JSON helpers; no parser SQL, external
+execution, storage scan, recovery shortcut, cluster provider authority,
+or external service is used.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, invalid pretty flag, or malformed text-array
+json_object input refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb42"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb42-1"><a href="#cb42-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> row_to_json(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.row_to_json</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b93-87c6-0a817949054a</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.json_row_to_json.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.json_row_to_json</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>row_to_json</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence: <code>SBSFC052-row-to-json-pretty</code>.</p>
+<h3 id="to_json"><code>to_json</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>to_json</code> and returns
+descriptor-authoritative to_json JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>to_json(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative to_json JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb43"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb43-1"><a href="#cb43-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> to_json(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.to_json</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-771d-b937-1fafd31b87c0</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.to_json.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.to_json</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>to_json</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+<h3 id="to_jsonb"><code>to_jsonb</code></h3>
+<p><strong>Purpose:</strong> Evaluates <code>to_jsonb</code> and returns
+descriptor-authoritative to_jsonb JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>to_jsonb(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: descriptor_authoritative JSON/document arguments
+bound by the parser/lowering route.</li>
+<li>Coercion: descriptor implicit cast matrix for JSON document, JSON
+path, text, boolean, and scalar value arguments.</li>
+<li>NULL handling: strict unless JSON/document function-specific
+semantics or the conformance fixtures row evidence defines an exact
+diagnostic/null result.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>descriptor-authoritative to_jsonb JSON/document scalar result as
+implemented by the SBLR document expression runtime.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: foldable only when volatility is immutable and all
+arguments are constants with stable descriptors.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: uses input descriptor collation/charset for JSON
+path/text values where character semantics apply.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: none unless session/security/system metadata
+is read.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>arity/type/path/document-format errors use builtin error
+compatibility matrix and the conformance fixtures exact diagnostic row
+evidence.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb44"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb44-1"><a href="#cb44-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> to_jsonb(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.json.to_jsonb</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7d72-91b3-6cc44f83bc70</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.to_jsonb.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.to_jsonb</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>to_jsonb</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>True</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>True</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>cpu_scalar</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC013_DOCUMENT_COLLECTION_FIXTURES</code>.</p>
+</body>
+</html>

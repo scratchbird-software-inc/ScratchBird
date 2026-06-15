@@ -96,7 +96,7 @@ Comparable descriptors include numeric descriptors with admitted conversions, te
 | `date - date` | compatible dates | day-count interval descriptor. | Incompatible calendar policy. |
 | temporal comparison | compatible temporal descriptors | `boolean`. | Incompatible timezone, precision, or calendar policy. |
 
-Portable scripts should use explicit casts when mixing `timestamp` and `timestamp with time zone`.
+Portable scripts should use explicit casts when mixing `timestamp` and `timestamptz`.
 
 ## JSON And Document Operators
 

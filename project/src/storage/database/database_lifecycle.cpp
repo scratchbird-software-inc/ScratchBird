@@ -64,6 +64,8 @@ using scratchbird::core::catalog::EncodeCatalogTypedRecord;
 using scratchbird::core::catalog::EvaluateClusterCatalogCompatibility;
 using scratchbird::core::catalog::kBootstrapCatalogTransactionId;
 using scratchbird::core::catalog::kClusterUserHomePolicyRoot;
+using scratchbird::core::catalog::kLocalAppSchemaPath;
+using scratchbird::core::catalog::kLocalClusterSchemaPath;
 using scratchbird::core::catalog::kLocalEmulatedSchemaPath;
 using scratchbird::core::catalog::kLocalRemoteSchemaPath;
 using scratchbird::core::catalog::kLocalSysAgentsSchemaPath;
@@ -2126,10 +2128,12 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
   const auto sys_information_schema_synonym_object = GenerateEngineIdentityV7(UuidKind::object, config.creation_unix_epoch_millis + 10035);
   const auto sys_catalog_readable_object = GenerateEngineIdentityV7(UuidKind::object, config.creation_unix_epoch_millis + 10036);
   const auto sys_diagnostics_object = GenerateEngineIdentityV7(UuidKind::object, config.creation_unix_epoch_millis + 10037);
+  const auto cluster_object = GenerateEngineIdentityV7(UuidKind::object, config.creation_unix_epoch_millis + 10040);
   const auto users_object = GenerateEngineIdentityV7(UuidKind::object, config.creation_unix_epoch_millis + 10050);
   const auto users_public_object = GenerateEngineIdentityV7(UuidKind::object, config.creation_unix_epoch_millis + 10051);
   const auto remote_object = GenerateEngineIdentityV7(UuidKind::object, config.creation_unix_epoch_millis + 10060);
   const auto emulated_object = GenerateEngineIdentityV7(UuidKind::object, config.creation_unix_epoch_millis + 10070);
+  const auto app_object = GenerateEngineIdentityV7(UuidKind::object, config.creation_unix_epoch_millis + 10080);
   if (!database_object.ok()) { return CatalogRowsBuildError(database_object.status, database_object.diagnostic); }
   if (!filespace_object.ok()) { return CatalogRowsBuildError(filespace_object.status, filespace_object.diagnostic); }
   if (!sys_object.ok()) { return CatalogRowsBuildError(sys_object.status, sys_object.diagnostic); }
@@ -2150,10 +2154,12 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
   if (!sys_information_schema_synonym_object.ok()) { return CatalogRowsBuildError(sys_information_schema_synonym_object.status, sys_information_schema_synonym_object.diagnostic); }
   if (!sys_catalog_readable_object.ok()) { return CatalogRowsBuildError(sys_catalog_readable_object.status, sys_catalog_readable_object.diagnostic); }
   if (!sys_diagnostics_object.ok()) { return CatalogRowsBuildError(sys_diagnostics_object.status, sys_diagnostics_object.diagnostic); }
+  if (!cluster_object.ok()) { return CatalogRowsBuildError(cluster_object.status, cluster_object.diagnostic); }
   if (!users_object.ok()) { return CatalogRowsBuildError(users_object.status, users_object.diagnostic); }
   if (!users_public_object.ok()) { return CatalogRowsBuildError(users_public_object.status, users_public_object.diagnostic); }
   if (!remote_object.ok()) { return CatalogRowsBuildError(remote_object.status, remote_object.diagnostic); }
   if (!emulated_object.ok()) { return CatalogRowsBuildError(emulated_object.status, emulated_object.diagnostic); }
+  if (!app_object.ok()) { return CatalogRowsBuildError(app_object.status, app_object.diagnostic); }
 
   const std::string database_payload = KeyValuePayload({{"database_uuid", scratchbird::core::uuid::UuidToString(config.database_uuid.value)},
                                                         {"database_header_format_major", std::to_string(scratchbird::storage::disk::kScratchBirdDatabaseFormatMajor)},
@@ -2224,7 +2230,7 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
     const char* name;
     bool root_schema = false;
   };
-  const std::array<BootstrapSchema, 21> schemas = {{
+  const std::array<BootstrapSchema, 23> schemas = {{
       {sys_object.value, database_object.value, kLocalSysSchemaPath, "sys", true},
       {sys_catalog_object.value, sys_object.value, kLocalSysCatalogSchemaPath, "catalog", false},
       {sys_metrics_object.value, sys_object.value, kLocalSysMetricsSchemaPath, "metrics", false},
@@ -2242,10 +2248,12 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
       {sys_information_object.value, sys_object.value, kLocalSysInformationTrueSchemaPath, "information", false},
       {sys_catalog_readable_object.value, sys_object.value, kLocalSysCatalogReadableSchemaPath, "catalog_readable", false},
       {sys_diagnostics_object.value, sys_object.value, kLocalSysDiagnosticsSchemaPath, "diagnostics", false},
+      {cluster_object.value, database_object.value, kLocalClusterSchemaPath, "cluster", true},
       {users_object.value, database_object.value, kLocalUsersSchemaPath, "users", true},
       {users_public_object.value, users_object.value, kLocalUsersPublicSchemaPath, "public", false},
-      {remote_object.value, database_object.value, kLocalRemoteSchemaPath, "remote", true},
       {emulated_object.value, database_object.value, kLocalEmulatedSchemaPath, "emulated", true},
+      {remote_object.value, database_object.value, kLocalRemoteSchemaPath, "remote", true},
+      {app_object.value, database_object.value, kLocalAppSchemaPath, "app", true},
   }};
   u64 schema_seed = config.creation_unix_epoch_millis + 11100;
   for (const auto& schema : schemas) {

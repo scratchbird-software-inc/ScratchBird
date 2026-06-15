@@ -2,7 +2,9 @@
 
 ## Purpose
 
-ScratchBird separates identity, authentication, authorization, schema visibility, and policy admission. A session is not admitted simply because a client reaches a listener, IPC endpoint, or embedded API.
+After reading this page you will understand why ScratchBird treats identity, authentication, and authorization as distinct stages — and why that separation matters for both security and flexibility.
+
+Many systems conflate these ideas: if a client can reach the server and supply a password, it is "in." ScratchBird draws sharper lines. Reaching a listener does not establish identity. Establishing identity does not guarantee authorization. Being authorized for some objects does not mean access to all objects. Each stage is a distinct check, and failure at any stage returns a controlled diagnostic rather than silently reducing access.
 
 This page explains the high-level model. Exact providers, commands, and policy options depend on the current build and configuration.
 
@@ -22,27 +24,9 @@ This page explains the high-level model. Exact providers, commands, and policy o
 
 ## Connection Flow
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Entry as Entry point
-    participant Auth as Authentication source
-    participant Engine as SBcore
-    participant Catalog
-    participant Policy
+![diagram](./identity_authentication_and_authorization-1.svg)
 
-    Client->>Entry: connect
-    Entry->>Auth: authenticate identity
-    Auth-->>Entry: identity result
-    Entry->>Engine: request session
-    Engine->>Catalog: load identity, grants, roots, descriptors
-    Engine->>Policy: materialize policy context
-    Policy-->>Engine: admitted or denied
-    Engine-->>Entry: session result or message vector
-    Entry-->>Client: connected or refused
-```
-
-Authentication proves who the session claims to be. Authorization decides what that identity may do after it is known.
+Authentication proves who the session claims to be. Authorization decides what that identity may do after it is known. Notice that the engine loads the identity's grants, schema roots (the branches of the schema tree visible to this identity), and policy context before deciding whether to open the session — authorization is materialized at session start, not looked up on each individual request.
 
 ## Identity
 
@@ -106,21 +90,7 @@ Authorization is materialized before engine execution. A parser can present the 
 
 Authorization includes namespace scope.
 
-```mermaid
-flowchart TB
-    Root[/Database root/]
-    Admin[Authorized administrative view]
-    Workarea[Client workarea root]
-    CatalogProjection[Catalog projection]
-    UserObjects[Visible user objects]
-    Outside[Objects outside sandbox]
-
-    Root --> Admin
-    Root --> Workarea
-    Workarea --> CatalogProjection
-    Workarea --> UserObjects
-    Root --> Outside
-```
+![diagram](./identity_authentication_and_authorization-2.svg)
 
 A native administrative SBsql session may see broad parts of the schema tree when authorized. A compatibility parser session normally sees its assigned workarea as the root. The client should not be able to name arbitrary objects outside that root.
 
@@ -159,23 +129,9 @@ The authenticated identity and engine authorization still decide whether the res
 
 ## Message Vectors
 
-ScratchBird uses message-vector diagnostics to represent failures and refusals.
+ScratchBird uses message-vector diagnostics to represent failures and refusals. A message vector (the structured diagnostic carrier that SBcore produces when something is refused or fails) should tell you which stage denied the request — authentication, session setup, object visibility, privilege, policy, or sandbox. This matters because the remediation differs: a missing privilege requires a grant, while a sandbox denial requires checking the session's visible root.
 
-Common identity and authorization diagnostics include:
-
-- authentication failed;
-- identity provider unavailable;
-- session denied;
-- parser route denied;
-- object not visible;
-- privilege missing;
-- policy denied;
-- sandbox denied;
-- protected material unavailable;
-- external access denied;
-- diagnostic redacted.
-
-The exact rendering can differ by parser or tool, but the refusal should be controlled.
+Common identity and authorization diagnostics include: authentication failed, identity provider unavailable, session denied, parser route denied, object not visible, privilege missing, policy denied, sandbox denied, protected material unavailable, external access denied, and diagnostic redacted. The exact rendering can differ by parser or tool, but the refusal should be controlled.
 
 ## Operational Guidance
 

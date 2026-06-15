@@ -38,13 +38,13 @@ These classes are intentionally coarse at the top level. Client tools should dis
 ```ebnf
 refusal_statement ::=
       unsupported_statement
-    | denied_statement
+    | refusal_stmt
     | unlicensed_statement ;
 ```
 
 ```ebnf
 unsupported_statement ::= unsupported_token_sequence ;
-denied_statement      ::= denied_token_sequence ;
+refusal_stmt          ::= denied_token_sequence ;
 unlicensed_statement  ::= unlicensed_token_sequence ;
 ```
 
@@ -54,19 +54,7 @@ The EBNF names above describe the diagnostic surface. They are not commands that
 
 SBsql admission is layered. A later stage may still refuse a request even when every earlier stage succeeded.
 
-```mermaid
-flowchart TD
-  A[Parse SBsql text] --> B[Bind names, parameters, descriptors, session, and transaction context]
-  B --> C[Classify statement family and SBLR operation]
-  C --> D[Check build profile, feature flags, and route availability]
-  D --> E[Check sandbox root, object UUIDs, grants, roles, policy, masks, and RLS]
-  E --> F[Check stream, bridge, file, provider, recovery, and resource gates]
-  F --> G[Execute through engine-owned authority]
-  D -- not available --> U[unsupported refusal]
-  E -- not authorized --> X[denied refusal]
-  F -- product profile blocks route --> L[unlicensed refusal]
-  F -- safety or recovery blocks route --> Y[denied refusal]
-```
+![diagram](./refusal_vectors-1.svg)
 
 The exact stage is reported in the refusal payload so tools can separate a missing feature from a security decision or a recovery fence.
 
@@ -234,7 +222,7 @@ Example display:
 
 ```text
 class: denied
-code: SB.SQL.SANDBOX.OUT_OF_SCOPE
+code: UDR.BRIDGE.SANDBOX_DENIED
 stage: authorization
 operation: query.relational.select
 message: object is outside the session schema root
@@ -246,7 +234,7 @@ Example display for an unavailable route:
 
 ```text
 class: unsupported
-code: SB.SQL.STREAM.FORMAT_UNSUPPORTED
+code: UDR.BRIDGE.UNSUPPORTED
 stage: admission
 operation: bulk.import
 message: stream format is not admitted for this target
@@ -295,11 +283,11 @@ Refusal behavior is part of the testable public contract. Proof suites should ve
 | --- | --- | --- | --- | --- |
 | `refusal_statement` | grammar production | diagnostic | yes | `sblr.diagnostic.refusal.v3` |
 | `unsupported_statement` | grammar production | diagnostic | yes | `sblr.diagnostic.refusal.v3` |
-| `denied_statement` | grammar production | diagnostic | yes | `sblr.diagnostic.refusal.v3` |
+| `refusal_stmt` | grammar production | diagnostic | yes | `sblr.diagnostic.refusal.v3` |
 | `unlicensed_statement` | grammar production | diagnostic | yes | `sblr.diagnostic.refusal.v3` |
 | `cluster_gated_statement` | statement family | cluster-gated | yes | `sblr.diagnostic.refusal.v3` when refused |
 | `copy_statement` | statement family | stream | yes | `sblr.bulk.import.v3` or `sblr.bulk.export.v3` when admitted |
-| `backup_statement` | statement family | archive | yes | `sblr.diagnostic.refusal.v3` when refused |
-| `restore_statement` | statement family | archive | yes | `sblr.diagnostic.refusal.v3` when refused |
-| `grant_statement` | statement family | security | yes | `sblr.catalog.mutation.v3` when admitted |
-| `policy_statement` | statement family | security | yes | `sblr.catalog.mutation.v3` when admitted |
+| `backup_stmt` | statement family | archive | yes | `sblr.diagnostic.refusal.v3` when refused |
+| `restore_stmt` | statement family | archive | yes | `sblr.diagnostic.refusal.v3` when refused |
+| `grant_stmt` | statement family | security | yes | `sblr.catalog.mutation.v3` when admitted |
+| `policy_stmt` | statement family | security | yes | `sblr.catalog.mutation.v3` when admitted |

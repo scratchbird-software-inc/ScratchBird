@@ -10,11 +10,13 @@ Generation task: `core_paradigms_parser_to_sblr`
 
 ## Purpose
 
-SBsql statements are not executed directly by the engine. A parser session
-turns source text into a bound operation, lowers that operation into an
-`SBLRExecutionEnvelope`, and submits the envelope to the server admission
-boundary. The engine then validates the envelope and executes the operation by
-SBLR operation identity.
+When you write an SBsql statement, the engine never runs the text you typed.
+Instead, a parser session translates that text through a defined pipeline —
+tokenize, bind names to UUID catalog objects, lower the result into a structured
+`SBLRExecutionEnvelope` — and only then submits the envelope to the server for
+admission and execution. SBLR (ScratchBird Logical Representation) is the
+binary operation language the engine understands; SBsql text is the human-facing
+layer on top of it.
 
 This separation is a core ScratchBird rule:
 
@@ -35,19 +37,7 @@ of continuing with guessed behavior.
 
 ## Pipeline At A Glance
 
-```mermaid
-flowchart TD
-    A[Client submits SBsql text] --> B[Tokenize using the session profile]
-    B --> C[Build a lossless concrete syntax tree]
-    C --> D[Build and normalize the statement AST]
-    D --> E[Bind names, parameters, descriptors, and scope]
-    E --> F[Create a UUID-bound operation tree]
-    F --> G[Lower to SBLRExecutionEnvelope v3]
-    G --> H[Server admission and envelope revalidation]
-    H --> I[Authorization, policy, sandbox, and transaction checks]
-    I --> J[Engine SBLR dispatch]
-    J --> K[ExecutionResultEnvelope and message vector]
-```
+![diagram](./parser_to_sblr_pipeline-1.svg)
 
 The same pipeline applies whether the client uses an embedded engine path, a
 local IPC server, or a network path through the manager, listener, parser, IPC
@@ -358,17 +348,17 @@ statement               ::= native_statement
 ```
 
 ```ebnf
-native_statement        ::= query_statement
-                          | dml_statement
-                          | ddl_statement
+native_statement        ::= query_dml_stmt
+                          | dml
+                          | ddl_catalog
                           | transaction_statement
-                          | security_statement
-                          | policy_statement
+                          | dcl_security_stmt
+                          | policy_stmt
                           | observability_statement
-                          | management_statement
-                          | acceleration_statement
-                          | archive_replication_migration_statement
-                          | nosql_statement
+                          | management_stmt
+                          | acceleration_stmt
+                          | archive_replication_stmt
+                          | multi_model_op_stmt
                           | cluster_gated_statement ;
 ```
 
@@ -408,16 +398,16 @@ execution_result        ::= command_completion
 | `script` | Grammar production | Defines batch and statement boundaries. | No execution until each statement is parsed and bound. |
 | `statement` | Grammar production | Selects native execution or explicit refusal. | Operation identity or refusal vector. |
 | `qualified_name` | Grammar production | Supplies user-layer object reference text. | UUID-bound object reference after binding. |
-| `uuid_ref` | Grammar production | Supplies explicit identity evidence. | Object class, visibility, and authorization still rechecked. |
+| `uuid_reference` | Grammar production | Supplies explicit identity evidence. | Object class, visibility, and authorization still rechecked. |
 | `parameter_marker` | Grammar production | Names a client-supplied value slot. | Parameter descriptor entry. |
 | `literal` | Grammar production | Supplies a source literal. | Typed value descriptor and canonical value representation. |
 | `expression` | Grammar production | Builds a scalar, row, document, graph, vector, predicate, or procedural expression. | Descriptor-bound expression SBLR. |
-| `query_statement` | Statement family | Requests a rowset, scalar, cursor, or stream. | Query operation envelope and result descriptor. |
-| `dml_statement` | Statement family | Requests MGA-governed insert, update, delete, merge, upsert, load, or return rows. | DML operation envelope and affected-row/result contract. |
-| `ddl_statement` | Statement family | Requests a catalog mutation or object lifecycle command. | Catalog operation envelope and command completion. |
+| `query_dml_stmt` | Statement family | Requests a rowset, scalar, cursor, or stream. | Query operation envelope and result descriptor. |
+| `dml` | Statement family | Requests MGA-governed insert, update, delete, merge, upsert, load, or return rows. | DML operation envelope and affected-row/result contract. |
+| `ddl_catalog` | Statement family | Requests a catalog mutation or object lifecycle command. | Catalog operation envelope and command completion. |
 | `transaction_statement` | Statement family | Requests begin, commit, rollback, savepoint, retain, chain, or transaction setting. | MGA transaction operation and finality result. |
-| `security_statement` | Statement family | Requests identity, role, grant, revoke, policy, masking, or protected-material operation. | Security operation envelope and authorization result. |
-| `management_statement` | Statement family | Requests diagnostic, health, configuration, support, agent, or operational action. | Management operation envelope or explicit refusal. |
+| `dcl_security_stmt` | Statement family | Requests identity, role, grant, revoke, policy, masking, or protected-material operation. | Security operation envelope and authorization result. |
+| `management_stmt` | Statement family | Requests diagnostic, health, configuration, support, agent, or operational action. | Management operation envelope or explicit refusal. |
 | `refusal_statement` | Statement family | Recognizes a command shape that must not execute. | Explicit unsupported, denied, unlicensed, or unavailable message vector. |
 
 ## Verification Checklist

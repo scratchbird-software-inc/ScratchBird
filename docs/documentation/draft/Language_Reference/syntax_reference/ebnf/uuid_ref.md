@@ -8,22 +8,18 @@ Generation task: `ebnf_uuid_ref`
 ## Production
 
 ```ebnf
-uuid_ref                ::= "UUID" string_literal ;
+uuid_reference          ::= "UUID" string_literal ;
 ```
 
 ## Meaning
 
-`uuid_ref` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`uuid_reference` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 
 | Parent Production |
 | --- |
 | object_ref |
-| schema_ref |
-| principal_ref |
-| policy_ref |
-| package_ref |
 | literal |
 
 ## Child Productions

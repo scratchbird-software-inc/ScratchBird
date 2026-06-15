@@ -8,18 +8,18 @@ Generation task: `ebnf_set_operator`
 ## Production
 
 ```ebnf
-set_operator            ::= "UNION" "ALL"? | "INTERSECT" "ALL"? | "EXCEPT" "ALL"? ;
+set_op                  ::= "UNION" "ALL"? | "INTERSECT" "ALL"? | "EXCEPT" "ALL"? ;
 ```
 
 ## Meaning
 
-`set_operator` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
+`set_op` is an SBsql grammar production. It is part of contextual parsing only; it does not by itself authorize execution. After parsing, the surrounding statement or expression must bind to descriptors, UUID catalog objects, security context, transaction context, and an admitted SBLR operation family.
 
 ## Used By
 
 | Parent Production |
 | --- |
-| set_query |
+| query_expression |
 
 ## Child Productions
 

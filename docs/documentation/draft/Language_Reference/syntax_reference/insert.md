@@ -32,13 +32,10 @@ insert_column ::=
     | path_target ;
 
 insert_source ::=
-      values_insert_source
-    | query_insert_source
-    | default_values_source
+      VALUES row_constructor ("," row_constructor)*
+    | query_dml_stmt
+    | DEFAULT VALUES
     | multimodel_insert_source ;
-
-values_insert_source ::=
-    VALUES row_constructor ("," row_constructor)* ;
 
 row_constructor ::=
       "(" insert_value ("," insert_value)* ")"
@@ -47,12 +44,6 @@ row_constructor ::=
 insert_value ::=
       expression
     | DEFAULT ;
-
-query_insert_source ::=
-    query_statement ;
-
-default_values_source ::=
-    DEFAULT VALUES ;
 
 returning_clause ::=
     RETURNING projection_list ;

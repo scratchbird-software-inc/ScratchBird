@@ -34,6 +34,7 @@ public record ScratchBirdCatalogObjectReference(
     @Nullable String parentUuid,
     @NotNull String objectType,
     @NotNull String fullPath,
+    @Nullable String authorityPath,
     @NotNull String objectName,
     boolean catalogBacked,
     boolean clientOnly
@@ -53,6 +54,50 @@ public record ScratchBirdCatalogObjectReference(
             parentUuid,
             "SCHEMA",
             fullPath,
+            fullPath,
+            objectName,
+            true,
+            false);
+    }
+
+    @NotNull
+    public static ScratchBirdCatalogObjectReference schema(
+        @Nullable String databaseUuid,
+        @Nullable String objectUuid,
+        @Nullable String parentUuid,
+        @NotNull String fullPath,
+        @Nullable String authorityPath,
+        @NotNull String objectName
+    ) {
+        return new ScratchBirdCatalogObjectReference(
+            databaseUuid,
+            objectUuid,
+            parentUuid,
+            "SCHEMA",
+            fullPath,
+            CommonUtils.isEmpty(authorityPath) ? fullPath : authorityPath,
+            objectName,
+            true,
+            false);
+    }
+
+    @NotNull
+    public static ScratchBirdCatalogObjectReference catalogObject(
+        @Nullable String databaseUuid,
+        @Nullable String objectUuid,
+        @Nullable String parentUuid,
+        @NotNull String objectType,
+        @NotNull String fullPath,
+        @Nullable String authorityPath,
+        @NotNull String objectName
+    ) {
+        return new ScratchBirdCatalogObjectReference(
+            databaseUuid,
+            objectUuid,
+            parentUuid,
+            objectType,
+            fullPath,
+            CommonUtils.isEmpty(authorityPath) ? fullPath : authorityPath,
             objectName,
             true,
             false);
@@ -71,6 +116,7 @@ public record ScratchBirdCatalogObjectReference(
             null,
             objectType,
             fullPath,
+            fullPath,
             leafName(fullPath),
             false,
             true);
@@ -84,6 +130,7 @@ public record ScratchBirdCatalogObjectReference(
             resolvedParentUuid,
             objectType,
             fullPath,
+            authorityPath,
             objectName,
             catalogBacked,
             clientOnly);
@@ -91,6 +138,11 @@ public record ScratchBirdCatalogObjectReference(
 
     public boolean hasCatalogIdentity() {
         return CommonUtils.isNotEmpty(objectUuid);
+    }
+
+    @NotNull
+    public String effectiveAuthorityPath() {
+        return CommonUtils.isEmpty(authorityPath) ? fullPath : authorityPath;
     }
 
     @NotNull

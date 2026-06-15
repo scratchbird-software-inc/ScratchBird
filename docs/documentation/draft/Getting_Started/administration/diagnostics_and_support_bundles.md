@@ -2,9 +2,9 @@
 
 ## Purpose
 
-Diagnostics explain what ScratchBird did, refused, could not complete, or could not safely determine. Support bundles collect diagnostic evidence for review while applying redaction policy.
+Good diagnostics make ScratchBird usable under real conditions: they tell you what the system did, refused, could not complete, or could not safely determine. A controlled refusal with a clear explanation is better than a confusing crash or silent success. Support bundles collect diagnostic evidence for review while keeping sensitive material out of places it should not go.
 
-This page explains the expected administrative model. It does not claim that every component emits complete evidence in every build.
+This page explains the expected administrative model for diagnostics and support bundles. It does not claim that every component emits complete evidence in every build. For detailed procedures on configuring diagnostic output and generating support bundles, see the [Operations Administration diagnostics chapter](../../Operations_Administration/).
 
 ## Diagnostic Goals
 
@@ -33,9 +33,9 @@ Diagnostics are part of the product surface. A controlled refusal is better than
 
 ## Message Vectors
 
-ScratchBird uses message vectors for structured diagnostics. A message vector should let tools distinguish between failure categories rather than parsing only human text.
+ScratchBird uses message vectors for structured diagnostics. A message vector is a structured diagnostic record that lets tools distinguish between failure categories rather than parsing only human-readable text. That distinction matters when you are trying to write automation that responds differently to "authorization denied" versus "database cannot open."
 
-Common message-vector categories include:
+Common message vector categories include:
 
 - invalid syntax;
 - invalid token;
@@ -60,27 +60,9 @@ The exact rendering can differ by parser or tool. The underlying category should
 
 ## Diagnostic Flow
 
-```mermaid
-flowchart TD
-    Event[Request, startup, shutdown, or background event]
-    Component[Component creates diagnostic]
-    Vector[Message vector]
-    Redact[Apply redaction policy]
-    Log[Write log or event]
-    Client[Return client diagnostic]
-    Bundle[Optional support bundle]
-    Review[Operator review]
+The flow below shows how a diagnostic moves from the event that triggered it through to logging, client delivery, and optional support bundle inclusion. Redaction must happen before sensitive material is shared outside the trusted boundary.
 
-    Event --> Component
-    Component --> Vector
-    Vector --> Redact
-    Redact --> Log
-    Redact --> Client
-    Redact --> Bundle
-    Bundle --> Review
-```
-
-Redaction must happen before sensitive diagnostic material is shared outside the trusted boundary.
+![diagram](./diagnostics_and_support_bundles-1.svg)
 
 ## What To Include In Diagnostics
 
@@ -97,7 +79,7 @@ Where policy allows, useful diagnostics include:
 - schema root or workarea reference;
 - transaction state;
 - object name and object UUID where safe;
-- message-vector class;
+- message vector class;
 - refusal reason;
 - next recommended action;
 - correlation identifier;
@@ -107,7 +89,7 @@ Do not include raw secrets, credentials, protected values, or unnecessary local 
 
 ## Support Bundle Purpose
 
-A support bundle is a controlled diagnostic package. It should help an operator or support engineer understand a problem without requiring unrestricted access to the environment.
+A support bundle is a controlled diagnostic package that helps an operator or support engineer understand a problem without requiring unrestricted access to the environment. It is not a raw log dump — it should be scoped to the problem and reviewed before being shared.
 
 A support bundle may include:
 
@@ -128,55 +110,19 @@ It should not include raw secrets or protected material.
 
 ## Support Bundle Flow
 
-```mermaid
-flowchart TD
-    Problem[Problem or support request]
-    Scope[Select support scope]
-    Collect[Collect evidence]
-    Redact[Redact protected material]
-    Validate[Validate bundle contents]
-    Review[Operator review]
-    Share[Share if policy allows]
-    Retain[Retain or delete according to policy]
+An operator should review the bundle before sharing it. Generating a bundle and sending it immediately — without review — risks disclosing information that should have been redacted.
 
-    Problem --> Scope
-    Scope --> Collect
-    Collect --> Redact
-    Redact --> Validate
-    Validate --> Review
-    Review --> Share
-    Review --> Retain
-```
-
-An operator should review the bundle before sharing it.
+![diagram](./diagnostics_and_support_bundles-2.svg)
 
 ## Redaction Policy
 
-Redaction should protect:
+Redaction should protect passwords, keys, tokens, raw protected material, unwrapped secret values, unnecessary local paths, credentials in connection strings, private user data not needed for diagnosis, and sensitive policy details where disclosure would create risk.
 
-- passwords;
-- keys;
-- tokens;
-- raw protected material;
-- unwrapped secret values;
-- unnecessary local paths;
-- credentials in connection strings;
-- private user data not needed for diagnosis;
-- sensitive policy details where disclosure would create risk.
-
-Redaction can preserve safe evidence such as:
-
-- hashes;
-- UUIDs where policy allows;
-- component names;
-- version identifiers;
-- timestamps;
-- message-vector classes;
-- object names where safe;
-- redacted route names;
-- counts and summaries.
+Redaction can preserve safe evidence such as hashes, UUIDs where policy allows, component names, version identifiers, timestamps, message vector classes, object names where safe, redacted route names, and counts and summaries.
 
 ## Diagnostics By Area
+
+When investigating a problem, collect diagnostics from the relevant area first. This table maps areas to the most useful evidence.
 
 | Area | Useful Evidence |
 | --- | --- |
@@ -191,6 +137,8 @@ Redaction can preserve safe evidence such as:
 | Data movement | Source, target, ordering or record identity summary, quarantine or refusal state. |
 
 ## Refusal Examples
+
+These examples show how a good diagnostic distinguishes between different failure causes, which matters for routing the fix to the right person.
 
 | User-Facing Situation | Diagnostic Should Distinguish |
 | --- | --- |
@@ -212,7 +160,7 @@ Before sharing a support bundle:
 4. Confirm protected material is redacted.
 5. Confirm local paths are removed or minimized.
 6. Confirm user data is not included unless required and authorized.
-7. Confirm the message-vector classes are preserved.
+7. Confirm the message vector classes are preserved.
 8. Confirm timestamps and component names are present.
 9. Confirm the bundle can be retained or deleted according to policy.
 
@@ -229,6 +177,8 @@ This page does not claim:
 Verify support-bundle behavior with the current build before using it in a real support process.
 
 ## Where To Go Next
+
+For detailed diagnostic configuration procedures, see the [Operations Administration](../../Operations_Administration/) chapters.
 
 - [Configuration Basics](configuration_basics.md)
 - [Choosing A Deployment Mode](choosing_a_deployment_mode.md)

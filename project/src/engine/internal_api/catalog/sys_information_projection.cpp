@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -22,9 +24,12 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 using scratchbird::core::catalog::BuiltinCatalogIndexProfiles;
+using scratchbird::core::catalog::BuiltinCatalogTableProfiles;
+using scratchbird::core::catalog::CatalogPathIsClusterScoped;
 using scratchbird::core::catalog::CatalogIndexMethodName;
 using scratchbird::core::catalog::CatalogIndexProfileHasOrderedNeed;
 using scratchbird::core::catalog::CatalogIndexPurposeName;
+using scratchbird::core::catalog::CatalogTableProfile;
 namespace dt = scratchbird::core::datatypes;
 
 SysInformationProjectionColumn Column(std::string column_name,
@@ -131,6 +136,42 @@ bool ContainsToken(std::string_view value, std::string_view token) {
   return value.find(token) != std::string_view::npos;
 }
 
+void AddUniqueText(std::vector<std::string>* values, std::string value) {
+  if (values == nullptr || value.empty()) { return; }
+  if (std::find(values->begin(), values->end(), value) == values->end()) {
+    values->push_back(std::move(value));
+  }
+}
+
+std::vector<std::string> EffectiveRoleUuids(const SysInformationProjectionContext& context) {
+  std::vector<std::string> roles;
+  for (const auto& role_uuid : context.effective_role_uuids) {
+    AddUniqueText(&roles, role_uuid);
+  }
+  AddUniqueText(&roles, context.active_role_uuid);
+  return roles;
+}
+
+std::string RoleDisplayNameAt(const SysInformationProjectionContext& context,
+                              std::size_t index,
+                              std::string_view role_uuid) {
+  if (!context.active_role_uuid.empty() &&
+      EqualsInsensitiveAscii(context.active_role_uuid, role_uuid)) {
+    if (!context.active_role_name.empty()) { return context.active_role_name; }
+    if (!context.requested_role_name.empty()) { return context.requested_role_name; }
+  }
+  if (index < context.effective_role_names.size() &&
+      !context.effective_role_names[index].empty()) {
+    return context.effective_role_names[index];
+  }
+  return index == 0 ? "active_role" : "effective_role_" + std::to_string(index + 1);
+}
+
+std::string PrincipalDisplayName(const SysInformationProjectionContext& context) {
+  if (!context.principal_name.empty()) { return context.principal_name; }
+  return "current_user";
+}
+
 std::string LogicalTypeForProjectionColumn(std::string_view column_name) {
   if (column_name == "ordinal_position" || column_name == "version_number" ||
       column_name == "active_version_number" || column_name == "port" ||
@@ -138,7 +179,8 @@ std::string LogicalTypeForProjectionColumn(std::string_view column_name) {
       column_name == "integer_value" || column_name == "truncate_ready_bytes" ||
       column_name == "supported_value" || column_name == "increment" ||
       column_name == "start_value" || column_name == "safe_start_byte" ||
-      column_name == "safe_end_byte") {
+      column_name == "safe_end_byte" || column_name == "depth" ||
+      column_name == "sort_group" || column_name == "sort_ordinal") {
     return "uint64";
   }
   if (ContainsToken(column_name, "count") || ContainsToken(column_name, "bytes") ||
@@ -148,7 +190,8 @@ std::string LogicalTypeForProjectionColumn(std::string_view column_name) {
   if (column_name == "enabled" || column_name == "grantable" ||
       column_name == "is_grantable" || column_name == "is_supported" ||
       column_name == "is_default" || column_name == "purged" ||
-      column_name == "approval_required" || column_name == "cycle_option") {
+      column_name == "approval_required" || column_name == "cycle_option" ||
+      column_name == "is_virtual" || column_name == "is_expandable") {
     return "yes_no";
   }
   return "text";
@@ -185,6 +228,42 @@ std::vector<SysInformationProjectionColumn> PacketColumns(std::string_view key_c
   return columns;
 }
 
+bool ColumnNameExposesUuidByConvention(std::string_view column_name) {
+  static constexpr std::string_view kToken = "_uuid";
+  if (column_name == "uuid") { return true; }
+  if (column_name.size() >= kToken.size() &&
+      column_name.substr(column_name.size() - kToken.size()) == kToken) {
+    return true;
+  }
+  return column_name.find("uuid_") != std::string_view::npos;
+}
+
+std::vector<SysInformationProjectionColumn> CatalogTableColumns(
+    const CatalogTableProfile& table) {
+  std::vector<SysInformationProjectionColumn> columns;
+  for (const auto& column_profile : table.columns) {
+    const bool exposes_uuid =
+        ColumnNameExposesUuidByConvention(column_profile.column_name);
+    columns.push_back(Column(column_profile.column_name,
+                             exposes_uuid ? "uuid" : LogicalTypeForProjectionColumn(column_profile.column_name),
+                             column_profile.nullable,
+                             false,
+                             false,
+                             exposes_uuid,
+                             false));
+  }
+  return columns;
+}
+
+std::vector<std::string> CatalogTableKeyColumns(const CatalogTableProfile& table) {
+  std::vector<std::string> keys;
+  for (const auto& column_profile : table.columns) {
+    if (keys.size() >= 4) { break; }
+    keys.push_back(column_profile.column_name);
+  }
+  return keys;
+}
+
 struct ProjectionPacketRow {
   std::string view_path;
   std::string family;
@@ -207,6 +286,8 @@ std::vector<std::string> SplitCsvLine(std::string_view line) {
 const std::vector<ProjectionPacketRow>& LocalFrontendProjectionPacketRows() {
   static const std::vector<ProjectionPacketRow> rows = [] {
     static constexpr std::string_view kRows = R"CSV(sys.catalog_readable.objects,catalog_readable,object_browser,object_path;object_name;object_kind;parent_path;status;comment_text;visibility_state,Primary ScratchBird-native object tree view.
+sys.catalog_readable.object_tree,catalog_readable,object_browser,object_id;parent_object_id;object_path;object_name;object_kind;parent_path;depth;schema_path;status;visibility_state,Authorization-filtered parent-child tree for drivers and tools.
+sys.catalog_readable.navigator_tree,catalog_readable,object_browser,node_id;parent_node_id;object_id;parent_object_id;node_path;node_name;node_kind;node_role;object_kind;object_path;schema_path;parent_path;depth;sort_group;sort_ordinal;is_virtual;is_expandable;status;visibility_state,Authorization-filtered typed navigator tree with standard UI folders for drivers and tools.
 sys.catalog_readable.object_names,catalog_readable,names_aliases,object_path;object_name;name_language;visibility_state,No UUID columns; names come from centralized resolver.
 sys.catalog_readable.object_comments,catalog_readable,comments,object_path;object_name;comment_text;comment_language;visibility_state,No UUID columns; comments come from centralized comment resolver.
 sys.catalog_readable.schemas,catalog_readable,schema_browser,schema_path;schema_name;parent_path;comment_text;visibility_state,Local schemas and subschemas.
@@ -238,6 +319,7 @@ sys.catalog_readable.settings,catalog_readable,settings,setting_name;setting_val
 sys.catalog_readable.jobs,catalog_readable,jobs,job_path;job_name;job_kind;status;policy_name;metrics_summary;visibility_state,Jobs and maintenance tasks.
 sys.catalog_readable.remote_connections,catalog_readable,remote_connections,connection_path;connection_name;connection_kind;endpoint_display;credential_state;visibility_state,Credentials redacted.
 sys.catalog_readable.emulation_profiles,catalog_readable,emulation_profiles,profile_path;profile_name;reference_family;parser_binding;udr_binding;status;visibility_state,Reference/emulation profile metadata.
+sys.parser.dialects,frontend_projection,parser_profiles,dialect_name;base_dialect;compatibility_state;parser_family,Frontend-safe parser dialect inventory for drivers and management tools.
 sys.information.schemata,information_schema,driver_metadata,catalog_name;schema_name;schema_owner;sql_path,Standard-compatible schema metadata.
 sys.information.tables,information_schema,driver_metadata,table_catalog;table_schema;table_name;table_type;is_insertable_into,Standard-compatible table metadata.
 sys.information.views,information_schema,driver_metadata,table_catalog;table_schema;table_name;view_definition,View metadata redacted by policy.
@@ -472,6 +554,86 @@ std::string ObjectDisplayPath(const std::vector<SysInformationResolverNameSource
   return schema_name.empty() ? object_name : schema_name + "." + object_name;
 }
 
+std::string TreeParentObjectId(const SysInformationCatalogObjectSource& object) {
+  if (!object.parent_object_uuid.empty()) { return object.parent_object_uuid; }
+  if (object.object_class != "schema") { return object.schema_uuid; }
+  return {};
+}
+
+bool AppendTreePathParts(const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
+                         const std::vector<SysInformationResolverNameSource>& resolver_names,
+                         const SysInformationProjectionContext& context,
+                         const SysInformationCatalogObjectSource& object,
+                         std::vector<std::string>* parts,
+                         std::uint32_t depth = 0) {
+  if (parts == nullptr || depth > 64) { return false; }
+  bool found_name = false;
+  const std::string object_name = ObjectDisplayName(resolver_names, context, object, &found_name);
+  if (!found_name) { return false; }
+
+  const std::string parent_id = TreeParentObjectId(object);
+  if (!parent_id.empty()) {
+    const auto* parent = FindObject(catalog_objects, parent_id, context);
+    if (parent == nullptr ||
+        !AppendTreePathParts(catalog_objects, resolver_names, context, *parent, parts, depth + 1)) {
+      return false;
+    }
+  }
+  parts->push_back(object_name);
+  return true;
+}
+
+std::string JoinPathParts(const std::vector<std::string>& parts) {
+  std::string out;
+  for (const auto& part : parts) {
+    if (!out.empty()) { out.push_back('.'); }
+    out += part;
+  }
+  return out;
+}
+
+std::string TreeDisplayPath(const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
+                            const std::vector<SysInformationResolverNameSource>& resolver_names,
+                            const SysInformationProjectionContext& context,
+                            const SysInformationCatalogObjectSource& object,
+                            bool* found) {
+  std::vector<std::string> parts;
+  *found = AppendTreePathParts(catalog_objects, resolver_names, context, object, &parts);
+  return *found ? JoinPathParts(parts) : std::string{};
+}
+
+std::string TreeParentPath(const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
+                           const std::vector<SysInformationResolverNameSource>& resolver_names,
+                           const SysInformationProjectionContext& context,
+                           const SysInformationCatalogObjectSource& object,
+                           bool* found) {
+  const std::string parent_id = TreeParentObjectId(object);
+  if (parent_id.empty()) {
+    *found = true;
+    return {};
+  }
+  const auto* parent = FindObject(catalog_objects, parent_id, context);
+  if (parent == nullptr) {
+    *found = false;
+    return {};
+  }
+  return TreeDisplayPath(catalog_objects, resolver_names, context, *parent, found);
+}
+
+std::uint32_t TreeDepth(const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
+                        const SysInformationProjectionContext& context,
+                        const SysInformationCatalogObjectSource& object) {
+  std::uint32_t depth = 0;
+  std::string cursor = TreeParentObjectId(object);
+  while (!cursor.empty() && depth < 64) {
+    const auto* parent = FindObject(catalog_objects, cursor, context);
+    if (parent == nullptr) { break; }
+    ++depth;
+    cursor = TreeParentObjectId(*parent);
+  }
+  return depth;
+}
+
 void AddField(SysInformationProjectionRow* row, std::string name, std::string value) {
   row->fields.push_back({std::move(name), std::move(value)});
 }
@@ -503,6 +665,774 @@ bool IsTableLikeObject(const SysInformationCatalogObjectSource& object) {
          object.object_class == "materialized_view" ||
          object.object_class == "temporary_table" ||
          object.object_class == "virtual_table";
+}
+
+bool IsSchemaObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "schema";
+}
+
+bool IsTableNavigatorObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "table" ||
+         object.object_class == "temporary_table" ||
+         object.object_class == "virtual_table" ||
+         object.object_class == "materialized_view";
+}
+
+bool IsViewNavigatorObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "view";
+}
+
+bool IsIndexNavigatorObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "index";
+}
+
+bool IsRoutineNavigatorObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "procedure" || object.object_class == "function";
+}
+
+bool IsProgrammabilityObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "procedure" ||
+         object.object_class == "function" ||
+         object.object_class == "package" ||
+         object.object_class == "sequence";
+}
+
+bool IsSecurityUserObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "user" || object.object_class == "principal";
+}
+
+bool IsSecurityGroupObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "group";
+}
+
+bool IsSecurityRoleObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "role";
+}
+
+bool IsSecurityPolicyObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "policy" ||
+         object.object_class == "security_policy";
+}
+
+bool IsSecurityConfigurationObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "configuration" ||
+         object.object_class == "security_configuration";
+}
+
+bool IsSecurityGrantObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "grant" ||
+         object.object_class == "security_grant";
+}
+
+bool IsSecurityUserGroupMembershipObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "security_user_group_membership";
+}
+
+bool IsSecurityUserRoleMembershipObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "security_user_role_membership";
+}
+
+bool IsSecurityGroupUserMembershipObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "security_group_user_membership";
+}
+
+bool IsSecurityGroupRoleMembershipObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "security_group_role_membership";
+}
+
+bool IsSecurityRoleUserMembershipObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "security_role_user_membership";
+}
+
+bool IsSecurityRoleGroupMembershipObject(const SysInformationCatalogObjectSource& object) {
+  return object.object_class == "security_role_group_membership";
+}
+
+std::uint32_t SchemaRootSortGroup(std::string_view path) {
+  if (path == "sys") { return 1000; }
+  if (path == "users") { return 1100; }
+  if (path == "emulated") { return 1200; }
+  if (path == "remote") { return 1300; }
+  if (path == "app") { return 1400; }
+  if (path == "cluster") { return 1500; }
+  return 9000;
+}
+
+bool IsContextualSchemaRoot(std::string_view path) {
+  return path == "cluster" || path == "emulated" || path == "remote";
+}
+
+std::uint32_t SchemaChildSortGroup(const SysInformationCatalogObjectSource& object) {
+  if (IsSchemaObject(object)) { return 10; }
+  if (IsTableNavigatorObject(object)) { return 20; }
+  if (IsViewNavigatorObject(object)) { return 30; }
+  if (IsProgrammabilityObject(object)) {
+    if (object.object_class == "procedure") { return 41; }
+    if (object.object_class == "function") { return 42; }
+    if (object.object_class == "package") { return 43; }
+    if (object.object_class == "sequence") { return 44; }
+  }
+  return 90;
+}
+
+std::uint32_t ProgrammabilityChildSortGroup(const SysInformationCatalogObjectSource& object) {
+  if (object.object_class == "procedure") { return 10; }
+  if (object.object_class == "function") { return 20; }
+  if (object.object_class == "package") { return 30; }
+  if (object.object_class == "sequence") { return 40; }
+  return 90;
+}
+
+std::string NavigatorObjectNodeId(const SysInformationCatalogObjectSource& object) {
+  return object.object_class + ":" + object.object_uuid;
+}
+
+std::string NavigatorFolderNodeId(std::string_view parent_node_id,
+                                  std::string_view folder_name) {
+  return "folder:" + std::string(parent_node_id) + ":" + std::string(folder_name);
+}
+
+std::string NavigatorChildPath(std::string_view parent_path, std::string_view child_name) {
+  if (parent_path.empty()) { return std::string(child_name); }
+  return std::string(parent_path) + "/" + std::string(child_name);
+}
+
+std::string NavigatorProjectedObjectNodeId(std::string_view parent_node_id,
+                                           std::string_view node_role,
+                                           const SysInformationCatalogObjectSource& object) {
+  return "projection:" + std::string(parent_node_id) + ":" + std::string(node_role) +
+         ":" + object.object_uuid;
+}
+
+void AddNavigatorRow(SysInformationProjectionResult* result,
+                     std::string node_id,
+                     std::string parent_node_id,
+                     std::string object_id,
+                     std::string parent_object_id,
+                     std::string node_path,
+                     std::string node_name,
+                     std::string node_kind,
+                     std::string node_role,
+                     std::string object_kind,
+                     std::string object_path,
+                     std::string schema_path,
+                     std::string parent_path,
+                     std::uint32_t depth,
+                     std::uint32_t sort_group,
+                     std::uint64_t sort_ordinal,
+                     bool is_virtual,
+                     bool is_expandable) {
+  SysInformationProjectionRow row;
+  AddField(&row, "node_id", std::move(node_id));
+  AddField(&row, "parent_node_id", std::move(parent_node_id));
+  AddField(&row, "object_id", std::move(object_id));
+  AddField(&row, "parent_object_id", std::move(parent_object_id));
+  AddField(&row, "node_path", std::move(node_path));
+  AddField(&row, "node_name", std::move(node_name));
+  AddField(&row, "node_kind", std::move(node_kind));
+  AddField(&row, "node_role", std::move(node_role));
+  AddField(&row, "object_kind", std::move(object_kind));
+  AddField(&row, "object_path", std::move(object_path));
+  AddField(&row, "schema_path", std::move(schema_path));
+  AddField(&row, "parent_path", std::move(parent_path));
+  AddField(&row, "depth", std::to_string(depth));
+  AddField(&row, "sort_group", std::to_string(sort_group));
+  AddField(&row, "sort_ordinal", std::to_string(sort_ordinal));
+  AddField(&row, "is_virtual", is_virtual ? "YES" : "NO");
+  AddField(&row, "is_expandable", is_expandable ? "YES" : "NO");
+  AddField(&row, "status", "active");
+  AddField(&row, "visibility_state", "visible");
+  result->rows.push_back(std::move(row));
+}
+
+struct NavigatorObjectRow {
+  const SysInformationCatalogObjectSource* object = nullptr;
+  std::string object_name;
+  std::string object_path;
+  std::string parent_path;
+  std::string parent_object_uuid;
+  std::string schema_path;
+  std::uint32_t depth = 0;
+  std::uint32_t sort_group = 0;
+};
+
+std::string NavigatorObjectRole(const NavigatorObjectRow& nav) {
+  if (nav.object == nullptr) { return {}; }
+  if (IsSchemaObject(*nav.object) && nav.parent_path.empty() && nav.object_path == "cluster") {
+    return "cluster";
+  }
+  return nav.object->object_class;
+}
+
+bool IsSecurityManagementObject(const SysInformationCatalogObjectSource& object) {
+  return IsSecurityUserObject(object) ||
+         IsSecurityGroupObject(object) ||
+         IsSecurityRoleObject(object) ||
+         IsSecurityPolicyObject(object) ||
+         IsSecurityConfigurationObject(object) ||
+         IsSecurityGrantObject(object) ||
+         IsSecurityUserGroupMembershipObject(object) ||
+         IsSecurityUserRoleMembershipObject(object) ||
+         IsSecurityGroupUserMembershipObject(object) ||
+         IsSecurityGroupRoleMembershipObject(object) ||
+         IsSecurityRoleUserMembershipObject(object) ||
+         IsSecurityRoleGroupMembershipObject(object);
+}
+
+std::string ObjectSchemaTreePath(const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
+                                 const std::vector<SysInformationResolverNameSource>& resolver_names,
+                                 const SysInformationProjectionContext& context,
+                                 const SysInformationCatalogObjectSource& object,
+                                 std::string_view fallback_parent_path) {
+  if (IsSchemaObject(object)) { return std::string(fallback_parent_path); }
+  if (object.schema_uuid.empty()) { return std::string(fallback_parent_path); }
+  const auto* schema = FindObject(catalog_objects, object.schema_uuid, context);
+  if (schema == nullptr) { return std::string(fallback_parent_path); }
+  bool found_schema_path = false;
+  const std::string schema_path =
+      TreeDisplayPath(catalog_objects, resolver_names, context, *schema, &found_schema_path);
+  return found_schema_path ? schema_path : std::string(fallback_parent_path);
+}
+
+std::vector<NavigatorObjectRow> VisibleNavigatorObjects(
+    const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
+    const std::vector<SysInformationResolverNameSource>& resolver_names,
+    const SysInformationProjectionContext& context) {
+  std::vector<NavigatorObjectRow> out;
+  for (const auto& object : catalog_objects) {
+    if (!ObjectVisible(object, context)) { continue; }
+    bool found_name = false;
+    bool found_path = false;
+    bool found_parent = false;
+    const std::string object_name = ObjectDisplayName(resolver_names, context, object, &found_name);
+    const std::string object_path =
+        TreeDisplayPath(catalog_objects, resolver_names, context, object, &found_path);
+    const std::string parent_path =
+        TreeParentPath(catalog_objects, resolver_names, context, object, &found_parent);
+    if (!found_name || !found_path || !found_parent) { continue; }
+
+    NavigatorObjectRow row;
+    row.object = &object;
+    row.object_name = object_name;
+    row.object_path = object_path;
+    row.parent_path = parent_path;
+    row.parent_object_uuid = TreeParentObjectId(object);
+    row.schema_path = IsSchemaObject(object)
+                          ? object_path
+                          : ObjectSchemaTreePath(catalog_objects,
+                                                 resolver_names,
+                                                 context,
+                                                 object,
+                                                 parent_path);
+    row.depth = TreeDepth(catalog_objects, context, object);
+    row.sort_group = row.parent_path.empty()
+                         ? SchemaRootSortGroup(row.object_path)
+                         : SchemaChildSortGroup(object);
+    out.push_back(std::move(row));
+  }
+  std::sort(out.begin(), out.end(), [](const auto& left, const auto& right) {
+    if (left.parent_path != right.parent_path) { return left.parent_path < right.parent_path; }
+    if (left.sort_group != right.sort_group) { return left.sort_group < right.sort_group; }
+    return left.object_path < right.object_path;
+  });
+  return out;
+}
+
+void SortNavigatorRows(std::vector<const NavigatorObjectRow*>* rows) {
+  std::sort(rows->begin(), rows->end(), [](const auto* left, const auto* right) {
+    if (left->sort_group != right->sort_group) { return left->sort_group < right->sort_group; }
+    return left->object_path < right->object_path;
+  });
+}
+
+SysInformationProjectionResult BuildNavigatorTreeProjection(
+    const SysInformationProjectionContext& context,
+    const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
+    const std::vector<SysInformationResolverNameSource>& resolver_names,
+    const std::vector<SysInformationColumnSource>& columns) {
+  SysInformationProjectionResult result;
+  (void)columns;
+  std::uint64_t ordinal = 0;
+  const std::string database_name =
+      context.catalog_display_name.empty() ? "Database" : context.catalog_display_name;
+  const std::string database_node_id = "database";
+  AddNavigatorRow(&result,
+                  database_node_id,
+                  "",
+                  "",
+                  "",
+                  database_name,
+                  database_name,
+                  "database",
+                  "database",
+                  "",
+                  "",
+                  "",
+                  "",
+                  0,
+                  0,
+                  ++ordinal,
+                  true,
+                  true);
+
+  auto emit_folder = [&](std::string_view parent_node_id,
+                         std::string_view parent_object_id,
+                         std::string_view parent_node_path,
+                         std::string_view schema_path,
+                         std::string_view role,
+                         std::string_view label,
+                         std::uint32_t depth,
+                         std::uint32_t sort_group,
+                         bool expandable = true) {
+    const std::string folder_id = NavigatorFolderNodeId(parent_node_id, role);
+    AddNavigatorRow(&result,
+                    folder_id,
+                    std::string(parent_node_id),
+                    "",
+                    std::string(parent_object_id),
+                    NavigatorChildPath(parent_node_path, label),
+                    std::string(label),
+                    "folder",
+                    std::string(role),
+                    "",
+                    "",
+                    std::string(schema_path),
+                    std::string(parent_node_path),
+                    depth,
+                    sort_group,
+                    ++ordinal,
+                    true,
+                    expandable);
+    return folder_id;
+  };
+
+  const auto nav_objects = VisibleNavigatorObjects(catalog_objects, resolver_names, context);
+  std::map<std::string, const NavigatorObjectRow*> by_object_uuid;
+  std::map<std::string, std::vector<const NavigatorObjectRow*>> children_by_parent_uuid;
+  for (const auto& row : nav_objects) {
+    if (row.object == nullptr) { continue; }
+    by_object_uuid[row.object->object_uuid] = &row;
+    children_by_parent_uuid[row.parent_object_uuid].push_back(&row);
+  }
+  for (auto& entry : children_by_parent_uuid) {
+    SortNavigatorRows(&entry.second);
+  }
+
+  const std::string management_id =
+      emit_folder(database_node_id, "", database_name, "", "database.management", "Management", 1, 100);
+  const std::string management_path = NavigatorChildPath(database_name, "Management");
+
+  const std::string security_id =
+      emit_folder(management_id, "", management_path, "", "database.security", "Security", 2, 10);
+  const std::string security_path = NavigatorChildPath(management_path, "Security");
+  const std::string security_users_id =
+      emit_folder(security_id, "", security_path, "", "security.users", "users", 3, 10);
+  const std::string security_groups_id =
+      emit_folder(security_id, "", security_path, "", "security.groups", "groups", 3, 20);
+  const std::string security_roles_id =
+      emit_folder(security_id, "", security_path, "", "security.roles", "roles", 3, 30);
+  const std::string security_policies_id =
+      emit_folder(security_id, "", security_path, "", "security.policies", "policies", 3, 40);
+  const std::string security_configurations_id =
+      emit_folder(security_id,
+                  "",
+                  security_path,
+                  "",
+                  "security.configurations",
+                  "configurations",
+                  3,
+                  50);
+
+  auto children_matching =
+      [&](std::string_view parent_uuid,
+          const std::function<bool(const SysInformationCatalogObjectSource&)>& predicate) {
+        std::vector<const NavigatorObjectRow*> out;
+        const auto found = children_by_parent_uuid.find(std::string(parent_uuid));
+        if (found == children_by_parent_uuid.end()) { return out; }
+        for (const auto* child : found->second) {
+          if (child == nullptr || child->object == nullptr) { continue; }
+          if (predicate(*child->object)) { out.push_back(child); }
+        }
+        SortNavigatorRows(&out);
+        return out;
+      };
+
+  auto emit_security_child_object =
+      [&](const NavigatorObjectRow& nav,
+          std::string_view parent_node_id,
+          std::string_view parent_node_path,
+          std::string_view node_role,
+          std::string_view object_kind,
+          std::uint32_t depth,
+          std::uint32_t sort_group) {
+        const auto& object = *nav.object;
+        AddNavigatorRow(&result,
+                        NavigatorObjectNodeId(object),
+                        std::string(parent_node_id),
+                        object.object_uuid,
+                        nav.parent_object_uuid,
+                        NavigatorChildPath(parent_node_path, nav.object_name),
+                        nav.object_name,
+                        object.object_class,
+                        std::string(node_role),
+                        object_kind.empty() ? object.object_class : std::string(object_kind),
+                        nav.object_path,
+                        "",
+                        std::string(parent_node_path),
+                        depth,
+                        sort_group,
+                        ++ordinal,
+                        false,
+                        false);
+      };
+
+  auto emit_security_object =
+      [&](const NavigatorObjectRow& nav,
+          std::string_view parent_node_id,
+          std::string_view parent_node_path,
+          std::string_view node_role,
+          std::string_view object_path_prefix,
+          std::uint32_t sort_group,
+          bool membership_folders) {
+    const auto& object = *nav.object;
+    const std::string node_id = NavigatorObjectNodeId(object);
+    const std::string node_path = NavigatorChildPath(parent_node_path, nav.object_name);
+    const std::string object_path =
+        std::string(object_path_prefix) + "." + nav.object_name;
+    AddNavigatorRow(&result,
+                    node_id,
+                    std::string(parent_node_id),
+                    object.object_uuid,
+                    nav.parent_object_uuid,
+                    node_path,
+                    nav.object_name,
+                    object.object_class,
+                    std::string(node_role),
+                    object.object_class,
+                    object_path,
+                    "",
+                    std::string(parent_node_path),
+                    4,
+                    sort_group,
+                    ++ordinal,
+                    false,
+                    membership_folders);
+    if (!membership_folders) { return; }
+    if (node_role == "security.user") {
+      const std::string groups_id =
+          emit_folder(node_id, object.object_uuid, node_path, "", "security.user.groups", "groups", 5, 10);
+      const std::string roles_id =
+          emit_folder(node_id, object.object_uuid, node_path, "", "security.user.roles", "roles", 5, 20);
+      const std::string grants_id =
+          emit_folder(node_id, object.object_uuid, node_path, "", "security.user.grants", "grants", 5, 30);
+      const std::string groups_path = NavigatorChildPath(node_path, "groups");
+      const std::string roles_path = NavigatorChildPath(node_path, "roles");
+      const std::string grants_path = NavigatorChildPath(node_path, "grants");
+      for (const auto* child : children_matching(object.object_uuid, IsSecurityUserGroupMembershipObject)) {
+        emit_security_child_object(*child, groups_id, groups_path, "security.user.group", "group", 6, 10);
+      }
+      for (const auto* child : children_matching(object.object_uuid, IsSecurityUserRoleMembershipObject)) {
+        emit_security_child_object(*child, roles_id, roles_path, "security.user.role", "role", 6, 10);
+      }
+      for (const auto* child : children_matching(object.object_uuid, IsSecurityGrantObject)) {
+        emit_security_child_object(*child, grants_id, grants_path, "security.user.grant", "grant", 6, 10);
+      }
+    } else if (node_role == "security.group") {
+      const std::string users_id =
+          emit_folder(node_id, object.object_uuid, node_path, "", "security.group.users", "users", 5, 10);
+      const std::string roles_id =
+          emit_folder(node_id, object.object_uuid, node_path, "", "security.group.roles", "roles", 5, 20);
+      const std::string grants_id =
+          emit_folder(node_id, object.object_uuid, node_path, "", "security.group.grants", "grants", 5, 30);
+      const std::string users_path = NavigatorChildPath(node_path, "users");
+      const std::string roles_path = NavigatorChildPath(node_path, "roles");
+      const std::string grants_path = NavigatorChildPath(node_path, "grants");
+      for (const auto* child : children_matching(object.object_uuid, IsSecurityGroupUserMembershipObject)) {
+        emit_security_child_object(*child, users_id, users_path, "security.group.user", "user", 6, 10);
+      }
+      for (const auto* child : children_matching(object.object_uuid, IsSecurityGroupRoleMembershipObject)) {
+        emit_security_child_object(*child, roles_id, roles_path, "security.group.role", "role", 6, 10);
+      }
+      for (const auto* child : children_matching(object.object_uuid, IsSecurityGrantObject)) {
+        emit_security_child_object(*child, grants_id, grants_path, "security.group.grant", "grant", 6, 10);
+      }
+    } else if (node_role == "security.role") {
+      const std::string users_id =
+          emit_folder(node_id, object.object_uuid, node_path, "", "security.role.users", "users", 5, 10);
+      const std::string groups_id =
+          emit_folder(node_id, object.object_uuid, node_path, "", "security.role.groups", "groups", 5, 20);
+      const std::string grants_id =
+          emit_folder(node_id, object.object_uuid, node_path, "", "security.role.grants", "grants", 5, 30);
+      const std::string users_path = NavigatorChildPath(node_path, "users");
+      const std::string groups_path = NavigatorChildPath(node_path, "groups");
+      const std::string grants_path = NavigatorChildPath(node_path, "grants");
+      for (const auto* child : children_matching(object.object_uuid, IsSecurityRoleUserMembershipObject)) {
+        emit_security_child_object(*child, users_id, users_path, "security.role.user", "user", 6, 10);
+      }
+      for (const auto* child : children_matching(object.object_uuid, IsSecurityRoleGroupMembershipObject)) {
+        emit_security_child_object(*child, groups_id, groups_path, "security.role.group", "group", 6, 10);
+      }
+      for (const auto* child : children_matching(object.object_uuid, IsSecurityGrantObject)) {
+        emit_security_child_object(*child, grants_id, grants_path, "security.role.grant", "grant", 6, 10);
+      }
+    }
+  };
+
+  const std::string security_users_path = NavigatorChildPath(security_path, "users");
+  const std::string security_groups_path = NavigatorChildPath(security_path, "groups");
+  const std::string security_roles_path = NavigatorChildPath(security_path, "roles");
+  const std::string security_policies_path = NavigatorChildPath(security_path, "policies");
+  const std::string security_configurations_path =
+      NavigatorChildPath(security_path, "configurations");
+  for (const auto& nav : nav_objects) {
+    if (nav.object == nullptr) { continue; }
+    if (IsSecurityUserObject(*nav.object)) {
+      emit_security_object(nav,
+                           security_users_id,
+                           security_users_path,
+                           "security.user",
+                           "security.users",
+                           10,
+                           true);
+    } else if (IsSecurityGroupObject(*nav.object)) {
+      emit_security_object(nav,
+                           security_groups_id,
+                           security_groups_path,
+                           "security.group",
+                           "security.groups",
+                           10,
+                           true);
+    } else if (IsSecurityRoleObject(*nav.object)) {
+      emit_security_object(nav,
+                           security_roles_id,
+                           security_roles_path,
+                           "security.role",
+                           "security.roles",
+                           10,
+                           true);
+    } else if (IsSecurityPolicyObject(*nav.object)) {
+      emit_security_object(nav,
+                           security_policies_id,
+                           security_policies_path,
+                           "security.policy",
+                           "security.policies",
+                           10,
+                           false);
+    } else if (IsSecurityConfigurationObject(*nav.object)) {
+      emit_security_object(nav,
+                           security_configurations_id,
+                           security_configurations_path,
+                           "security.configuration",
+                           "security.configurations",
+                           10,
+                           false);
+    }
+  }
+
+  const std::string programmability_id =
+      emit_folder(management_id,
+                  "",
+                  management_path,
+                  "",
+                  "database.programmability",
+                  "Programmability",
+                  2,
+                  20);
+  const std::string programmability_path = NavigatorChildPath(management_path, "Programmability");
+  const std::string domains_id =
+      emit_folder(management_id, "", management_path, "", "database.domains", "Domains", 2, 30);
+  const std::string domains_path = NavigatorChildPath(management_path, "Domains");
+  emit_folder(management_id, "", management_path, "", "database.agents", "Agents", 2, 40);
+  emit_folder(management_id, "", management_path, "", "database.jobs", "Jobs", 2, 50);
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "database.diagnostics_metrics",
+              "Diagnostics / Metrics",
+              2,
+              60);
+  const std::string triggers_id =
+      emit_folder(management_id, "", management_path, "", "database.triggers", "Triggers", 2, 70);
+  const std::string triggers_path = NavigatorChildPath(management_path, "Triggers");
+  emit_folder(management_id,
+              "",
+              management_path,
+              "",
+              "database.filespaces",
+              "File-spaces",
+              2,
+              80);
+
+  auto emit_object =
+      [&](const NavigatorObjectRow& nav,
+          std::string_view parent_node_id,
+          std::string_view parent_node_path,
+          std::uint32_t depth,
+          std::uint32_t sort_group) {
+    const auto& object = *nav.object;
+    const std::string node_id = NavigatorObjectNodeId(object);
+    const std::string node_path = NavigatorChildPath(parent_node_path, nav.object_name);
+    const bool expandable = IsSchemaObject(object) ||
+                            IsTableNavigatorObject(object) ||
+                            IsViewNavigatorObject(object) ||
+                            IsRoutineNavigatorObject(object);
+    AddNavigatorRow(&result,
+                    node_id,
+                    std::string(parent_node_id),
+                    object.object_uuid,
+                    nav.parent_object_uuid,
+                    node_path,
+                    nav.object_name,
+                    object.object_class,
+                    NavigatorObjectRole(nav),
+                    object.object_class,
+                    nav.object_path,
+                    nav.schema_path,
+                    std::string(parent_node_path),
+                    depth,
+                    sort_group,
+                    ++ordinal,
+                    false,
+                    expandable);
+    return node_id;
+  };
+
+  auto emit_projected_object =
+      [&](const NavigatorObjectRow& nav,
+          std::string_view parent_node_id,
+          std::string_view parent_node_path,
+          std::string_view node_role,
+          std::uint32_t depth,
+          std::uint32_t sort_group,
+          bool expandable = false) {
+    const auto& object = *nav.object;
+    AddNavigatorRow(&result,
+                    NavigatorProjectedObjectNodeId(parent_node_id, node_role, object),
+                    std::string(parent_node_id),
+                    object.object_uuid,
+                    nav.parent_object_uuid,
+                    NavigatorChildPath(parent_node_path, nav.object_name),
+                    nav.object_name,
+                    object.object_class,
+                    std::string(node_role),
+                    object.object_class,
+                    nav.object_path,
+                    nav.schema_path,
+                    std::string(parent_node_path),
+                    depth,
+                    sort_group,
+                    ++ordinal,
+                    false,
+                    expandable);
+  };
+
+  auto emit_projected_group = [&](std::string_view parent_node_id,
+                                  std::string_view parent_path,
+                                  std::string_view role,
+                                  std::string_view label,
+                                  const std::function<bool(const SysInformationCatalogObjectSource&)>& predicate,
+                                  std::uint32_t sort_group) {
+    std::vector<const NavigatorObjectRow*> children;
+    for (const auto& nav : nav_objects) {
+      if (nav.object == nullptr || !predicate(*nav.object)) { continue; }
+      children.push_back(&nav);
+    }
+    if (children.empty()) { return; }
+    SortNavigatorRows(&children);
+    const std::string folder_id =
+        emit_folder(parent_node_id, "", parent_path, "", role, label, 3, sort_group);
+    const std::string folder_path = NavigatorChildPath(parent_path, label);
+    for (const auto* child : children) {
+      emit_projected_object(*child,
+                            folder_id,
+                            folder_path,
+                            std::string(role) + ".object",
+                            4,
+                            child->sort_group);
+    }
+  };
+
+  emit_projected_group(programmability_id,
+                       programmability_path,
+                       "database.programmability.procedures",
+                       "procedures",
+                       [](const auto& object) { return object.object_class == "procedure"; },
+                       10);
+  emit_projected_group(programmability_id,
+                       programmability_path,
+                       "database.programmability.functions",
+                       "functions",
+                       [](const auto& object) { return object.object_class == "function"; },
+                       20);
+  emit_projected_group(programmability_id,
+                       programmability_path,
+                       "database.programmability.packages",
+                       "packages",
+                       [](const auto& object) { return object.object_class == "package"; },
+                       30);
+  emit_projected_group(programmability_id,
+                       programmability_path,
+                       "database.programmability.sequences",
+                       "sequences",
+                       [](const auto& object) { return object.object_class == "sequence"; },
+                       40);
+  emit_projected_group(domains_id,
+                       domains_path,
+                       "database.domains.domains",
+                       "domains",
+                       [](const auto& object) { return object.object_class == "domain"; },
+                       10);
+  emit_projected_group(triggers_id,
+                       triggers_path,
+                       "database.triggers.triggers",
+                       "triggers",
+                       [](const auto& object) { return object.object_class == "trigger"; },
+                       10);
+
+  std::function<void(const NavigatorObjectRow&,
+                     std::string_view,
+                     std::string_view,
+                     std::uint32_t)> emit_physical;
+  emit_physical = [&](const NavigatorObjectRow& nav,
+                      std::string_view parent_node_id,
+                      std::string_view parent_node_path,
+                      std::uint32_t depth) {
+    const auto& object = *nav.object;
+    const std::string node_id = emit_object(nav, parent_node_id, parent_node_path, depth, nav.sort_group);
+    const std::string node_path = NavigatorChildPath(parent_node_path, nav.object_name);
+
+    const auto found = children_by_parent_uuid.find(object.object_uuid);
+    if (found == children_by_parent_uuid.end()) { return; }
+    for (const auto* child : found->second) {
+      if (child == nullptr || child->object == nullptr) { continue; }
+      if (IsSecurityManagementObject(*child->object)) { continue; }
+      emit_physical(*child, node_id, node_path, depth + 1);
+    }
+  };
+
+  auto has_visible_children = [&](const NavigatorObjectRow& nav) {
+    if (nav.object == nullptr) { return false; }
+    const auto found = children_by_parent_uuid.find(nav.object->object_uuid);
+    if (found == children_by_parent_uuid.end()) { return false; }
+    for (const auto* child : found->second) {
+      if (child != nullptr && child->object != nullptr &&
+          !IsSecurityManagementObject(*child->object)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (const auto* root : children_matching("", IsSchemaObject)) {
+    if (root == nullptr || root->object == nullptr) { continue; }
+    if (IsContextualSchemaRoot(root->object_path) && !has_visible_children(*root)) {
+      continue;
+    }
+    emit_physical(*root, database_node_id, database_name, 1);
+  }
+
+  return result;
 }
 
 std::string UIntText(std::uint64_t value) {
@@ -1038,7 +1968,76 @@ const std::vector<SysInformationProjectionDefinition>& BuiltinSysInformationProj
                  "storage_agents",
                  {"filespace_uuid", "readiness_state"},
                  "Filespace shrink readiness projection with blocker payload redacted."),
+      Definition("sys.configuration.settings",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {Column("setting_name", "text"),
+                  Column("setting_value", "text", true),
+                  Column("source_scope", "text"),
+                  Column("effective_state", "text")},
+                 {SysInformationSourceKind::security_policy},
+                 false,
+                 false,
+                 "settings",
+                 {"setting_name", "source_scope", "effective_state"},
+                 "Direct configuration setting projection for drivers and management tools."),
+      Definition("sys.configuration.profiles",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {ExplicitUuidColumn("profile_uuid"),
+                  Column("profile_name", "text"),
+                  Column("profile_kind", "text"),
+                  Column("profile_state", "text")},
+                 {SysInformationSourceKind::security_policy},
+                 false,
+                 false,
+                 "settings",
+                 {"profile_uuid", "profile_name", "profile_state"},
+                 "Direct configuration profile projection for drivers and management tools."),
+      Definition("sys.configuration.effective_settings",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {Column("setting_name", "text"),
+                  Column("effective_value", "text", true),
+                  Column("resolved_from", "text"),
+                  Column("policy_hash", "text")},
+                 {SysInformationSourceKind::security_policy},
+                 false,
+                 false,
+                 "settings",
+                 {"setting_name", "resolved_from", "policy_hash"},
+                 "Direct effective configuration projection for drivers and management tools."),
+      Definition("sys.configuration.policy_bindings",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {ExplicitUuidColumn("binding_uuid"),
+                  ExplicitUuidColumn("profile_uuid"),
+                  ExplicitUuidColumn("policy_uuid"),
+                  Column("binding_state", "text")},
+                 {SysInformationSourceKind::agent_policy,
+                  SysInformationSourceKind::storage_agent_state,
+                  SysInformationSourceKind::security_policy},
+                 false,
+                 false,
+                 "settings",
+                 {"binding_uuid", "profile_uuid", "policy_uuid", "binding_state"},
+                 "Direct configuration policy binding projection for drivers and management tools."),
     };
+    for (const auto& table : BuiltinCatalogTableProfiles()) {
+      if (table.table_path.empty() || CatalogPathIsClusterScoped(table.table_path)) {
+        continue;
+      }
+      auto existing = std::find_if(out.begin(), out.end(), [&table](const auto& definition) {
+        return definition.view_path == table.table_path;
+      });
+      if (existing != out.end()) { continue; }
+      out.push_back(Definition(table.table_path,
+                               SysInformationProjectionFamily::catalog_readable,
+                               CatalogTableColumns(table),
+                               {SysInformationSourceKind::catalog_object_identity,
+                                SysInformationSourceKind::security_policy},
+                               false,
+                               false,
+                               "physical_catalog",
+                               CatalogTableKeyColumns(table),
+                               "Raw physical system catalog table projection."));
+    }
     for (const auto& row : LocalFrontendProjectionPacketRows()) {
       auto existing = std::find_if(out.begin(), out.end(), [&row](const auto& definition) {
         return definition.view_path == row.view_path;
@@ -1370,7 +2369,47 @@ SysInformationProjectionResult BuildSysInformationProjection(
     return result;
   }
 
+  if (canonical_view_path == "sys.information.enabled_roles") {
+    const auto role_uuids = EffectiveRoleUuids(context);
+    for (std::size_t index = 0; index < role_uuids.size(); ++index) {
+      const std::string role_name = RoleDisplayNameAt(context, index, role_uuids[index]);
+      if (role_name.empty()) { continue; }
+      SysInformationProjectionRow row;
+      AddField(&row, "role_name", role_name);
+      AddField(&row,
+               "is_default",
+               !context.active_role_uuid.empty() &&
+                       EqualsInsensitiveAscii(context.active_role_uuid, role_uuids[index])
+                   ? "YES"
+                   : "NO");
+      AddField(&row,
+               "enabled_by",
+               !context.requested_role_name.empty() ? "requested_role" : "session_default");
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.information.applicable_roles") {
+    const auto role_uuids = EffectiveRoleUuids(context);
+    for (std::size_t index = 0; index < role_uuids.size(); ++index) {
+      const std::string role_name = RoleDisplayNameAt(context, index, role_uuids[index]);
+      if (role_name.empty()) { continue; }
+      SysInformationProjectionRow row;
+      AddField(&row, "grantee", PrincipalDisplayName(context));
+      AddField(&row, "role_name", role_name);
+      AddField(&row, "is_grantable", "NO");
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.catalog_readable.navigator_tree") {
+    return BuildNavigatorTreeProjection(context, catalog_objects, resolver_names, columns);
+  }
+
   if (canonical_view_path == "sys.catalog_readable.objects" ||
+      canonical_view_path == "sys.catalog_readable.object_tree" ||
       canonical_view_path == "sys.catalog_readable.schemas" ||
       canonical_view_path == "sys.catalog_readable.relations") {
     for (const auto& object : catalog_objects) {
@@ -1386,7 +2425,10 @@ SysInformationProjectionResult BuildSysInformationProjection(
       bool found_object = false;
       bool found_path = false;
       const std::string object_name = ObjectDisplayName(resolver_names, context, object, &found_object);
-      const std::string object_path = ObjectDisplayPath(resolver_names, context, object, &found_path);
+      const std::string object_path =
+          canonical_view_path == "sys.catalog_readable.object_tree"
+              ? TreeDisplayPath(catalog_objects, resolver_names, context, object, &found_path)
+              : ObjectDisplayPath(resolver_names, context, object, &found_path);
       if (!found_object || !found_path) {
         if (context.strict_mode) {
           return Failure(kSysInformationDiagnosticNameNotFound, object.object_uuid);
@@ -1396,7 +2438,26 @@ SysInformationProjectionResult BuildSysInformationProjection(
       const std::string comment = SelectCommentText(
           comments, context, object.object_uuid, object.object_class);
       SysInformationProjectionRow row;
-      if (canonical_view_path == "sys.catalog_readable.objects") {
+      if (canonical_view_path == "sys.catalog_readable.object_tree") {
+        bool found_parent_path = false;
+        const std::string parent_path = TreeParentPath(
+            catalog_objects, resolver_names, context, object, &found_parent_path);
+        if (!found_parent_path) {
+          if (context.strict_mode) {
+            return Failure(kSysInformationDiagnosticNameNotFound, TreeParentObjectId(object));
+          }
+          continue;
+        }
+        const std::string parent_id = TreeParentObjectId(object);
+        AddField(&row, "object_id", object.object_uuid);
+        AddField(&row, "parent_object_id", parent_id);
+        AddField(&row, "object_path", object_path);
+        AddField(&row, "object_name", object_name);
+        AddField(&row, "object_kind", object.object_class);
+        AddField(&row, "parent_path", parent_path);
+        AddField(&row, "depth", std::to_string(TreeDepth(catalog_objects, context, object)));
+        AddField(&row, "schema_path", parent_path);
+      } else if (canonical_view_path == "sys.catalog_readable.objects") {
         AddField(&row, "object_path", object_path);
         AddField(&row, "object_name", object_name);
         AddField(&row, "object_kind", object.object_class);
@@ -1531,6 +2592,76 @@ SysInformationProjectionResult BuildSysInformationProjection(
       AddField(&row, "visibility_state", setting.visibility_state);
       result.rows.push_back(std::move(row));
     }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.configuration.settings" ||
+      canonical_view_path == "sys.configuration.effective_settings") {
+    for (const auto& setting : settings) {
+      if (!ProjectionSourceVisible(setting.hidden, setting.catalog_generation_id, context)) { continue; }
+      SysInformationProjectionRow row;
+      if (canonical_view_path == "sys.configuration.settings") {
+        AddField(&row, "setting_name", setting.setting_name);
+        AddField(&row, "setting_value", setting.setting_value_display);
+        AddField(&row, "source_scope", setting.default_source);
+        AddField(&row, "effective_state", setting.visibility_state);
+      } else {
+        AddField(&row, "setting_name", setting.setting_name);
+        AddField(&row, "effective_value", setting.setting_value_display);
+        AddField(&row, "resolved_from", setting.authority + ":" + setting.default_source);
+        AddField(&row, "policy_hash", setting.redaction_state);
+      }
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.configuration.profiles") {
+    return result;
+  }
+
+  if (canonical_view_path == "sys.configuration.policy_bindings") {
+    std::size_t ordinal = 1;
+    for (const auto& policy : agent_policies) {
+      if (!ProjectionSourceVisible(policy.hidden, policy.catalog_generation_id, context)) { continue; }
+      SysInformationProjectionRow row;
+      AddField(&row,
+               "binding_uuid",
+               StableRef(policy.version_uuid,
+                         "agent_policy_binding_" + std::to_string(ordinal++)));
+      AddField(&row, "profile_uuid", StableRef(policy.agent_uuid, policy.agent_ref));
+      AddField(&row, "policy_uuid", StableRef(policy.policy_uuid, policy.policy_ref));
+      AddField(&row, "binding_state", policy.active_state);
+      result.rows.push_back(std::move(row));
+    }
+    for (const auto& state : filespace_capacity_agent_state) {
+      if (!ProjectionSourceVisible(state.hidden, state.catalog_generation_id, context)) { continue; }
+      SysInformationProjectionRow row;
+      AddField(&row, "binding_uuid", "filespace_capacity_policy_binding_" + std::to_string(ordinal++));
+      AddField(&row, "profile_uuid", StableRef(state.agent_uuid, state.agent_ref));
+      AddField(&row, "policy_uuid", StableRef(state.policy_uuid, state.policy_ref));
+      AddField(&row, "binding_state", state.mode);
+      result.rows.push_back(std::move(row));
+    }
+    for (const auto& state : page_allocation_agent_state) {
+      if (!ProjectionSourceVisible(state.hidden, state.catalog_generation_id, context)) { continue; }
+      SysInformationProjectionRow row;
+      AddField(&row, "binding_uuid", "page_allocation_policy_binding_" + std::to_string(ordinal++));
+      AddField(&row, "profile_uuid", StableRef(state.agent_uuid, state.agent_ref));
+      AddField(&row, "policy_uuid", StableRef(state.policy_uuid, state.policy_ref));
+      AddField(&row, "binding_state", state.mode);
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.parser.dialects") {
+    SysInformationProjectionRow row;
+    AddField(&row, "dialect_name", "SBsql");
+    AddField(&row, "base_dialect", "SBsql");
+    AddField(&row, "compatibility_state", "supported");
+    AddField(&row, "parser_family", "native_sbsql");
+    result.rows.push_back(std::move(row));
     return result;
   }
 

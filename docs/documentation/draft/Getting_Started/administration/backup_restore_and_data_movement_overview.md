@@ -2,13 +2,17 @@
 
 ## Purpose
 
-This page explains backup, restore, import, export, CDC, replication, ETL, and migration at a high level. It is an orientation page for administrators, not a complete data-protection policy or release certification.
+Data movement in ScratchBird covers a range of related activities: protecting your data through backup and restore, importing or exporting records, streaming changes through CDC or replication, and migrating between systems. Understanding the distinctions between these surfaces — and between logical and physical operations — prevents both data loss and security mistakes.
 
-Any workflow that protects real data must be proven against the current build, target platform, configuration, parser route, and operational policy. A backup is not useful until restore has been tested.
+This page is an orientation for administrators. It explains the concepts, the safety model, and what to verify before relying on any data movement workflow. It is not a complete data-protection policy, a release certification, or a step-by-step procedure. Any workflow that protects real data must be proven against the current build, target platform, configuration, parser route, and operational policy.
+
+For detailed procedures, see the [Operations Administration backup and restore chapters](../../Operations_Administration/).
+
+**A backup is not useful until restore has been tested.**
 
 ## Core Distinction: Logical Versus Physical
 
-The most important distinction is whether data movement is logical or physical.
+The most important distinction in data movement is whether an operation is logical or physical. Getting this wrong leads either to failed operations (physical operations rejected through parser routes) or to security problems (physical operations being admitted when they should not be).
 
 | Kind | Meaning | Administrative Reading |
 | --- | --- | --- |
@@ -16,36 +20,20 @@ The most important distinction is whether data movement is logical or physical.
 | Logical import | A stream of statements, rows, records, or events is applied as database work. | Should pass through normal admission, type, transaction, and policy checks. |
 | Logical backup | A backup stream that represents database content as metadata and data operations. | Restore can be treated as admitted logical work when the format is supported. |
 | Logical restore | Applying a logical backup stream to a target database. | Should be tested into a disposable database before trust. |
-| Physical copy | Database pages, files, or storage images are copied directly. | Requires engine-native storage rules; it should not be treated as parser-level logical restore input. |
+| Physical copy | Database pages, files, or storage images are copied directly. | Requires engine-native storage rules; should not be treated as parser-level logical restore input. |
 | Low-level repair or verification | Direct inspection or manipulation of storage internals. | Should be limited to documented native administrative surfaces where implemented and authorized. |
 
 Logical streams can be interpreted as work. Physical storage operations require storage authority.
 
 ## ScratchBird Data Movement Model
 
-```mermaid
-flowchart LR
-    Source[Client, tool, or logical stream]
-    Parser[Parser or native tool route]
-    Bind[Bind records, names, and types]
-    Engine[SBcore admission]
-    Txn[MGA transaction authority]
-    Target[(Database state)]
-    Diagnostic[Message vector]
+All data movement — including logical backup and restore — passes through the same admission path as ordinary client work. It is not a shortcut around SBcore (the core database engine).
 
-    Source --> Parser
-    Parser --> Bind
-    Bind --> Engine
-    Engine --> Txn
-    Txn --> Target
-    Engine --> Diagnostic
-```
-
-A logical stream still passes through parser, binder, authorization, transaction, and engine rules. It is not a shortcut around SBcore.
+![diagram](./backup_restore_and_data_movement_overview-1.svg)
 
 ## Backup
 
-A backup workflow should define:
+A backup workflow should define each of these items before it is run on anything important.
 
 - source database;
 - backup kind;
@@ -78,7 +66,7 @@ Do not trust a backup strategy until restore into a non-production target has be
 
 ## Remote Logical Streams
 
-Remote logical streams are the safest compatibility shape to reason about because the server receives logical work from a client or tool rather than being asked to open and manipulate arbitrary local files.
+Remote logical streams are the safest compatibility shape because the server receives logical work from a client or tool rather than being asked to open and manipulate arbitrary local files.
 
 Allowed by design where implemented and policy admits it:
 
@@ -88,11 +76,11 @@ Allowed by design where implemented and policy admits it:
 - a tool exports rows or records through an admitted route;
 - a parser-support routine streams logical CDC or ETL records.
 
-The stream still has to pass authorization, type, transaction, and policy checks.
+The stream still must pass authorization, type, transaction, and policy checks.
 
 ## Server-Local File Access
 
-Server-local file access is sensitive. A command that asks the server to open, read, overwrite, or repair a local file should be denied unless a documented native administrative surface and policy explicitly admits it.
+Server-local file access is sensitive and deserves explicit policy treatment. A command that asks the server to open, read, overwrite, or repair a local file should be denied unless a documented native administrative surface and policy explicitly admits it.
 
 For compatibility parser routes, the conservative rule is:
 
@@ -105,7 +93,7 @@ This protects the engine authority boundary and reduces accidental file exposure
 
 ## CDC, Replication, And ETL
 
-CDC, replication, and ETL are logical data movement surfaces.
+CDC, replication, and ETL are logical data movement surfaces. Each has specific requirements for correctness that must be defined before the workflow can be trusted.
 
 | Surface | Meaning |
 | --- | --- |
@@ -114,18 +102,7 @@ CDC, replication, and ETL are logical data movement surfaces.
 | ETL | Extract, transform, load: reads data from one source, changes its shape, and writes it to a target. |
 | Migration | Moves schema, data, routines, security, and operational behavior from one shape to another. |
 
-These surfaces need explicit rules for:
-
-- source identity;
-- target identity;
-- transaction grouping;
-- record identity;
-- ordering token or ordering evidence;
-- idempotency;
-- quarantine;
-- cutover;
-- retry;
-- refusal when order or identity is ambiguous.
+These surfaces need explicit rules for source identity, target identity, transaction grouping, record identity, ordering token or ordering evidence, idempotency, quarantine, cutover, retry, and refusal when order or identity is ambiguous.
 
 Do not describe a replication or ETL route as available until the relevant parser, tool, engine path, and tests prove it.
 
@@ -133,7 +110,7 @@ Do not describe a replication or ETL route as available until the relevant parse
 
 Some compatibility parser families expose logical backup, restore, CDC, replication, ETL, import, or export behavior. ScratchBird should support those surfaces only where they are implemented, safe, scoped to that parser, and admitted by policy.
 
-The parser must classify the operation:
+The parser must classify each operation correctly:
 
 | Compatibility Request | Expected Classification |
 | --- | --- |
@@ -148,29 +125,13 @@ Compatibility does not mean bypassing ScratchBird security, storage, or transact
 
 ## Migration
 
-Migration is broader than import.
-
-A migration may need to handle:
-
-- schemas;
-- tables and data;
-- datatypes and domains;
-- indexes and constraints;
-- views and materialized views;
-- stored procedures and functions;
-- triggers and events;
-- security grants and roles;
-- policies;
-- comments;
-- sequences;
-- backup and restore behavior;
-- application cutover.
+Migration is broader than import. A migration may need to handle schemas, tables and data, datatypes and domains, indexes and constraints, views and materialized views, stored procedures and functions, triggers and events, security grants and roles, policies, comments, sequences, backup and restore behavior, and application cutover.
 
 Migration should be staged, tested, validated, and reversible where possible.
 
 ## Validation Checklist
 
-Before relying on a data movement workflow, verify:
+Before relying on a data movement workflow, verify each of these items.
 
 1. The operation is classified as logical or physical.
 2. The selected parser or native tool route supports the operation.
@@ -187,27 +148,9 @@ Before relying on a data movement workflow, verify:
 
 ## Restore Drill
 
-A restore drill should be routine and repeatable.
+A restore drill should be routine and repeatable. The drill is not complete until the restored target has been reopened and validated — closing and reopening proves the data was written durably, not just applied to a running engine.
 
-```mermaid
-flowchart TD
-    Backup[Create backup or export stream]
-    Target[Create disposable restore target]
-    Restore[Apply restore or import]
-    Validate[Run validation queries]
-    Reopen[Close and reopen target]
-    Compare[Compare expected state]
-    Record[Record proof and diagnostics]
-
-    Backup --> Target
-    Target --> Restore
-    Restore --> Validate
-    Validate --> Reopen
-    Reopen --> Compare
-    Compare --> Record
-```
-
-The drill is not complete until the restored target has been reopened and validated.
+![diagram](./backup_restore_and_data_movement_overview-2.svg)
 
 ## What This Page Does Not Claim
 
@@ -222,6 +165,8 @@ This page does not claim:
 - data movement is safe without policy review.
 
 ## Where To Go Next
+
+For detailed procedures and format documentation, see the [Operations Administration](../../Operations_Administration/) chapters.
 
 - [Configuration Basics](configuration_basics.md)
 - [Diagnostics And Support Bundles](diagnostics_and_support_bundles.md)

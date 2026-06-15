@@ -35,27 +35,7 @@ A CDE design explores whether more of those capabilities can share one engine au
 
 A CDE does not mean that every language becomes the same language. It means that different surfaces can lower into a common execution and authority layer.
 
-```mermaid
-flowchart TB
-    Apps[Applications and tools]
-    Protocols[Protocols and command surfaces]
-    Parsers[Parser packages]
-    SBLR[Common bound request representation]
-    Engine[Shared engine authority]
-    Catalog[Shared catalog and descriptors]
-    Txn[Shared transaction authority]
-    Security[Shared security and diagnostics]
-    Storage[Shared storage layer]
-
-    Apps --> Protocols
-    Protocols --> Parsers
-    Parsers --> SBLR
-    SBLR --> Engine
-    Engine --> Catalog
-    Engine --> Txn
-    Engine --> Security
-    Engine --> Storage
-```
+![diagram](./what_is_a_convergent_data_engine-1.svg)
 
 The parser accepts a client language or wire protocol. The engine owns durable identity, security, transaction finality, recovery, and storage.
 
@@ -112,22 +92,7 @@ ScratchBird uses parser packages as translators. A parser package can:
 
 The engine then decides whether the bound request is authorized, type-correct, transactionally valid, and executable.
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Parser
-    participant Engine
-    participant Catalog
-    participant Storage
-
-    Client->>Parser: Language or protocol request
-    Parser->>Parser: Parse and bind visible names
-    Parser->>Engine: SBLR request
-    Engine->>Catalog: Resolve UUID descriptors and policy
-    Engine->>Storage: Execute admitted work
-    Engine-->>Parser: Result or message vector
-    Parser-->>Client: Client-shaped result
-```
+![diagram](./what_is_a_convergent_data_engine-2.svg)
 
 ## Compatibility Must Be Scoped
 

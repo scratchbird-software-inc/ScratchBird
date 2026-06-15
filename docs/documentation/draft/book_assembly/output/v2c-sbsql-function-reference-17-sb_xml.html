@@ -1,0 +1,2223 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-xml-functional-reference" id="toc-sb-xml-functional-reference">SB XML Functional Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#xml_attrs" id="toc-xml_attrs"><code>xml_attrs</code></a></li>
+<li><a href="#xml_ns" id="toc-xml_ns"><code>xml_ns</code></a></li>
+<li><a href="#xmlagg" id="toc-xmlagg"><code>xmlagg</code></a></li>
+<li><a href="#xmlattributes" id="toc-xmlattributes"><code>xmlattributes</code></a></li>
+<li><a href="#xmlcast" id="toc-xmlcast"><code>xmlcast</code></a></li>
+<li><a href="#xmlcomment" id="toc-xmlcomment"><code>xmlcomment</code></a></li>
+<li><a href="#xmlconcat" id="toc-xmlconcat"><code>xmlconcat</code></a></li>
+<li><a href="#xmldocument" id="toc-xmldocument"><code>xmldocument</code></a></li>
+<li><a href="#xmlelement" id="toc-xmlelement"><code>xmlelement</code></a></li>
+<li><a href="#xmlexists" id="toc-xmlexists"><code>xmlexists</code></a></li>
+<li><a href="#xmlforest" id="toc-xmlforest"><code>xmlforest</code></a></li>
+<li><a href="#xmlnamespaces" id="toc-xmlnamespaces"><code>xmlnamespaces</code></a></li>
+<li><a href="#xmlparse" id="toc-xmlparse"><code>xmlparse</code></a></li>
+<li><a href="#xmlpi" id="toc-xmlpi"><code>xmlpi</code></a></li>
+<li><a href="#xmlquery" id="toc-xmlquery"><code>xmlquery</code></a></li>
+<li><a href="#xmlroot" id="toc-xmlroot"><code>xmlroot</code></a></li>
+<li><a href="#xmlserialize" id="toc-xmlserialize"><code>xmlserialize</code></a></li>
+<li><a href="#xmltable" id="toc-xmltable"><code>xmltable</code></a></li>
+<li><a href="#xmltext" id="toc-xmltext"><code>xmltext</code></a></li>
+<li><a href="#xmlvalidate" id="toc-xmlvalidate"><code>xmlvalidate</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_xml.md -->
+<p><a id="ch-language-reference-functional-reference-sb-xml-md"></a></p>
+<h1 id="sb-xml-functional-reference">SB XML Functional Reference</h1>
+<p>Generation task: <code>sb_xml</code></p>
+<p>Package namespace: <code>sb.xml</code></p>
+<p>Bounded XML construction, query, serialization, validation, and
+XML-to-row helpers.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Creates, parses, queries, and serializes bounded XML values.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>scalar</td>
+<td style="text-align: right;">20</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="xml_attrs"><code>xml_attrs</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>xml attrs</code> XML
+helper on bounded XML input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xml.attrs(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML document/query helper
+arguments: XML/text fragments, document/content/sequence mode tokens,
+namespace or attribute name/value pairs, path tokens, and target type
+metadata only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes text/attribute/namespace output and rejects
+unsafe names, malformed XML document text, arity, entity, DTD, or
+byte-limit violations.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/query/serialize helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML document/query scalar helper returns bounded xml_document, xml
+fragment, or character descriptor according to function id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML descriptor output;
+no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML document/query scalar
+helper; deterministic in-core XML normalization, escaping,
+namespace/attribute descriptor, serialize, validate, and narrow tag-path
+query behavior only; no parser SQL execution, external plugin XML
+engine, storage/catalog lookup, transaction finality, recovery, or
+cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content/entity, malformed XML document
+text, DTD/entity declaration, or bounded-size violation refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xml.attrs(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.attrs</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f003-7008-8a00-000000000008</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_attrs.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_attrs</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xml_attrs</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC039-xml-attrs;SBSFC039-xmldocument-invalid;SBSFC039-xml-attrs-invalid</code>.</p>
+<h3 id="xml_ns"><code>xml_ns</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>xml ns</code> XML helper
+on bounded XML input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xml.ns(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML document/query helper
+arguments: XML/text fragments, document/content/sequence mode tokens,
+namespace or attribute name/value pairs, path tokens, and target type
+metadata only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes text/attribute/namespace output and rejects
+unsafe names, malformed XML document text, arity, entity, DTD, or
+byte-limit violations.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/query/serialize helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML document/query scalar helper returns bounded xml_document, xml
+fragment, or character descriptor according to function id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML descriptor output;
+no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML document/query scalar
+helper; deterministic in-core XML normalization, escaping,
+namespace/attribute descriptor, serialize, validate, and narrow tag-path
+query behavior only; no parser SQL execution, external plugin XML
+engine, storage/catalog lookup, transaction finality, recovery, or
+cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content/entity, malformed XML document
+text, DTD/entity declaration, or bounded-size violation refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xml.ns(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.ns</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f003-7009-8a00-000000000009</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_ns.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_ns</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xml_ns</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC039-xml-ns;SBSFC039-xmldocument-invalid;SBSFC039-xml-attrs-invalid</code>.</p>
+<h3 id="xmlagg"><code>xmlagg</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>xmlagg</code> XML helper
+on bounded XML input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmlagg(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">xmlagg</span>(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.agg</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b98-9ff9-18050f0ac8ac</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_agg.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_agg</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlagg</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmlagg;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmlattributes"><code>xmlattributes</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>xmlattributes</code> XML
+helper on bounded XML input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmlattributes(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlattributes(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.attributes</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7403-9b7d-be5431e418ed</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_attributes.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_attributes</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlattributes</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmlattributes;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmlcast"><code>xmlcast</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>xmlcast</code> XML
+helper on bounded XML input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>XMLCAST(exprAStype)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>exprAStype</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlcast(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.cast</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7b48-afa6-134b032a0e11</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_cast.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_cast</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlcast</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmlcast-as;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmlcomment"><code>xmlcomment</code></h3>
+<p><strong>Purpose:</strong> Creates an XML comment from safe text
+content.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmlcomment(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlcomment(<span class="st">&#39;generated by SBsql&#39;</span>) <span class="kw">as</span> comment_node;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.comment</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7830-a706-102315c7a34a</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_comment.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_comment</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlcomment</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmlcomment;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmlconcat"><code>xmlconcat</code></h3>
+<p><strong>Purpose:</strong> Concatenates XML fragments.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>XMLCONCAT(expr_list)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>expr_list</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">xmlconcat</span>(<span class="fu">xmlelement</span>(<span class="st">&#39;a&#39;</span>, <span class="st">&#39;1&#39;</span>), <span class="fu">xmlelement</span>(<span class="st">&#39;b&#39;</span>, <span class="st">&#39;2&#39;</span>)) <span class="kw">as</span> xml_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.concat</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7970-825c-8ace8ab8b77e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_concat.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_concat</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlconcat</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmlconcat-list;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmldocument"><code>xmldocument</code></h3>
+<p><strong>Purpose:</strong> Builds or validates a bounded XML document
+value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmldocument(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML document/query helper
+arguments: XML/text fragments, document/content/sequence mode tokens,
+namespace or attribute name/value pairs, path tokens, and target type
+metadata only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes text/attribute/namespace output and rejects
+unsafe names, malformed XML document text, arity, entity, DTD, or
+byte-limit violations.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/query/serialize helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML document/query scalar helper returns bounded xml_document, xml
+fragment, or character descriptor according to function id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML descriptor output;
+no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML document/query scalar
+helper; deterministic in-core XML normalization, escaping,
+namespace/attribute descriptor, serialize, validate, and narrow tag-path
+query behavior only; no parser SQL execution, external plugin XML
+engine, storage/catalog lookup, transaction finality, recovery, or
+cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content/entity, malformed XML document
+text, DTD/entity declaration, or bounded-size violation refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmldocument(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.document</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f003-7001-8a00-000000000001</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_document.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_document</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmldocument</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC039-xmldocument-bare;SBSFC039-xmldocument-invalid;SBSFC039-xml-attrs-invalid</code>.</p>
+<h3 id="xmlelement"><code>xmlelement</code></h3>
+<p><strong>Purpose:</strong> Builds an XML element from a safe name and
+content values.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>XMLELEMENT(NAMEname[,namespaces][,attrs][,content_list])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>NAMEname[</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>namespaces][</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>attrs][</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li><code>content_list]</code>: Bound using the declared descriptor
+rules for this overload.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">xmlelement</span>(<span class="st">&#39;person&#39;</span>, <span class="st">&#39;Ada&#39;</span>) <span class="kw">as</span> xml_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.element</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7ecd-ac64-30f2e5814c94</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_element.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_element</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlelement</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmlelement-name;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmlexists"><code>xmlexists</code></h3>
+<p><strong>Purpose:</strong> Returns whether an XML query finds a
+value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmlexists(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlexists(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.exists</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f8e-8d18-5a968f021f07</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_exists.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_exists</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlexists</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmlexists;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmlforest"><code>xmlforest</code></h3>
+<p><strong>Purpose:</strong> Builds XML elements from named scalar
+values.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmlforest(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> <span class="fu">xmlforest</span>(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.forest</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-770d-ad5a-9652416b8eb8</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_forest.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_forest</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlforest</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmlforest;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmlnamespaces"><code>xmlnamespaces</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>xmlnamespaces</code> XML
+helper on bounded XML input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>XMLNAMESPACES(decl_list)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>decl_list</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li>Descriptor rule: bounded in-core XML document/query helper
+arguments: XML/text fragments, document/content/sequence mode tokens,
+namespace or attribute name/value pairs, path tokens, and target type
+metadata only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes text/attribute/namespace output and rejects
+unsafe names, malformed XML document text, arity, entity, DTD, or
+byte-limit violations.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/query/serialize helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML document/query scalar helper returns bounded xml_document, xml
+fragment, or character descriptor according to function id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML descriptor output;
+no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML document/query scalar
+helper; deterministic in-core XML normalization, escaping,
+namespace/attribute descriptor, serialize, validate, and narrow tag-path
+query behavior only; no parser SQL execution, external plugin XML
+engine, storage/catalog lookup, transaction finality, recovery, or
+cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content/entity, malformed XML document
+text, DTD/entity declaration, or bounded-size violation refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlnamespaces(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.namespaces</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f003-7002-8a00-000000000002</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_namespaces.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_namespaces</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlnamespaces</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC039-xmlnamespaces-decl;SBSFC039-xmldocument-invalid;SBSFC039-xml-attrs-invalid</code>.</p>
+<h3 id="xmlparse"><code>xmlparse</code></h3>
+<p><strong>Purpose:</strong> Parses bounded text into an XML value.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmlparse(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML document/query helper
+arguments: XML/text fragments, document/content/sequence mode tokens,
+namespace or attribute name/value pairs, path tokens, and target type
+metadata only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes text/attribute/namespace output and rejects
+unsafe names, malformed XML document text, arity, entity, DTD, or
+byte-limit violations.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/query/serialize helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML document/query scalar helper returns bounded xml_document, xml
+fragment, or character descriptor according to function id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML descriptor output;
+no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML document/query scalar
+helper; deterministic in-core XML normalization, escaping,
+namespace/attribute descriptor, serialize, validate, and narrow tag-path
+query behavior only; no parser SQL execution, external plugin XML
+engine, storage/catalog lookup, transaction finality, recovery, or
+cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content/entity, malformed XML document
+text, DTD/entity declaration, or bounded-size violation refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlparse(<span class="st">&#39;&lt;person&gt;Ada&lt;/person&gt;&#39;</span>) <span class="kw">as</span> xml_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.parse</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f003-7003-8a00-000000000003</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_parse.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_parse</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlparse</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC039-xmlparse-bare;SBSFC039-xmldocument-invalid;SBSFC039-xml-attrs-invalid</code>.</p>
+<h3 id="xmlpi"><code>xmlpi</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>xmlpi</code> XML helper
+on bounded XML input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>XMLPI(NAMEtarget[,content])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>NAMEtarget[</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>content]</code>: Bound using the declared descriptor rules for
+this overload.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlpi(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.pi</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7c5d-9d3d-92c0b78fb021</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_pi.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_pi</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlpi</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmlpi-name;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmlquery"><code>xmlquery</code></h3>
+<p><strong>Purpose:</strong> Evaluates a bounded XML query
+expression.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>XMLQUERY(xq[namespaces][PASSING...][RETURNING...][ONEMPTY])</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>xq[namespaces][PASSING...][RETURNING...][ONEMPTY]</code>:
+Bound using the declared descriptor rules for this overload.</li>
+<li>Descriptor rule: bounded in-core XML document/query helper
+arguments: XML/text fragments, document/content/sequence mode tokens,
+namespace or attribute name/value pairs, path tokens, and target type
+metadata only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes text/attribute/namespace output and rejects
+unsafe names, malformed XML document text, arity, entity, DTD, or
+byte-limit violations.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/query/serialize helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML document/query scalar helper returns bounded xml_document, xml
+fragment, or character descriptor according to function id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML descriptor output;
+no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML document/query scalar
+helper; deterministic in-core XML normalization, escaping,
+namespace/attribute descriptor, serialize, validate, and narrow tag-path
+query behavior only; no parser SQL execution, external plugin XML
+engine, storage/catalog lookup, transaction finality, recovery, or
+cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content/entity, malformed XML document
+text, DTD/entity declaration, or bounded-size violation refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlquery(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.query</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f003-7004-8a00-000000000004</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_query.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_query</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlquery</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC039-xmlquery-path;SBSFC039-xmldocument-invalid;SBSFC039-xml-attrs-invalid</code>.</p>
+<h3 id="xmlroot"><code>xmlroot</code></h3>
+<p><strong>Purpose:</strong> Returns XML with root-level declaration
+controls applied.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmlroot(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb16"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlroot(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.root</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-771b-9c03-aea00ea3719e</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_root.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_root</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlroot</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmlroot;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmlserialize"><code>xmlserialize</code></h3>
+<p><strong>Purpose:</strong> Serializes XML to a text or binary
+descriptor.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmlserialize(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML document/query helper
+arguments: XML/text fragments, document/content/sequence mode tokens,
+namespace or attribute name/value pairs, path tokens, and target type
+metadata only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes text/attribute/namespace output and rejects
+unsafe names, malformed XML document text, arity, entity, DTD, or
+byte-limit violations.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/query/serialize helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML document/query scalar helper returns bounded xml_document, xml
+fragment, or character descriptor according to function id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML descriptor output;
+no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML document/query scalar
+helper; deterministic in-core XML normalization, escaping,
+namespace/attribute descriptor, serialize, validate, and narrow tag-path
+query behavior only; no parser SQL execution, external plugin XML
+engine, storage/catalog lookup, transaction finality, recovery, or
+cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content/entity, malformed XML document
+text, DTD/entity declaration, or bounded-size violation refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlserialize(<span class="fu">xmlelement</span>(<span class="st">&#39;person&#39;</span>, <span class="st">&#39;Ada&#39;</span>)) <span class="kw">as</span> xml_text;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.serialize</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f003-7005-8a00-000000000005</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_serialize.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_serialize</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlserialize</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC039-xmlserialize-bare;SBSFC039-xmldocument-invalid;SBSFC039-xml-attrs-invalid</code>.</p>
+<h3 id="xmltable"><code>xmltable</code></h3>
+<p><strong>Purpose:</strong> Maps XML content into a tabular row
+shape.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>XMLTABLE([namespaces,]xq[PASSING...]COLUMNS(...))</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>[namespaces</code>: Bound using the declared descriptor rules
+for this overload.</li>
+<li><code>]xq[PASSING...]COLUMNS(...)</code>: Bound using the declared
+descriptor rules for this overload.</li>
+<li>Descriptor rule: bounded in-core XML scalar helper arguments:
+XML/text fragments, name-like aliases, path tokens, declaration
+controls, and scalar content values only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes non-XML descriptors and rejects unsafe XML names,
+comments, PI content, declaration values, arity, or byte limits.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/boolean helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML/multimodel scalar helper returns bounded xml_document, xml
+fragment, boolean, or json_document descriptor according to function
+id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML/JSON descriptor
+output; no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML/multimodel scalar helper;
+deterministic in-core XML text construction/inspection only; no parser
+SQL execution, external plugin XML engine, storage/catalog lookup,
+transaction finality, recovery, or cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content, malformed XML control value,
+or bounded-size violation refuses with SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmltable(value_1, value_2) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.table</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f000-7f47-8a74-4acf46ce946c</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_table.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_table</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmltable</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC037-xmltable-columns;SBSFC037-xmlcomment-invalid</code>.</p>
+<h3 id="xmltext"><code>xmltext</code></h3>
+<p><strong>Purpose:</strong> Performs the <code>xmltext</code> XML
+helper on bounded XML input.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmltext(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML document/query helper
+arguments: XML/text fragments, document/content/sequence mode tokens,
+namespace or attribute name/value pairs, path tokens, and target type
+metadata only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes text/attribute/namespace output and rejects
+unsafe names, malformed XML document text, arity, entity, DTD, or
+byte-limit violations.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/query/serialize helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML document/query scalar helper returns bounded xml_document, xml
+fragment, or character descriptor according to function id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML descriptor output;
+no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML document/query scalar
+helper; deterministic in-core XML normalization, escaping,
+namespace/attribute descriptor, serialize, validate, and narrow tag-path
+query behavior only; no parser SQL execution, external plugin XML
+engine, storage/catalog lookup, transaction finality, recovery, or
+cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content/entity, malformed XML document
+text, DTD/entity declaration, or bounded-size violation refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb19"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb19-1"><a href="#cb19-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmltext(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.text</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f003-7006-8a00-000000000006</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_text.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_text</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmltext</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC039-xmltext-bare;SBSFC039-xmldocument-invalid;SBSFC039-xml-attrs-invalid</code>.</p>
+<h3 id="xmlvalidate"><code>xmlvalidate</code></h3>
+<p><strong>Purpose:</strong> Validates bounded XML input according to
+the selected XML helper route.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>xmlvalidate(...)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>...</code>: Arguments are selected by the overload and
+descriptor binding rules.</li>
+<li>Descriptor rule: bounded in-core XML document/query helper
+arguments: XML/text fragments, document/content/sequence mode tokens,
+namespace or attribute name/value pairs, path tokens, and target type
+metadata only.</li>
+<li>Coercion: accepts deterministic bounded textual XML fragments and
+scalar values; escapes text/attribute/namespace output and rejects
+unsafe names, malformed XML document text, arity, entity, DTD, or
+byte-limit violations.</li>
+<li>NULL handling: SQL null input propagates to SQL null for
+document/query/serialize helpers where applicable.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p>XML document/query scalar helper returns bounded xml_document, xml
+fragment, or character descriptor according to function id.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable.</li>
+<li>Determinism: deterministic.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: UTF-8 text semantics for XML descriptor output;
+no collation-sensitive comparison.</li>
+<li>Timezone: not applicable.</li>
+<li>Security and authority: pure bounded XML document/query scalar
+helper; deterministic in-core XML normalization, escaping,
+namespace/attribute descriptor, serialize, validate, and narrow tag-path
+query behavior only; no parser SQL execution, external plugin XML
+engine, storage/catalog lookup, transaction finality, recovery, or
+cluster behavior.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>invalid arity, unsafe XML name/content/entity, malformed XML document
+text, DTD/entity declaration, or bounded-size violation refuses with
+SBSQL.FUNCTION.INVALID_INPUT.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> xmlvalidate(value_1) <span class="kw">as</span> result_value <span class="kw">from</span> app.sample_values;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>sb.xml.validate</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019dffbb-f003-7007-8a00-000000000007</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>scalar</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.xml_validate.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.xml_validate</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>xmlvalidate</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+<p>Conformance evidence:
+<code>SBSFC039-xmlvalidate-bare;SBSFC039-xmldocument-invalid;SBSFC039-xml-attrs-invalid</code>.</p>
+</body>
+</html>

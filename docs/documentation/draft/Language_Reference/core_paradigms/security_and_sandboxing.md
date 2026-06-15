@@ -9,17 +9,17 @@ Generation task: `core_paradigms_security_and_sandboxing`
 
 ## Purpose
 
-Security in ScratchBird is materialized engine state. A parser can recognize a
-security statement, a client can submit credentials, and a script can name an
-object, but none of those facts grants authority by itself.
+Security in ScratchBird is materialized engine state, not a gate checked once
+at login. Every operation is evaluated against the intersection of who the
+caller is, what roles they hold, which schema sandbox they are in, what policy
+applies to the object they are touching, and what the current transaction and
+recovery state permits. Passing authentication, owning an object, or holding a
+GRANT are all necessary inputs — but the engine rechecks all of them at
+execution time, not just at the moment the session opened.
 
-The effective user or agent UUID, active role set, group membership, sandbox
-root, security epoch, policy snapshot, object UUID, operation descriptor,
-transaction state, and recovery state decide whether an operation is admitted.
-The engine rechecks those facts after parsing and binding, before returning
-data or mutating durable state.
-
-The model is fail-closed:
+The model is fail-closed: when any required piece of evidence is missing,
+stale, ambiguous, or contradicted by an explicit denial, the engine refuses the
+operation rather than guessing:
 
 - explicit denial wins over allow;
 - hidden objects must stay hidden unless disclosure policy admits them;
@@ -31,18 +31,7 @@ The model is fail-closed:
 
 ## Security Flow
 
-```mermaid
-flowchart TD
-    A[Client or agent attaches] --> B[Authenticate or bind admitted identity]
-    B --> C[Create session security context]
-    C --> D[Apply sandbox root and schema visibility]
-    D --> E[Parse and bind SBsql to UUIDs]
-    E --> F[Resolve effective roles and grants]
-    F --> G[Apply policy, masks, RLS, and protected-material rules]
-    G --> H[Admit or refuse SBLR operation]
-    H --> I[Engine execution under MGA]
-    I --> J[Redacted result envelope and message vector]
-```
+![diagram](./security_and_sandboxing-1.svg)
 
 Security is evaluated on bound identity. A name that cannot be resolved inside
 the session's visible schema branch does not become a security decision about a
@@ -111,17 +100,7 @@ ordinary name resolution. A session connected to a workarea, tenant branch,
 application branch, or other bounded schema root sees that root as its visible
 world unless SBsql administrative authority and policy admit broader access.
 
-```mermaid
-flowchart TD
-    R[/database root/] --> SYS[system catalog branch]
-    R --> APP[application branch]
-    APP --> TENANT_A[tenant_a sandbox root]
-    APP --> TENANT_B[tenant_b sandbox root]
-    TENANT_A --> OBJ_A[tables, views, routines, policies]
-    TENANT_B --> OBJ_B[tables, views, routines, policies]
-    SYS --> PROJ[authorized catalog projections]
-    PROJ -. policy-rendered metadata .-> TENANT_A
-```
+![diagram](./security_and_sandboxing-2.svg)
 
 Sandbox rules:
 
@@ -406,32 +385,32 @@ from admin.security_audit;
 ## Syntax Productions
 
 ```ebnf
-security_statement ::=
-      create_identity_statement
-    | alter_identity_statement
-    | drop_identity_statement
-    | grant_statement
-    | revoke_statement
+dcl_security_stmt ::=
+      create_principal_stmt
+    | alter_principal_stmt
+    | drop_principal_stmt
+    | grant_stmt
+    | revoke_stmt
     | set_role_statement
     | show_security_statement
     | describe_security_statement ;
 ```
 
 ```ebnf
-principal_ref           ::= uuid_ref
+principal_ref           ::= uuid_reference
                           | qualified_name ;
 ```
 
 ```ebnf
-grant_statement         ::= "GRANT" grant_payload "TO" principal_ref grant_option_list? ;
+grant_stmt              ::= "GRANT" grant_payload "TO" principal_ref grant_option_list? ;
 ```
 
 ```ebnf
-revoke_statement        ::= "REVOKE" revoke_payload "FROM" principal_ref revoke_option_list? ;
+revoke_stmt             ::= "REVOKE" revoke_payload "FROM" principal_ref revoke_option_list? ;
 ```
 
 ```ebnf
-policy_statement        ::= create_policy_statement
+policy_stmt             ::= create_policy_statement
                           | alter_policy_statement
                           | drop_policy_statement
                           | create_mask_statement

@@ -2,49 +2,23 @@
 
 ## Purpose
 
-ScratchBird separates client language handling from durable database authority. This is one of the central architectural ideas in the system.
+After reading this page you will understand why ScratchBird draws a sharp line between the component that accepts your commands and the component that actually changes data. Understanding this boundary will help you reason about why the same SQL statement might be accepted by a parser but still refused by the engine, and why different client tools can share the same storage and transaction rules.
 
-A parser understands a command language, script format, or wire protocol. SBcore owns durable database behavior: catalog identity, descriptors, storage, transactions, authorization, diagnostics, and recovery decisions.
+ScratchBird separates client language handling from durable database authority. A parser understands a command language, script format, or wire protocol. SBcore (the database engine) owns durable database behavior: catalog identity, descriptors (the engine's metadata records for objects and types), storage, transactions, authorization, diagnostics, and recovery decisions.
 
 This page explains the boundary at an end-user level. It does not claim that every parser route or command surface is complete in every build.
 
 ## The Boundary In One Diagram
 
-```mermaid
-flowchart LR
-    Client[Client or tool]
-    Surface[Language, script, or protocol surface]
-    Parser[Parser package]
-    Bound[Bound request]
-    SBLR[SBLR envelope]
-    Engine[SBcore]
-    Catalog[UUID catalog]
-    Types[Descriptors and types]
-    Txn[MGA transaction state]
-    Storage[Storage and filespaces]
-    Policy[Security and policy]
-    Diagnostic[Message vector]
+![diagram](./engine_parser_boundary-1.svg)
 
-    Client --> Surface
-    Surface --> Parser
-    Parser --> Bound
-    Bound --> SBLR
-    SBLR --> Engine
-    Engine --> Catalog
-    Engine --> Types
-    Engine --> Txn
-    Engine --> Storage
-    Engine --> Policy
-    Engine --> Diagnostic
-```
-
-The client sends text, frames, parameters, or tool commands. The parser decides whether that surface is accepted. The engine decides whether the resulting bound request is valid, authorized, transactionally safe, and executable.
+The client sends text, frames, parameters, or tool commands. The parser decides whether that surface is accepted. The engine decides whether the resulting bound request — expressed as an SBLR envelope (the structured, engine-facing form of an accepted statement) — is valid, authorized, transactionally safe, and executable.
 
 ## Why The Boundary Exists
 
-Without a strict parser/engine boundary, every accepted language surface could become a separate database engine. That would make transaction behavior, catalog identity, security, recovery, and diagnostics drift by parser.
+Without a strict parser/engine boundary, every accepted language surface could become a separate database engine. That would mean transaction behavior, catalog identity, security, recovery, and diagnostics could each drift independently depending on which parser a client happened to use — the same underlying data could behave differently depending on how you connected to it.
 
-ScratchBird avoids that by making parsers translators, not storage authorities.
+ScratchBird avoids that by making parsers translators, not storage authorities. MGA (ScratchBird's transaction and visibility authority model) and all catalog state remain in SBcore regardless of which parser route a session uses.
 
 | Concern | Parser Package | SBcore |
 | --- | --- | --- |
@@ -58,7 +32,9 @@ ScratchBird avoids that by making parsers translators, not storage authorities.
 
 ## Parser Responsibilities
 
-A parser package is responsible for:
+A parser package is the client-facing component: it understands a specific language or protocol, applies its own syntax rules and defaults, and translates accepted work into an engine request. A parser also binds visible names through the session's schema root (the branch of the schema tree that this session is permitted to see and navigate). What a parser must never do is write database files, decide final transaction visibility, bypass catalog identity, or grant access outside the session's authority.
+
+Specifically, a parser package is responsible for:
 
 - accepting only the language or protocol surface it is designed to support;
 - rejecting unrelated dialects or malformed protocol input;
@@ -68,8 +44,6 @@ A parser package is responsible for:
 - lowering admitted work into SBLR or another engine-facing request shape;
 - rendering rows, status, and diagnostics in the client-facing shape where implemented;
 - refusing unsupported, denied, unsafe, or unavailable behavior clearly.
-
-A parser should not write database files, decide final transaction visibility, bypass catalog identity, or grant access outside the session's authority.
 
 ## Engine Responsibilities
 
@@ -85,31 +59,11 @@ SBcore is responsible for:
 - support-bundle evidence and engine diagnostics;
 - final admission, execution, or refusal of a bound request.
 
-The engine may refuse a request even after the parser accepts the syntax. That is expected behavior.
+The engine may refuse a request even after the parser accepts the syntax. That is expected behavior: parser acceptance and engine admission are independent decisions.
 
 ## Statement Lifecycle
 
-```mermaid
-sequenceDiagram
-    participant Client
-    participant Parser
-    participant Engine as SBcore
-    participant Catalog
-    participant Txn as MGA
-    participant Storage
-
-    Client->>Parser: Client request
-    Parser->>Parser: Parse accepted surface
-    Parser->>Parser: Bind visible names and parameters
-    Parser->>Engine: Submit bound request
-    Engine->>Catalog: Resolve UUID descriptors
-    Engine->>Txn: Check transaction visibility and state
-    Engine->>Engine: Check authorization and policy
-    Engine->>Storage: Execute admitted read or write
-    Storage-->>Engine: Data or durable status
-    Engine-->>Parser: Result or message vector
-    Parser-->>Client: Client-shaped response
-```
+![diagram](./engine_parser_boundary-2.svg)
 
 This lifecycle is the same architectural pattern whether the client uses native SBsql or a compatibility parser route.
 
@@ -137,6 +91,8 @@ A session has a visible schema root and authorization context. A compatibility p
 The parser cannot simply spell a path outside the visible root and gain authority. Name resolution must end in a visible object identity that the engine admits for the session.
 
 ## Refusal Behavior
+
+Knowing where a refusal comes from helps you diagnose problems. A failure at the binder means a name was not visible; a failure at engine admission means the operation was unauthorized or unsupported by this build; a failure at execution means a runtime constraint was violated. The message vector (ScratchBird's structured diagnostic carrier) should tell you which stage refused and why.
 
 Refusal can happen at several points.
 

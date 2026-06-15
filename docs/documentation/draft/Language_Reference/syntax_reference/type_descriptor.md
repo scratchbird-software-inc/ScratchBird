@@ -219,7 +219,7 @@ Renaming a descriptor changes only the resolver name. Stored data, domains, colu
 | Boolean | `boolean` | Three-valued logic, display rendering, null interaction. |
 | Signed integer | `int16`, `int32`, `int64`, `int128` | Width, signed range, overflow, widening. |
 | Unsigned integer | `uint8`, `uint16`, `uint32`, `uint64` | Width, unsigned range, explicit casts. |
-| Decimal | `decimal(18,2)`, `numeric(38,10)`, `decfloat(34)` | Precision, scale, rounding, overflow, special values where admitted. |
+| Decimal | `decimal(18,2)`, `numeric(38,10)`, `decimal_float` | Precision, scale, rounding, overflow, special values where admitted. |
 | Real | `float32`, `float64` | Approximation policy, NaN/infinity handling, comparison policy. |
 | Text | `char`, `varchar`, `text`, `clob` | Character count, byte count, charset, collation, padding, overflow. |
 | Binary | `binary`, `varbinary`, `blob` | Byte count, large-value storage, rendering, byte ordering. |

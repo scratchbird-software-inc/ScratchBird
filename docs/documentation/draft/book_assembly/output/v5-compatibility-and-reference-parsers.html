@@ -1,0 +1,3896 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>ScratchBird — Compatibility and Reference Parsers</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">ScratchBird — Compatibility and Reference Parsers</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#scratchbird-compatibility-and-reference-parsers" id="toc-scratchbird-compatibility-and-reference-parsers">ScratchBird —
+Compatibility and Reference Parsers</a>
+<ul>
+<li><a href="#who-this-book-is-for" id="toc-who-this-book-is-for">Who
+this book is for</a></li>
+<li><a href="#about-this-book" id="toc-about-this-book">About this
+book</a></li>
+<li><a href="#parts-in-this-volume" id="toc-parts-in-this-volume">Parts
+in this volume</a></li>
+</ul></li>
+<li><a href="#reference-parsers" id="toc-reference-parsers">Reference
+Parsers</a></li>
+<li><a href="#reference-parsers-compatibility-parsers" id="toc-reference-parsers-compatibility-parsers">Reference Parsers
+(Compatibility Parsers)</a>
+<ul>
+<li><a href="#purpose" id="toc-purpose">Purpose</a></li>
+<li><a href="#read-first" id="toc-read-first">Read first</a></li>
+<li><a href="#reference-parsers-1" id="toc-reference-parsers-1">Reference parsers</a></li>
+<li><a href="#related-manuals" id="toc-related-manuals">Related
+manuals</a></li>
+</ul></li>
+<li><a href="#how-reference-parsers-work" id="toc-how-reference-parsers-work">How Reference Parsers Work</a>
+<ul>
+<li><a href="#purpose-1" id="toc-purpose-1">Purpose</a></li>
+<li><a href="#what-a-reference-parser-is" id="toc-what-a-reference-parser-is">What a reference parser is</a></li>
+<li><a href="#one-parser-one-dialect-one-wire-protocol" id="toc-one-parser-one-dialect-one-wire-protocol">One parser, one
+dialect, one wire protocol</a></li>
+<li><a href="#how-a-request-flows" id="toc-how-a-request-flows">How a
+request flows</a></li>
+<li><a href="#the-parser-is-untrusted" id="toc-the-parser-is-untrusted">The parser is untrusted</a></li>
+<li><a href="#where-to-go-next" id="toc-where-to-go-next">Where to go
+next</a></li>
+</ul></li>
+<li><a href="#compatibility-scope-and-boundaries" id="toc-compatibility-scope-and-boundaries">Compatibility Scope And
+Boundaries</a>
+<ul>
+<li><a href="#purpose-2" id="toc-purpose-2">Purpose</a></li>
+<li><a href="#compatibility-is-the-only-goal" id="toc-compatibility-is-the-only-goal">Compatibility is the only
+goal</a></li>
+<li><a href="#the-engine-keeps-authority" id="toc-the-engine-keeps-authority">The engine keeps authority</a></li>
+<li><a href="#what-is-deliberately-blocked" id="toc-what-is-deliberately-blocked">What is deliberately
+blocked</a></li>
+<li><a href="#unsupported-is-refused-not-faked" id="toc-unsupported-is-refused-not-faked">Unsupported is refused, not
+faked</a></li>
+<li><a href="#where-to-go-next-1" id="toc-where-to-go-next-1">Where to
+go next</a></li>
+</ul></li>
+<li><a href="#how-compatibility-behaviors-are-emulated" id="toc-how-compatibility-behaviors-are-emulated">How Compatibility
+Behaviors Are Emulated</a>
+<ul>
+<li><a href="#purpose-3" id="toc-purpose-3">Purpose</a></li>
+<li><a href="#behavior-is-emulated-authority-is-not" id="toc-behavior-is-emulated-authority-is-not">Behavior is emulated;
+authority is not</a></li>
+<li><a href="#storage-and-index-behavior" id="toc-storage-and-index-behavior">Storage and index behavior</a></li>
+<li><a href="#transactions-and-autocommit" id="toc-transactions-and-autocommit">Transactions and
+autocommit</a></li>
+<li><a href="#other-behavioral-differences" id="toc-other-behavioral-differences">Other behavioral
+differences</a></li>
+<li><a href="#where-to-go-next-2" id="toc-where-to-go-next-2">Where to
+go next</a></li>
+</ul></li>
+<li><a href="#conformance-and-compatibility-targets" id="toc-conformance-and-compatibility-targets">Conformance And
+Compatibility Targets</a>
+<ul>
+<li><a href="#purpose-4" id="toc-purpose-4">Purpose</a></li>
+<li><a href="#each-parser-targets-a-published-baseline" id="toc-each-parser-targets-a-published-baseline">Each parser targets a
+published baseline</a></li>
+<li><a href="#what-conformance-covers" id="toc-what-conformance-covers">What conformance covers</a></li>
+<li><a href="#what-conformance-does-not-promise" id="toc-what-conformance-does-not-promise">What conformance does not
+promise</a></li>
+<li><a href="#where-to-go-next-3" id="toc-where-to-go-next-3">Where to
+go next</a></li>
+</ul></li>
+<li><a href="#apache-ignite-compatibility-parser" id="toc-apache-ignite-compatibility-parser">Apache Ignite Compatibility
+Parser</a>
+<ul>
+<li><a href="#purpose-5" id="toc-purpose-5">Purpose</a></li>
+<li><a href="#what-it-does" id="toc-what-it-does">What it does</a></li>
+<li><a href="#behavior-emulation" id="toc-behavior-emulation">Behavior
+emulation</a></li>
+<li><a href="#scope-and-boundaries" id="toc-scope-and-boundaries">Scope
+and boundaries</a></li>
+<li><a href="#see-also" id="toc-see-also">See also</a></li>
+</ul></li>
+<li><a href="#cassandra-compatibility-parser" id="toc-cassandra-compatibility-parser">Cassandra Compatibility
+Parser</a>
+<ul>
+<li><a href="#purpose-6" id="toc-purpose-6">Purpose</a></li>
+<li><a href="#what-it-does-1" id="toc-what-it-does-1">What it
+does</a></li>
+<li><a href="#behavior-emulation-1" id="toc-behavior-emulation-1">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-1" id="toc-scope-and-boundaries-1">Scope and boundaries</a></li>
+<li><a href="#see-also-1" id="toc-see-also-1">See also</a></li>
+</ul></li>
+<li><a href="#clickhouse-compatibility-parser" id="toc-clickhouse-compatibility-parser">ClickHouse Compatibility
+Parser</a>
+<ul>
+<li><a href="#purpose-7" id="toc-purpose-7">Purpose</a></li>
+<li><a href="#what-it-does-2" id="toc-what-it-does-2">What it
+does</a></li>
+<li><a href="#behavior-emulation-2" id="toc-behavior-emulation-2">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-2" id="toc-scope-and-boundaries-2">Scope and boundaries</a></li>
+<li><a href="#see-also-2" id="toc-see-also-2">See also</a></li>
+</ul></li>
+<li><a href="#cockroachdb-compatibility-parser" id="toc-cockroachdb-compatibility-parser">CockroachDB Compatibility
+Parser</a>
+<ul>
+<li><a href="#purpose-8" id="toc-purpose-8">Purpose</a></li>
+<li><a href="#what-it-does-3" id="toc-what-it-does-3">What it
+does</a></li>
+<li><a href="#behavior-emulation-3" id="toc-behavior-emulation-3">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-3" id="toc-scope-and-boundaries-3">Scope and boundaries</a></li>
+<li><a href="#see-also-3" id="toc-see-also-3">See also</a></li>
+</ul></li>
+<li><a href="#dolt-compatibility-parser" id="toc-dolt-compatibility-parser">Dolt Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-9" id="toc-purpose-9">Purpose</a></li>
+<li><a href="#what-it-does-4" id="toc-what-it-does-4">What it
+does</a></li>
+<li><a href="#behavior-emulation-4" id="toc-behavior-emulation-4">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-4" id="toc-scope-and-boundaries-4">Scope and boundaries</a></li>
+<li><a href="#see-also-4" id="toc-see-also-4">See also</a></li>
+</ul></li>
+<li><a href="#duckdb-compatibility-parser" id="toc-duckdb-compatibility-parser">DuckDB Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-10" id="toc-purpose-10">Purpose</a></li>
+<li><a href="#what-it-does-5" id="toc-what-it-does-5">What it
+does</a></li>
+<li><a href="#behavior-emulation-5" id="toc-behavior-emulation-5">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-5" id="toc-scope-and-boundaries-5">Scope and boundaries</a></li>
+<li><a href="#see-also-5" id="toc-see-also-5">See also</a></li>
+</ul></li>
+<li><a href="#firebird-compatibility-parser" id="toc-firebird-compatibility-parser">Firebird Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-11" id="toc-purpose-11">Purpose</a></li>
+<li><a href="#what-it-does-6" id="toc-what-it-does-6">What it
+does</a></li>
+<li><a href="#behavior-emulation-6" id="toc-behavior-emulation-6">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-6" id="toc-scope-and-boundaries-6">Scope and boundaries</a></li>
+<li><a href="#see-also-6" id="toc-see-also-6">See also</a></li>
+</ul></li>
+<li><a href="#foundationdb-compatibility-parser" id="toc-foundationdb-compatibility-parser">FoundationDB Compatibility
+Parser</a>
+<ul>
+<li><a href="#purpose-12" id="toc-purpose-12">Purpose</a></li>
+<li><a href="#what-it-does-7" id="toc-what-it-does-7">What it
+does</a></li>
+<li><a href="#behavior-emulation-7" id="toc-behavior-emulation-7">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-7" id="toc-scope-and-boundaries-7">Scope and boundaries</a></li>
+<li><a href="#see-also-7" id="toc-see-also-7">See also</a></li>
+</ul></li>
+<li><a href="#immudb-compatibility-parser" id="toc-immudb-compatibility-parser">immudb Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-13" id="toc-purpose-13">Purpose</a></li>
+<li><a href="#what-it-does-8" id="toc-what-it-does-8">What it
+does</a></li>
+<li><a href="#behavior-emulation-8" id="toc-behavior-emulation-8">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-8" id="toc-scope-and-boundaries-8">Scope and boundaries</a></li>
+<li><a href="#see-also-8" id="toc-see-also-8">See also</a></li>
+</ul></li>
+<li><a href="#influxdb-compatibility-parser" id="toc-influxdb-compatibility-parser">InfluxDB Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-14" id="toc-purpose-14">Purpose</a></li>
+<li><a href="#what-it-does-9" id="toc-what-it-does-9">What it
+does</a></li>
+<li><a href="#behavior-emulation-9" id="toc-behavior-emulation-9">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-9" id="toc-scope-and-boundaries-9">Scope and boundaries</a></li>
+<li><a href="#see-also-9" id="toc-see-also-9">See also</a></li>
+</ul></li>
+<li><a href="#mariadb-compatibility-parser" id="toc-mariadb-compatibility-parser">MariaDB Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-15" id="toc-purpose-15">Purpose</a></li>
+<li><a href="#what-it-does-10" id="toc-what-it-does-10">What it
+does</a></li>
+<li><a href="#behavior-emulation-10" id="toc-behavior-emulation-10">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-10" id="toc-scope-and-boundaries-10">Scope and boundaries</a></li>
+<li><a href="#see-also-10" id="toc-see-also-10">See also</a></li>
+</ul></li>
+<li><a href="#milvus-compatibility-parser" id="toc-milvus-compatibility-parser">Milvus Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-16" id="toc-purpose-16">Purpose</a></li>
+<li><a href="#what-it-does-11" id="toc-what-it-does-11">What it
+does</a></li>
+<li><a href="#behavior-emulation-11" id="toc-behavior-emulation-11">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-11" id="toc-scope-and-boundaries-11">Scope and boundaries</a></li>
+<li><a href="#see-also-11" id="toc-see-also-11">See also</a></li>
+</ul></li>
+<li><a href="#mongodb-compatibility-parser" id="toc-mongodb-compatibility-parser">MongoDB Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-17" id="toc-purpose-17">Purpose</a></li>
+<li><a href="#what-it-does-12" id="toc-what-it-does-12">What it
+does</a></li>
+<li><a href="#behavior-emulation-12" id="toc-behavior-emulation-12">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-12" id="toc-scope-and-boundaries-12">Scope and boundaries</a></li>
+<li><a href="#see-also-12" id="toc-see-also-12">See also</a></li>
+</ul></li>
+<li><a href="#mysql-compatibility-parser" id="toc-mysql-compatibility-parser">MySQL Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-18" id="toc-purpose-18">Purpose</a></li>
+<li><a href="#what-it-does-13" id="toc-what-it-does-13">What it
+does</a></li>
+<li><a href="#behavior-emulation-13" id="toc-behavior-emulation-13">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-13" id="toc-scope-and-boundaries-13">Scope and boundaries</a></li>
+<li><a href="#see-also-13" id="toc-see-also-13">See also</a></li>
+</ul></li>
+<li><a href="#neo4j-compatibility-parser" id="toc-neo4j-compatibility-parser">Neo4j Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-19" id="toc-purpose-19">Purpose</a></li>
+<li><a href="#what-it-does-14" id="toc-what-it-does-14">What it
+does</a></li>
+<li><a href="#behavior-emulation-14" id="toc-behavior-emulation-14">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-14" id="toc-scope-and-boundaries-14">Scope and boundaries</a></li>
+<li><a href="#see-also-14" id="toc-see-also-14">See also</a></li>
+</ul></li>
+<li><a href="#opensearch-compatibility-parser" id="toc-opensearch-compatibility-parser">OpenSearch Compatibility
+Parser</a>
+<ul>
+<li><a href="#purpose-20" id="toc-purpose-20">Purpose</a></li>
+<li><a href="#what-it-does-15" id="toc-what-it-does-15">What it
+does</a></li>
+<li><a href="#behavior-emulation-15" id="toc-behavior-emulation-15">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-15" id="toc-scope-and-boundaries-15">Scope and boundaries</a></li>
+<li><a href="#see-also-15" id="toc-see-also-15">See also</a></li>
+</ul></li>
+<li><a href="#opensearch-sqlppl-compatibility-parser" id="toc-opensearch-sqlppl-compatibility-parser">OpenSearch SQL/PPL
+Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-21" id="toc-purpose-21">Purpose</a></li>
+<li><a href="#what-it-does-16" id="toc-what-it-does-16">What it
+does</a></li>
+<li><a href="#behavior-emulation-16" id="toc-behavior-emulation-16">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-16" id="toc-scope-and-boundaries-16">Scope and boundaries</a></li>
+<li><a href="#see-also-16" id="toc-see-also-16">See also</a></li>
+</ul></li>
+<li><a href="#postgresql-compatibility-parser" id="toc-postgresql-compatibility-parser">PostgreSQL Compatibility
+Parser</a>
+<ul>
+<li><a href="#purpose-22" id="toc-purpose-22">Purpose</a></li>
+<li><a href="#what-it-does-17" id="toc-what-it-does-17">What it
+does</a></li>
+<li><a href="#behavior-emulation-17" id="toc-behavior-emulation-17">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-17" id="toc-scope-and-boundaries-17">Scope and boundaries</a></li>
+<li><a href="#see-also-17" id="toc-see-also-17">See also</a></li>
+</ul></li>
+<li><a href="#redis-compatibility-parser" id="toc-redis-compatibility-parser">Redis Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-23" id="toc-purpose-23">Purpose</a></li>
+<li><a href="#what-it-does-18" id="toc-what-it-does-18">What it
+does</a></li>
+<li><a href="#behavior-emulation-18" id="toc-behavior-emulation-18">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-18" id="toc-scope-and-boundaries-18">Scope and boundaries</a></li>
+<li><a href="#see-also-18" id="toc-see-also-18">See also</a></li>
+</ul></li>
+<li><a href="#sqlite-compatibility-parser" id="toc-sqlite-compatibility-parser">SQLite Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-24" id="toc-purpose-24">Purpose</a></li>
+<li><a href="#what-it-does-19" id="toc-what-it-does-19">What it
+does</a></li>
+<li><a href="#behavior-emulation-19" id="toc-behavior-emulation-19">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-19" id="toc-scope-and-boundaries-19">Scope and boundaries</a></li>
+<li><a href="#see-also-19" id="toc-see-also-19">See also</a></li>
+</ul></li>
+<li><a href="#tidb-compatibility-parser" id="toc-tidb-compatibility-parser">TiDB Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-25" id="toc-purpose-25">Purpose</a></li>
+<li><a href="#what-it-does-20" id="toc-what-it-does-20">What it
+does</a></li>
+<li><a href="#behavior-emulation-20" id="toc-behavior-emulation-20">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-20" id="toc-scope-and-boundaries-20">Scope and boundaries</a></li>
+<li><a href="#see-also-20" id="toc-see-also-20">See also</a></li>
+</ul></li>
+<li><a href="#tikv-compatibility-parser" id="toc-tikv-compatibility-parser">TiKV Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-26" id="toc-purpose-26">Purpose</a></li>
+<li><a href="#what-it-does-21" id="toc-what-it-does-21">What it
+does</a></li>
+<li><a href="#behavior-emulation-21" id="toc-behavior-emulation-21">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-21" id="toc-scope-and-boundaries-21">Scope and boundaries</a></li>
+<li><a href="#see-also-21" id="toc-see-also-21">See also</a></li>
+</ul></li>
+<li><a href="#vitess-compatibility-parser" id="toc-vitess-compatibility-parser">Vitess Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-27" id="toc-purpose-27">Purpose</a></li>
+<li><a href="#what-it-does-22" id="toc-what-it-does-22">What it
+does</a></li>
+<li><a href="#behavior-emulation-22" id="toc-behavior-emulation-22">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-22" id="toc-scope-and-boundaries-22">Scope and boundaries</a></li>
+<li><a href="#see-also-22" id="toc-see-also-22">See also</a></li>
+</ul></li>
+<li><a href="#xtdb-compatibility-parser" id="toc-xtdb-compatibility-parser">XTDB Compatibility Parser</a>
+<ul>
+<li><a href="#purpose-28" id="toc-purpose-28">Purpose</a></li>
+<li><a href="#what-it-does-23" id="toc-what-it-does-23">What it
+does</a></li>
+<li><a href="#behavior-emulation-23" id="toc-behavior-emulation-23">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-23" id="toc-scope-and-boundaries-23">Scope and boundaries</a></li>
+<li><a href="#see-also-23" id="toc-see-also-23">See also</a></li>
+</ul></li>
+<li><a href="#yugabytedb-compatibility-parser" id="toc-yugabytedb-compatibility-parser">YugabyteDB Compatibility
+Parser</a>
+<ul>
+<li><a href="#purpose-29" id="toc-purpose-29">Purpose</a></li>
+<li><a href="#what-it-does-24" id="toc-what-it-does-24">What it
+does</a></li>
+<li><a href="#behavior-emulation-24" id="toc-behavior-emulation-24">Behavior emulation</a></li>
+<li><a href="#scope-and-boundaries-24" id="toc-scope-and-boundaries-24">Scope and boundaries</a></li>
+<li><a href="#see-also-24" id="toc-see-also-24">See also</a></li>
+</ul></li>
+<li><a href="#glossary" id="toc-glossary">Glossary</a>
+<ul>
+<li><a href="#purpose-30" id="toc-purpose-30">Purpose</a></li>
+<li><a href="#scratchbird-product-names" id="toc-scratchbird-product-names">ScratchBird Product Names</a></li>
+<li><a href="#architecture-terms" id="toc-architecture-terms">Architecture Terms</a></li>
+<li><a href="#database-and-catalog-terms" id="toc-database-and-catalog-terms">Database And Catalog Terms</a></li>
+<li><a href="#schema-and-name-terms" id="toc-schema-and-name-terms">Schema And Name Terms</a></li>
+<li><a href="#transaction-and-recovery-terms" id="toc-transaction-and-recovery-terms">Transaction And Recovery
+Terms</a></li>
+<li><a href="#security-terms" id="toc-security-terms">Security
+Terms</a></li>
+<li><a href="#data-and-type-terms" id="toc-data-and-type-terms">Data And
+Type Terms</a></li>
+<li><a href="#query-terms" id="toc-query-terms">Query Terms</a></li>
+<li><a href="#procedural-terms" id="toc-procedural-terms">Procedural
+Terms</a></li>
+<li><a href="#operations-and-data-movement-terms" id="toc-operations-and-data-movement-terms">Operations And Data Movement
+Terms</a></li>
+<li><a href="#build-and-release-terms" id="toc-build-and-release-terms">Build And Release Terms</a></li>
+</ul></li>
+<li><a href="#about-this-documentation" id="toc-about-this-documentation">About This Documentation</a></li>
+</ul>
+</nav>
+<h1 id="scratchbird-compatibility-and-reference-parsers">ScratchBird —
+Compatibility and Reference Parsers</h1>
+<p><em>ScratchBird documentation — draft</em></p>
+<h2 id="who-this-book-is-for">Who this book is for</h2>
+<p>Teams migrating from, or interoperating with, other databases.</p>
+<h2 id="about-this-book">About this book</h2>
+<p>This volume explains, in general terms, how ScratchBird’s reference
+parsers provide compatibility with other database dialects and wire
+protocols, how behavior is emulated, and where the boundaries are.</p>
+<h2 id="parts-in-this-volume">Parts in this volume</h2>
+<ul>
+<li><strong>Reference Parsers</strong></li>
+</ul>
+<blockquote>
+<p>This is a <strong>draft</strong>. See <em>About This
+Documentation</em> at the end of this book for status and license.
+Confirm any specific behavior against the current build.</p>
+</blockquote>
+<h1 id="reference-parsers">Reference Parsers</h1>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/README.md -->
+<p><a id="ch-reference-parsers-readme-md"></a></p>
+<h1 id="reference-parsers-compatibility-parsers">Reference Parsers
+(Compatibility Parsers)</h1>
+<h2 id="purpose">Purpose</h2>
+<p>This guide explains, in general terms, the <strong>why</strong> and
+<strong>how</strong> of ScratchBird’s reference parsers — the
+compatibility surfaces that let clients built for other databases
+connect to ScratchBird using their own dialect and wire protocol. It is
+deliberately high-level: it describes the model, the behavior emulation,
+and the boundaries, not any source system’s internals or a parser’s
+statement-by-statement coverage.</p>
+<p>Each reference parser is responsible for <strong>one source dialect
+and one wire protocol</strong>, exists for <strong>compatibility
+only</strong> (it adds no functionality and blends no other dialect),
+and is <strong>untrusted</strong> by the engine — accepted work is
+lowered to the engine’s internal SBLR representation and rechecked
+there. The engine keeps all identity, transaction, storage, and security
+authority.</p>
+<p>This is a <strong>draft</strong>; availability of any specific
+behavior still depends on the build, configuration, policy, and release
+notes.</p>
+<h2 id="read-first">Read first</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a> — the model and the request flow.</li>
+<li><a href="#ch-reference-parsers-behavior-emulation-md">How
+Compatibility Behaviors Are Emulated</a> — index, storage, and
+transaction/autocommit emulation over the engine.</li>
+<li><a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a> — what compatibility covers and what is
+deliberately blocked.</li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a> — what each parser is built to match.</li>
+</ul>
+<h2 id="reference-parsers-1">Reference parsers</h2>
+<p>Each parser presents one system’s dialect, wire protocol, and
+behavior as compatibility, over a single ScratchBird engine.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Parser</th>
+<th>Category</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-duckdb-md">DuckDB</a></td>
+<td>Relational</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-firebird-md">Firebird</a></td>
+<td>Relational</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-mariadb-md">MariaDB</a></td>
+<td>Relational</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-mysql-md">MySQL</a></td>
+<td>Relational</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-postgresql-md">PostgreSQL</a></td>
+<td>Relational</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-sqlite-md">SQLite</a></td>
+<td>Relational</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-clickhouse-md">ClickHouse</a></td>
+<td>Analytical</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-influxdb-md">InfluxDB</a></td>
+<td>Analytical</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-milvus-md">Milvus</a></td>
+<td>Analytical</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-opensearch-md">OpenSearch</a></td>
+<td>Analytical</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-opensearch-sql-ppl-md">OpenSearch
+SQL/PPL</a></td>
+<td>Analytical</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-cassandra-md">Cassandra</a></td>
+<td>NoSQL</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-mongodb-md">MongoDB</a></td>
+<td>NoSQL</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-neo4j-md">Neo4j</a></td>
+<td>NoSQL</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-redis-md">Redis</a></td>
+<td>NoSQL</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-xtdb-md">XTDB</a></td>
+<td>NoSQL</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-apache-ignite-md">Apache
+Ignite</a></td>
+<td>Distributed</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-cockroachdb-md">CockroachDB</a></td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-dolt-md">Dolt</a></td>
+<td>Distributed</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-foundationdb-md">FoundationDB</a></td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-immudb-md">immudb</a></td>
+<td>Distributed</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-tidb-md">TiDB</a></td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-tikv-md">TiKV</a></td>
+<td>Distributed</td>
+</tr>
+<tr class="even">
+<td><a href="#ch-reference-parsers-parsers-vitess-md">Vitess</a></td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td><a href="#ch-reference-parsers-parsers-yugabytedb-md">YugabyteDB</a></td>
+<td>Distributed</td>
+</tr>
+</tbody>
+</table>
+<h2 id="related-manuals">Related manuals</h2>
+<ul>
+<li>CDE Concepts: Dialect Plurality And Parser Separation (ScratchBird —
+Concepts and Getting Started, page XXX)</li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX) — connection, wire, and authentication
+specifics.</li>
+<li>Security Guide: Trust And Separation Architecture (ScratchBird —
+Operations, Security, and Autonomy, page XXX) — why parsers are
+untrusted.</li>
+<li>Operations And Administration: Parser Registration And Routes
+(ScratchBird — Operations, Security, and Autonomy, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/how_reference_parsers_work.md -->
+<p><a id="ch-reference-parsers-how-reference-parsers-work-md"></a></p>
+<h1 id="how-reference-parsers-work">How Reference Parsers Work</h1>
+<h2 id="purpose-1">Purpose</h2>
+<p>This page explains, in general terms, what a reference parser is and
+how it works inside ScratchBird. It does not describe any source
+system’s internals or any parser’s statement-by-statement coverage. The
+goal is to make the model clear: why these parsers exist, what each one
+is responsible for, and where the boundaries are.</p>
+<h2 id="what-a-reference-parser-is">What a reference parser is</h2>
+<p>A <strong>reference parser</strong> (also called a compatibility
+parser) lets a client written for another database connect to
+ScratchBird and speak that database’s own language. Each parser presents
+one source system’s <strong>client wire protocol</strong> and one source
+system’s <strong>SQL or query dialect</strong>, accepts requests in that
+form, and hands the accepted work to the ScratchBird engine.</p>
+<p>The term “reference” means the parser is measured against a published
+specification for the system it targets. One parser — the Firebird
+parser — is the worked reference implementation that the others are
+built to match. See <a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Status</a>.</p>
+<h2 id="one-parser-one-dialect-one-wire-protocol">One parser, one
+dialect, one wire protocol</h2>
+<p>The single most important rule of this design is narrowness:</p>
+<ul>
+<li><strong>One parser is responsible for exactly one source dialect and
+one wire protocol.</strong> It does not try to be a general
+gateway.</li>
+<li><strong>Parsers do not borrow from each other.</strong> A parser
+never blends another system’s syntax, types, or behavior into its own
+surface. Each parser’s cross-dialect dependency is none.</li>
+<li><strong>No parser adds new functionality.</strong> A parser exists
+to translate, not to invent. It exposes only what its target dialect
+already offers; it does not extend, improve, or combine
+capabilities.</li>
+</ul>
+<p>Compatibility is the only goal. If a client expects a particular
+dialect, the matching parser is the one and only place that dialect is
+understood.</p>
+<h2 id="how-a-request-flows">How a request flows</h2>
+<p>At a high level, every reference parser does the same job in the same
+order:</p>
+<ol type="1">
+<li><strong>Negotiate</strong> the source system’s client wire protocol
+or API session.</li>
+<li><strong>Authenticate</strong> through the ScratchBird server path
+(the parser does not own authentication; it relays it).</li>
+<li><strong>Parse</strong> the request in the source dialect.</li>
+<li><strong>Resolve</strong> the names the client used to ScratchBird’s
+durable UUID catalog identity, through the public catalog resolution
+surface.</li>
+<li><strong>Lower</strong> accepted work into SBLR — the engine’s
+internal, bound request representation — and build the associated data
+packets.</li>
+<li><strong>Return</strong> engine results and diagnostics rendered back
+into the shape the client expects.</li>
+</ol>
+<pre class="text"><code>client (source dialect + wire protocol)
+        |
+   reference parser   negotiate -&gt; parse -&gt; resolve names -&gt; lower to SBLR
+        |
+   ScratchBird server   rechecks and admits (or refuses)
+        |
+   ScratchBird engine   owns identity, transactions (MGA), storage, security</code></pre>
+<h2 id="the-parser-is-untrusted">The parser is untrusted</h2>
+<p>A reference parser is <strong>not</strong> trusted by the engine.
+Whatever a parser produces is rechecked by the server and the engine
+before anything happens:</p>
+<ul>
+<li>The engine’s execution authority is its internal SBLR/MGA path only.
+A parser’s output is treated as a request, never as a command that must
+be obeyed.</li>
+<li>A parser holds no storage authority, no transaction-finality
+authority, and no recovery authority. The engine owns all of those.</li>
+<li>Identity is the engine’s UUID catalog. A parser maps visible names
+to UUIDs through the public resolution surface; it never becomes the
+source of identity.</li>
+</ul>
+<p>Because the parser is untrusted and replaceable, a compatibility
+surface can be added, corrected, or refused without weakening the
+engine. This is the same trust-separation principle described in the
+Security Guide (ScratchBird — Operations, Security, and Autonomy, page
+XXX).</p>
+<h2 id="where-to-go-next">Where to go next</h2>
+<ul>
+<li><a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a> — what compatibility does and does not include,
+and what is deliberately blocked.</li>
+<li><a href="#ch-reference-parsers-behavior-emulation-md">How
+Compatibility Behaviors Are Emulated</a> — how index, storage, and
+transaction behavior are mapped onto the engine.</li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a> — what each parser is built to match.</li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser List</a>
+— the full set of parsers and their status.</li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX) — connection, wire, and authentication
+specifics.</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/compatibility_scope_and_boundaries.md -->
+<p><a id="ch-reference-parsers-compatibility-scope-and-boundaries-md"></a></p>
+<h1 id="compatibility-scope-and-boundaries">Compatibility Scope And
+Boundaries</h1>
+<h2 id="purpose-2">Purpose</h2>
+<p>This page describes, in general terms, what a reference parser’s
+compatibility covers and — just as importantly — what it deliberately
+does not. It is about the shape of the boundary, not a list of
+individual statements.</p>
+<h2 id="compatibility-is-the-only-goal">Compatibility is the only
+goal</h2>
+<p>A reference parser exists so that an existing client can talk to
+ScratchBird using the dialect and wire protocol it already speaks. That
+is the whole purpose. It follows that:</p>
+<ul>
+<li>A parser exposes its target dialect’s behavior <strong>as
+compatibility</strong>, not as a new product surface.</li>
+<li>A parser does <strong>not</strong> add features, options, or syntax
+beyond what its target dialect defines.</li>
+<li>A parser does <strong>not</strong> mix in another dialect’s
+behavior. Each parser stays inside the single dialect it is responsible
+for.</li>
+</ul>
+<p>When a client uses a feature the target dialect supports and
+ScratchBird can honor through its engine, the parser lowers that work to
+the engine. When a client uses something the parser cannot honor as
+genuine compatibility, the parser <strong>refuses with a clear
+diagnostic</strong> rather than silently pretending to succeed or
+quietly substituting different behavior.</p>
+<h2 id="the-engine-keeps-authority">The engine keeps authority</h2>
+<p>No matter which dialect a client speaks, durable behavior is owned by
+the ScratchBird engine, not by the parser:</p>
+<ul>
+<li>Transactions, visibility, and finality are owned by the engine’s
+Multi-Generational Architecture.</li>
+<li>Identity is the engine’s UUID catalog.</li>
+<li>The parser’s accepted output (SBLR) is rechecked and admitted by the
+engine before anything becomes durable.</li>
+</ul>
+<p>A parser presents a familiar surface; it does not change who is in
+charge underneath it.</p>
+<h2 id="what-is-deliberately-blocked">What is deliberately blocked</h2>
+<p>Some categories of a source system’s surface are intentionally
+<strong>not</strong> offered through a compatibility parser, because
+they fall outside the engine’s authority model or would breach its
+security and storage boundaries. These are refused with diagnostics
+rather than emulated. In general terms, the blocked categories
+include:</p>
+<ul>
+<li><strong>File and storage management</strong> — operations that would
+read, write, place, or manipulate database files, pages, or on-disk
+structures directly.</li>
+<li><strong>Low-level and physical utilities</strong> — physical
+backup/repair/validation tooling and other low-level maintenance
+surfaces of the source system. (The engine provides its own logical
+backup, restore, and maintenance through its own authorized surfaces;
+see the Operations And Administration (ScratchBird — Operations,
+Security, and Autonomy, page XXX) guide.)</li>
+<li><strong>Host operating-system access</strong> — anything that would
+run programs, reach the host filesystem, or otherwise act outside the
+database boundary.</li>
+<li><strong>Direct storage or page access</strong> — any path that would
+bypass the engine and touch storage directly.</li>
+<li><strong>Authority bypass</strong> — any request that asserts it
+should own execution, transaction finality, recovery, or identity. Those
+belong to the engine.</li>
+</ul>
+<p>The principle is consistent: a compatibility parser may present the
+<em>shape</em> of a source dialect, but it cannot become a back door
+around the engine’s transaction, security, or storage authority. Where a
+source system exposes such a back door, the compatibility parser closes
+it.</p>
+<h2 id="unsupported-is-refused-not-faked">Unsupported is refused, not
+faked</h2>
+<p>A surface that is not yet implemented, not safe to honor, or not
+permitted by policy is refused with a diagnostic identifying the reason.
+ScratchBird does not silently approximate a behavior it cannot
+faithfully provide. This keeps the compatibility promise honest: a
+request either runs as genuine compatibility or it returns a clear
+refusal.</p>
+<h2 id="where-to-go-next-1">Where to go next</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-behavior-emulation-md">How
+Compatibility Behaviors Are Emulated</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li>Backup, Restore, And Data Movement (ScratchBird — Operations,
+Security, and Autonomy, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/behavior_emulation.md -->
+<p><a id="ch-reference-parsers-behavior-emulation-md"></a></p>
+<h1 id="how-compatibility-behaviors-are-emulated">How Compatibility
+Behaviors Are Emulated</h1>
+<h2 id="purpose-3">Purpose</h2>
+<p>A reference parser does more than translate syntax. Clients expect
+their source database to <em>behave</em> in particular ways — how an
+index treats keys, how a statement commits, how a type rounds.
+ScratchBird has one engine with one set of rules, so the parser’s job is
+to make that one engine present the <strong>behavior</strong> a client
+expects. This page explains, in general terms, how that emulation
+works.</p>
+<p>The key idea: ScratchBird does not run a different engine for each
+dialect. It runs its own engine and <strong>maps the emulated system’s
+behavioral assumptions onto it</strong>. The same data, in the same
+logical structure, can be made to behave the way each emulated system’s
+clients expect.</p>
+<h2 id="behavior-is-emulated-authority-is-not">Behavior is emulated;
+authority is not</h2>
+<p>Emulation changes how things <em>look and behave</em> to the client.
+It never changes who is in charge underneath:</p>
+<ul>
+<li>Identity is always ScratchBird’s UUID catalog.</li>
+<li>Transactions, visibility, and finality are always owned by the
+engine’s Multi-Generational Architecture (MGA).</li>
+<li>The blocked categories still apply (see <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>).</li>
+</ul>
+<p>Within those limits, the parser shapes behavior to match the emulated
+system.</p>
+<h2 id="storage-and-index-behavior">Storage and index behavior</h2>
+<p>Two systems can offer “the same” index type — a B-tree, for example —
+and still disagree about what that index means. They make different
+assumptions about things such as:</p>
+<ul>
+<li>how null keys are ordered and whether they are indexed at all,</li>
+<li>how text keys compare (collation, case sensitivity, accent
+sensitivity),</li>
+<li>how uniqueness treats nulls and duplicate keys,</li>
+<li>key ordering and how the index is filled and maintained.</li>
+</ul>
+<p>Because of these differences, an index created over the same data,
+using the same logical index type, may legitimately be <strong>stored on
+disk differently</strong> depending on which system is being emulated.
+To handle this, index creation carries <strong>behavioral
+settings</strong> that tell the engine which assumptions to apply. When
+a client of an emulated system creates, say, a B-tree, the parser
+supplies the settings that make ScratchBird’s index behave — and store
+itself — the way that system’s B-tree behaves.</p>
+<p>The result: clients of different emulated systems can each create “a
+normal index” and each get the behavior their ecosystem assumes, from
+one engine, over one copy of the data.</p>
+<h2 id="transactions-and-autocommit">Transactions and autocommit</h2>
+<p>ScratchBird is <strong>always inside a transaction</strong>. There is
+no way to do anything outside of a transaction — every statement runs
+within transaction context owned by MGA. Emulation has to present each
+source system’s transaction model on top of that always-transactional
+foundation:</p>
+<ul>
+<li><strong>Systems with autocommit.</strong> Many systems default to
+autocommit, where each statement is its own committed unit. ScratchBird
+emulates this by <strong>committing and starting a new transaction
+around every statement</strong>. This faithfully reproduces the
+per-statement commit behavior a client expects, but it is
+<strong>slow</strong> compared with grouping work into an explicit
+transaction — every statement pays for a commit. Clients that care about
+throughput should use explicit transactions where the source dialect
+allows it.</li>
+<li><strong>Systems with explicit transactions.</strong> Where the
+source dialect manages transactions explicitly, the parser maps those
+begin/commit/rollback requests onto the engine’s transaction control
+directly.</li>
+<li><strong>Systems with no transactions at all.</strong> Some emulated
+systems have no concept of transactions. ScratchBird cannot run
+“outside” a transaction, so such work still executes inside the engine’s
+always-on transaction model; the parser emulates the source’s
+non-transactional expectations on top of it (typically by committing per
+operation, as with autocommit). The client sees the non-transactional
+behavior it expects; the engine still gets transactional safety
+underneath.</li>
+</ul>
+<p>The trade-off is worth stating plainly: emulating per-statement
+commit behavior is correct but costs performance. The closer a client
+can stay to explicit transactions, the better it will perform.</p>
+<h2 id="other-behavioral-differences">Other behavioral differences</h2>
+<p>The same approach applies to other places where systems disagree —
+for example default values and implicit conversions, how types round or
+range-check, sort ordering, and the shape and wording of diagnostics. In
+each case the parser maps the emulated system’s expected behavior onto
+the engine’s own behavior, so the client sees results consistent with
+its source system, while the engine applies its own durable,
+authoritative rules underneath.</p>
+<h2 id="where-to-go-next-2">Where to go next</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/conformance_and_status.md -->
+<p><a id="ch-reference-parsers-conformance-and-status-md"></a></p>
+<h1 id="conformance-and-compatibility-targets">Conformance And
+Compatibility Targets</h1>
+<h2 id="purpose-4">Purpose</h2>
+<p>This page explains, in general terms, what each reference parser
+conforms to and what “compatibility” guarantees for a client. It is
+about the target a parser matches, not a maturity ranking.</p>
+<h2 id="each-parser-targets-a-published-baseline">Each parser targets a
+published baseline</h2>
+<p>Every reference parser is built to conform to a published baseline of
+the system it emulates — its dialect, its wire protocol, and its
+behavior. Conformance is defined against that baseline: a conformant
+parser presents that system’s behavior faithfully and refuses, with a
+diagnostic, anything it cannot honor as genuine compatibility.</p>
+<p>Targeting a defined baseline keeps compatibility precise.</p>
+<h2 id="what-conformance-covers">What conformance covers</h2>
+<p>Conformance is about faithful behavior, not just accepted syntax. A
+conformant reference parser:</p>
+<ul>
+<li>accepts its target dialect and speaks its target wire protocol,</li>
+<li>maps the target system’s <strong>behavior</strong> onto the engine —
+including index and storage behavior and transaction/autocommit
+semantics (see <a href="#ch-reference-parsers-behavior-emulation-md">How
+Compatibility Behaviors Are Emulated</a>),</li>
+<li>resolves names to the engine’s UUID catalog identity, and</li>
+<li>refuses, with a clear diagnostic, anything it cannot honor as
+genuine compatibility or that falls in a blocked category (see <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>).</li>
+</ul>
+<h2 id="what-conformance-does-not-promise">What conformance does not
+promise</h2>
+<p>Conformance describes what a parser is built to match. It does not,
+by itself, guarantee that a particular behavior is enabled in a
+particular deployment. Actual availability always depends on:</p>
+<ul>
+<li>the build and platform,</li>
+<li>configuration and which parser routes are enabled,</li>
+<li>security policy, and</li>
+<li>the current release notes.</li>
+</ul>
+<p>Always confirm against the current build before relying on a specific
+compatibility behavior.</p>
+<h2 id="where-to-go-next-3">Where to go next</h2>
+<ul>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-behavior-emulation-md">How
+Compatibility Behaviors Are Emulated</a></li>
+<li><a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a></li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/apache_ignite.md -->
+<p><a id="ch-reference-parsers-parsers-apache-ignite-md"></a></p>
+<h1 id="apache-ignite-compatibility-parser">Apache Ignite Compatibility
+Parser</h1>
+<h2 id="purpose-5">Purpose</h2>
+<p>The Apache Ignite compatibility parser lets a client built for Apache
+Ignite — a distributed in-memory data platform — connect to ScratchBird
+using the Apache Ignite dialect and wire protocol. It is a
+<strong>compatibility surface only</strong>: it presents Apache Ignite’s
+own language and behavior to existing clients and translates accepted
+work into the ScratchBird engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>Apache Ignite</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native Apache Ignite client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the Apache Ignite dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does">What it does</h2>
+<p>In general terms, this parser negotiates the Apache Ignite client
+session, parses the Apache Ignite dialect, resolves the names a client
+uses to ScratchBird’s UUID catalog identity, and lowers accepted
+requests into the engine’s internal SBLR representation. Results and
+diagnostics are rendered back into the form a Apache Ignite client
+expects. It adds no functionality beyond Apache Ignite compatibility and
+does not blend in any other dialect.</p>
+<h2 id="behavior-emulation">Behavior emulation</h2>
+<p>The parser maps Apache Ignite’s expected behavior onto the engine —
+including index and storage behavior and Apache Ignite’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a Apache Ignite client sees familiar behavior while the engine
+applies its own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/cassandra.md -->
+<p><a id="ch-reference-parsers-parsers-cassandra-md"></a></p>
+<h1 id="cassandra-compatibility-parser">Cassandra Compatibility
+Parser</h1>
+<h2 id="purpose-6">Purpose</h2>
+<p>The Cassandra compatibility parser lets a client built for Cassandra
+— a wide-column NoSQL database — connect to ScratchBird using the
+Cassandra dialect and wire protocol. It is a <strong>compatibility
+surface only</strong>: it presents Cassandra’s own language and behavior
+to existing clients and translates accepted work into the ScratchBird
+engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>Cassandra</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>NoSQL</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native Cassandra client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the Cassandra dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-1">What it does</h2>
+<p>In general terms, this parser negotiates the Cassandra client
+session, parses the Cassandra dialect, resolves the names a client uses
+to ScratchBird’s UUID catalog identity, and lowers accepted requests
+into the engine’s internal SBLR representation. Results and diagnostics
+are rendered back into the form a Cassandra client expects. It adds no
+functionality beyond Cassandra compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-1">Behavior emulation</h2>
+<p>The parser maps Cassandra’s expected behavior onto the engine —
+including index and storage behavior and Cassandra’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a Cassandra client sees familiar behavior while the engine applies
+its own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-1">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-1">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/clickhouse.md -->
+<p><a id="ch-reference-parsers-parsers-clickhouse-md"></a></p>
+<h1 id="clickhouse-compatibility-parser">ClickHouse Compatibility
+Parser</h1>
+<h2 id="purpose-7">Purpose</h2>
+<p>The ClickHouse compatibility parser lets a client built for
+ClickHouse — an analytical columnar SQL database — connect to
+ScratchBird using the ClickHouse dialect and wire protocol. It is a
+<strong>compatibility surface only</strong>: it presents ClickHouse’s
+own language and behavior to existing clients and translates accepted
+work into the ScratchBird engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>ClickHouse</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Analytical</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native ClickHouse client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the ClickHouse dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-2">What it does</h2>
+<p>In general terms, this parser negotiates the ClickHouse client
+session, parses the ClickHouse dialect, resolves the names a client uses
+to ScratchBird’s UUID catalog identity, and lowers accepted requests
+into the engine’s internal SBLR representation. Results and diagnostics
+are rendered back into the form a ClickHouse client expects. It adds no
+functionality beyond ClickHouse compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-2">Behavior emulation</h2>
+<p>The parser maps ClickHouse’s expected behavior onto the engine —
+including index and storage behavior and ClickHouse’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a ClickHouse client sees familiar behavior while the engine applies
+its own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-2">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-2">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/cockroachdb.md -->
+<p><a id="ch-reference-parsers-parsers-cockroachdb-md"></a></p>
+<h1 id="cockroachdb-compatibility-parser">CockroachDB Compatibility
+Parser</h1>
+<h2 id="purpose-8">Purpose</h2>
+<p>The CockroachDB compatibility parser lets a client built for
+CockroachDB — a distributed SQL database — connect to ScratchBird using
+the CockroachDB dialect and wire protocol. It is a <strong>compatibility
+surface only</strong>: it presents CockroachDB’s own language and
+behavior to existing clients and translates accepted work into the
+ScratchBird engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>CockroachDB</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native CockroachDB client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the CockroachDB dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-3">What it does</h2>
+<p>In general terms, this parser negotiates the CockroachDB client
+session, parses the CockroachDB dialect, resolves the names a client
+uses to ScratchBird’s UUID catalog identity, and lowers accepted
+requests into the engine’s internal SBLR representation. Results and
+diagnostics are rendered back into the form a CockroachDB client
+expects. It adds no functionality beyond CockroachDB compatibility and
+does not blend in any other dialect.</p>
+<h2 id="behavior-emulation-3">Behavior emulation</h2>
+<p>The parser maps CockroachDB’s expected behavior onto the engine —
+including index and storage behavior and CockroachDB’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a CockroachDB client sees familiar behavior while the engine applies
+its own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-3">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-3">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/dolt.md -->
+<p><a id="ch-reference-parsers-parsers-dolt-md"></a></p>
+<h1 id="dolt-compatibility-parser">Dolt Compatibility Parser</h1>
+<h2 id="purpose-9">Purpose</h2>
+<p>The Dolt compatibility parser lets a client built for Dolt — a
+version-controlled SQL database — connect to ScratchBird using the Dolt
+dialect and wire protocol. It is a <strong>compatibility surface
+only</strong>: it presents Dolt’s own language and behavior to existing
+clients and translates accepted work into the ScratchBird engine, which
+keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>Dolt</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native Dolt client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the Dolt dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-4">What it does</h2>
+<p>In general terms, this parser negotiates the Dolt client session,
+parses the Dolt dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a Dolt client expects. It adds no
+functionality beyond Dolt compatibility and does not blend in any other
+dialect.</p>
+<h2 id="behavior-emulation-4">Behavior emulation</h2>
+<p>The parser maps Dolt’s expected behavior onto the engine — including
+index and storage behavior and Dolt’s transaction and autocommit model
+over ScratchBird’s always-in-a-transaction foundation — so a Dolt client
+sees familiar behavior while the engine applies its own durable rules
+underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-4">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-4">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/duckdb.md -->
+<p><a id="ch-reference-parsers-parsers-duckdb-md"></a></p>
+<h1 id="duckdb-compatibility-parser">DuckDB Compatibility Parser</h1>
+<h2 id="purpose-10">Purpose</h2>
+<p>The DuckDB compatibility parser lets a client built for DuckDB — an
+embedded analytical (columnar) SQL database — connect to ScratchBird
+using the DuckDB dialect and wire protocol. It is a
+<strong>compatibility surface only</strong>: it presents DuckDB’s own
+language and behavior to existing clients and translates accepted work
+into the ScratchBird engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>DuckDB</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Relational</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native DuckDB client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the DuckDB dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-5">What it does</h2>
+<p>In general terms, this parser negotiates the DuckDB client session,
+parses the DuckDB dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a DuckDB client expects. It adds no
+functionality beyond DuckDB compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-5">Behavior emulation</h2>
+<p>The parser maps DuckDB’s expected behavior onto the engine —
+including index and storage behavior and DuckDB’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a DuckDB client sees familiar behavior while the engine applies its
+own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-5">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-5">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/firebird.md -->
+<p><a id="ch-reference-parsers-parsers-firebird-md"></a></p>
+<h1 id="firebird-compatibility-parser">Firebird Compatibility
+Parser</h1>
+<h2 id="purpose-11">Purpose</h2>
+<p>The Firebird compatibility parser lets a client built for Firebird —
+a relational SQL database — connect to ScratchBird using the Firebird
+dialect and wire protocol. It is a <strong>compatibility surface
+only</strong>: it presents Firebird’s own language and behavior to
+existing clients and translates accepted work into the ScratchBird
+engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>Firebird</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Relational</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native Firebird client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the Firebird dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-6">What it does</h2>
+<p>In general terms, this parser negotiates the Firebird client session,
+parses the Firebird dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a Firebird client expects. It adds no
+functionality beyond Firebird compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-6">Behavior emulation</h2>
+<p>The parser maps Firebird’s expected behavior onto the engine —
+including index and storage behavior and Firebird’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a Firebird client sees familiar behavior while the engine applies its
+own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-6">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-6">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/foundationdb.md -->
+<p><a id="ch-reference-parsers-parsers-foundationdb-md"></a></p>
+<h1 id="foundationdb-compatibility-parser">FoundationDB Compatibility
+Parser</h1>
+<h2 id="purpose-12">Purpose</h2>
+<p>The FoundationDB compatibility parser lets a client built for
+FoundationDB — a distributed transactional key-value store — connect to
+ScratchBird using the FoundationDB dialect and wire protocol. It is a
+<strong>compatibility surface only</strong>: it presents FoundationDB’s
+own language and behavior to existing clients and translates accepted
+work into the ScratchBird engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>FoundationDB</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native FoundationDB client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the FoundationDB dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-7">What it does</h2>
+<p>In general terms, this parser negotiates the FoundationDB client
+session, parses the FoundationDB dialect, resolves the names a client
+uses to ScratchBird’s UUID catalog identity, and lowers accepted
+requests into the engine’s internal SBLR representation. Results and
+diagnostics are rendered back into the form a FoundationDB client
+expects. It adds no functionality beyond FoundationDB compatibility and
+does not blend in any other dialect.</p>
+<h2 id="behavior-emulation-7">Behavior emulation</h2>
+<p>The parser maps FoundationDB’s expected behavior onto the engine —
+including index and storage behavior and FoundationDB’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a FoundationDB client sees familiar behavior while the engine applies
+its own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-7">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-7">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/immudb.md -->
+<p><a id="ch-reference-parsers-parsers-immudb-md"></a></p>
+<h1 id="immudb-compatibility-parser">immudb Compatibility Parser</h1>
+<h2 id="purpose-13">Purpose</h2>
+<p>The immudb compatibility parser lets a client built for immudb — an
+immutable, append-only database — connect to ScratchBird using the
+immudb dialect and wire protocol. It is a <strong>compatibility surface
+only</strong>: it presents immudb’s own language and behavior to
+existing clients and translates accepted work into the ScratchBird
+engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>immudb</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native immudb client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the immudb dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-8">What it does</h2>
+<p>In general terms, this parser negotiates the immudb client session,
+parses the immudb dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a immudb client expects. It adds no
+functionality beyond immudb compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-8">Behavior emulation</h2>
+<p>The parser maps immudb’s expected behavior onto the engine —
+including index and storage behavior and immudb’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a immudb client sees familiar behavior while the engine applies its
+own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-8">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-8">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/influxdb.md -->
+<p><a id="ch-reference-parsers-parsers-influxdb-md"></a></p>
+<h1 id="influxdb-compatibility-parser">InfluxDB Compatibility
+Parser</h1>
+<h2 id="purpose-14">Purpose</h2>
+<p>The InfluxDB compatibility parser lets a client built for InfluxDB —
+a time-series database — connect to ScratchBird using the InfluxDB
+dialect and wire protocol. It is a <strong>compatibility surface
+only</strong>: it presents InfluxDB’s own language and behavior to
+existing clients and translates accepted work into the ScratchBird
+engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>InfluxDB</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Analytical</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native InfluxDB client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the InfluxDB dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-9">What it does</h2>
+<p>In general terms, this parser negotiates the InfluxDB client session,
+parses the InfluxDB dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a InfluxDB client expects. It adds no
+functionality beyond InfluxDB compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-9">Behavior emulation</h2>
+<p>The parser maps InfluxDB’s expected behavior onto the engine —
+including index and storage behavior and InfluxDB’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a InfluxDB client sees familiar behavior while the engine applies its
+own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-9">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-9">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/mariadb.md -->
+<p><a id="ch-reference-parsers-parsers-mariadb-md"></a></p>
+<h1 id="mariadb-compatibility-parser">MariaDB Compatibility Parser</h1>
+<h2 id="purpose-15">Purpose</h2>
+<p>The MariaDB compatibility parser lets a client built for MariaDB — a
+relational SQL database — connect to ScratchBird using the MariaDB
+dialect and wire protocol. It is a <strong>compatibility surface
+only</strong>: it presents MariaDB’s own language and behavior to
+existing clients and translates accepted work into the ScratchBird
+engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>MariaDB</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Relational</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native MariaDB client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the MariaDB dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-10">What it does</h2>
+<p>In general terms, this parser negotiates the MariaDB client session,
+parses the MariaDB dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a MariaDB client expects. It adds no
+functionality beyond MariaDB compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-10">Behavior emulation</h2>
+<p>The parser maps MariaDB’s expected behavior onto the engine —
+including index and storage behavior and MariaDB’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a MariaDB client sees familiar behavior while the engine applies its
+own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-10">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-10">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/milvus.md -->
+<p><a id="ch-reference-parsers-parsers-milvus-md"></a></p>
+<h1 id="milvus-compatibility-parser">Milvus Compatibility Parser</h1>
+<h2 id="purpose-16">Purpose</h2>
+<p>The Milvus compatibility parser lets a client built for Milvus — a
+vector database — connect to ScratchBird using the Milvus dialect and
+wire protocol. It is a <strong>compatibility surface only</strong>: it
+presents Milvus’s own language and behavior to existing clients and
+translates accepted work into the ScratchBird engine, which keeps all
+authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>Milvus</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Analytical</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native Milvus client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the Milvus dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-11">What it does</h2>
+<p>In general terms, this parser negotiates the Milvus client session,
+parses the Milvus dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a Milvus client expects. It adds no
+functionality beyond Milvus compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-11">Behavior emulation</h2>
+<p>The parser maps Milvus’s expected behavior onto the engine —
+including index and storage behavior and Milvus’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a Milvus client sees familiar behavior while the engine applies its
+own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-11">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-11">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/mongodb.md -->
+<p><a id="ch-reference-parsers-parsers-mongodb-md"></a></p>
+<h1 id="mongodb-compatibility-parser">MongoDB Compatibility Parser</h1>
+<h2 id="purpose-17">Purpose</h2>
+<p>The MongoDB compatibility parser lets a client built for MongoDB — a
+document NoSQL database — connect to ScratchBird using the MongoDB
+dialect and wire protocol. It is a <strong>compatibility surface
+only</strong>: it presents MongoDB’s own language and behavior to
+existing clients and translates accepted work into the ScratchBird
+engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>MongoDB</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>NoSQL</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native MongoDB client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the MongoDB dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-12">What it does</h2>
+<p>In general terms, this parser negotiates the MongoDB client session,
+parses the MongoDB dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a MongoDB client expects. It adds no
+functionality beyond MongoDB compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-12">Behavior emulation</h2>
+<p>The parser maps MongoDB’s expected behavior onto the engine —
+including index and storage behavior and MongoDB’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a MongoDB client sees familiar behavior while the engine applies its
+own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-12">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-12">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/mysql.md -->
+<p><a id="ch-reference-parsers-parsers-mysql-md"></a></p>
+<h1 id="mysql-compatibility-parser">MySQL Compatibility Parser</h1>
+<h2 id="purpose-18">Purpose</h2>
+<p>The MySQL compatibility parser lets a client built for MySQL — a
+relational SQL database — connect to ScratchBird using the MySQL dialect
+and wire protocol. It is a <strong>compatibility surface only</strong>:
+it presents MySQL’s own language and behavior to existing clients and
+translates accepted work into the ScratchBird engine, which keeps all
+authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>MySQL</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Relational</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native MySQL client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the MySQL dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-13">What it does</h2>
+<p>In general terms, this parser negotiates the MySQL client session,
+parses the MySQL dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a MySQL client expects. It adds no
+functionality beyond MySQL compatibility and does not blend in any other
+dialect.</p>
+<h2 id="behavior-emulation-13">Behavior emulation</h2>
+<p>The parser maps MySQL’s expected behavior onto the engine — including
+index and storage behavior and MySQL’s transaction and autocommit model
+over ScratchBird’s always-in-a-transaction foundation — so a MySQL
+client sees familiar behavior while the engine applies its own durable
+rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-13">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-13">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/neo4j.md -->
+<p><a id="ch-reference-parsers-parsers-neo4j-md"></a></p>
+<h1 id="neo4j-compatibility-parser">Neo4j Compatibility Parser</h1>
+<h2 id="purpose-19">Purpose</h2>
+<p>The Neo4j compatibility parser lets a client built for Neo4j — a
+graph database — connect to ScratchBird using the Neo4j dialect and wire
+protocol. It is a <strong>compatibility surface only</strong>: it
+presents Neo4j’s own language and behavior to existing clients and
+translates accepted work into the ScratchBird engine, which keeps all
+authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>Neo4j</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>NoSQL</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native Neo4j client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the Neo4j dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-14">What it does</h2>
+<p>In general terms, this parser negotiates the Neo4j client session,
+parses the Neo4j dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a Neo4j client expects. It adds no
+functionality beyond Neo4j compatibility and does not blend in any other
+dialect.</p>
+<h2 id="behavior-emulation-14">Behavior emulation</h2>
+<p>The parser maps Neo4j’s expected behavior onto the engine — including
+index and storage behavior and Neo4j’s transaction and autocommit model
+over ScratchBird’s always-in-a-transaction foundation — so a Neo4j
+client sees familiar behavior while the engine applies its own durable
+rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-14">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-14">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/opensearch.md -->
+<p><a id="ch-reference-parsers-parsers-opensearch-md"></a></p>
+<h1 id="opensearch-compatibility-parser">OpenSearch Compatibility
+Parser</h1>
+<h2 id="purpose-20">Purpose</h2>
+<p>The OpenSearch compatibility parser lets a client built for
+OpenSearch — a search and analytics engine — connect to ScratchBird
+using the OpenSearch dialect and wire protocol. It is a
+<strong>compatibility surface only</strong>: it presents OpenSearch’s
+own language and behavior to existing clients and translates accepted
+work into the ScratchBird engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>OpenSearch</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Analytical</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native OpenSearch client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the OpenSearch dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-15">What it does</h2>
+<p>In general terms, this parser negotiates the OpenSearch client
+session, parses the OpenSearch dialect, resolves the names a client uses
+to ScratchBird’s UUID catalog identity, and lowers accepted requests
+into the engine’s internal SBLR representation. Results and diagnostics
+are rendered back into the form a OpenSearch client expects. It adds no
+functionality beyond OpenSearch compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-15">Behavior emulation</h2>
+<p>The parser maps OpenSearch’s expected behavior onto the engine —
+including index and storage behavior and OpenSearch’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a OpenSearch client sees familiar behavior while the engine applies
+its own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-15">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-15">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/opensearch_sql_ppl.md -->
+<p><a id="ch-reference-parsers-parsers-opensearch-sql-ppl-md"></a></p>
+<h1 id="opensearch-sqlppl-compatibility-parser">OpenSearch SQL/PPL
+Compatibility Parser</h1>
+<h2 id="purpose-21">Purpose</h2>
+<p>The OpenSearch SQL/PPL compatibility parser lets a client built for
+OpenSearch SQL/PPL — the SQL and PPL query interface for a search and
+analytics engine — connect to ScratchBird using the OpenSearch SQL/PPL
+dialect and wire protocol. It is a <strong>compatibility surface
+only</strong>: it presents OpenSearch SQL/PPL’s own language and
+behavior to existing clients and translates accepted work into the
+ScratchBird engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>OpenSearch SQL/PPL</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Analytical</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native OpenSearch SQL/PPL client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the OpenSearch SQL/PPL
+dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-16">What it does</h2>
+<p>In general terms, this parser negotiates the OpenSearch SQL/PPL
+client session, parses the OpenSearch SQL/PPL dialect, resolves the
+names a client uses to ScratchBird’s UUID catalog identity, and lowers
+accepted requests into the engine’s internal SBLR representation.
+Results and diagnostics are rendered back into the form a OpenSearch
+SQL/PPL client expects. It adds no functionality beyond OpenSearch
+SQL/PPL compatibility and does not blend in any other dialect.</p>
+<h2 id="behavior-emulation-16">Behavior emulation</h2>
+<p>The parser maps OpenSearch SQL/PPL’s expected behavior onto the
+engine — including index and storage behavior and OpenSearch SQL/PPL’s
+transaction and autocommit model over ScratchBird’s
+always-in-a-transaction foundation — so a OpenSearch SQL/PPL client sees
+familiar behavior while the engine applies its own durable rules
+underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-16">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-16">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/postgresql.md -->
+<p><a id="ch-reference-parsers-parsers-postgresql-md"></a></p>
+<h1 id="postgresql-compatibility-parser">PostgreSQL Compatibility
+Parser</h1>
+<h2 id="purpose-22">Purpose</h2>
+<p>The PostgreSQL compatibility parser lets a client built for
+PostgreSQL — a relational SQL database — connect to ScratchBird using
+the PostgreSQL dialect and wire protocol. It is a <strong>compatibility
+surface only</strong>: it presents PostgreSQL’s own language and
+behavior to existing clients and translates accepted work into the
+ScratchBird engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>PostgreSQL</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Relational</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native PostgreSQL client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the PostgreSQL dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-17">What it does</h2>
+<p>In general terms, this parser negotiates the PostgreSQL client
+session, parses the PostgreSQL dialect, resolves the names a client uses
+to ScratchBird’s UUID catalog identity, and lowers accepted requests
+into the engine’s internal SBLR representation. Results and diagnostics
+are rendered back into the form a PostgreSQL client expects. It adds no
+functionality beyond PostgreSQL compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-17">Behavior emulation</h2>
+<p>The parser maps PostgreSQL’s expected behavior onto the engine —
+including index and storage behavior and PostgreSQL’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a PostgreSQL client sees familiar behavior while the engine applies
+its own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-17">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-17">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/redis.md -->
+<p><a id="ch-reference-parsers-parsers-redis-md"></a></p>
+<h1 id="redis-compatibility-parser">Redis Compatibility Parser</h1>
+<h2 id="purpose-23">Purpose</h2>
+<p>The Redis compatibility parser lets a client built for Redis — a
+key-value store — connect to ScratchBird using the Redis dialect and
+wire protocol. It is a <strong>compatibility surface only</strong>: it
+presents Redis’s own language and behavior to existing clients and
+translates accepted work into the ScratchBird engine, which keeps all
+authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>Redis</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>NoSQL</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native Redis client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the Redis dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-18">What it does</h2>
+<p>In general terms, this parser negotiates the Redis client session,
+parses the Redis dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a Redis client expects. It adds no
+functionality beyond Redis compatibility and does not blend in any other
+dialect.</p>
+<h2 id="behavior-emulation-18">Behavior emulation</h2>
+<p>The parser maps Redis’s expected behavior onto the engine — including
+index and storage behavior and Redis’s transaction and autocommit model
+over ScratchBird’s always-in-a-transaction foundation — so a Redis
+client sees familiar behavior while the engine applies its own durable
+rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-18">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-18">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/sqlite.md -->
+<p><a id="ch-reference-parsers-parsers-sqlite-md"></a></p>
+<h1 id="sqlite-compatibility-parser">SQLite Compatibility Parser</h1>
+<h2 id="purpose-24">Purpose</h2>
+<p>The SQLite compatibility parser lets a client built for SQLite — an
+embedded relational SQL database — connect to ScratchBird using the
+SQLite dialect and wire protocol. It is a <strong>compatibility surface
+only</strong>: it presents SQLite’s own language and behavior to
+existing clients and translates accepted work into the ScratchBird
+engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>SQLite</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Relational</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native SQLite client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the SQLite dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-19">What it does</h2>
+<p>In general terms, this parser negotiates the SQLite client session,
+parses the SQLite dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a SQLite client expects. It adds no
+functionality beyond SQLite compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-19">Behavior emulation</h2>
+<p>The parser maps SQLite’s expected behavior onto the engine —
+including index and storage behavior and SQLite’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a SQLite client sees familiar behavior while the engine applies its
+own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-19">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-19">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/tidb.md -->
+<p><a id="ch-reference-parsers-parsers-tidb-md"></a></p>
+<h1 id="tidb-compatibility-parser">TiDB Compatibility Parser</h1>
+<h2 id="purpose-25">Purpose</h2>
+<p>The TiDB compatibility parser lets a client built for TiDB — a
+distributed SQL database — connect to ScratchBird using the TiDB dialect
+and wire protocol. It is a <strong>compatibility surface only</strong>:
+it presents TiDB’s own language and behavior to existing clients and
+translates accepted work into the ScratchBird engine, which keeps all
+authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>TiDB</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native TiDB client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the TiDB dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-20">What it does</h2>
+<p>In general terms, this parser negotiates the TiDB client session,
+parses the TiDB dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a TiDB client expects. It adds no
+functionality beyond TiDB compatibility and does not blend in any other
+dialect.</p>
+<h2 id="behavior-emulation-20">Behavior emulation</h2>
+<p>The parser maps TiDB’s expected behavior onto the engine — including
+index and storage behavior and TiDB’s transaction and autocommit model
+over ScratchBird’s always-in-a-transaction foundation — so a TiDB client
+sees familiar behavior while the engine applies its own durable rules
+underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-20">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-20">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/tikv.md -->
+<p><a id="ch-reference-parsers-parsers-tikv-md"></a></p>
+<h1 id="tikv-compatibility-parser">TiKV Compatibility Parser</h1>
+<h2 id="purpose-26">Purpose</h2>
+<p>The TiKV compatibility parser lets a client built for TiKV — a
+distributed transactional key-value store — connect to ScratchBird using
+the TiKV dialect and wire protocol. It is a <strong>compatibility
+surface only</strong>: it presents TiKV’s own language and behavior to
+existing clients and translates accepted work into the ScratchBird
+engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>TiKV</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native TiKV client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the TiKV dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-21">What it does</h2>
+<p>In general terms, this parser negotiates the TiKV client session,
+parses the TiKV dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a TiKV client expects. It adds no
+functionality beyond TiKV compatibility and does not blend in any other
+dialect.</p>
+<h2 id="behavior-emulation-21">Behavior emulation</h2>
+<p>The parser maps TiKV’s expected behavior onto the engine — including
+index and storage behavior and TiKV’s transaction and autocommit model
+over ScratchBird’s always-in-a-transaction foundation — so a TiKV client
+sees familiar behavior while the engine applies its own durable rules
+underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-21">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-21">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/vitess.md -->
+<p><a id="ch-reference-parsers-parsers-vitess-md"></a></p>
+<h1 id="vitess-compatibility-parser">Vitess Compatibility Parser</h1>
+<h2 id="purpose-27">Purpose</h2>
+<p>The Vitess compatibility parser lets a client built for Vitess — a
+horizontally-sharded (scale-out) SQL system — connect to ScratchBird
+using the Vitess dialect and wire protocol. It is a
+<strong>compatibility surface only</strong>: it presents Vitess’s own
+language and behavior to existing clients and translates accepted work
+into the ScratchBird engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>Vitess</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native Vitess client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the Vitess dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-22">What it does</h2>
+<p>In general terms, this parser negotiates the Vitess client session,
+parses the Vitess dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a Vitess client expects. It adds no
+functionality beyond Vitess compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-22">Behavior emulation</h2>
+<p>The parser maps Vitess’s expected behavior onto the engine —
+including index and storage behavior and Vitess’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a Vitess client sees familiar behavior while the engine applies its
+own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-22">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-22">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/xtdb.md -->
+<p><a id="ch-reference-parsers-parsers-xtdb-md"></a></p>
+<h1 id="xtdb-compatibility-parser">XTDB Compatibility Parser</h1>
+<h2 id="purpose-28">Purpose</h2>
+<p>The XTDB compatibility parser lets a client built for XTDB — a
+bitemporal document database — connect to ScratchBird using the XTDB
+dialect and wire protocol. It is a <strong>compatibility surface
+only</strong>: it presents XTDB’s own language and behavior to existing
+clients and translates accepted work into the ScratchBird engine, which
+keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>XTDB</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>NoSQL</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native XTDB client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the XTDB dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-23">What it does</h2>
+<p>In general terms, this parser negotiates the XTDB client session,
+parses the XTDB dialect, resolves the names a client uses to
+ScratchBird’s UUID catalog identity, and lowers accepted requests into
+the engine’s internal SBLR representation. Results and diagnostics are
+rendered back into the form a XTDB client expects. It adds no
+functionality beyond XTDB compatibility and does not blend in any other
+dialect.</p>
+<h2 id="behavior-emulation-23">Behavior emulation</h2>
+<p>The parser maps XTDB’s expected behavior onto the engine — including
+index and storage behavior and XTDB’s transaction and autocommit model
+over ScratchBird’s always-in-a-transaction foundation — so a XTDB client
+sees familiar behavior while the engine applies its own durable rules
+underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-23">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-23">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Reference_Parsers/parsers/yugabytedb.md -->
+<p><a id="ch-reference-parsers-parsers-yugabytedb-md"></a></p>
+<h1 id="yugabytedb-compatibility-parser">YugabyteDB Compatibility
+Parser</h1>
+<h2 id="purpose-29">Purpose</h2>
+<p>The YugabyteDB compatibility parser lets a client built for
+YugabyteDB — a distributed SQL database — connect to ScratchBird using
+the YugabyteDB dialect and wire protocol. It is a <strong>compatibility
+surface only</strong>: it presents YugabyteDB’s own language and
+behavior to existing clients and translates accepted work into the
+ScratchBird engine, which keeps all authority.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Target system</td>
+<td>YugabyteDB</td>
+</tr>
+<tr class="even">
+<td>Category</td>
+<td>Distributed</td>
+</tr>
+<tr class="odd">
+<td>Client surface</td>
+<td>Native YugabyteDB client wire protocol or API session</td>
+</tr>
+<tr class="even">
+<td>Authority</td>
+<td>Engine SBLR/MGA only — the parser holds no execution, storage,
+transaction-finality, or recovery authority</td>
+</tr>
+<tr class="odd">
+<td>Cross-dialect dependency</td>
+<td>None — this parser implements only the YugabyteDB dialect</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-it-does-24">What it does</h2>
+<p>In general terms, this parser negotiates the YugabyteDB client
+session, parses the YugabyteDB dialect, resolves the names a client uses
+to ScratchBird’s UUID catalog identity, and lowers accepted requests
+into the engine’s internal SBLR representation. Results and diagnostics
+are rendered back into the form a YugabyteDB client expects. It adds no
+functionality beyond YugabyteDB compatibility and does not blend in any
+other dialect.</p>
+<h2 id="behavior-emulation-24">Behavior emulation</h2>
+<p>The parser maps YugabyteDB’s expected behavior onto the engine —
+including index and storage behavior and YugabyteDB’s transaction and
+autocommit model over ScratchBird’s always-in-a-transaction foundation —
+so a YugabyteDB client sees familiar behavior while the engine applies
+its own durable rules underneath. See <a href="#ch-reference-parsers-behavior-emulation-md">How Compatibility
+Behaviors Are Emulated</a>.</p>
+<h2 id="scope-and-boundaries-24">Scope and boundaries</h2>
+<p>Like every reference parser, this one is compatibility-only and
+untrusted by the engine. File and storage management, low-level or
+physical utilities, host operating-system access, and any path that
+would bypass the engine are deliberately blocked and refused with a
+diagnostic; unsupported or unsafe surface is refused, not silently
+emulated. See <a href="#ch-reference-parsers-compatibility-scope-and-boundaries-md">Compatibility
+Scope And Boundaries</a>.</p>
+<h2 id="see-also-24">See also</h2>
+<ul>
+<li><a href="#ch-reference-parsers-how-reference-parsers-work-md">How
+Reference Parsers Work</a></li>
+<li><a href="#ch-reference-parsers-conformance-and-status-md">Conformance And
+Compatibility Targets</a></li>
+<li><a href="#ch-reference-parsers-readme-md">Reference Parser
+List</a></li>
+<li>Client And Driver Guide (ScratchBird — Application Development and
+Integration, page XXX)</li>
+</ul>
+<p><a id="ch-glossary"></a></p>
+<h1 id="glossary">Glossary</h1>
+<h2 id="purpose-30">Purpose</h2>
+<p>This glossary defines terms used across the ScratchBird documentation
+set. The definitions are written for end users, evaluators, operators,
+and developers. They are intentionally concise and cautious: a term
+appearing here does not mean the related feature is complete, enabled,
+or available in every build.</p>
+<h2 id="scratchbird-product-names">ScratchBird Product Names</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>ScratchBird</td>
+<td>The project and product line described by this documentation.</td>
+</tr>
+<tr class="even">
+<td>ScratchBird Convergent Data Engine</td>
+<td>The full product concept: engine, parsers, tools, resources, and
+operational surfaces.</td>
+</tr>
+<tr class="odd">
+<td>SB</td>
+<td>Short brand form used in names and examples.</td>
+</tr>
+<tr class="even">
+<td>SBcore</td>
+<td>ScratchBird Engine. The embedded engine library that owns durable
+catalog identity, transactions, storage, security admission, recovery
+decisions, and engine diagnostics.</td>
+</tr>
+<tr class="odd">
+<td>SBsql</td>
+<td>ScratchBird SQL. The native ScratchBird command language and script
+runner surface.</td>
+</tr>
+<tr class="even">
+<td>SBParser</td>
+<td>ScratchBird Core Parser. The native SBsql parser package that lowers
+SBsql requests to SBLR.</td>
+</tr>
+<tr class="odd">
+<td>SBsrv</td>
+<td>ScratchBird IPC Server. A local multi-user server process for
+same-machine clients.</td>
+</tr>
+<tr class="even">
+<td>SBgate</td>
+<td>ScratchBird Listener. The listener and parser-facing entry point
+used for network-facing client traffic.</td>
+</tr>
+<tr class="odd">
+<td>SBmgr</td>
+<td>ScratchBird Single Node Manager. A single-node front door that can
+proxy authenticated connections to internal listener routes in managed
+deployments.</td>
+</tr>
+<tr class="even">
+<td>SBadm</td>
+<td>ScratchBird Administrator. Administrative utility name for
+configuration, time zone, character set, collation, and policy
+management where present.</td>
+</tr>
+<tr class="odd">
+<td>SBbak</td>
+<td>ScratchBird Backup Manager. Utility name for backup and backup-set
+operations where present.</td>
+</tr>
+<tr class="even">
+<td>SBsec</td>
+<td>ScratchBird Security. Utility name for security provider, user,
+role, group, and policy management where present.</td>
+</tr>
+<tr class="odd">
+<td>SBdoc</td>
+<td>ScratchBird Doctor. Utility name for analysis, diagnosis, and
+repair-oriented workflows where present and admitted.</td>
+</tr>
+<tr class="even">
+<td>SBcop</td>
+<td>ScratchBird Conformance Officer. Utility name for conformance and
+comparison checks where present.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="architecture-terms">Architecture Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Convergent Data Engine</td>
+<td>An engine design that attempts to bring multiple data shapes, parser
+surfaces, transaction rules, security rules, and diagnostics under one
+shared engine authority model.</td>
+</tr>
+<tr class="even">
+<td>CDE</td>
+<td>Abbreviation for Convergent Data Engine.</td>
+</tr>
+<tr class="odd">
+<td>Engine authority</td>
+<td>The rule that durable behavior belongs to SBcore: object identity,
+descriptors, transactions, security admission, storage, recovery, and
+diagnostics.</td>
+</tr>
+<tr class="even">
+<td>Parser boundary</td>
+<td>The separation between a client language or wire protocol and engine
+execution authority.</td>
+</tr>
+<tr class="odd">
+<td>Parser package</td>
+<td>A component that accepts a specific language or protocol surface and
+lowers accepted work to ScratchBird execution requests.</td>
+</tr>
+<tr class="even">
+<td>Compatibility parser</td>
+<td>A standalone parser package for one reference-system client family.
+It should not silently accept unrelated dialects.</td>
+</tr>
+<tr class="odd">
+<td>SBsql language profile</td>
+<td>A parser resource profile that can change user-facing SBsql
+spellings, phrase order, diagnostics, completion hints, and source
+rendering without changing SBLR, UUID identity, descriptors, security,
+storage, or MGA transaction authority.</td>
+</tr>
+<tr class="even">
+<td>Canonical element stream</td>
+<td>The normalized parser output created before UUID binding. It records
+canonical token and surface identities rather than treating localized
+words as engine authority.</td>
+</tr>
+<tr class="odd">
+<td>Standard SBsql fallback</td>
+<td>A policy-controlled input fallback that lets a non-English session
+accept canonical English SBsql when the preferred language profile does
+not parse the statement.</td>
+</tr>
+<tr class="even">
+<td>Parser route</td>
+<td>The configured path that determines which parser handles a client
+request.</td>
+</tr>
+<tr class="odd">
+<td>SBLR</td>
+<td>ScratchBird’s bound engine-facing request representation. Parsers
+emit SBLR after parsing and binding accepted work.</td>
+</tr>
+<tr class="even">
+<td>Bound request</td>
+<td>A structured request whose names, values, parameters, and types have
+been resolved enough to submit toward engine authority.</td>
+</tr>
+<tr class="odd">
+<td>Raw text</td>
+<td>The command text received from a client before parsing. Raw text is
+not durable engine authority.</td>
+</tr>
+<tr class="even">
+<td>Catalog projection</td>
+<td>A view or metadata surface that presents engine catalog information
+in a particular shape for a parser, tool, or user.</td>
+</tr>
+<tr class="odd">
+<td>Workarea</td>
+<td>A schema-root area presented to a parser or user as its operating
+root.</td>
+</tr>
+<tr class="even">
+<td>Compatibility surface</td>
+<td>The subset of behavior a parser or tool is designed and proven to
+accept, execute, or refuse clearly.</td>
+</tr>
+<tr class="odd">
+<td>Refusal</td>
+<td>A controlled response that says a request is unsupported, denied,
+unavailable, unsafe, or otherwise not admitted.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="database-and-catalog-terms">Database And Catalog Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Database</td>
+<td>A managed durable store of data, metadata, identity, transactions,
+security rules, diagnostics, and recovery behavior.</td>
+</tr>
+<tr class="even">
+<td>Metadata</td>
+<td>Information that describes data, such as schemas, tables, columns,
+types, constraints, indexes, views, routines, grants, policies, and
+catalog rows.</td>
+</tr>
+<tr class="odd">
+<td>Catalog</td>
+<td>Engine-owned metadata that describes durable database objects and
+their relationships.</td>
+</tr>
+<tr class="even">
+<td>Catalog identity</td>
+<td>The durable identity of a catalog object, separate from the
+user-facing name used to spell it.</td>
+</tr>
+<tr class="odd">
+<td>UUID identity</td>
+<td>Durable object identity based on UUIDs rather than only text
+names.</td>
+</tr>
+<tr class="even">
+<td>Object descriptor</td>
+<td>Engine metadata describing an object shape, type, storage behavior,
+dependency, or operational capability.</td>
+</tr>
+<tr class="odd">
+<td>Type descriptor</td>
+<td>Metadata describing a datatype, its value behavior, binary
+representation, capabilities, and related rules.</td>
+</tr>
+<tr class="even">
+<td>Domain</td>
+<td>A reusable constrained type definition.</td>
+</tr>
+<tr class="odd">
+<td>Constraint</td>
+<td>A rule attached to a table, column, domain, or related object.</td>
+</tr>
+<tr class="even">
+<td>Index</td>
+<td>A search structure maintained for faster lookup, ordering,
+constraint enforcement, or query planning where implemented.</td>
+</tr>
+<tr class="odd">
+<td>View</td>
+<td>A named query projection.</td>
+</tr>
+<tr class="even">
+<td>Materialized view</td>
+<td>A stored projection whose refresh and dependency behavior must be
+defined by the implementation.</td>
+</tr>
+<tr class="odd">
+<td>Procedure</td>
+<td>A stored routine that can perform controlled work and may return
+output parameters or result sets where supported.</td>
+</tr>
+<tr class="even">
+<td>Function</td>
+<td>A routine that returns a value or result.</td>
+</tr>
+<tr class="odd">
+<td>Package</td>
+<td>A named grouping of routine definitions where supported.</td>
+</tr>
+<tr class="even">
+<td>Trigger</td>
+<td>Routine behavior tied to table, database, transaction, or
+event-style actions where implemented.</td>
+</tr>
+<tr class="odd">
+<td>Sequence</td>
+<td>A database object that generates ordered values according to its
+definition.</td>
+</tr>
+<tr class="even">
+<td>Comment</td>
+<td>Descriptive metadata attached to an object. Comments do not grant
+authority and should not contain secrets.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="schema-and-name-terms">Schema And Name Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Schema</td>
+<td>A namespace branch that can contain objects and, where supported,
+child schemas.</td>
+</tr>
+<tr class="even">
+<td>Recursive schema tree</td>
+<td>A schema model where schemas can contain child schemas, creating a
+tree rather than one flat namespace.</td>
+</tr>
+<tr class="odd">
+<td>Database root</td>
+<td>The top of the durable database tree. Not every session can see it
+directly.</td>
+</tr>
+<tr class="even">
+<td>Parser-visible root</td>
+<td>The root of the namespace presented to the selected parser
+route.</td>
+</tr>
+<tr class="odd">
+<td>Home schema</td>
+<td>The schema associated with a user, identity, or configured
+workarea.</td>
+</tr>
+<tr class="even">
+<td>Current schema</td>
+<td>The default schema used for unqualified names in a session.</td>
+</tr>
+<tr class="odd">
+<td>Search path</td>
+<td>An ordered lookup path used by commands that allow path-based name
+resolution.</td>
+</tr>
+<tr class="even">
+<td>Qualified name</td>
+<td>A name that includes schema or path information, such as
+<code>app.notes</code>.</td>
+</tr>
+<tr class="odd">
+<td>Unqualified name</td>
+<td>A name without schema qualification, such as
+<code>notes</code>.</td>
+</tr>
+<tr class="even">
+<td>Name resolution</td>
+<td>The process of turning a user-visible name into engine object
+identity.</td>
+</tr>
+<tr class="odd">
+<td>Sandbox</td>
+<td>The visible boundary that limits what a session or parser route can
+name, inspect, or access.</td>
+</tr>
+<tr class="even">
+<td>Schema branch</td>
+<td>A subtree of the database namespace.</td>
+</tr>
+<tr class="odd">
+<td>Object lifecycle</td>
+<td>The create, alter, rename, comment, describe, use, refresh,
+validate, or drop actions that apply to an object type.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="transaction-and-recovery-terms">Transaction And Recovery
+Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Transaction</td>
+<td>A boundary around work that can commit, roll back, and participate
+in visibility rules.</td>
+</tr>
+<tr class="even">
+<td>Commit</td>
+<td>Make a transaction’s admitted changes final according to engine
+visibility rules.</td>
+</tr>
+<tr class="odd">
+<td>Rollback</td>
+<td>Discard uncommitted transaction changes.</td>
+</tr>
+<tr class="even">
+<td>Savepoint</td>
+<td>A named point inside a transaction that can be rolled back without
+ending the whole transaction where supported.</td>
+</tr>
+<tr class="odd">
+<td>Autocommit</td>
+<td>A mode where each statement may be committed automatically according
+to session and parser rules.</td>
+</tr>
+<tr class="even">
+<td>MGA</td>
+<td>ScratchBird’s transaction and visibility authority model. In this
+documentation, the key rule is that transaction finality belongs to the
+engine.</td>
+</tr>
+<tr class="odd">
+<td>Visibility</td>
+<td>The rule that determines which transaction versions a session can
+see.</td>
+</tr>
+<tr class="even">
+<td>Cleanup</td>
+<td>Engine-controlled work that reclaims or resolves old transaction
+state when it is safe.</td>
+</tr>
+<tr class="odd">
+<td>Recovery</td>
+<td>The process of reopening or refusing a database after shutdown,
+interruption, or uncertain durable state.</td>
+</tr>
+<tr class="even">
+<td>Recovery-required state</td>
+<td>A state where the engine requires recovery handling before normal
+writes can proceed.</td>
+</tr>
+<tr class="odd">
+<td>Fail closed</td>
+<td>Refuse work when the safe outcome is uncertain instead of silently
+accepting it.</td>
+</tr>
+<tr class="even">
+<td>Reopen proof</td>
+<td>A test that closes and reopens a database to verify committed state
+is still present.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="security-terms">Security Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Identity</td>
+<td>The authenticated user, service, or agent identity attached to a
+session or operation.</td>
+</tr>
+<tr class="even">
+<td>Principal</td>
+<td>A user, role, group, service, or other authority-bearing
+identity.</td>
+</tr>
+<tr class="odd">
+<td>Authentication</td>
+<td>Establishing who the session or agent is.</td>
+</tr>
+<tr class="even">
+<td>Authorization</td>
+<td>Deciding what an authenticated identity is allowed to do.</td>
+</tr>
+<tr class="odd">
+<td>Grant</td>
+<td>A permission given to a principal or object.</td>
+</tr>
+<tr class="even">
+<td>Revoke</td>
+<td>Removal of a previously granted permission.</td>
+</tr>
+<tr class="odd">
+<td>Role</td>
+<td>A named set of privileges that can be granted and activated
+according to policy.</td>
+</tr>
+<tr class="even">
+<td>Policy</td>
+<td>A rule that controls access, masking, row visibility, external
+access, operational admission, or protected material use.</td>
+</tr>
+<tr class="odd">
+<td>Row-level security</td>
+<td>Policy behavior that limits which rows a session can see or
+change.</td>
+</tr>
+<tr class="even">
+<td>Mask</td>
+<td>A policy-controlled transformation that hides or changes protected
+values in query output.</td>
+</tr>
+<tr class="odd">
+<td>Protected material</td>
+<td>Secrets or sensitive values that require controlled storage,
+reference, redaction, and use.</td>
+</tr>
+<tr class="even">
+<td>Secret reference</td>
+<td>A reference to protected material without placing the raw secret in
+a parser packet, script, or diagnostic.</td>
+</tr>
+<tr class="odd">
+<td>Materialized authorization</td>
+<td>Authorization information loaded into an engine-admissible form
+before work is executed.</td>
+</tr>
+<tr class="even">
+<td>Denied</td>
+<td>A refusal because the authenticated identity, policy, or sandbox
+does not admit the operation.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="data-and-type-terms">Data And Type Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Datatype</td>
+<td>A named value category with storage, comparison, conversion, and
+validation behavior.</td>
+</tr>
+<tr class="even">
+<td>Scalar value</td>
+<td>A single value such as an integer, timestamp, boolean, UUID, or text
+value.</td>
+</tr>
+<tr class="odd">
+<td>Numeric type</td>
+<td>A datatype for integer, unsigned integer, decimal, fixed-point, or
+floating-point values.</td>
+</tr>
+<tr class="even">
+<td>Text type</td>
+<td>A datatype for character data governed by character set and
+collation rules.</td>
+</tr>
+<tr class="odd">
+<td>Character set</td>
+<td>The encoding rules for text values.</td>
+</tr>
+<tr class="even">
+<td>Collation</td>
+<td>The comparison and ordering rules for text values.</td>
+</tr>
+<tr class="odd">
+<td>Temporal type</td>
+<td>A datatype for dates, times, timestamps, intervals, or
+time-zone-aware values.</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>A fixed-size identifier value commonly used for durable
+identity.</td>
+</tr>
+<tr class="odd">
+<td>Binary value</td>
+<td>A sequence of bytes with type-specific interpretation.</td>
+</tr>
+<tr class="even">
+<td>Protected value</td>
+<td>A value governed by protected-material policy.</td>
+</tr>
+<tr class="odd">
+<td>Document value</td>
+<td>A structured value such as JSON-like data where implemented.</td>
+</tr>
+<tr class="even">
+<td>Graph value</td>
+<td>A relationship-oriented value or model surface where
+implemented.</td>
+</tr>
+<tr class="odd">
+<td>Vector value</td>
+<td>A numeric vector used for similarity or embedding-style operations
+where implemented.</td>
+</tr>
+<tr class="even">
+<td>Time-series value</td>
+<td>A value or record organized around time-oriented measurement
+behavior where implemented.</td>
+</tr>
+<tr class="odd">
+<td>Coercion</td>
+<td>An implicit or explicit conversion between compatible types.</td>
+</tr>
+<tr class="even">
+<td>Cast</td>
+<td>An explicit type conversion requested by the user.</td>
+</tr>
+<tr class="odd">
+<td>Null</td>
+<td>A marker for absence of a value, distinct from zero, empty string,
+or false.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="query-terms">Query Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>DDL</td>
+<td>Data definition language: commands that create, alter, describe,
+comment on, rename, or drop database objects.</td>
+</tr>
+<tr class="even">
+<td>DML</td>
+<td>Data manipulation language: commands that read or change rows and
+values.</td>
+</tr>
+<tr class="odd">
+<td>Query</td>
+<td>A request that reads data and returns a result set or scalar
+result.</td>
+</tr>
+<tr class="even">
+<td>Result set</td>
+<td>Rows and columns returned by a query or routine.</td>
+</tr>
+<tr class="odd">
+<td>Projection</td>
+<td>The selected output columns or expressions of a query.</td>
+</tr>
+<tr class="even">
+<td>Predicate</td>
+<td>A condition used to filter rows or control logic.</td>
+</tr>
+<tr class="odd">
+<td>Join</td>
+<td>A query operation that combines rows from more than one source.</td>
+</tr>
+<tr class="even">
+<td>Grouping</td>
+<td>A query operation that forms groups of rows for aggregate
+calculations.</td>
+</tr>
+<tr class="odd">
+<td>Aggregate</td>
+<td>A calculation over multiple rows, such as count or sum where
+implemented.</td>
+</tr>
+<tr class="even">
+<td>Window function</td>
+<td>A calculation over a window of rows related to the current row where
+implemented.</td>
+</tr>
+<tr class="odd">
+<td>CTE</td>
+<td>Common table expression. A named temporary query expression inside a
+statement.</td>
+</tr>
+<tr class="even">
+<td>Recursive CTE</td>
+<td>A CTE that refers to itself according to the rules of the language
+surface.</td>
+</tr>
+<tr class="odd">
+<td>Ordering</td>
+<td>The explicit sort order requested for result rows.</td>
+</tr>
+<tr class="even">
+<td>Limit</td>
+<td>A request to return only a bounded number of rows.</td>
+</tr>
+<tr class="odd">
+<td>Offset</td>
+<td>A request to skip a number of rows before returning results.</td>
+</tr>
+<tr class="even">
+<td>Upsert</td>
+<td>Insert-or-update behavior according to a conflict rule where
+supported.</td>
+</tr>
+<tr class="odd">
+<td>Merge</td>
+<td>A statement that conditionally inserts, updates, or deletes based on
+a source relation where supported.</td>
+</tr>
+<tr class="even">
+<td>Copy</td>
+<td>A large or streaming data input or output surface where implemented
+and admitted.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="procedural-terms">Procedural Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Procedural SQL</td>
+<td>Stored routine language constructs such as blocks, variables,
+control flow, cursors, exceptions, and triggers where implemented.</td>
+</tr>
+<tr class="even">
+<td>Block</td>
+<td>A procedural unit containing declarations and executable
+statements.</td>
+</tr>
+<tr class="odd">
+<td>Variable</td>
+<td>A named procedural value local to a routine or block.</td>
+</tr>
+<tr class="even">
+<td>Cursor</td>
+<td>A controlled handle over a result set.</td>
+</tr>
+<tr class="odd">
+<td>Result-set cursor</td>
+<td>A cursor passed or returned as a routine-controlled result where
+supported.</td>
+</tr>
+<tr class="even">
+<td>Exception handler</td>
+<td>Procedural logic that handles a diagnostic or error condition.</td>
+</tr>
+<tr class="odd">
+<td>Event trigger</td>
+<td>Trigger-style behavior tied to database, transaction, or event
+actions where implemented.</td>
+</tr>
+<tr class="even">
+<td>UDR</td>
+<td>User-defined routine or parser-support routine package, depending on
+context. In parser documentation, it commonly means the package that
+supports bridge or extension behavior for that parser.</td>
+</tr>
+<tr class="odd">
+<td>Bridge</td>
+<td>A controlled connection or interface used by a parser-support
+routine to reach another database surface where configured and
+admitted.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operations-and-data-movement-terms">Operations And Data Movement
+Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Configuration</td>
+<td>Settings that control startup, resource locations, parser
+registration, security providers, policy defaults, and runtime
+behavior.</td>
+</tr>
+<tr class="even">
+<td>Resource file</td>
+<td>A staged file needed by the product, such as character set,
+collation, time zone, policy, or configuration data.</td>
+</tr>
+<tr class="odd">
+<td>Health check</td>
+<td>A diagnostic check that reports whether a component appears alive
+and able to answer.</td>
+</tr>
+<tr class="even">
+<td>Readiness check</td>
+<td>A diagnostic check that reports whether a component is ready to
+accept intended work.</td>
+</tr>
+<tr class="odd">
+<td>Liveness check</td>
+<td>A diagnostic check that reports whether a component is still
+running.</td>
+</tr>
+<tr class="even">
+<td>Support bundle</td>
+<td>A redacted package of diagnostic evidence for review or
+support.</td>
+</tr>
+<tr class="odd">
+<td>Redaction</td>
+<td>Removing or masking protected material before diagnostics are shown
+or bundled.</td>
+</tr>
+<tr class="even">
+<td>Message vector</td>
+<td>Structured diagnostic output used for errors, refusals, and
+operational status.</td>
+</tr>
+<tr class="odd">
+<td>Logical stream</td>
+<td>Data movement represented as statements, rows, records, or events
+rather than physical page files.</td>
+</tr>
+<tr class="even">
+<td>Logical backup</td>
+<td>A backup stream that represents database content as logical metadata
+and data operations.</td>
+</tr>
+<tr class="odd">
+<td>Logical restore</td>
+<td>Replaying a logical stream as admitted database operations.</td>
+</tr>
+<tr class="even">
+<td>Physical backup</td>
+<td>A page-copy or file-copy backup shape. Compatibility parser routes
+should not treat physical page-copy formats as normal logical restore
+input.</td>
+</tr>
+<tr class="odd">
+<td>Import</td>
+<td>Bring external logical data into a database through an admitted
+parser or tool route.</td>
+</tr>
+<tr class="even">
+<td>Export</td>
+<td>Write logical data from a database to an external stream or file
+according to policy.</td>
+</tr>
+<tr class="odd">
+<td>CDC</td>
+<td>Change data capture. A stream or record of changes suitable for
+replication, ETL, or integration where implemented.</td>
+</tr>
+<tr class="even">
+<td>Replication</td>
+<td>Copying changes between systems according to an ordering and
+identity model where implemented.</td>
+</tr>
+<tr class="odd">
+<td>ETL</td>
+<td>Extract, transform, load. A data movement workflow that reads from
+one source, transforms, and writes to another target.</td>
+</tr>
+<tr class="even">
+<td>Migration</td>
+<td>Moving schema, data, routines, security, or operational behavior
+from one database shape to another.</td>
+</tr>
+<tr class="odd">
+<td>Quarantine</td>
+<td>Holding questionable incoming records or events aside for review
+instead of applying them silently.</td>
+</tr>
+<tr class="even">
+<td>Cutover</td>
+<td>The controlled switch from one active source or route to
+another.</td>
+</tr>
+<tr class="odd">
+<td>Idempotency key</td>
+<td>A value used to detect repeated events or operations so replay can
+be handled safely.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="build-and-release-terms">Build And Release Terms</h2>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Build output</td>
+<td>The generated binaries, libraries, parser packages, resources, and
+configuration artifacts for a target platform.</td>
+</tr>
+<tr class="even">
+<td>Output tree</td>
+<td>The staged directory layout intended for testing or release
+packaging.</td>
+</tr>
+<tr class="odd">
+<td>Target platform</td>
+<td>The operating system and architecture being built or tested.</td>
+</tr>
+<tr class="even">
+<td>Proof gate</td>
+<td>A test or validation step intended to prove that a behavior remains
+implemented and has not regressed.</td>
+</tr>
+<tr class="odd">
+<td>CTest</td>
+<td>The test runner integration used by many project tests.</td>
+</tr>
+<tr class="even">
+<td>Conformance test</td>
+<td>A test that compares behavior against a declared specification,
+parser expectation, or compatibility target.</td>
+</tr>
+<tr class="odd">
+<td>Smoke test</td>
+<td>A small test proving that a basic workflow starts, runs, and
+stops.</td>
+</tr>
+<tr class="even">
+<td>Regression test</td>
+<td>A test intended to prevent a previously handled behavior from
+breaking again.</td>
+</tr>
+<tr class="odd">
+<td>Draft documentation</td>
+<td>Documentation under active review. Draft status means users should
+verify commands and claims against the current build and tests.</td>
+</tr>
+</tbody>
+</table>
+<h1 id="about-this-documentation">About This Documentation</h1>
+<p>This book is part of the ScratchBird documentation set. ScratchBird
+is a Convergent Data Engine (CDE).</p>
+<p><strong>Draft status.</strong> This is draft documentation. It
+describes the architecture and intended behavior of the source tree. A
+topic appearing here does not by itself guarantee that a feature is
+complete, enabled, performant, certified, or available in any particular
+build. Always confirm against the current build, configuration, tests,
+and release notes.</p>
+<p><strong>License.</strong> The ScratchBird engine is distributed under
+the Mozilla Public License 2.0 (MPL-2.0). This documentation describes
+that open-source engine.</p>
+<p><strong>No certification claim.</strong> Nothing in this
+documentation constitutes a security certification, performance
+benchmark, or compatibility guarantee.</p>
+</body>
+</html>

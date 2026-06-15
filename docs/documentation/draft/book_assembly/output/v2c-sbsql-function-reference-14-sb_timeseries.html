@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>SBsql Language Reference — Functions</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">SBsql Language Reference — Functions</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#sb-timeseries-functional-reference" id="toc-sb-timeseries-functional-reference">SB Timeseries Functional
+Reference</a>
+<ul>
+<li><a href="#how-to-read-this-page" id="toc-how-to-read-this-page">How
+To Read This Page</a></li>
+<li><a href="#package-inventory" id="toc-package-inventory">Package
+Inventory</a></li>
+<li><a href="#operation-reference" id="toc-operation-reference">Operation Reference</a>
+<ul>
+<li><a href="#aggregate" id="toc-aggregate"><code>aggregate</code></a></li>
+</ul></li>
+</ul></li>
+</ul>
+</nav>
+<p>===== FILE SEPARATION =====</p>
+<!-- chapter source: Language_Reference/functional_reference/sb_timeseries.md -->
+<p><a id="ch-language-reference-functional-reference-sb-timeseries-md"></a></p>
+<h1 id="sb-timeseries-functional-reference">SB Timeseries Functional
+Reference</h1>
+<p>Generation task: <code>sb_timeseries</code></p>
+<p>Package namespace: <code>timeseries</code></p>
+<p>Time-series bucketing, interpolation, downsampling, and aggregate
+helper surfaces.</p>
+<h2 id="how-to-read-this-page">How To Read This Page</h2>
+<p>Provides scalar time-series helpers for bucketing, interpolation,
+simple series aggregation, and downsampling.</p>
+<p>Each entry below is written for a user reading SBsql, not for a
+registry maintainer. The technical fields are retained so an operator
+can connect the language surface to SBLR and engine diagnostics when
+troubleshooting.</p>
+<p>Privileges, policy admission, sandboxing, and descriptor
+compatibility are still checked by the surrounding statement. A function
+being listed here does not grant access to catalog objects, protected
+material, files, network targets, or external services.</p>
+<p>Every operation entry includes:</p>
+<ul>
+<li><code>Purpose</code>: what the operation is for.</li>
+<li><code>Call forms</code>: the public spelling or overload shapes
+recognized by SBsql.</li>
+<li><code>Parameters</code>: the argument roles and descriptor/coercion
+rules.</li>
+<li><code>Returns</code>: the result descriptor and value rule.</li>
+<li><code>Behavior</code>: NULL, volatility, collation, timezone,
+side-effect, and execution notes.</li>
+<li><code>Errors</code>: the message-vector conditions raised for
+invalid input or denied execution.</li>
+<li><code>Example</code>: a representative SBsql usage shape. Examples
+use ordinary schema names such as <code>app.orders</code> and are meant
+to show the function form, not prescribe a schema.</li>
+</ul>
+<h2 id="package-inventory">Package Inventory</h2>
+<table>
+<thead>
+<tr class="header">
+<th>Kind</th>
+<th style="text-align: right;">Records</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>aggregate</td>
+<td style="text-align: right;">1</td>
+</tr>
+</tbody>
+</table>
+<h2 id="operation-reference">Operation Reference</h2>
+<h3 id="aggregate"><code>aggregate</code></h3>
+<p><strong>Purpose:</strong> Computes a simple aggregate over a bounded
+numeric time-series payload.</p>
+<p><strong>Call Forms:</strong></p>
+<ul>
+<li><code>timeseries.aggregate(aggregate_name, numeric_series)</code></li>
+<li>Syntax category: <code>function_call</code></li>
+</ul>
+<p><strong>Parameters:</strong></p>
+<ul>
+<li><code>aggregate_name</code>: Text value naming the aggregate to
+apply. Supported names are <code>count</code>, <code>min</code>,
+<code>max</code>, <code>sum</code>, <code>avg</code>, and
+<code>average</code>.</li>
+<li><code>numeric_series</code>: Text or descriptor-supported value
+containing numeric samples. The current bounded helper accepts
+comma-separated values and bracketed list text such as
+<code>&#39;[1,2,3,4]&#39;</code>.</li>
+<li>Coercion: Both arguments are read through descriptor-aware scalar
+conversion. Invalid text, unsupported aggregate names, malformed numeric
+samples, or ambiguous casts are refused.</li>
+<li>NULL handling: If the parsed series contains no numeric values, the
+function returns SQL <code>NULL</code> with a <code>real64</code>
+descriptor. Other NULL behavior follows descriptor binding for the
+supplied arguments.</li>
+</ul>
+<p><strong>Returns:</strong></p>
+<p><code>real64</code>. <code>count</code> returns the number of parsed
+samples as a <code>real64</code>; <code>min</code> and <code>max</code>
+return the lowest and highest parsed samples; <code>sum</code> returns
+the sample total; <code>avg</code> and <code>average</code> return the
+arithmetic mean.</p>
+<p><strong>Behavior:</strong></p>
+<ul>
+<li>Volatility: immutable for the same aggregate name and numeric series
+payload.</li>
+<li>Determinism: deterministic for the same parsed sample sequence.</li>
+<li>Side effects: none.</li>
+<li>Collation/charset: text input is parsed byte-stably; aggregate names
+are matched as canonical lowercase tokens.</li>
+<li>Timezone: not applicable to this scalar aggregate helper.</li>
+<li>Security and authority: executes as a bounded scalar helper. It does
+not create, write, or manage persistent time-series objects.</li>
+</ul>
+<p><strong>Errors:</strong></p>
+<p>The function refuses invalid arity, non-numeric series values,
+malformed descriptor input, and unsupported aggregate names through
+SBsql message vectors.</p>
+<p><strong>Example:</strong></p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode sql"><code class="sourceCode sql"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">select</span> timeseries.aggregate(<span class="st">&#39;avg&#39;</span>, <span class="st">&#39;[1,2,3,4]&#39;</span>) <span class="kw">as</span> average_value;</span></code></pre></div>
+<p><strong>Technical Details:</strong></p>
+<table>
+<thead>
+<tr class="header">
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Builtin ID</td>
+<td>timeseries.aggregate</td>
+</tr>
+<tr class="even">
+<td>UUID</td>
+<td>019f0000-0000-7000-8000-000000063901</td>
+</tr>
+<tr class="odd">
+<td>Kind</td>
+<td>aggregate</td>
+</tr>
+<tr class="even">
+<td>Syntax forms</td>
+<td>function_call</td>
+</tr>
+<tr class="odd">
+<td>SBLR binding</td>
+<td>sblr.expr.timeseries_aggregate.v3</td>
+</tr>
+<tr class="even">
+<td>AST binding</td>
+<td>ast.expr.timeseries_aggregate</td>
+</tr>
+<tr class="odd">
+<td>Engine entrypoint</td>
+<td>aggregate</td>
+</tr>
+<tr class="even">
+<td>Optimizer foldable</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Index eligible</td>
+<td>False</td>
+</tr>
+<tr class="even">
+<td>Generated-column eligible</td>
+<td>False</td>
+</tr>
+<tr class="odd">
+<td>Cost class</td>
+<td>runtime_seed</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>
