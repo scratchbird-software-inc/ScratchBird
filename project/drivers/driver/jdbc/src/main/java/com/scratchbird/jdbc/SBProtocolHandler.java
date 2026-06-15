@@ -69,6 +69,8 @@ import javax.net.ssl.X509TrustManager;
  * Protocol handler for ScratchBird native wire protocol.
  */
 public class SBProtocolHandler {
+    private static final int P1_ROW_DESCRIPTION_HEADER_BYTES = 72;
+    private static final int P1_CANONICAL_TYPE_REF_BYTES = 144;
 
     public interface NotificationListener {
         void onNotification(NotificationMessage notification);
@@ -2070,6 +2072,9 @@ public class SBProtocolHandler {
     }
 
     private List<SBColumnInfo> parseRowDescription(byte[] payload) throws SQLException {
+        if (isP1RowDescription(payload)) {
+            return parseP1RowDescription(payload);
+        }
         ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
         int count = Short.toUnsignedInt(buf.getShort());
         buf.getShort();
@@ -2102,10 +2107,78 @@ public class SBProtocolHandler {
         return columns;
     }
 
+    private List<SBColumnInfo> parseP1RowDescription(byte[] payload) throws SQLException {
+        int count = readIntLE(payload, 4);
+        if (count < 0) {
+            throw createSQLException("P1 row description column count invalid", "08P01");
+        }
+
+        int offset = P1_ROW_DESCRIPTION_HEADER_BYTES;
+        List<SBColumnInfo> columns = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
+            int fixedColumnBytes = 4 + 4 + 8 + P1_CANONICAL_TYPE_REF_BYTES + 56;
+            if (offset + fixedColumnBytes > payload.length) {
+                throw createSQLException("P1 row description truncated", "08P01");
+            }
+
+            int ordinal = readIntLE(payload, offset);
+            offset += 4;
+
+            offset += 1;
+            short format = (short) ((payload[offset++] & 0xff) == 1
+                ? SBTypeCodec.FORMAT_TEXT
+                : SBTypeCodec.FORMAT_BINARY);
+            boolean nullable = payload[offset++] == 1;
+            offset += 1;
+
+            offset += 8;
+            int typeOid = oidFromCanonicalTypeRef(payload, offset);
+            offset += P1_CANONICAL_TYPE_REF_BYTES;
+
+            offset += 16 * 3;
+            offset += 4;
+            offset += 2;
+            offset += 2;
+
+            NullableText name = readNullableText(payload, offset);
+            offset = name.nextOffset;
+
+            SBColumnInfo col = new SBColumnInfo();
+            col.setName(name.value == null || name.value.isEmpty() ? "column" + (i + 1) : name.value);
+            col.setTableOid(0);
+            col.setColumnNumber((short) (ordinal == 0 ? i : ordinal - 1));
+            col.setTypeOid(typeOid);
+            col.setTypeSize(typeSizeForOid(typeOid));
+            col.setTypeModifier(-1);
+            col.setFormatCode(format);
+            col.setNullable(nullable);
+            columns.add(col);
+        }
+        return columns;
+    }
+
+    private static boolean isP1RowDescription(byte[] payload) {
+        return payload.length >= P1_ROW_DESCRIPTION_HEADER_BYTES
+            && readUnsignedShortLE(payload, 0) == 1
+            && payload[3] == 1;
+    }
+
     private Object[] parseDataRow(byte[] payload, List<SBColumnInfo> columns) throws SQLException {
+        if (payload.length < 4) {
+            throw createSQLException("Row data truncated", "08P01");
+        }
         ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
         int count = Short.toUnsignedInt(buf.getShort());
         int nullBytes = Short.toUnsignedInt(buf.getShort());
+        if (columns == null || columns.size() != count) {
+            int columnCount = columns == null ? 0 : columns.size();
+            throw createSQLException(
+                "Row data column count mismatch: row has " + count + " values but description has " + columnCount,
+                "08P01");
+        }
+        if (buf.remaining() < nullBytes) {
+            throw createSQLException("Row data null bitmap truncated", "08P01");
+        }
         byte[] nullBitmap = new byte[nullBytes];
         buf.get(nullBitmap);
         Object[] row = new Object[count];
@@ -2118,10 +2191,16 @@ public class SBProtocolHandler {
                 row[i] = null;
                 continue;
             }
+            if (buf.remaining() < 4) {
+                throw createSQLException("Row data value length truncated", "08P01");
+            }
             int len = buf.getInt();
             if (len < 0) {
                 row[i] = null;
                 continue;
+            }
+            if (buf.remaining() < len) {
+                throw createSQLException("Row data value truncated", "08P01");
             }
             byte[] data = new byte[len];
             buf.get(data);
@@ -2129,6 +2208,79 @@ public class SBProtocolHandler {
             row[i] = SBTypeCodec.decodeValue(col.getTypeOid(), data, col.getFormatCode());
         }
         return row;
+    }
+
+    private static int oidFromCanonicalTypeRef(byte[] payload, int offset) {
+        if (offset + 4 > payload.length) {
+            return SBTypeCodec.OID_TEXT;
+        }
+        int family = readUnsignedShortLE(payload, offset);
+        int code = readUnsignedShortLE(payload, offset + 2);
+        if (family == 1 && code == 1) {
+            return SBTypeCodec.OID_BOOL;
+        }
+        if (family == 2 && code == 3) {
+            return SBTypeCodec.OID_INT4;
+        }
+        if (family == 2 && code == 4) {
+            return SBTypeCodec.OID_INT8;
+        }
+        if (family == 4 && code == 1) {
+            return SBTypeCodec.OID_NUMERIC;
+        }
+        if (family == 6 && code == 2) {
+            return SBTypeCodec.OID_FLOAT8;
+        }
+        if (family == 8 && code == 1) {
+            return SBTypeCodec.OID_TEXT;
+        }
+        return SBTypeCodec.OID_TEXT;
+    }
+
+    private static short typeSizeForOid(int oid) {
+        switch (oid) {
+            case SBTypeCodec.OID_BOOL:
+                return 1;
+            case SBTypeCodec.OID_INT4:
+                return 4;
+            case SBTypeCodec.OID_INT8:
+            case SBTypeCodec.OID_FLOAT8:
+                return 8;
+            default:
+                return -1;
+        }
+    }
+
+    private static NullableText readNullableText(byte[] payload, int offset) throws SQLException {
+        if (offset + 5 > payload.length) {
+            throw new SQLException("Nullable text truncated", "08P01");
+        }
+        int tag = payload[offset++] & 0xff;
+        int length = readIntLE(payload, offset);
+        offset += 4;
+        if (length < 0) {
+            throw new SQLException("Nullable text length invalid", "08P01");
+        }
+        if (tag == 0) {
+            return new NullableText("", offset);
+        }
+        if (offset + length > payload.length) {
+            throw new SQLException("Nullable text truncated", "08P01");
+        }
+        return new NullableText(
+            new String(payload, offset, length, StandardCharsets.UTF_8),
+            offset + length);
+    }
+
+    private static int readUnsignedShortLE(byte[] payload, int offset) {
+        return (payload[offset] & 0xff) | ((payload[offset + 1] & 0xff) << 8);
+    }
+
+    private static int readIntLE(byte[] payload, int offset) {
+        return (payload[offset] & 0xff)
+            | ((payload[offset + 1] & 0xff) << 8)
+            | ((payload[offset + 2] & 0xff) << 16)
+            | (payload[offset + 3] << 24);
     }
 
     private CommandComplete parseCommandComplete(byte[] payload) {
@@ -2602,6 +2754,16 @@ public class SBProtocolHandler {
             this.attachmentId = attachmentId;
             this.txnId = txnId;
             this.payload = payload;
+        }
+    }
+
+    private static final class NullableText {
+        final String value;
+        final int nextOffset;
+
+        NullableText(String value, int nextOffset) {
+            this.value = value;
+            this.nextOffset = nextOffset;
         }
     }
 
