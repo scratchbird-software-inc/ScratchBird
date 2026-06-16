@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "driver_tools": [
+    {
+      "driver": "cpp",
+      "path": "project/drivers/driver/cpp/tools/sb_isql_cpp.cpp",
+      "native_tokens": ["scratchbird::client::Connection", "connect", "prepare", "execute", "executeQuery", "metadataQuery", "commit", "rollback", "ResultSet::next"]
+    },
+    {
+      "driver": "odbc",
+      "path": "project/drivers/driver/odbc/tools/sb_isql_odbc.cpp",
+      "native_tokens": ["SQLAllocHandle", "SQLConnect", "SQLPrepare", "SQLBindParameter", "SQLExecute", "SQLFetch", "SQLTables", "SQLColumns"]
+    },
+    {
+      "driver": "jdbc",
+      "path": "project/drivers/driver/jdbc/src/main/java/com/scratchbird/jdbc/tools/SBIsqlJdbc.java",
+      "native_tokens": ["DriverManager.getConnection", "Connection", "PreparedStatement", "ResultSet", "DatabaseMetaData", "SQLException"]
+    },
+    {
+      "driver": "dotnet",
+      "path": "project/drivers/driver/dotnet/tools/SBIsqlDotNet/Program.cs",
+      "native_tokens": ["DbConnection", "DbCommand", "DbParameter", "DbDataReader", "DbTransaction", "GetSchema"]
+    },
+    {
+      "driver": "python",
+      "path": "project/drivers/driver/python/tools/sb_isql_python.py",
+      "native_tokens": ["scratchbird.connect", "cursor.execute", "cursor.fetchall", "conn.commit", "conn.rollback", "conn.query_metadata"]
+    },
+    {
+      "driver": "go",
+      "path": "project/drivers/driver/go/cmd/sb-isql-go/main.go",
+      "native_tokens": ["sql.Open", "db.Conn", "PrepareContext", "QueryContext", "Rows", "Tx"]
+    },
+    {
+      "driver": "rust",
+      "path": "project/drivers/driver/rust/src/bin/sb_isql_rust.rs",
+      "native_tokens": ["Client", "connect", "query", "query_params", "begin", "commit", "rollback", "query_metadata"]
+    },
+    {
+      "driver": "node",
+      "path": "project/drivers/driver/node/src/tools/sb-isql-node.ts",
+      "native_tokens": ["ScratchBirdClient", "connect", "prepare", "execute", "query", "transaction"]
+    },
+    {
+      "driver": "php",
+      "path": "project/drivers/driver/php/tools/sb_isql_php.php",
+      "native_tokens": ["PDO", "prepare", "execute", "fetch", "errorInfo"]
+    },
+    {
+      "driver": "r",
+      "path": "project/drivers/driver/r/tools/sb_isql_r.R",
+      "native_tokens": ["DBI::dbConnect", "DBI::dbSendQuery", "DBI::dbFetch", "DBI::dbExecute", "DBI::dbListTables", "DBI::dbCommit", "DBI::dbRollback"]
+    },
+    {
+      "driver": "ruby",
+      "path": "project/drivers/driver/ruby/tools/sb_isql_ruby.rb",
+      "native_tokens": ["Scratchbird", "connect", "prepare", "execute", "query_metadata", "commit", "rollback"]
+    },
+    {
+      "driver": "pascal",
+      "path": "project/drivers/driver/pascal/tools/sb_isql_pascal.pas",
+      "native_tokens": ["TScratchBirdClient", "Connect", "ExecuteQuery", "ReadRow", "Commit", "Rollback", "GetLastSblr"]
+    },
+    {
+      "driver": "swift",
+      "path": "project/drivers/driver/swift/Sources/SBIsqlSwift/main.swift",
+      "native_tokens": ["ScratchBirdConnection", "connect", "query", "metadataTables", "begin", "commit", "rollback", "close"]
+    },
+    {
+      "driver": "dart",
+      "path": "project/drivers/driver/dart/bin/sb_isql_dart.dart",
+      "native_tokens": ["ScratchBirdClient", "connect", "query", "queryMetadata", "begin", "commit", "rollback", "close"]
+    },
+    {
+      "driver": "elixir",
+      "path": "project/drivers/driver/elixir/tools/sb_isql_elixir.exs",
+      "native_tokens": ["ScratchBird.Connection.connect", "ScratchBird.Connection.query", "ScratchBird.Connection.begin", "ScratchBird.Connection.commit", "ScratchBird.Connection.rollback"]
+    },
+    {
+      "driver": "mojo",
+      "path": "project/drivers/driver/mojo/tools/sb_isql_mojo.mojo",
+      "native_tokens": ["ScratchBirdConnection", "connect", "prepare", "execute", "query_metadata"]
+    },
+    {
+      "driver": "adbc",
+      "path": "project/drivers/driver/adbc/tools/sb_isql_adbc",
+      "native_tokens": ["AdbcDatabase", "AdbcConnection", "AdbcStatement", "ArrowArrayStream"]
+    },
+    {
+      "driver": "flightsql",
+      "path": "project/drivers/driver/flightsql/tools/sb_isql_flightsql",
+      "native_tokens": ["FlightSqlClient", "Handshake", "PreparedStatement", "DoGet", "Arrow"]
+    },
+    {
+      "driver": "julia",
+      "path": "project/drivers/driver/julia/tools/sb_isql_julia.jl",
+      "native_tokens": ["DBInterface.connect", "DBInterface.prepare", "DBInterface.execute", "Tables.rows"]
+    },
+    {
+      "driver": "perl",
+      "path": "project/drivers/driver/perl/tools/sb_isql_perl.pl",
+      "native_tokens": ["DBI->connect", "prepare", "execute", "fetchrow_arrayref", "errstr"]
+    },
+    {
+      "driver": "r2dbc",
+      "path": "project/drivers/driver/r2dbc/tools/sb_isql_r2dbc",
+      "native_tokens": ["ConnectionFactory", "createStatement", "execute", "Publisher", "Result"]
+    }
+  ],
+  "forbidden_tokens": [
+    "project/drivers/tool/cli",
+    "drivers/tool/cli",
+    "sb_isql ",
+    "SBsql ",
+    "subprocess.run",
+    "ProcessBuilder(",
+    "system(",
+    "exec("
+  ]
+}

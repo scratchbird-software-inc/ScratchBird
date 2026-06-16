@@ -16,7 +16,8 @@ let package = Package(
         .iOS(.v16)
     ],
     products: [
-        .library(name: "ScratchBird", targets: ["ScratchBird"])
+        .library(name: "ScratchBird", targets: ["ScratchBird"]),
+        .executable(name: "SBIsqlSwift", targets: ["SBIsqlSwift"])
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.1.0"),
@@ -35,6 +36,10 @@ let package = Package(
         .testTarget(
             name: "ScratchBirdTests",
             dependencies: ["ScratchBird"]
+        ),
+        .executableTarget(
+            name: "SBIsqlSwift",
+            dependencies: ["ScratchBird", .product(name: "Crypto", package: "swift-crypto")]
         )
     ]
 )

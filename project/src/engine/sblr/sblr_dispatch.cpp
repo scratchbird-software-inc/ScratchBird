@@ -20,6 +20,7 @@
 #include "catalog/descriptor_api.hpp"
 #include "catalog/descriptor_mutation_api.hpp"
 #include "catalog/catalog_lookup_api.hpp"
+#include "catalog/name_registry.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "cluster/cluster_control_api.hpp"
@@ -1486,6 +1487,171 @@ api::EngineObjectReference TargetObjectForDml(const api::EngineApiRequest& reque
   target.object_kind = api::SecurityOptionValue(request, "target_object_kind:");
   if (target.object_kind.empty()) target.object_kind = default_kind;
   return target;
+}
+
+bool IsCreateSchemaRuntimeOption(std::string_view option) {
+  return option.starts_with("comment:") ||
+         option.starts_with("localized_comment:") ||
+         option.starts_with("unresolved_schema_parent_path:");
+}
+
+std::vector<std::string> SplitDottedIdentifierPath(std::string_view path) {
+  std::vector<std::string> parts;
+  std::string current;
+  bool quoted = false;
+  for (std::size_t index = 0; index < path.size(); ++index) {
+    const char ch = path[index];
+    if (quoted) {
+      if (ch == '"') {
+        if (index + 1 < path.size() && path[index + 1] == '"') {
+          current.push_back('"');
+          ++index;
+        } else {
+          quoted = false;
+        }
+      } else {
+        current.push_back(ch);
+      }
+      continue;
+    }
+    if (ch == '"') {
+      quoted = true;
+      continue;
+    }
+    if (ch == '.') {
+      if (!current.empty()) {
+        parts.push_back(current);
+        current.clear();
+      }
+      continue;
+    }
+    if (!std::isspace(static_cast<unsigned char>(ch)) || !current.empty()) {
+      current.push_back(ch);
+    }
+  }
+  if (!current.empty()) { parts.push_back(current); }
+  return parts;
+}
+
+std::string JoinDottedIdentifierPath(const std::vector<std::string>& parts) {
+  std::string out;
+  for (const auto& part : parts) {
+    if (part.empty()) { continue; }
+    if (!out.empty()) { out.push_back('.'); }
+    out += part;
+  }
+  return out;
+}
+
+std::optional<std::string> ResolveSchemaParentPathToUuid(const api::EngineApiRequest& request,
+                                                         const std::string& parent_path,
+                                                         std::string* normalized_path) {
+  if (parent_path.empty()) { return std::nullopt; }
+  const auto parts = SplitDottedIdentifierPath(parent_path);
+  const std::string normalized = JoinDottedIdentifierPath(parts);
+  if (normalized.empty()) { return std::nullopt; }
+  if (normalized_path != nullptr) { *normalized_path = normalized; }
+
+  const std::string profile = request.context.identifier_profile_uuid.empty()
+                                  ? "sbsql_v3"
+                                  : request.context.identifier_profile_uuid;
+  std::vector<std::string> lookup_keys;
+  auto add_key = [&](const std::string& value) {
+    if (value.empty()) { return; }
+    const std::string folded = api::NameRegistryLookupKey(value, profile, false);
+    if (std::find(lookup_keys.begin(), lookup_keys.end(), folded) == lookup_keys.end()) {
+      lookup_keys.push_back(folded);
+    }
+  };
+  add_key(parent_path);
+  add_key(normalized);
+
+  auto context = request.context;
+  const std::uint64_t observer_tx =
+      context.snapshot_visible_through_local_transaction_id != 0
+          ? context.snapshot_visible_through_local_transaction_id
+          : context.local_transaction_id;
+  auto loaded = api::LoadNameRegistryState(context, observer_tx);
+  if (!loaded.ok && context.local_transaction_id != 0) {
+    context.local_transaction_id = 0;
+    loaded = api::LoadNameRegistryState(context, observer_tx);
+  }
+  if (!loaded.ok) { return std::nullopt; }
+
+  std::optional<std::string> match;
+  for (const auto& entry : loaded.state.entries) {
+    if (entry.deleted || entry.lifecycle_state != "active" || entry.object_class != "schema") {
+      continue;
+    }
+    const std::string entry_full_key = entry.full_path_lookup_key.empty()
+                                           ? entry.normalized_lookup_key
+                                           : entry.full_path_lookup_key;
+    const bool key_matches =
+        std::find(lookup_keys.begin(), lookup_keys.end(), entry_full_key) != lookup_keys.end() ||
+        (parts.size() == 1 &&
+         std::find(lookup_keys.begin(), lookup_keys.end(), entry.normalized_lookup_key) != lookup_keys.end());
+    if (!key_matches) { continue; }
+    if (match && *match != entry.object_uuid) { return std::nullopt; }
+    match = entry.object_uuid;
+  }
+  return match;
+}
+
+api::EngineCreateSchemaRequest TypedCreateSchemaRequest(const SblrDispatchRequest& request) {
+  api::EngineCreateSchemaRequest typed;
+  const api::EngineApiRequest base = BaseApiRequest(request);
+  static_cast<api::EngineApiRequest&>(typed) = base;
+  if (typed.target_object.uuid.canonical.empty()) {
+    typed.target_object.uuid.canonical = api::SecurityOptionValue(base, "schema_object_uuid:");
+  }
+  if (typed.target_object.object_kind.empty()) {
+    typed.target_object.object_kind = "schema";
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  }
+  std::string normalized_parent_path;
+  const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
+  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+    const auto resolved_parent =
+        ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
+    if (resolved_parent) {
+      typed.target_schema.uuid.canonical = *resolved_parent;
+    }
+  }
+  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+    typed.target_schema.object_kind = "schema";
+  }
+  if (typed.localized_names.empty()) {
+    std::string schema_name = api::SecurityOptionValue(base, "schema_name:");
+    if (schema_name.empty()) schema_name = api::SecurityOptionValue(base, "name:");
+    if (!schema_name.empty()) {
+      if (normalized_parent_path.empty() && !schema_parent_path.empty()) {
+        const auto parts = SplitDottedIdentifierPath(schema_parent_path);
+        normalized_parent_path = JoinDottedIdentifierPath(parts);
+      }
+      const std::string full_path =
+          normalized_parent_path.empty() ? std::string{} : normalized_parent_path + "." + schema_name;
+      typed.localized_names.push_back({"en", "primary", full_path, schema_name, true});
+    }
+  }
+
+  typed.option_envelopes.clear();
+  for (const auto& option : base.option_envelopes) {
+    if (IsCreateSchemaRuntimeOption(option)) {
+      typed.option_envelopes.push_back(option);
+    }
+  }
+  if (!schema_parent_path.empty() && typed.target_schema.uuid.canonical.empty()) {
+    typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
+  }
+  return typed;
 }
 
 api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest& request) {
@@ -3443,7 +3609,7 @@ SblrDispatchResult DispatchSblrOperation(const SblrDispatchRequest& request) {
   else if (op == "artifact.external_git.diff_snapshot") result.api_result = api::EngineDiffExternalGitSnapshot(TypedRequest<api::EngineDiffExternalGitSnapshotRequest>(request));
   else if (op == "artifact.external_git.rollback_plan") result.api_result = api::EnginePlanExternalGitRollback(TypedRequest<api::EnginePlanExternalGitRollbackRequest>(request));
   else if (op == "ddl.create_database") result.api_result = api::EngineCreateDatabase(TypedRequest<api::EngineCreateDatabaseRequest>(request));
-  else if (op == "ddl.create_schema") result.api_result = api::EngineCreateSchema(TypedRequest<api::EngineCreateSchemaRequest>(request));
+  else if (op == "ddl.create_schema") result.api_result = api::EngineCreateSchema(TypedCreateSchemaRequest(request));
   else if (op == "ddl.create_table") result.api_result = api::EngineCreateTable(TypedCreateTableRequest(request));
   else if (op == "ddl.create_index") result.api_result = api::EngineCreateIndex(TypedCreateIndexRequest(request));
   else if (op == "ddl.create_index_template") result.api_result = api::EngineCreateIndexTemplate(TypedCreateIndexTemplateRequest(request));

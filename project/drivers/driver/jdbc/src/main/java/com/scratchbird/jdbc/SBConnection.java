@@ -579,7 +579,6 @@ public class SBConnection implements Connection {
                 commit();
             }
             this.autoCommit = autoCommit;
-            protocol.execute("SET AUTOCOMMIT " + (autoCommit ? "ON" : "OFF"));
             if (!autoCommit && !protocol.hasActiveTransaction()) {
                 beginManagedTransaction();
             }
@@ -1307,7 +1306,6 @@ public class SBConnection implements Connection {
         if (!autoCommit) {
             // ScratchBird remains always-in-transaction after reconnect, but this is a new
             // session transaction, not a resurrection of the abandoned in-flight one.
-            protocol.execute("SET AUTOCOMMIT OFF");
             beginManagedTransaction();
         }
 
@@ -1350,25 +1348,9 @@ public class SBConnection implements Connection {
     }
 
     private void applyStartupAutocommitSetting() throws SQLException {
-        try {
-            protocol.execute("SET AUTOCOMMIT " + (autoCommit ? "ON" : "OFF"));
-        } catch (SQLException ex) {
-            if (!autoCommit || !isStartupAutocommitUnsupported(ex)) {
-                throw ex;
-            }
-            appendWarning(new SQLWarning(
-                "server route refused startup SET AUTOCOMMIT ON; continuing with server default autocommit",
-                ex.getSQLState(),
-                ex
-            ));
+        if (!autoCommit && !protocol.hasActiveTransaction()) {
+            beginManagedTransaction();
         }
-    }
-
-    private static boolean isStartupAutocommitUnsupported(SQLException ex) {
-        String message = ex.getMessage();
-        return message != null
-            && message.contains("PARSER_SERVER_IPC.SBLR_REVALIDATION_FAILED")
-            && message.contains("operation family");
     }
 
     private String discoverCurrentSchema() {

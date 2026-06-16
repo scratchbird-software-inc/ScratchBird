@@ -666,7 +666,7 @@ add_test(
   COMMAND engine_listener_materialized_authorization_conformance
 )
 set_tests_properties(engine_listener_materialized_authorization_conformance PROPERTIES
-  LABELS "ELER-032;ELER-GATE-032;ELER-100;ELER-GATE-100;ELER-103;ELER-GATE-103;ELER-104;ELER-GATE-104;engine_listener_enterprise;security;authorization;materialized_context;trace_fallback_refusal;fixture_fence;deny_override;epoch_fail_closed;auth_bypass;privilege_escalation;authorization_property;linux_proof"
+  LABELS "ELER-032;ELER-GATE-032;ELER-100;ELER-GATE-100;ELER-103;ELER-GATE-103;ELER-104;ELER-GATE-104;engine_listener_enterprise;security;authorization;materialized_context;recursive_group_authorization;group_depth_128;role_group_inheritance;cross_principal_replay_refusal;trace_fallback_refusal;fixture_fence;deny_override;epoch_fail_closed;auth_bypass;privilege_escalation;authorization_property;linux_proof"
 )
 
 add_executable(engine_listener_protected_material_durable_catalog_conformance

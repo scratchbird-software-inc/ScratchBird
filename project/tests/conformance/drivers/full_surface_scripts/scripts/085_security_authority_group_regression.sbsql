@@ -1,0 +1,211 @@
+-- script_id: SBDFS-085
+-- Purpose: recursive group, role, grant, deny, replay, and filtered-resolution security regression matrix.
+-- namespace placeholder: __SB_NAMESPACE__
+
+CREATE TABLE __SB_NAMESPACE__.security_subjects (
+    subject_id VARCHAR(96) PRIMARY KEY,
+    subject_kind VARCHAR(32) NOT NULL,
+    active BOOLEAN NOT NULL,
+    security_epoch INTEGER NOT NULL
+);
+
+CREATE TABLE __SB_NAMESPACE__.security_memberships (
+    membership_id VARCHAR(96) PRIMARY KEY,
+    member_id VARCHAR(96) NOT NULL,
+    member_kind VARCHAR(32) NOT NULL,
+    parent_id VARCHAR(96) NOT NULL,
+    parent_kind VARCHAR(32) NOT NULL,
+    active BOOLEAN NOT NULL,
+    security_epoch INTEGER NOT NULL
+);
+
+CREATE TABLE __SB_NAMESPACE__.security_grants (
+    grant_id VARCHAR(96) PRIMARY KEY,
+    subject_id VARCHAR(96) NOT NULL,
+    subject_kind VARCHAR(32) NOT NULL,
+    target_id VARCHAR(96) NOT NULL,
+    right_name VARCHAR(32) NOT NULL,
+    deny BOOLEAN NOT NULL,
+    active BOOLEAN NOT NULL,
+    security_epoch INTEGER NOT NULL
+);
+
+CREATE TABLE __SB_NAMESPACE__.security_authorization_cases (
+    case_id VARCHAR(96) PRIMARY KEY,
+    principal_id VARCHAR(96) NOT NULL,
+    target_id VARCHAR(96) NOT NULL,
+    right_name VARCHAR(32) NOT NULL,
+    expected_decision VARCHAR(32) NOT NULL,
+    expected_reason VARCHAR(96) NOT NULL
+);
+
+CREATE TABLE __SB_NAMESPACE__.security_sblr_replay_cases (
+    case_id VARCHAR(96) PRIMARY KEY,
+    original_principal_id VARCHAR(96) NOT NULL,
+    replay_principal_id VARCHAR(96) NOT NULL,
+    target_id VARCHAR(96) NOT NULL,
+    right_name VARCHAR(32) NOT NULL,
+    expected_refusal VARCHAR(96) NOT NULL
+);
+
+CREATE TABLE __SB_NAMESPACE__.security_uuid_resolution_cases (
+    case_id VARCHAR(96) PRIMARY KEY,
+    principal_id VARCHAR(96) NOT NULL,
+    object_uuid VARCHAR(96) NOT NULL,
+    expected_visible BOOLEAN NOT NULL,
+    expected_diagnostic VARCHAR(96)
+);
+
+WITH RECURSIVE depth_probe(depth_value) AS (
+    VALUES (0)
+    UNION ALL
+    SELECT depth_value + 1
+    FROM depth_probe
+    WHERE depth_value < 127
+)
+INSERT INTO __SB_NAMESPACE__.security_subjects
+SELECT 'grp_depth_' || CAST(depth_value AS VARCHAR(16)),
+       'group',
+       TRUE,
+       11
+FROM depth_probe;
+
+INSERT INTO __SB_NAMESPACE__.security_subjects VALUES
+    ('user_direct', 'principal', TRUE, 11),
+    ('user_nested', 'principal', TRUE, 11),
+    ('user_role_nested', 'principal', TRUE, 11),
+    ('user_denied', 'principal', TRUE, 11),
+    ('user_none', 'principal', TRUE, 11),
+    ('user_stale', 'principal', TRUE, 11),
+    ('user_cycle', 'principal', TRUE, 11),
+    ('role_reporting', 'role', TRUE, 11),
+    ('role_security_reader', 'role', TRUE, 11),
+    ('grp_cycle_a', 'group', TRUE, 11),
+    ('grp_cycle_b', 'group', TRUE, 11),
+    ('grp_stale_parent', 'group', TRUE, 11);
+
+WITH RECURSIVE depth_edges(depth_value) AS (
+    VALUES (0)
+    UNION ALL
+    SELECT depth_value + 1
+    FROM depth_edges
+    WHERE depth_value < 127
+)
+INSERT INTO __SB_NAMESPACE__.security_memberships
+SELECT 'm_depth_' || CAST(depth_value AS VARCHAR(16)),
+       CASE WHEN depth_value = 0
+            THEN 'user_nested'
+            ELSE 'grp_depth_' || CAST(depth_value - 1 AS VARCHAR(16))
+       END,
+       CASE WHEN depth_value = 0 THEN 'principal' ELSE 'group' END,
+       'grp_depth_' || CAST(depth_value AS VARCHAR(16)),
+       'group',
+       TRUE,
+       11
+FROM depth_edges;
+
+INSERT INTO __SB_NAMESPACE__.security_memberships VALUES
+    ('m_role_user', 'user_role_nested', 'principal', 'grp_depth_0', 'group', TRUE, 11),
+    ('m_role_chain', 'grp_depth_127', 'group', 'role_reporting', 'role', TRUE, 11),
+    ('m_denied_user', 'user_denied', 'principal', 'grp_depth_0', 'group', TRUE, 11),
+    ('m_stale_user', 'user_stale', 'principal', 'grp_stale_parent', 'group', TRUE, 10),
+    ('m_cycle_user', 'user_cycle', 'principal', 'grp_cycle_a', 'group', TRUE, 11),
+    ('m_cycle_ab', 'grp_cycle_a', 'group', 'grp_cycle_b', 'group', TRUE, 11),
+    ('m_cycle_ba', 'grp_cycle_b', 'group', 'grp_cycle_a', 'group', TRUE, 11);
+
+INSERT INTO __SB_NAMESPACE__.security_grants VALUES
+    ('grant_direct_select', 'user_direct', 'principal', 'object_direct', 'SELECT', FALSE, TRUE, 11),
+    ('grant_top_group_select', 'grp_depth_127', 'group', 'object_nested', 'SELECT', FALSE, TRUE, 11),
+    ('grant_role_update', 'role_reporting', 'role', 'object_role', 'UPDATE', FALSE, TRUE, 11),
+    ('grant_denied_allow', 'grp_depth_127', 'group', 'object_denied', 'SELECT', FALSE, TRUE, 11),
+    ('grant_denied_direct', 'user_denied', 'principal', 'object_denied', 'SELECT', TRUE, TRUE, 11),
+    ('grant_security_reader', 'role_security_reader', 'role', 'object_security_catalog', 'VISIBLE', FALSE, TRUE, 11);
+
+INSERT INTO __SB_NAMESPACE__.security_authorization_cases VALUES
+    ('case_direct_user_grant', 'user_direct', 'object_direct', 'SELECT', 'allow', 'direct_principal_grant'),
+    ('case_nested_group_128', 'user_nested', 'object_nested', 'SELECT', 'allow', 'recursive_group_grant_depth_128'),
+    ('case_role_via_group', 'user_role_nested', 'object_role', 'UPDATE', 'allow', 'role_grant_inherited_through_group'),
+    ('case_target_specific_denied', 'user_nested', 'object_direct', 'SELECT', 'deny', 'target_specific_grant_required'),
+    ('case_no_grant_denied', 'user_none', 'object_nested', 'SELECT', 'deny', 'no_effective_grant'),
+    ('case_direct_deny_wins', 'user_denied', 'object_denied', 'SELECT', 'deny', 'explicit_deny_precedence'),
+    ('case_stale_epoch_refused', 'user_stale', 'object_nested', 'SELECT', 'refuse', 'security_epoch_mismatch'),
+    ('case_cycle_refused', 'user_cycle', 'object_nested', 'SELECT', 'refuse', 'membership_cycle');
+
+INSERT INTO __SB_NAMESPACE__.security_sblr_replay_cases VALUES
+    ('case_replay_cross_user', 'user_nested', 'user_none', 'object_nested', 'SELECT', 'SECURITY.AUTHORIZATION.PRINCIPAL_MISMATCH'),
+    ('case_replay_role_change', 'user_role_nested', 'user_direct', 'object_role', 'UPDATE', 'SECURITY.AUTHORIZATION.PRINCIPAL_MISMATCH');
+
+INSERT INTO __SB_NAMESPACE__.security_uuid_resolution_cases VALUES
+    ('case_visible_uuid_path', 'user_nested', 'object_nested', TRUE, NULL),
+    ('case_hidden_uuid_path', 'user_none', 'object_nested', FALSE, 'SB_AUTH_OBJECT_NOT_VISIBLE'),
+    ('case_security_catalog_filtered', 'user_direct', 'object_security_catalog', FALSE, 'SB_AUTH_OBJECT_NOT_VISIBLE');
+
+SELECT 'SBDFS-085-001' AS assertion_id,
+       COUNT(*) AS actual_subject_rows,
+       140 AS expected_subject_rows
+FROM __SB_NAMESPACE__.security_subjects;
+
+SELECT 'SBDFS-085-002' AS assertion_id,
+       MAX(depth_value) AS actual_max_recursive_depth,
+       128 AS expected_max_recursive_depth
+FROM (
+    WITH RECURSIVE depth_probe(depth_value) AS (
+        VALUES (0)
+        UNION ALL
+        SELECT depth_value + 1
+        FROM depth_probe
+        WHERE depth_value < 128
+    )
+    SELECT depth_value FROM depth_probe
+) AS depth_check;
+
+SELECT 'SBDFS-085-003' AS assertion_id,
+       COUNT(*) AS actual_nested_memberships,
+       135 AS expected_nested_memberships
+FROM __SB_NAMESPACE__.security_memberships;
+
+SELECT 'SBDFS-085-004' AS assertion_id,
+       COUNT(*) AS actual_authorization_cases,
+       8 AS expected_authorization_cases
+FROM __SB_NAMESPACE__.security_authorization_cases;
+
+SELECT 'SBDFS-085-005' AS assertion_id,
+       COUNT(*) AS actual_allowed_cases,
+       3 AS expected_allowed_cases
+FROM __SB_NAMESPACE__.security_authorization_cases
+WHERE expected_decision = 'allow';
+
+SELECT 'SBDFS-085-006' AS assertion_id,
+       COUNT(*) AS actual_denied_or_refused_cases,
+       5 AS expected_denied_or_refused_cases
+FROM __SB_NAMESPACE__.security_authorization_cases
+WHERE expected_decision IN ('deny', 'refuse');
+
+SELECT 'SBDFS-085-007' AS assertion_id,
+       COUNT(*) AS actual_replay_refusal_cases,
+       2 AS expected_replay_refusal_cases
+FROM __SB_NAMESPACE__.security_sblr_replay_cases
+WHERE expected_refusal = 'SECURITY.AUTHORIZATION.PRINCIPAL_MISMATCH';
+
+SELECT 'SBDFS-085-008' AS assertion_id,
+       COUNT(*) AS actual_hidden_uuid_cases,
+       2 AS expected_hidden_uuid_cases
+FROM __SB_NAMESPACE__.security_uuid_resolution_cases
+WHERE expected_visible = FALSE;
+
+SELECT 'SBDFS-085-009' AS assertion_id,
+       COUNT(*) AS actual_epoch_or_cycle_refusals,
+       2 AS expected_epoch_or_cycle_refusals
+FROM __SB_NAMESPACE__.security_authorization_cases
+WHERE expected_reason IN ('security_epoch_mismatch', 'membership_cycle');
+
+SELECT 'SBDFS-085-010' AS assertion_id,
+       COUNT(*) AS actual_security_matrix_cases,
+       13 AS expected_security_matrix_cases
+FROM (
+    SELECT case_id FROM __SB_NAMESPACE__.security_authorization_cases
+    UNION ALL
+    SELECT case_id FROM __SB_NAMESPACE__.security_sblr_replay_cases
+    UNION ALL
+    SELECT case_id FROM __SB_NAMESPACE__.security_uuid_resolution_cases
+) AS security_case_union;

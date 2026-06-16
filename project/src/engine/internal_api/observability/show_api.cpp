@@ -618,15 +618,16 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
                                             ? "en"
                                             : request.context.language_context.default_language_tag;
   projection_context.session_uuid = request.context.session_uuid.canonical;
-  projection_context.visible_catalog_generation_id = request.context.catalog_generation_id;
   projection_context.cluster_authority_available = request.context.cluster_authority_available;
   PopulateSessionSecurityProjectionContext(request, &projection_context);
   const EngineRequestContext catalog_read_context = CatalogReadContext(request.context);
+  const std::uint64_t observer_tx = CatalogObserverTx(request.context);
+  projection_context.visible_catalog_generation_id =
+      std::max(request.context.catalog_generation_id, observer_tx);
 
   std::vector<SysInformationCatalogObjectSource> objects;
   std::vector<SysInformationResolverNameSource> resolver_names;
   std::vector<SysInformationColumnSource> columns;
-  const std::uint64_t observer_tx = CatalogObserverTx(request.context);
   const auto schemas = VisibleSchemaTreeRecords(request.context, observer_tx);
   std::map<std::string, std::string> schema_path_by_uuid;
   std::map<std::string, std::string> schema_uuid_by_path;

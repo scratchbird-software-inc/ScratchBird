@@ -1,0 +1,347 @@
+#!/usr/bin/env ruby
+# Copyright (c) 2026 ScratchBird Software Inc.
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# SPDX-License-Identifier: MPL-2.0
+
+require "digest"
+require "fileutils"
+require "json"
+
+$LOAD_PATH.unshift(File.expand_path("../lib", __dir__))
+require "scratchbird"
+
+PAGE_SIZES = %w[4k 8k 16k 32k 64k 128k].freeze
+ROUTES = %w[embedded ipc_local listener-parser manager-listener-parser].freeze
+PARSER_MODES = %w[server-parser standalone-parser driver-sblr-uuid].freeze
+
+def main(argv)
+  args = parse_args(argv)
+  exit(run(args))
+rescue StandardError => e
+  warn e.message
+  exit 1
+end
+
+def run(args)
+  validate(args)
+  run_root = File.dirname(required(args, "--summary"))
+  FileUtils.mkdir_p(run_root)
+  paths = {
+    events: File.join(run_root, "command-events.jsonl"),
+    wire: File.join(run_root, "wire-transcript.jsonl"),
+    timing: File.join(run_root, "timing-groups.json"),
+    digests: File.join(run_root, "result-digests.json"),
+    metadata: File.join(run_root, "metadata-snapshots.json"),
+    refusals: File.join(run_root, "security-refusals.json"),
+    api: File.join(run_root, "native-api-coverage.json"),
+    review: File.join(run_root, "code-example-review.json"),
+    junit: File.join(run_root, "junit.xml"),
+    stdout: File.join(run_root, "stdout.log"),
+    stderr: File.join(run_root, "stderr.log")
+  }
+  ([required(args, "--output"), required(args, "--error"), required(args, "--diagnostics"),
+    required(args, "--metrics"), required(args, "--transcript"), required(args, "--summary")] + paths.values).each do |path|
+    write_text(path, "")
+  end
+
+  timings = {}
+  api_hits = {
+    "Scratchbird" => 0,
+    "connect" => 0,
+    "prepare" => 0,
+    "execute" => 0,
+    "query_metadata" => 0,
+    "commit" => 0,
+    "rollback" => 0
+  }
+  testcases = []
+  failures = []
+  digests = []
+  security_refusals = []
+  started = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
+  client = nil
+
+  begin
+    cfg = Scratchbird::Config.new
+    cfg.host = required(args, "--host")
+    cfg.port = required(args, "--port").to_i
+    cfg.database = required(args, "--database")
+    cfg.user = required(args, "--user")
+    cfg.password = required(args, "--password")
+    cfg.role = value_or_default(args, "--role", "")
+    cfg.sslmode = value_or_default(args, "--sslmode", "require")
+    cfg.front_door_mode = required(args, "--route") == "manager-listener-parser" ? "manager_proxy" : "direct"
+    cfg.metadata_expand_schema_parents = true
+    cfg.application_name = "SBIsqlRuby"
+    client = Scratchbird::Client.new(cfg)
+    api_hits["Scratchbird"] += 1
+    connect_started = monotonic_ns
+    client.connect
+    api_hits["connect"] += 1
+    add_timing(timings, "connection", connect_started)
+    append_jsonl(required(args, "--transcript"), {
+      event: "connect",
+      driver: "ruby",
+      route: required(args, "--route"),
+      parser_mode: required(args, "--parser-mode"),
+      page_size: required(args, "--page-size")
+    })
+    append_jsonl(paths[:wire], { event: "server_admission_required", driver_or_parser_finality: "forbidden" })
+
+    raise "--create-database is not implemented in the Ruby native tool yet" if flag?(args, "--create-database")
+    unless required(args, "--parser-mode") == "server-parser"
+      raise "#{required(args, "--parser-mode")} is not yet implemented by the Ruby native tool; it fails closed"
+    end
+
+    split_statements(read_input(required(args, "--input"))).each_with_index do |sql, index|
+      statement_id = "#{File.basename(required(args, "--input"))}:#{index + 1}"
+      group = classify_statement(sql)
+      statement_started = monotonic_ns
+      outcome = "success"
+      row_count = -1
+      result_digest = nil
+      sqlstate = nil
+      diagnostic = nil
+      begin
+        if group == "transaction"
+          run_transaction(client, sql, api_hits)
+          row_count = 0
+          result_digest = sha256_text("transaction")
+        else
+          name = "sb_isql_ruby_#{index + 1}"
+          client.prepare(name, sql)
+          api_hits["prepare"] += 1
+          result = client.execute(name)
+          api_hits["execute"] += 1
+          rows = result.rows
+          row_count = result.rowcount
+          result_digest = sha256_text(JSON.generate(rows))
+          append_text(required(args, "--output"), JSON.generate(statement_id: statement_id, rows: rows) + "\n")
+        end
+        digests << { statement_id: statement_id, row_count: row_count, result_digest: result_digest }
+      rescue StandardError => e
+        outcome = "refusal"
+        sqlstate = e.respond_to?(:sqlstate) ? e.sqlstate : "HY000"
+        diagnostic = e.message
+        append_jsonl(required(args, "--diagnostics"), { statement_id: statement_id, sqlstate: sqlstate, message: diagnostic })
+        append_text(required(args, "--error"), "#{statement_id}: #{diagnostic}\n")
+        failures << { statement_id: statement_id, message: diagnostic }
+        if flag?(args, "--stop-on-error")
+          add_timing(timings, group, statement_started)
+          break
+        end
+      end
+      elapsed = monotonic_ns - statement_started
+      add_timing(timings, group, statement_started)
+      event = {
+        run_id: value_or_default(args, "--run-id", "manual"),
+        driver_name: "ruby",
+        driver_version: "unknown",
+        route: required(args, "--route"),
+        parser_mode: required(args, "--parser-mode"),
+        page_size: required(args, "--page-size"),
+        namespace: required(args, "--namespace"),
+        script: required(args, "--input"),
+        statement_index: index + 1,
+        statement_id: statement_id,
+        command_group: group,
+        sql_hash: sha256_text(sql),
+        expected_outcome: "success",
+        actual_outcome: outcome,
+        sqlstate: sqlstate,
+        diagnostic_code: diagnostic,
+        canonical_message_vector: [],
+        row_count: row_count,
+        result_digest: result_digest,
+        elapsed_ns: elapsed,
+        server_revalidation_state: "required",
+        transaction_id_observed: nil,
+        mga_authority: "engine",
+        native_api_surface: "ruby",
+        code_example_section: "prepare_execute_fetch"
+      }
+      append_jsonl(paths[:events], event)
+      testcases << event
+    end
+
+    metadata_started = monotonic_ns
+    metadata = client.query_metadata("tables")
+    api_hits["query_metadata"] += 1
+    write_text(paths[:metadata], JSON.generate(tables_digest: sha256_text(JSON.generate(metadata.rows)), row_count: metadata.rowcount) + "\n")
+    add_timing(timings, "metadata", metadata_started)
+  rescue StandardError => e
+    failures << { statement_id: "run", message: e.message }
+    append_text(paths[:stderr], e.message + "\n")
+  ensure
+    client&.close
+  end
+
+  elapsed = monotonic_ns - started
+  timings["overall"] = elapsed
+  summary = {
+    run_id: value_or_default(args, "--run-id", "manual"),
+    driver_name: "ruby",
+    route: required(args, "--route"),
+    parser_mode: required(args, "--parser-mode"),
+    page_size: required(args, "--page-size"),
+    namespace: required(args, "--namespace"),
+    status: failures.empty? ? "pass" : "fail",
+    failure_count: failures.length,
+    elapsed_ns: elapsed,
+    server_revalidation_required: true,
+    driver_or_parser_finality: "forbidden",
+    mga_authority: "engine"
+  }
+  write_text(required(args, "--summary"), JSON.generate(summary) + "\n")
+  write_text(required(args, "--metrics"), JSON.generate(timings) + "\n")
+  write_text(paths[:timing], JSON.generate(timings) + "\n")
+  write_text(paths[:digests], JSON.generate(digests) + "\n")
+  write_text(paths[:refusals], JSON.generate(security_refusals) + "\n")
+  write_text(paths[:api], JSON.generate(api_hits) + "\n")
+  write_text(paths[:review], JSON.generate(driver: "ruby", public_api_only: true, shells_out_to_other_driver: false,
+                                           source_is_canonical_example: true,
+                                           sections: %w[connection prepare execute fetch metadata diagnostics transaction]) + "\n")
+  write_text(paths[:junit], junit_xml("SBIsqlRuby", "scratchbird.ruby", testcases, failures))
+  append_text(paths[:stdout], "SBIsqlRuby status=#{summary[:status]}\n")
+  failures.empty? ? 0 : 1
+end
+
+def parse_args(raw)
+  args = {}
+  index = 0
+  while index < raw.length
+    key = raw[index]
+    raise "unexpected positional argument: #{key}" unless key.start_with?("--")
+    if key == "--stop-on-error" || key == "--create-database"
+      args[key] = true
+      index += 1
+      next
+    end
+    value = raw[index + 1]
+    raise "missing value for #{key}" if value.nil? || value.start_with?("--")
+    args[key] = value
+    index += 2
+  end
+  args
+end
+
+def validate(args)
+  raise "unsupported page size: #{required(args, "--page-size")}" unless PAGE_SIZES.include?(required(args, "--page-size"))
+  raise "unsupported route: #{required(args, "--route")}" unless ROUTES.include?(required(args, "--route"))
+  raise "unsupported parser mode: #{required(args, "--parser-mode")}" unless PARSER_MODES.include?(required(args, "--parser-mode"))
+end
+
+def split_statements(script)
+  statements = []
+  current = +""
+  single = false
+  double = false
+  script.each_char do |ch|
+    if ch == "'" && !double
+      single = !single
+    elsif ch == '"' && !single
+      double = !double
+    end
+    if ch == ";" && !single && !double
+      trimmed = current.strip
+      statements << trimmed unless trimmed.empty?
+      current = +""
+      next
+    end
+    current << ch
+  end
+  trimmed = current.strip
+  statements << trimmed unless trimmed.empty?
+  statements
+end
+
+def classify_statement(sql)
+  trimmed = sql.strip.downcase
+  first = trimmed.split(/\s+/, 2).first.to_s
+  return "ddl" if %w[create alter drop].include?(first)
+  return "dml" if %w[insert update delete merge upsert].include?(first)
+  return "transaction" if %w[commit rollback savepoint begin start].include?(first)
+  return "security_refusal" if %w[grant revoke].include?(first)
+  return "metadata" if trimmed.include?("sys.")
+  "query"
+end
+
+def run_transaction(client, sql, api_hits)
+  first = sql.strip.downcase.split(/\s+/, 2).first.to_s
+  if first == "commit"
+    client.commit
+    api_hits["commit"] += 1
+  elsif first == "rollback"
+    client.rollback
+    api_hits["rollback"] += 1
+  else
+    client.begin
+  end
+end
+
+def required(args, key)
+  value = args[key]
+  raise "missing required argument #{key}" if value.nil? || value == ""
+  value.to_s
+end
+
+def value_or_default(args, key, default)
+  args.fetch(key, default).to_s
+end
+
+def flag?(args, key)
+  args[key] == true
+end
+
+def read_input(path)
+  path == "-" ? STDIN.read : File.read(path)
+end
+
+def monotonic_ns
+  Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
+end
+
+def add_timing(timings, group, started)
+  timings[group] = timings.fetch(group, 0) + (monotonic_ns - started)
+end
+
+def write_text(path, text)
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, text)
+end
+
+def append_text(path, text)
+  FileUtils.mkdir_p(File.dirname(path))
+  File.open(path, "a") { |file| file.write(text) }
+end
+
+def append_jsonl(path, record)
+  append_text(path, JSON.generate(record) + "\n")
+end
+
+def sha256_text(text)
+  "sha256:#{Digest::SHA256.hexdigest(text)}"
+end
+
+def junit_xml(suite, klass, testcases, failures)
+  xml = +"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+  xml << "<testsuite name=\"#{escape_xml(suite)}\" tests=\"#{[testcases.length, 1].max}\" failures=\"#{failures.length}\">\n"
+  xml << "  <testcase classname=\"#{escape_xml(klass)}\" name=\"run\"></testcase>\n" if testcases.empty?
+  testcases.each do |testcase|
+    xml << "  <testcase classname=\"#{escape_xml(klass)}\" name=\"#{escape_xml(testcase[:statement_id].to_s)}\"></testcase>\n"
+  end
+  failures.each do |failure|
+    xml << "  <testcase classname=\"#{escape_xml(klass)}\" name=\"#{escape_xml(failure[:statement_id].to_s)}\"><failure message=\"#{escape_xml(failure[:message].to_s)}\" /></testcase>\n"
+  end
+  xml << "</testsuite>\n"
+end
+
+def escape_xml(text)
+  text.gsub("&", "&amp;").gsub('"', "&quot;").gsub("<", "&lt;").gsub(">", "&gt;")
+end
+
+main(ARGV)

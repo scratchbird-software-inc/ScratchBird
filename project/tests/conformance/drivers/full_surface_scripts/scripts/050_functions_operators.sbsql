@@ -1,0 +1,96 @@
+-- script_id: SBDFS-050
+-- Purpose: expected/actual checks for scalar, aggregate, JSON, vector, temporal, cast, and operator surfaces.
+
+SELECT 'SBDFS-050-001' AS assertion_id,
+       ABS(-42) AS actual_value,
+       42 AS expected_value;
+
+SELECT 'SBDFS-050-002' AS assertion_id,
+       POWER(2, 10) AS actual_value,
+       1024 AS expected_value;
+
+SELECT 'SBDFS-050-003' AS assertion_id,
+       ROUND(123.456, 2) AS actual_value,
+       123.46 AS expected_value;
+
+SELECT 'SBDFS-050-004' AS assertion_id,
+       SQRT(81) AS actual_value,
+       9 AS expected_value;
+
+SELECT 'SBDFS-050-005' AS assertion_id,
+       LOWER('ScratchBird') AS actual_value,
+       'scratchbird' AS expected_value;
+
+SELECT 'SBDFS-050-006' AS assertion_id,
+       UPPER('ScratchBird') AS actual_value,
+       'SCRATCHBIRD' AS expected_value;
+
+SELECT 'SBDFS-050-007' AS assertion_id,
+       POSITION('Bird' IN 'ScratchBird') AS actual_value,
+       8 AS expected_value;
+
+SELECT 'SBDFS-050-008' AS assertion_id,
+       SUBSTRING('ScratchBird' FROM 1 FOR 7) AS actual_value,
+       'Scratch' AS expected_value;
+
+SELECT 'SBDFS-050-009' AS assertion_id,
+       COALESCE(NULL, 'fallback') AS actual_value,
+       'fallback' AS expected_value;
+
+SELECT 'SBDFS-050-010' AS assertion_id,
+       NULLIF('same', 'same') IS NULL AS actual_value,
+       TRUE AS expected_value;
+
+SELECT 'SBDFS-050-011' AS assertion_id,
+       CAST('42' AS INTEGER) AS actual_value,
+       42 AS expected_value;
+
+SELECT 'SBDFS-050-012' AS assertion_id,
+       JSON_VALUE(JSON '{"a":7}', '$.a') AS actual_value,
+       7 AS expected_value;
+
+SELECT 'SBDFS-050-013' AS assertion_id,
+       JSON_ARRAY_LENGTH(JSON '[1,2,3]') AS actual_value,
+       3 AS expected_value;
+
+SELECT 'SBDFS-050-014' AS assertion_id,
+       UUID_TO_STRING(UUID '018f0a2b-0000-7000-9000-000000000050') AS actual_value,
+       '018f0a2b-0000-7000-9000-000000000050' AS expected_value;
+
+SELECT 'SBDFS-050-015' AS assertion_id,
+       L2_DISTANCE(VECTOR '[1,0,0]', VECTOR '[0,1,0]') AS actual_value,
+       1.4142135623730951 AS expected_value;
+
+SELECT 'SBDFS-050-016' AS assertion_id,
+       1 + 2 * 3 - 4 / 2 AS actual_value,
+       5 AS expected_value;
+
+SELECT 'SBDFS-050-017' AS assertion_id,
+       (5 > 4 AND 3 <= 3 AND NOT FALSE) AS actual_value,
+       TRUE AS expected_value;
+
+SELECT 'SBDFS-050-018' AS assertion_id,
+       ('ScratchBird' LIKE 'Scratch%') AS actual_value,
+       TRUE AS expected_value;
+
+SELECT 'SBDFS-050-019' AS assertion_id,
+       (5 BETWEEN 1 AND 10) AS actual_value,
+       TRUE AS expected_value;
+
+SELECT 'SBDFS-050-020' AS assertion_id,
+       (3 IN (1, 2, 3)) AS actual_value,
+       TRUE AS expected_value;
+
+SELECT 'SBDFS-050-021' AS assertion_id,
+       COUNT(*) AS actual_language_function_count,
+       1317 AS expected_language_function_count
+FROM sys.parser.language_elements
+WHERE element_kind = 'surface_function'
+  AND support_state = 'release_supported';
+
+SELECT 'SBDFS-050-022' AS assertion_id,
+       COUNT(*) AS actual_language_operator_count,
+       18 AS expected_language_operator_count
+FROM sys.parser.language_elements
+WHERE element_kind = 'surface_operator'
+  AND support_state = 'release_supported';

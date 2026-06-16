@@ -1,0 +1,40 @@
+-- script_id: SBDFS-060
+-- Purpose: engine-owned MGA transaction finality, rollback, savepoints, and visibility.
+
+CREATE TABLE __SB_NAMESPACE__.txn_probe (
+    id INTEGER PRIMARY KEY,
+    note VARCHAR(64) NOT NULL,
+    amount INTEGER NOT NULL
+);
+
+BEGIN;
+INSERT INTO __SB_NAMESPACE__.txn_probe VALUES (1, 'committed', 10);
+COMMIT;
+
+BEGIN;
+INSERT INTO __SB_NAMESPACE__.txn_probe VALUES (2, 'rolled-back', 20);
+ROLLBACK;
+
+BEGIN;
+INSERT INTO __SB_NAMESPACE__.txn_probe VALUES (3, 'before-savepoint', 30);
+SAVEPOINT sp_keep;
+INSERT INTO __SB_NAMESPACE__.txn_probe VALUES (4, 'after-savepoint', 40);
+ROLLBACK TO SAVEPOINT sp_keep;
+RELEASE SAVEPOINT sp_keep;
+COMMIT;
+
+SELECT 'SBDFS-060-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       2 AS expected_count
+FROM __SB_NAMESPACE__.txn_probe;
+
+SELECT 'SBDFS-060-002' AS assertion_id,
+       COUNT(*) AS actual_rolled_back_visible,
+       0 AS expected_rolled_back_visible
+FROM __SB_NAMESPACE__.txn_probe
+WHERE note = 'rolled-back';
+
+SELECT 'SBDFS-060-003' AS assertion_id,
+       SUM(amount) AS actual_sum,
+       40 AS expected_sum
+FROM __SB_NAMESPACE__.txn_probe;

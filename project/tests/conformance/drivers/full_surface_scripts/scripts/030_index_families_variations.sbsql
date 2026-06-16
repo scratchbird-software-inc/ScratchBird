@@ -1,0 +1,54 @@
+-- script_id: SBDFS-030
+-- Purpose: all index families and important index variations.
+
+CREATE TABLE __SB_NAMESPACE__.index_probe (
+    row_id INTEGER PRIMARY KEY,
+    tenant_id INTEGER NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    category VARCHAR(32) NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    note TEXT,
+    document JSON,
+    vector_value VECTOR(3),
+    created_at TIMESTAMP NOT NULL
+);
+
+INSERT INTO __SB_NAMESPACE__.index_probe
+    (row_id, tenant_id, status, category, amount, note, document, vector_value, created_at)
+VALUES
+    (1, 10, 'open', 'alpha', 10.00, 'one', JSON '{"k":"a"}', VECTOR '[1,0,0]', TIMESTAMP '2026-01-01 00:00:00'),
+    (2, 10, 'open', 'beta', 20.00, 'two', JSON '{"k":"b"}', VECTOR '[0,1,0]', TIMESTAMP '2026-01-02 00:00:00'),
+    (3, 20, 'closed', 'alpha', 30.00, 'three', JSON '{"k":"c"}', VECTOR '[0,0,1]', TIMESTAMP '2026-01-03 00:00:00'),
+    (4, 20, 'open', 'gamma', 40.00, 'four', JSON '{"k":"d"}', VECTOR '[1,1,0]', TIMESTAMP '2026-01-04 00:00:00');
+
+CREATE UNIQUE INDEX idx_probe_pk_shadow ON __SB_NAMESPACE__.index_probe (row_id);
+CREATE INDEX idx_probe_btree_tenant_status ON __SB_NAMESPACE__.index_probe USING BTREE (tenant_id, status);
+CREATE INDEX idx_probe_hash_category ON __SB_NAMESPACE__.index_probe USING HASH (category);
+CREATE INDEX idx_probe_bitmap_status ON __SB_NAMESPACE__.index_probe USING BITMAP (status);
+CREATE INDEX idx_probe_partial_open ON __SB_NAMESPACE__.index_probe (tenant_id, amount) WHERE status = 'open';
+CREATE INDEX idx_probe_covering_amount ON __SB_NAMESPACE__.index_probe (amount) INCLUDE (status, category);
+CREATE INDEX idx_probe_expression_lower_note ON __SB_NAMESPACE__.index_probe (LOWER(note));
+CREATE INDEX idx_probe_desc_created ON __SB_NAMESPACE__.index_probe (created_at DESC);
+CREATE INDEX idx_probe_json_path ON __SB_NAMESPACE__.index_probe USING GIN (document);
+CREATE INDEX idx_probe_vector_exact ON __SB_NAMESPACE__.index_probe USING VECTOR_EXACT (vector_value);
+CREATE INDEX idx_probe_vector_hnsw ON __SB_NAMESPACE__.index_probe USING HNSW (vector_value);
+CREATE INDEX idx_probe_fulltext_note ON __SB_NAMESPACE__.index_probe USING FULLTEXT (note);
+
+SELECT 'SBDFS-030-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       4 AS expected_count
+FROM __SB_NAMESPACE__.index_probe
+WHERE tenant_id = 10
+  AND status = 'open';
+
+SELECT 'SBDFS-030-002' AS assertion_id,
+       COUNT(*) AS actual_count,
+       1 AS expected_count
+FROM __SB_NAMESPACE__.index_probe
+WHERE LOWER(note) = 'three';
+
+SELECT 'SBDFS-030-003' AS assertion_id,
+       COUNT(*) AS actual_count,
+       3 AS expected_count
+FROM __SB_NAMESPACE__.index_probe
+WHERE status = 'open';

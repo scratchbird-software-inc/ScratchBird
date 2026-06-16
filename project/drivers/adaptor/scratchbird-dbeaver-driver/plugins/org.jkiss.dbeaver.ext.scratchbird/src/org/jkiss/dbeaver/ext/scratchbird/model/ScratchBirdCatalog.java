@@ -81,6 +81,11 @@ public class ScratchBirdCatalog extends GenericCatalog {
         return schemaTree == null ? Collections.emptyList() : schemaTree;
     }
 
+    @Association
+    public synchronized Collection<ScratchBirdSchemaNode> getChildSchemas(@NotNull DBRProgressMonitor monitor) throws DBException {
+        return getSchemaTree(monitor);
+    }
+
     private void buildSchemaTree(@NotNull DBRProgressMonitor monitor) throws DBException {
         List<ScratchBirdCatalogObjectReference> catalogReferences = loadCatalogObjectReferences(monitor);
         if (catalogReferences.isEmpty()) {

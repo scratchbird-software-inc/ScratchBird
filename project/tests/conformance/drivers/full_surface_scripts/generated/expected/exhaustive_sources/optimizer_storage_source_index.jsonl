@@ -1,0 +1,3 @@
+{"bytes": "894", "path": "project/tests/release_evidence/commercial_readiness_public_evidence/artifacts/DURABLE_STORAGE_INDEX_PROOF_MATRIX.csv", "sha256": "59fd18ddd09a6963bbbbd0e07762d6945160a7d83fd8097a58889b7aeffd0202"}
+{"bytes": "696154", "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-030_INDEX_READINESS_MANIFEST.yaml", "sha256": "bcc4a151a93c1c228a02a85ba059fb6e9151fc209ec0cb60ea8afe7e9d34ce84"}
+{"bytes": "58637", "path": "project/tests/release_evidence/consolidated_enterprise_public_evidence/artifacts/CEIC-062_OPTIMIZER_READINESS_MANIFEST.yaml", "sha256": "b414c18e030504765c6c297689b7771d07df30260a1069026fd8a4992b80c39f"}

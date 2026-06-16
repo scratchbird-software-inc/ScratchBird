@@ -251,6 +251,8 @@ struct SimpleCreateSchemaInfo {
   bool active{false};
   bool valid{false};
   std::size_t schema_name_parts{0};
+  std::string schema_name;
+  std::string schema_parent_path;
 };
 
 struct SimpleCreateStatisticsInfo {
@@ -1259,6 +1261,33 @@ bool ConsumeQualifiedNameWithLeaf(const CstDocument& cst,
   if (parts == 0 || expect_part) return false;
   *part_count = parts;
   if (leaf != nullptr) *leaf = std::move(last_leaf);
+  return true;
+}
+
+bool ConsumeQualifiedNameWithParts(const CstDocument& cst,
+                                   std::size_t* index,
+                                   std::vector<std::string>* parts) {
+  if (parts == nullptr) return false;
+  std::vector<std::string> consumed;
+  bool expect_part = true;
+  for (; *index < cst.tokens.size(); ++(*index)) {
+    const auto& token = cst.tokens[*index];
+    if (token.kind == TokenKind::kEnd || token.kind == TokenKind::kStatementTerminator) break;
+    if (IsTriviaToken(token)) continue;
+    if (expect_part) {
+      if (!IsIdentifierLikeToken(token)) break;
+      consumed.push_back(token.text);
+      expect_part = false;
+      continue;
+    }
+    if (token.text == ".") {
+      expect_part = true;
+      continue;
+    }
+    break;
+  }
+  if (consumed.empty() || expect_part) return false;
+  *parts = std::move(consumed);
   return true;
 }
 
@@ -16236,7 +16265,16 @@ SimpleCreateSchemaInfo AnalyzeSimpleCreateSchema(const CstDocument& cst) {
   if (!ConsumeKeyword(cst, &index, "CREATE")) return info;
   if (!ConsumeKeyword(cst, &index, "SCHEMA")) return info;
   info.active = true;
-  if (!ConsumeQualifiedName(cst, &index, &info.schema_name_parts)) return info;
+  std::vector<std::string> name_parts;
+  if (!ConsumeQualifiedNameWithParts(cst, &index, &name_parts)) return info;
+  info.schema_name_parts = name_parts.size();
+  info.schema_name = name_parts.back();
+  if (name_parts.size() > 1) {
+    for (std::size_t part = 0; part + 1 < name_parts.size(); ++part) {
+      if (!info.schema_parent_path.empty()) info.schema_parent_path.push_back('.');
+      info.schema_parent_path += name_parts[part];
+    }
+  }
   info.valid = OnlyStatementTerminatorRemains(cst, index);
   return info;
 }
@@ -20677,13 +20715,19 @@ void AppendSimpleCreateSchemaJson(std::ostream& out, const SimpleCreateSchemaInf
       << "\"ddl_operation_id\":\"ddl.create_schema\","
       << "\"target_object_kind\":\"schema\","
       << "\"schema_name_parts\":" << info.schema_name_parts << ','
+      << "\"schema_name\":\"" << EscapeJson(info.schema_name) << "\",";
+  if (!info.schema_parent_path.empty()) {
+    out << "\"schema_parent_path\":\"" << EscapeJson(info.schema_parent_path) << "\",";
+  }
+  out
       << "\"row_surface_ids\":["
       << "\"SBSQL-DE4B8AAF6326\","
       << "\"SBSQL-7BA0B928798B\""
       << "],"
       << "\"target_uuid_resolution\":\"server_name_registry_required\","
       << "\"mga_catalog_commit_required\":true,"
-      << "\"name_text_included\":false,"
+      << "\"name_text_included\":true,"
+      << "\"name_text_authority\":\"metadata_only_engine_name_registry\","
       << "\"sql_text_included\":false,";
 }
 

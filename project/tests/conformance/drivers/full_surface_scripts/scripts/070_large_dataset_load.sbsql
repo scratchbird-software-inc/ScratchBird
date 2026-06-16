@@ -1,0 +1,53 @@
+-- script_id: SBDFS-070
+-- Purpose: large dataset loading, indexed updates, deletes, aggregates, and timing proof.
+
+CREATE TABLE __SB_NAMESPACE__.large_fact (
+    fact_id INTEGER PRIMARY KEY,
+    tenant_id INTEGER NOT NULL,
+    bucket_id INTEGER NOT NULL,
+    payload VARCHAR(64) NOT NULL,
+    measure DECIMAL(18, 2) NOT NULL,
+    is_active BOOLEAN NOT NULL
+);
+
+WITH RECURSIVE seq(n) AS (
+    VALUES (1)
+    UNION ALL
+    SELECT n + 1 FROM seq WHERE n < 10000
+)
+INSERT INTO __SB_NAMESPACE__.large_fact
+SELECT n,
+       MOD(n, 64),
+       MOD(n, 17),
+       'payload-' || CAST(n AS VARCHAR(16)),
+       CAST(n AS DECIMAL(18,2)) / 10.00,
+       MOD(n, 2) = 0
+FROM seq;
+
+CREATE INDEX idx_large_fact_tenant_bucket ON __SB_NAMESPACE__.large_fact (tenant_id, bucket_id);
+CREATE INDEX idx_large_fact_active_measure ON __SB_NAMESPACE__.large_fact (is_active, measure);
+
+UPDATE __SB_NAMESPACE__.large_fact
+SET measure = measure + 1.00
+WHERE tenant_id = 7;
+
+DELETE FROM __SB_NAMESPACE__.large_fact
+WHERE bucket_id = 16
+  AND is_active = FALSE;
+
+SELECT 'SBDFS-070-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       9706 AS expected_count
+FROM __SB_NAMESPACE__.large_fact;
+
+SELECT 'SBDFS-070-002' AS assertion_id,
+       COUNT(*) AS actual_count,
+       156 AS expected_count
+FROM __SB_NAMESPACE__.large_fact
+WHERE tenant_id = 7;
+
+SELECT 'SBDFS-070-003' AS assertion_id,
+       COUNT(*) AS actual_active_count,
+       5000 AS expected_active_count
+FROM __SB_NAMESPACE__.large_fact
+WHERE is_active = TRUE;

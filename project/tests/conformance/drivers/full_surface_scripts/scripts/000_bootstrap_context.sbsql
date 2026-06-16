@@ -1,0 +1,28 @@
+-- ScratchBird driver full-surface script suite
+-- script_id: SBDFS-000
+-- namespace placeholder: __SB_NAMESPACE__
+
+CREATE SCHEMA __SB_NAMESPACE__;
+
+CREATE TABLE __SB_NAMESPACE__.run_context (
+    run_key VARCHAR(64) PRIMARY KEY,
+    run_value VARCHAR(256) NOT NULL
+);
+
+INSERT INTO __SB_NAMESPACE__.run_context (run_key, run_value) VALUES
+    ('driver', '__SB_DRIVER__'),
+    ('route', '__SB_ROUTE__'),
+    ('parser_mode', '__SB_PARSER_MODE__'),
+    ('page_size', '__SB_PAGE_SIZE__'),
+    ('run_id', '__SB_RUN_ID__');
+
+SELECT 'SBDFS-000-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       5 AS expected_count
+FROM __SB_NAMESPACE__.run_context;
+
+SELECT 'SBDFS-000-002' AS assertion_id,
+       run_value AS actual_driver,
+       '__SB_DRIVER__' AS expected_driver
+FROM __SB_NAMESPACE__.run_context
+WHERE run_key = 'driver';

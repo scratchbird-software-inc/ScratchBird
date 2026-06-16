@@ -17,6 +17,8 @@
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
+#include "catalog/schema_tree_api.hpp"
+#include "observability/show_api.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -44,6 +46,7 @@ constexpr std::string_view kOperationId = "ddl.create_schema";
 constexpr std::string_view kOpcode = "SBLR_DDL_CREATE_SCHEMA";
 constexpr std::string_view kFamily = "sblr.catalog.mutation.v3";
 constexpr std::string_view kSchemaUuid = "019f0000-0000-7000-8000-000000023306";
+constexpr std::string_view kLiveRouteSchemaUuid = "019f0000-0000-7000-8000-000000023307";
 
 struct CreateSchemaRowEvidence {
   std::string_view surface_id;
@@ -96,6 +99,26 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+  }
+  return false;
+}
+
+bool RowHasFieldValue(const api::EngineRowValue& row,
+                      std::string_view field_name,
+                      std::string_view field_value) {
+  for (const auto& field : row.fields) {
+    if (field.first == field_name && field.second.encoded_value == field_value) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool ResultHasRowWithFieldValue(const api::EngineApiResult& result,
+                                std::string_view field_name,
+                                std::string_view field_value) {
+  for (const auto& row : result.result_shape.rows) {
+    if (RowHasFieldValue(row, field_name, field_value)) { return true; }
   }
   return false;
 }
@@ -212,19 +235,23 @@ void RequireExactLowering(const PipelineArtifacts& artifacts) {
           "CREATE SCHEMA payload missing catalog envelope kind");
   Require(Contains(artifacts.envelope.payload, "\"schema_name_parts\":1"),
           "CREATE SCHEMA payload missing schema name part evidence");
+  Require(Contains(artifacts.envelope.payload, "\"schema_name\":\"qa_schema\""),
+          "CREATE SCHEMA payload missing structured schema name metadata");
   for (const auto& row : kCreateSchemaRows) {
     Require(Contains(artifacts.envelope.payload, row.surface_id),
             "CREATE SCHEMA payload missing row-identifiable surface evidence");
   }
-  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":false"),
-          "CREATE SCHEMA payload did not prove no name text authority");
+  Require(Contains(artifacts.envelope.payload, "\"name_text_included\":true"),
+          "CREATE SCHEMA payload did not carry schema name metadata");
+  Require(Contains(artifacts.envelope.payload,
+                   "\"name_text_authority\":\"metadata_only_engine_name_registry\""),
+          "CREATE SCHEMA payload did not bound name text authority");
   Require(Contains(artifacts.envelope.payload, "\"sql_text_included\":false"),
           "CREATE SCHEMA payload did not prove no SQL text authority");
   Require(Contains(artifacts.envelope.payload, "\"parser_executes_sql\":false"),
           "CREATE SCHEMA payload did not prove parser_executes_sql=false");
-  Require(!Contains(artifacts.envelope.payload, "qa_schema") &&
-              !Contains(artifacts.envelope.payload, kSql),
-          "CREATE SCHEMA payload embedded SQL text or identifier names as authority");
+  Require(!Contains(artifacts.envelope.payload, kSql),
+          "CREATE SCHEMA payload embedded SQL text as authority");
   Require(!Contains(artifacts.envelope.payload, "reference"),
           "CREATE SCHEMA payload carried reference authority");
   Require(!Contains(artifacts.envelope.payload, "WAL") &&
@@ -345,6 +372,72 @@ api::EngineRequestContext BeginEngineTransaction(const std::filesystem::path& pa
   return context;
 }
 
+void CommitEngineTransaction(api::EngineRequestContext context) {
+  auto envelope = sblr::MakeSblrEnvelope("transaction.commit",
+                                         "SBLR_TRANSACTION_COMMIT",
+                                         "trace.create_schema.exact_route.transaction.commit");
+  envelope.requires_security_context = true;
+  envelope.requires_transaction_context = true;
+  envelope.contains_sql_text = false;
+  const sblr::SblrDispatchRequest request{context, envelope, api::EngineApiRequest{}};
+  const auto result = sblr::DispatchSblrOperation(request);
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  for (const auto& diagnostic : result.api_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(result.envelope_validated, "transaction commit envelope did not validate");
+  Require(result.accepted, "transaction commit dispatch did not accept");
+  Require(result.api_result.ok, "transaction commit did not return success");
+}
+
+std::string SchemaUuidForPath(const api::EngineRequestContext& context,
+                              const std::string& path) {
+  for (const auto& schema : api::VisibleSchemaTreeRecords(context,
+                                                          context.local_transaction_id)) {
+    for (const auto& name : schema.localized_names) {
+      if (name.path == path) { return schema.schema_uuid; }
+    }
+  }
+  return {};
+}
+
+void RequireSchemaPath(const api::EngineRequestContext& context,
+                       std::string_view schema_uuid,
+                       std::string_view expected_parent_uuid,
+                       std::string_view expected_path,
+                       std::string_view expected_name) {
+  const auto schema = api::FindVisibleSchemaTreeRecord(context,
+                                                       std::string(schema_uuid),
+                                                       context.local_transaction_id);
+  Require(schema.has_value(), "created schema was not visible in schema tree");
+  Require(schema->parent_schema_uuid == expected_parent_uuid,
+          "created schema parent UUID was not persisted");
+  bool saw_name = false;
+  for (const auto& name : schema->localized_names) {
+    if (name.path == expected_path && name.name == expected_name) {
+      saw_name = true;
+      break;
+    }
+  }
+  Require(saw_name, "created schema full path was not persisted in name metadata");
+}
+
+void RequireCatalogReadableNavigatorPath(const api::EngineRequestContext& context,
+                                         std::string_view expected_object_path) {
+  api::EngineShowCatalogRequest request;
+  request.context = context;
+  request.option_envelopes.push_back("projection:sys.catalog_readable.navigator_tree");
+  const auto result = api::EngineShowCatalog(request);
+  for (const auto& diagnostic : result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(result.ok, "EngineShowCatalog navigator projection did not return success");
+  Require(ResultHasRowWithFieldValue(result, "object_path", expected_object_path),
+          "catalog-readable navigator projection omitted created schema path");
+}
+
 api::EngineApiRequest EngineCreateSchemaApiRequest() {
   api::EngineApiRequest request;
   request.target_schema.uuid.canonical = "";
@@ -367,11 +460,19 @@ sblr::SblrOperationEnvelope EngineEnvelope() {
   return envelope;
 }
 
+void AddTextOperand(sblr::SblrOperationEnvelope* envelope,
+                    std::string name,
+                    std::string value) {
+  envelope->operands.push_back({"text", std::move(name), std::move(value)});
+}
+
 void RequireEngineDispatch() {
   const auto path = TestDatabasePath();
   RemoveDatabaseArtifacts(path);
   const auto database_uuid = CreateMinimalDatabase(path);
   auto context = BeginEngineTransaction(path, database_uuid);
+  const std::string public_schema_uuid = SchemaUuidForPath(context, "users.public");
+  Require(!public_schema_uuid.empty(), "users.public bootstrap schema was not visible");
   const sblr::SblrDispatchRequest request{
       context,
       EngineEnvelope(),
@@ -397,6 +498,59 @@ void RequireEngineDispatch() {
           "EngineCreateSchema missing API behavior event evidence");
   Require(HasEvidence(result.api_result, "schema", kSchemaUuid),
           "EngineCreateSchema missing schema UUID evidence");
+
+  auto live_route_envelope = EngineEnvelope();
+  AddTextOperand(&live_route_envelope, "principal_name", "alice");
+  AddTextOperand(&live_route_envelope, "requested_role_name", "sysarch");
+  AddTextOperand(&live_route_envelope, "active_role_name", "sysarch");
+  AddTextOperand(&live_route_envelope, "current_role_uuid",
+                 "019f0000-0000-7000-8000-000000023401");
+  AddTextOperand(&live_route_envelope, "effective_role_uuid_set",
+                 "019f0000-0000-7000-8000-000000023401");
+  AddTextOperand(&live_route_envelope, "target_object_uuid",
+                 std::string(kLiveRouteSchemaUuid));
+  AddTextOperand(&live_route_envelope, "target_object_kind", "schema");
+  AddTextOperand(&live_route_envelope, "name", "qa_live_schema");
+  AddTextOperand(&live_route_envelope, "schema_parent_path", "users.public");
+  const sblr::SblrDispatchRequest live_route_request{
+      context,
+      live_route_envelope,
+      api::EngineApiRequest{}};
+  const auto live_route_result = sblr::DispatchSblrOperation(live_route_request);
+  for (const auto& diagnostic : live_route_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  for (const auto& diagnostic : live_route_result.api_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(live_route_result.envelope_validated,
+          "live-route CREATE SCHEMA envelope did not validate");
+  Require(live_route_result.accepted,
+          "live-route CREATE SCHEMA dispatch was not accepted");
+  Require(live_route_result.dispatched_to_api,
+          "live-route CREATE SCHEMA did not route to internal API");
+  Require(live_route_result.api_result.ok,
+          "live-route CREATE SCHEMA was rejected by schema option filtering");
+  Require(live_route_result.api_result.primary_object.uuid.canonical ==
+              kLiveRouteSchemaUuid,
+          "live-route CREATE SCHEMA returned wrong schema UUID");
+  Require(HasEvidence(live_route_result.api_result, "schema",
+                      kLiveRouteSchemaUuid),
+          "live-route CREATE SCHEMA missing schema UUID evidence");
+  RequireSchemaPath(context,
+                    kLiveRouteSchemaUuid,
+                    public_schema_uuid,
+                    "users.public.qa_live_schema",
+                    "qa_live_schema");
+  CommitEngineTransaction(context);
+  auto read_context = BeginEngineTransaction(path, database_uuid);
+  RequireSchemaPath(read_context,
+                    kLiveRouteSchemaUuid,
+                    public_schema_uuid,
+                    "users.public.qa_live_schema",
+                    "qa_live_schema");
+  RequireCatalogReadableNavigatorPath(read_context,
+                                      "users.public.qa_live_schema");
   RemoveDatabaseArtifacts(path);
 }
 
