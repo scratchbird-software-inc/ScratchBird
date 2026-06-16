@@ -1,0 +1,42 @@
+-- script_id: SBDFS-080
+-- Purpose: metadata visibility and authorization-sensitive system views.
+
+SELECT 'SBDFS-080-001' AS assertion_id,
+       COUNT(*) >= 1 AS actual_has_schema,
+       TRUE AS expected_has_schema
+FROM sys.schemas
+WHERE schema_name = '__SB_NAMESPACE__';
+
+SELECT 'SBDFS-080-002' AS assertion_id,
+       COUNT(*) >= 1 AS actual_has_tables,
+       TRUE AS expected_has_tables
+FROM sys.tables
+WHERE schema_id IN (
+    SELECT schema_id FROM sys.schemas WHERE schema_name = '__SB_NAMESPACE__'
+);
+
+SELECT 'SBDFS-080-003' AS assertion_id,
+       COUNT(*) >= 1 AS actual_has_columns,
+       TRUE AS expected_has_columns
+FROM sys.columns
+WHERE table_id IN (
+    SELECT table_id
+    FROM sys.tables
+    WHERE schema_id IN (
+        SELECT schema_id FROM sys.schemas WHERE schema_name = '__SB_NAMESPACE__'
+    )
+);
+
+SELECT 'SBDFS-080-004' AS assertion_id,
+       COUNT(*) >= 1 AS actual_language_surface_loaded,
+       TRUE AS expected_language_surface_loaded
+FROM sys.parser.language_elements
+WHERE support_state = 'release_supported';
+
+SELECT 'SBDFS-080-005' AS assertion_id,
+       COUNT(*) >= 1 AS actual_visible_security_user,
+       TRUE AS expected_visible_security_user
+FROM sys.security.users;
+
+SELECT *
+FROM sys.security.protected_material;

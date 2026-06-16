@@ -42,6 +42,12 @@ target_compile_features(scratchbird_client PUBLIC cxx_std_17)
 find_package(OpenSSL REQUIRED)
 target_link_libraries(scratchbird_client PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 
+add_executable(sb_isql_cpp
+    tools/sb_isql_cpp.cpp
+)
+target_compile_features(sb_isql_cpp PRIVATE cxx_std_17)
+target_link_libraries(sb_isql_cpp PRIVATE scratchbird_client OpenSSL::Crypto)
+
 if (TARGET sbl_sbsql_parser_worker_core)
     target_compile_definitions(scratchbird_client PRIVATE SCRATCHBIRD_CLIENT_ENABLE_LOCAL_SBSQL_BRIDGE)
     if (TARGET sb_server_core)

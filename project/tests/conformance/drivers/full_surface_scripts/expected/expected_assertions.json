@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "assertion_count": 80,
+  "assertion_result_shape": [
+    "assertion_id",
+    "actual_*",
+    "expected_*"
+  ],
+  "notes": "Drivers must emit result rows. The post-run verifier compares actual_* and expected_* columns for matching assertion_id rows in driver output artifacts."
+}

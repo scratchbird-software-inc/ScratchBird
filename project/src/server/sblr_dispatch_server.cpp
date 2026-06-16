@@ -2966,6 +2966,43 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       operation_envelope += "\n";
     }
   }
+  if (dispatch_operation_id == "ddl.create_schema") {
+    constexpr std::string_view kSchemaFields[] = {
+        "target_object_uuid", "target_object_kind",
+        "schema_object_uuid", "schema_name",
+        "target_schema_uuid", "schema_uuid",
+        "schema_parent_uuid", "schema_parent_path",
+        "name"};
+    for (const auto field : kSchemaFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
+      if (value.empty()) continue;
+      AppendOperationOperand(&operation_envelope, field, value);
+    }
+    const std::string schema_uuid = JsonTextField(encoded, "schema_object_uuid").value_or(
+        TextLineValue(encoded, "schema_object_uuid").value_or(""));
+    if (!schema_uuid.empty() &&
+        JsonTextField(encoded, "target_object_uuid").value_or(
+            TextLineValue(encoded, "target_object_uuid").value_or("")).empty()) {
+      AppendOperationOperand(&operation_envelope, "target_object_uuid", schema_uuid);
+      AppendOperationOperand(&operation_envelope, "target_object_kind", "schema");
+    }
+    const std::string schema_name = JsonTextField(encoded, "schema_name").value_or(
+        TextLineValue(encoded, "schema_name").value_or(""));
+    if (!schema_name.empty() &&
+        JsonTextField(encoded, "name").value_or(
+            TextLineValue(encoded, "name").value_or("")).empty()) {
+      AppendOperationOperand(&operation_envelope, "name", schema_name);
+    }
+    const std::string parent_uuid = JsonTextField(encoded, "schema_parent_uuid").value_or(
+        TextLineValue(encoded, "schema_parent_uuid").value_or(""));
+    if (!parent_uuid.empty() &&
+        JsonTextField(encoded, "target_schema_uuid").value_or(
+            TextLineValue(encoded, "target_schema_uuid").value_or("")).empty()) {
+      AppendOperationOperand(&operation_envelope, "target_schema_uuid", parent_uuid);
+    }
+  }
   if (dispatch_operation_id == "ddl.create_table") {
     constexpr std::string_view kTableFields[] = {
         "target_object_uuid", "target_object_kind",

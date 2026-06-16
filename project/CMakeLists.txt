@@ -47,6 +47,21 @@ if(EXISTS "${SB_PUBLIC_PRIVATE_MATERIAL_REFERENCE_GATE_SCRIPT}")
 endif()
 unset(SB_PUBLIC_PRIVATE_MATERIAL_REFERENCE_GATE_SCRIPT)
 
+set(SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT
+  "${CMAKE_CURRENT_SOURCE_DIR}/tools/release/public_repo_cleanliness_gate.py")
+if(EXISTS "${SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT}")
+  add_test(
+    NAME public_repo_cleanliness_gate
+    COMMAND "${Python3_EXECUTABLE}"
+            "${SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT}"
+            "--root=${CMAKE_CURRENT_SOURCE_DIR}/.."
+  )
+  set_tests_properties(public_repo_cleanliness_gate PROPERTIES
+    LABELS "public_release;repo_cleanliness;wip_boundary"
+  )
+endif()
+unset(SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

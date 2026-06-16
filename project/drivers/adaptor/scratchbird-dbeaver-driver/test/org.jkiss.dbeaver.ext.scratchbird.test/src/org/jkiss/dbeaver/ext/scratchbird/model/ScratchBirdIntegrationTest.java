@@ -272,6 +272,7 @@ public class ScratchBirdIntegrationTest {
 
         String catalogSource = readHostSource("org/jkiss/dbeaver/ext/scratchbird/model/ScratchBirdCatalog.java");
         Assert.assertTrue(catalogSource.contains("FROM sys.catalog_readable.navigator_tree"));
+        Assert.assertTrue(catalogSource.contains("public synchronized Collection<ScratchBirdSchemaNode> getChildSchemas"));
         Assert.assertTrue(catalogSource.contains("navigatorAuthorityPath"));
         Assert.assertTrue(catalogSource.contains("navigatorPathFromNodePath"));
         Assert.assertTrue(catalogSource.contains("nodeRole != null && nodeRole.startsWith(\"database.\")"));

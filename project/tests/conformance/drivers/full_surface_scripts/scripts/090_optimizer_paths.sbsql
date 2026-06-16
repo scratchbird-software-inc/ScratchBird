@@ -1,0 +1,34 @@
+-- script_id: SBDFS-090
+-- Purpose: optimizer path coverage through plans and query shapes.
+
+EXPLAIN SELECT *
+FROM __SB_NAMESPACE__.large_fact
+WHERE tenant_id = 7
+  AND bucket_id = 3;
+
+EXPLAIN SELECT tenant_id, COUNT(*), SUM(measure)
+FROM __SB_NAMESPACE__.large_fact
+GROUP BY tenant_id
+HAVING COUNT(*) > 10
+ORDER BY tenant_id;
+
+EXPLAIN SELECT c.customer_name, SUM(o.amount)
+FROM __SB_NAMESPACE__.query_customer AS c
+JOIN __SB_NAMESPACE__.query_order AS o ON c.customer_id = o.customer_id
+WHERE o.order_status = 'open'
+GROUP BY c.customer_name;
+
+EXPLAIN WITH recent AS (
+    SELECT *
+    FROM __SB_NAMESPACE__.large_fact
+    WHERE fact_id BETWEEN 100 AND 200
+)
+SELECT bucket_id, AVG(measure)
+FROM recent
+GROUP BY bucket_id;
+
+SELECT 'SBDFS-090-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       1 AS expected_count
+FROM __SB_NAMESPACE__.large_fact
+WHERE fact_id = 128;
