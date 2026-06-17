@@ -1,0 +1,467 @@
+-- ScratchBird driver full-surface script suite
+-- script_id: SBDFS-045
+-- namespace placeholder: __SB_NAMESPACE__
+-- Purpose: query-language completeness — join types, grouping extensions,
+--          set operations, DISTINCT, NULLS FIRST/LAST, LIMIT/OFFSET/FETCH.
+-- Grounding: Language_Reference/syntax_reference/{from,group_by_and_having,
+--            select,order_by_limit_offset,ebnf/set_operator,projection}.md
+-- Does NOT duplicate SBDFS-040: no INNER/LEFT join, no EXISTS, no GROUP BY/HAVING
+-- basics, no ROW_NUMBER window, no recursive CTE, no UNION (dedup).
+
+-- ---------------------------------------------------------------------------
+-- Base tables for this script
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE __SB_NAMESPACE__.dept (
+    dept_id   INTEGER PRIMARY KEY,
+    dept_name VARCHAR(32) NOT NULL,
+    region    VARCHAR(16) NOT NULL
+);
+
+CREATE TABLE __SB_NAMESPACE__.emp (
+    emp_id    INTEGER PRIMARY KEY,
+    dept_id   INTEGER,              -- nullable: intentional for outer-join tests
+    emp_name  VARCHAR(64) NOT NULL,
+    salary    DECIMAL(12, 2) NOT NULL
+);
+
+CREATE TABLE __SB_NAMESPACE__.proj (
+    proj_id   INTEGER PRIMARY KEY,
+    dept_id   INTEGER NOT NULL,
+    proj_name VARCHAR(64) NOT NULL,
+    budget    DECIMAL(12, 2) NOT NULL
+);
+
+-- dept rows: 4 departments (dept 4 has no employees; emp 5 has no dept)
+INSERT INTO __SB_NAMESPACE__.dept VALUES
+    (1, 'Engineering',  'east'),
+    (2, 'Marketing',    'west'),
+    (3, 'Finance',      'east'),
+    (4, 'Operations',   'north');
+
+-- emp rows: 5 employees (emp 5 has NULL dept_id — no matching dept)
+INSERT INTO __SB_NAMESPACE__.emp VALUES
+    (1, 1, 'Ada',     90000.00),
+    (2, 1, 'Grace',   85000.00),
+    (3, 2, 'Linus',   75000.00),
+    (4, 3, 'Barbara', 80000.00),
+    (5, NULL, 'Dennis', 70000.00);
+
+-- proj rows: projects for depts 1, 2, and 3 only (dept 4 has no project)
+INSERT INTO __SB_NAMESPACE__.proj VALUES
+    (10, 1, 'Alpha',   500000.00),
+    (11, 1, 'Beta',    300000.00),
+    (12, 2, 'Gamma',   200000.00),
+    (13, 3, 'Delta',   150000.00);
+
+-- ---------------------------------------------------------------------------
+-- RIGHT JOIN
+-- Grounded: from.md join_type ::= ... | RIGHT OUTER?
+-- Ada and Grace (dept 1) join Engineering projects; Linus joins Gamma;
+-- Barbara joins Delta; Dennis (no dept) appears on the right if we swap sides.
+-- Here: proj RIGHT JOIN dept → all 4 dept rows; dept 4 has no project → NULL proj side.
+-- proj has 4 rows covering depts 1,1,2,3.  dept has depts 1,2,3,4.
+-- RIGHT JOIN: all dept rows survive.  dept 4 → NULL proj columns.
+-- Expected: 5 rows total (two for dept 1, one each for 2, 3, 4).
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       5 AS expected_count
+FROM __SB_NAMESPACE__.proj AS p
+RIGHT JOIN __SB_NAMESPACE__.dept AS d ON d.dept_id = p.dept_id;
+
+-- RIGHT JOIN: the dept-4 row has a NULL proj_id on the left side.
+-- Expected: 1 row where p.proj_id IS NULL (dept 4 — Operations, no projects).
+
+SELECT 'SBDFS-045-002' AS assertion_id,
+       COUNT(*) AS actual_count,
+       1 AS expected_count
+FROM __SB_NAMESPACE__.proj AS p
+RIGHT JOIN __SB_NAMESPACE__.dept AS d ON d.dept_id = p.dept_id
+WHERE p.proj_id IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- FULL OUTER JOIN
+-- Grounded: from.md join_type ::= ... | FULL OUTER?
+-- emp FULL OUTER JOIN dept ON emp.dept_id = dept.dept_id
+--   Left-only:  emp 5 (Dennis, NULL dept_id) — dept side is NULL
+--   Right-only: dept 4 (Operations) — emp side is NULL
+--   Matched:    emps 1-4 join their departments (4 rows)
+-- Total: 4 matched + 1 left-only + 1 right-only = 6 rows.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-003' AS assertion_id,
+       COUNT(*) AS actual_count,
+       6 AS expected_count
+FROM __SB_NAMESPACE__.emp AS e
+FULL OUTER JOIN __SB_NAMESPACE__.dept AS d ON d.dept_id = e.dept_id;
+
+-- FULL OUTER JOIN: rows with a NULL on the dept side (emp has no dept)
+-- or a NULL on the emp side (dept has no emp).
+-- Unmatched left (Dennis, dept_id IS NULL) = 1; unmatched right (Operations) = 1.
+-- Expected: 2 unmatched rows total.
+
+SELECT 'SBDFS-045-004' AS assertion_id,
+       COUNT(*) AS actual_count,
+       2 AS expected_count
+FROM __SB_NAMESPACE__.emp AS e
+FULL OUTER JOIN __SB_NAMESPACE__.dept AS d ON d.dept_id = e.dept_id
+WHERE e.emp_id IS NULL OR d.dept_id IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- CROSS JOIN
+-- Grounded: from.md join_clause ::= ... | CROSS JOIN table_reference
+-- 4 dept rows × 4 proj rows = 16 cross-product rows.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-005' AS assertion_id,
+       COUNT(*) AS actual_count,
+       16 AS expected_count
+FROM __SB_NAMESPACE__.dept AS d
+CROSS JOIN __SB_NAMESPACE__.proj AS p;
+
+-- CROSS JOIN with a column-equality filter in WHERE is logically equivalent to
+-- an inner join.  dept 1 has 2 projects, dept 2 has 1, dept 3 has 1 = 4 matches.
+
+SELECT 'SBDFS-045-006' AS assertion_id,
+       COUNT(*) AS actual_count,
+       4 AS expected_count
+FROM __SB_NAMESPACE__.dept AS d
+CROSS JOIN __SB_NAMESPACE__.proj AS p
+WHERE d.dept_id = p.dept_id;
+
+-- ---------------------------------------------------------------------------
+-- LATERAL JOIN
+-- Grounded: from.md join_clause ::= ... | LATERAL JOIN table_reference join_condition?
+-- Use a VALUES-derived inline table as the lateral source correlated on dept_id.
+-- For each dept_id, we inline a single-row subquery returning a label.
+-- Dept 1 → 'large', others → 'small' (budget threshold logic in the inline table).
+-- This exercises the LATERAL keyword with a correlated derived table.
+-- Each dept (4 rows) laterally joins to exactly 1 derived row → 4 rows total.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-007' AS assertion_id,
+       COUNT(*) AS actual_count,
+       4 AS expected_count
+FROM __SB_NAMESPACE__.dept AS d
+LATERAL JOIN (
+    SELECT SUM(p2.budget) AS dept_budget
+    FROM __SB_NAMESPACE__.proj AS p2
+    WHERE p2.dept_id = d.dept_id
+) AS lb ON true;
+
+-- LATERAL: verify the correlated aggregate value is correct for dept 1.
+-- dept 1 has projects Alpha (500000) + Beta (300000) = 800000.
+-- Only dept 1 has dept_budget = 800000.00; the others have smaller or NULL budgets.
+-- COUNT where dept_budget = 800000.00 should be 1.
+
+SELECT 'SBDFS-045-008' AS assertion_id,
+       COUNT(*) AS actual_count,
+       1 AS expected_count
+FROM __SB_NAMESPACE__.dept AS d
+LATERAL JOIN (
+    SELECT SUM(p2.budget) AS dept_budget
+    FROM __SB_NAMESPACE__.proj AS p2
+    WHERE p2.dept_id = d.dept_id
+) AS lb ON true
+WHERE lb.dept_budget = 800000.00;
+
+-- ---------------------------------------------------------------------------
+-- JOIN USING
+-- Grounded: from.md join_condition ::= ... | USING "(" identifier ("," identifier)* ")"
+-- dept and proj share column dept_id.
+-- INNER JOIN USING (dept_id) produces matched rows: 4 proj rows (dept 4 has none).
+-- Expected: 4 rows.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-009' AS assertion_id,
+       COUNT(*) AS actual_count,
+       4 AS expected_count
+FROM __SB_NAMESPACE__.dept
+JOIN __SB_NAMESPACE__.proj USING (dept_id);
+
+-- ---------------------------------------------------------------------------
+-- GROUPING SETS
+-- Grounded: group_by_and_having.md grouping_set ::= GROUPING SETS "(" grouping_set_list ")"
+-- Salary totals grouped by: (region, dept_id), (region), and ().
+-- emp rows with dept: Ada 90k + Grace 85k = 175k (east, dept 1);
+-- Barbara 80k (east, dept 3); Linus 75k (west, dept 2).
+-- Dennis has NULL dept_id → excluded from dept join; use emp table directly.
+-- Emps 1-4 only (Dennis excluded via WHERE e.dept_id IS NOT NULL):
+--   (east, 1): 175000  (east, 3): 80000  (west, 2): 75000
+--   east subtotal: 255000           west subtotal: 75000
+--   grand total: 330000
+-- Rows produced by GROUPING SETS ((region, dept_id), (region), ()):
+--   3 detail rows + 2 region subtotals + 1 grand total = 6 rows.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-010' AS assertion_id,
+       COUNT(*) AS actual_count,
+       6 AS expected_count
+FROM (
+    SELECT d.region, e.dept_id, SUM(e.salary) AS total_salary
+    FROM __SB_NAMESPACE__.emp AS e
+    JOIN __SB_NAMESPACE__.dept AS d ON d.dept_id = e.dept_id
+    GROUP BY GROUPING SETS (
+        (d.region, e.dept_id),
+        (d.region),
+        ()
+    )
+) AS gs;
+
+-- GROUPING SETS grand total: the row where both region and dept_id are NULL
+-- (the () grouping set) should have total_salary = 330000.00.
+
+SELECT 'SBDFS-045-011' AS assertion_id,
+       SUM(total_salary) AS actual_grand_total,
+       330000.00 AS expected_grand_total
+FROM (
+    SELECT d.region, e.dept_id, SUM(e.salary) AS total_salary
+    FROM __SB_NAMESPACE__.emp AS e
+    JOIN __SB_NAMESPACE__.dept AS d ON d.dept_id = e.dept_id
+    GROUP BY GROUPING SETS (
+        (d.region, e.dept_id),
+        (d.region),
+        ()
+    )
+    HAVING d.region IS NULL AND e.dept_id IS NULL
+) AS grand;
+
+-- ---------------------------------------------------------------------------
+-- ROLLUP
+-- Grounded: group_by_and_having.md grouping_set ::= ... | ROLLUP "(" expression_list ")"
+-- ROLLUP(region, dept_id): same 3 combinations as GROUPING SETS above (detail,
+-- region subtotal, grand total) — 3 detail + 2 region subtotals + 1 grand = 6 rows.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-012' AS assertion_id,
+       COUNT(*) AS actual_count,
+       6 AS expected_count
+FROM (
+    SELECT d.region, e.dept_id, SUM(e.salary) AS total_salary
+    FROM __SB_NAMESPACE__.emp AS e
+    JOIN __SB_NAMESPACE__.dept AS d ON d.dept_id = e.dept_id
+    GROUP BY ROLLUP(d.region, e.dept_id)
+) AS ro;
+
+-- ---------------------------------------------------------------------------
+-- CUBE
+-- Grounded: group_by_and_having.md grouping_set ::= ... | CUBE "(" expression_list ")"
+-- CUBE(region, dept_id): all 2^2 = 4 combos:
+--   (region, dept_id) — 3 rows
+--   (region)          — 2 rows (east, west)
+--   (dept_id)         — 3 rows (dept 1, 2, 3)
+--   ()                — 1 row (grand total)
+-- Total: 3 + 2 + 3 + 1 = 9 rows.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-013' AS assertion_id,
+       COUNT(*) AS actual_count,
+       9 AS expected_count
+FROM (
+    SELECT d.region, e.dept_id, SUM(e.salary) AS total_salary
+    FROM __SB_NAMESPACE__.emp AS e
+    JOIN __SB_NAMESPACE__.dept AS d ON d.dept_id = e.dept_id
+    GROUP BY CUBE(d.region, e.dept_id)
+) AS cu;
+
+-- ---------------------------------------------------------------------------
+-- UNION ALL (multiset union, keeps duplicates)
+-- Grounded: ebnf/set_operator.md set_op ::= "UNION" "ALL"? | ...
+-- dept_id values from emp (1,1,2,3,NULL) UNION ALL dept_id from proj (1,1,2,3)
+-- = 9 rows total (all rows from both sides, duplicates kept).
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-014' AS assertion_id,
+       COUNT(*) AS actual_count,
+       9 AS expected_count
+FROM (
+    SELECT dept_id FROM __SB_NAMESPACE__.emp
+    UNION ALL
+    SELECT dept_id FROM __SB_NAMESPACE__.proj
+) AS ua;
+
+-- ---------------------------------------------------------------------------
+-- INTERSECT (set intersection, deduplicates)
+-- Grounded: ebnf/set_operator.md set_op ::= ... | "INTERSECT" "ALL"? | ...
+-- dept_id values from emp (distinct non-null: 1, 2, 3) INTERSECT
+-- dept_id values from proj (distinct: 1, 2, 3) = {1, 2, 3} → 3 rows.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-015' AS assertion_id,
+       COUNT(*) AS actual_count,
+       3 AS expected_count
+FROM (
+    SELECT dept_id FROM __SB_NAMESPACE__.emp WHERE dept_id IS NOT NULL
+    INTERSECT
+    SELECT dept_id FROM __SB_NAMESPACE__.proj
+) AS ix;
+
+-- INTERSECT result should not include dept_id = 4 (Operations has no employees
+-- and no projects in emp, but let us verify by checking MAX value = 3).
+
+SELECT 'SBDFS-045-016' AS assertion_id,
+       MAX(dept_id) AS actual_max,
+       3 AS expected_max
+FROM (
+    SELECT dept_id FROM __SB_NAMESPACE__.emp WHERE dept_id IS NOT NULL
+    INTERSECT
+    SELECT dept_id FROM __SB_NAMESPACE__.proj
+) AS ix2;
+
+-- ---------------------------------------------------------------------------
+-- EXCEPT (set difference, deduplicates)
+-- Grounded: ebnf/set_operator.md set_op ::= ... | "EXCEPT" "ALL"?
+-- dept_id values in dept (1,2,3,4) EXCEPT dept_id values in proj (1,2,3)
+-- = {4} → 1 row.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-017' AS assertion_id,
+       COUNT(*) AS actual_count,
+       1 AS expected_count
+FROM (
+    SELECT dept_id FROM __SB_NAMESPACE__.dept
+    EXCEPT
+    SELECT dept_id FROM __SB_NAMESPACE__.proj
+) AS ex;
+
+-- EXCEPT result should be dept_id = 4 (Operations, the only dept with no project).
+
+SELECT 'SBDFS-045-018' AS assertion_id,
+       MIN(dept_id) AS actual_dept_id,
+       4 AS expected_dept_id
+FROM (
+    SELECT dept_id FROM __SB_NAMESPACE__.dept
+    EXCEPT
+    SELECT dept_id FROM __SB_NAMESPACE__.proj
+) AS ex2;
+
+-- ---------------------------------------------------------------------------
+-- DISTINCT (set_quantifier)
+-- Grounded: select.md set_quantifier ::= "ALL" | "DISTINCT"
+-- emp.dept_id distinct values: 1, 2, 3, NULL → 4 distinct values.
+-- (NULL is a single distinct value under SQL distinct semantics.)
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-019' AS assertion_id,
+       COUNT(*) AS actual_count,
+       4 AS expected_count
+FROM (
+    SELECT DISTINCT dept_id
+    FROM __SB_NAMESPACE__.emp
+) AS dq;
+
+-- DISTINCT on salary: Ada 90000, Grace 85000, Linus 75000, Barbara 80000,
+-- Dennis 70000 — all five are distinct → 5 rows.
+
+SELECT 'SBDFS-045-020' AS assertion_id,
+       COUNT(*) AS actual_count,
+       5 AS expected_count
+FROM (
+    SELECT DISTINCT salary
+    FROM __SB_NAMESPACE__.emp
+) AS ds;
+
+-- ---------------------------------------------------------------------------
+-- ORDER BY DESC with NULLS LAST
+-- Grounded: order_by_limit_offset.md null_ordering ::= "NULLS" "FIRST" | "NULLS" "LAST"
+-- emp.dept_id ordered DESC NULLS LAST: NULLs pushed to the end.
+-- First row should be dept_id = 3 (max non-null value).
+-- Verify by selecting the first row using LIMIT 1.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-021' AS assertion_id,
+       dept_id AS actual_first_dept_id,
+       3 AS expected_first_dept_id
+FROM __SB_NAMESPACE__.emp
+ORDER BY dept_id DESC NULLS LAST
+LIMIT 1;
+
+-- ---------------------------------------------------------------------------
+-- ORDER BY ASC with NULLS FIRST
+-- Grounded: order_by_limit_offset.md null_ordering ::= "NULLS" "FIRST" | "NULLS" "LAST"
+-- emp.dept_id ordered ASC NULLS FIRST: NULL first, then 1, 2, 3.
+-- First row should have dept_id IS NULL (Dennis).
+-- Verify by selecting the first row's dept_id using LIMIT 1.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-022' AS assertion_id,
+       CASE WHEN dept_id IS NULL THEN 1 ELSE 0 END AS actual_is_null,
+       1 AS expected_is_null
+FROM __SB_NAMESPACE__.emp
+ORDER BY dept_id ASC NULLS FIRST
+LIMIT 1;
+
+-- ---------------------------------------------------------------------------
+-- LIMIT with OFFSET (pagination)
+-- Grounded: order_by_limit_offset.md limit_clause ::= "LIMIT" ... ("OFFSET" expression)?
+-- emp ordered by emp_id ASC: rows 1,2,3,4,5. LIMIT 2 OFFSET 2 → rows 3 and 4.
+-- emp_id 3 = Linus, emp_id 4 = Barbara.  COUNT should be 2.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-023' AS assertion_id,
+       COUNT(*) AS actual_count,
+       2 AS expected_count
+FROM (
+    SELECT emp_id
+    FROM __SB_NAMESPACE__.emp
+    ORDER BY emp_id ASC
+    LIMIT 2 OFFSET 2
+) AS paged;
+
+-- LIMIT/OFFSET: verify first emp_id in the page is 3 (Linus).
+
+SELECT 'SBDFS-045-024' AS assertion_id,
+       MIN(emp_id) AS actual_min_emp_id,
+       3 AS expected_min_emp_id
+FROM (
+    SELECT emp_id
+    FROM __SB_NAMESPACE__.emp
+    ORDER BY emp_id ASC
+    LIMIT 2 OFFSET 2
+) AS paged2;
+
+-- ---------------------------------------------------------------------------
+-- FETCH FIRST n ROWS ONLY
+-- Grounded: order_by_limit_offset.md fetch_clause ::= "FETCH" fetch_quantifier? limit_count "ROW" row_plural? "ONLY"
+-- emp ordered by salary DESC: Ada (90000), Grace (85000), Barbara (80000), ...
+-- FETCH FIRST 2 ROWS ONLY → 2 rows.
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-025' AS assertion_id,
+       COUNT(*) AS actual_count,
+       2 AS expected_count
+FROM (
+    SELECT emp_id, salary
+    FROM __SB_NAMESPACE__.emp
+    ORDER BY salary DESC, emp_id
+    FETCH FIRST 2 ROWS ONLY
+) AS fetched;
+
+-- FETCH FIRST: verify the highest salary in the 2-row result is 90000.00 (Ada).
+
+SELECT 'SBDFS-045-026' AS assertion_id,
+       MAX(salary) AS actual_max_salary,
+       90000.00 AS expected_max_salary
+FROM (
+    SELECT emp_id, salary
+    FROM __SB_NAMESPACE__.emp
+    ORDER BY salary DESC, emp_id
+    FETCH FIRST 2 ROWS ONLY
+) AS fetched2;
+
+-- ---------------------------------------------------------------------------
+-- LIMIT 0 (empty rowset)
+-- Grounded: order_by_limit_offset.md "A value of zero returns an empty rowset."
+-- ---------------------------------------------------------------------------
+
+SELECT 'SBDFS-045-027' AS assertion_id,
+       COUNT(*) AS actual_count,
+       0 AS expected_count
+FROM (
+    SELECT emp_id
+    FROM __SB_NAMESPACE__.emp
+    ORDER BY emp_id
+    LIMIT 0
+) AS empty_page;

@@ -13,6 +13,7 @@
 #include "sblr_admission.hpp"
 
 #include "backup_archive/backup_archive_api.hpp"
+#include "catalog/sbsql_language_elements_catalog.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "crud_support/crud_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -25,8 +26,10 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <optional>
@@ -340,6 +343,64 @@ std::string EscapeOperationOperandField(std::string_view value) {
     }
   }
   return out;
+}
+
+std::string UnescapeOperationOperandField(std::string_view value) {
+  std::string out;
+  bool escaped = false;
+  for (const char ch : value) {
+    if (!escaped) {
+      if (ch == '\\') {
+        escaped = true;
+      } else {
+        out.push_back(ch);
+      }
+      continue;
+    }
+    switch (ch) {
+      case 'n': out.push_back('\n'); break;
+      case 'r': out.push_back('\r'); break;
+      case 't': out.push_back('\t'); break;
+      case '\\': out.push_back('\\'); break;
+      default:
+        out.push_back('\\');
+        out.push_back(ch);
+        break;
+    }
+    escaped = false;
+  }
+  if (escaped) out.push_back('\\');
+  return out;
+}
+
+std::optional<std::string> ExistingTextOperandValue(std::string_view encoded,
+                                                    std::string_view key) {
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const std::size_t end = encoded.find('\n', start);
+    const std::string_view line =
+        encoded.substr(start, end == std::string_view::npos ? encoded.size() - start : end - start);
+    if (line.starts_with("operand=")) {
+      const std::string_view payload = line.substr(std::string_view("operand=").size());
+      const std::size_t first = payload.find('\t');
+      const std::size_t second =
+          first == std::string_view::npos ? std::string_view::npos : payload.find('\t', first + 1);
+      if (first != std::string_view::npos && second != std::string_view::npos &&
+          UnescapeOperationOperandField(payload.substr(0, first)) == "text" &&
+          UnescapeOperationOperandField(payload.substr(first + 1, second - first - 1)) == key) {
+        return UnescapeOperationOperandField(payload.substr(second + 1));
+      }
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return std::nullopt;
+}
+
+bool IsPublicRegistryPlaceholder(std::string_view value) {
+  return value == "engine_resolves_from_public_registry" ||
+         value == "engine_resolves_from_catalog" ||
+         value == "public_registry";
 }
 
 void AppendExistingOperationOperands(std::string_view encoded, std::string* operation_envelope) {
@@ -1462,9 +1523,10 @@ void AppendProjectionExpressionOperands(std::string_view encoded,
                                         std::uint32_t depth = 0) {
   if (depth > 4) return;
   constexpr std::string_view kFields[] = {
-      "expr_kind", "expr_opcode", "type", "value", "is_null",
+      "name", "expr_kind", "expr_opcode", "type", "value", "is_null",
       "function_id", "function_arg_count",
-      "operator_id", "canonical_operator_id", "operator_arg_count"};
+      "operator_id", "canonical_operator_id", "operator_arg_count",
+      "special_form_id", "sblr_binding", "special_form_arg_count"};
   for (const auto field : kFields) {
     const std::string key = prefix + std::string(field);
     AppendOperationOperand(operation_envelope, key, EncodedTextField(encoded, key));
@@ -1774,6 +1836,7 @@ const char* PublicAbiOpcodeForOperation(std::string_view operation_id) {
   if (operation_id == "observability.show_acceleration_extended") return "SBLR_OBSERVABILITY_SHOW_ACCELERATION_EXTENDED";
   if (operation_id == "observability.show_metrics") return "SBLR_OBSERVABILITY_SHOW_METRICS";
   if (operation_id == "observability.explain_operation") return "SBLR_OBSERVABILITY_EXPLAIN_OPERATION";
+  if (operation_id == "op.sbsql.surface_replay") return "SBLR_OP_SBSQL_SURFACE_REPLAY";
   if (operation_id == "catalog.get_descriptor") return "SBLR_CATALOG_GET_DESCRIPTOR";
   if (const char* catalog_mutation_opcode =
           CatalogMutationPublicAbiOpcodeForOperation(operation_id);
@@ -2119,6 +2182,7 @@ scratchbird::engine::SblrOperationFamily PublicAbiFamilyForServerFamily(std::str
   if (family == "sblr.mga.control.v3") return SblrOperationFamily::management_control;
   if (family == "sblr.mga.report.v3") return SblrOperationFamily::management_inspect;
   if (family == "sblr.filespace.management.v3") return SblrOperationFamily::management_control;
+  if (family == "sblr.migration.operation.v3") return SblrOperationFamily::management_control;
   if (family == "sblr.index.maintenance.v3") return SblrOperationFamily::management_control;
   if (family == "sblr.database.management.v3") return SblrOperationFamily::management_control;
   if (family == "sblr.backup.operation.v3") return SblrOperationFamily::replication_operation;
@@ -2166,6 +2230,8 @@ bool OperationNeedsTransactionContext(std::string_view operation_id) {
          operation_id.starts_with("ddl.constraint.") ||
          operation_id == "query.evaluate_projection" ||
          operation_id == "query.plan_operation" ||
+         operation_id == "op.migration.begin_from_reference" ||
+         operation_id == "op.migration.alter" ||
          (operation_id != "transaction.begin" &&
           operation_id != "transaction.set_characteristics" &&
           operation_id.starts_with("transaction.")) ||
@@ -2726,6 +2792,36 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     operation_envelope += "operand=text\tcatalog_projection\t";
     operation_envelope += EscapeOperationOperandField(virtual_projection);
     operation_envelope += "\n";
+    constexpr std::string_view kVirtualQueryFields[] = {
+        "result_projection",
+        "aggregate_function",
+        "assertion_id",
+        "actual_column_name",
+        "expected_column_name",
+        "expected_count",
+        "expected_value",
+        "predicate_kind",
+        "predicate_column",
+        "predicate_value",
+        "predicate_value_type",
+        "subquery_projection",
+        "subquery_select_column",
+        "subquery_predicate_kind",
+        "subquery_predicate_column",
+        "subquery_predicate_value",
+        "subquery_predicate_value_type",
+        "subquery_nested_projection",
+        "subquery_nested_select_column",
+        "subquery_nested_predicate_kind",
+        "subquery_nested_predicate_column",
+        "subquery_nested_predicate_value",
+        "subquery_nested_predicate_value_type"};
+    for (const auto field : kVirtualQueryFields) {
+      const std::string value = EncodedTextField(encoded, std::string(field));
+      if (!value.empty()) {
+        AppendOperationOperand(&operation_envelope, field, value);
+      }
+    }
   }
   auto append_session_operand = [&operation_envelope](std::string_view name,
                                                       const std::string& value) {
@@ -2843,6 +2939,60 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     for (const auto field : kSecurityPolicyFields) {
       const auto value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
+      if (value.empty()) continue;
+      operation_envelope += "operand=text\t";
+      operation_envelope += field;
+      operation_envelope += "\t";
+      operation_envelope += EscapeOperationOperandField(value);
+      operation_envelope += "\n";
+    }
+  }
+  if (dispatch_operation_id == "op.sbsql.surface_replay") {
+    constexpr std::string_view kReplayFields[] = {
+        "surface_key", "target_ref", "target_ref_kind", "surface_id"};
+    for (const auto field : kReplayFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          TextLineValue(encoded, field).value_or(""));
+      if (value.empty()) continue;
+      operation_envelope += "operand=text\t";
+      operation_envelope += field;
+      operation_envelope += "\t";
+      operation_envelope += EscapeOperationOperandField(value);
+      operation_envelope += "\n";
+    }
+  }
+  if (dispatch_operation_id == "op.migration.begin_from_reference" ||
+      dispatch_operation_id == "op.migration.alter" ||
+      dispatch_operation_id == "op.show.migration") {
+    auto migration_field_value = [encoded](std::string_view field) -> std::string {
+      auto value = ExistingTextOperandValue(encoded, field).value_or(
+          JsonTextField(encoded, field).value_or(TextLineValue(encoded, field).value_or("")));
+      if (field == "reference_profile" && (value.empty() || IsPublicRegistryPlaceholder(value))) {
+        value = ExistingTextOperandValue(encoded, "target_ref").value_or(
+            JsonTextField(encoded, "target_ref").value_or(TextLineValue(encoded, "target_ref").value_or("")));
+      } else if (field == "reference_package" &&
+                 (value.empty() || IsPublicRegistryPlaceholder(value))) {
+        value = ExistingTextOperandValue(encoded, "secondary_ref").value_or(
+            JsonTextField(encoded, "secondary_ref").value_or(
+                TextLineValue(encoded, "secondary_ref").value_or("")));
+      } else if (field == "migration_ref" && (value.empty() || IsPublicRegistryPlaceholder(value))) {
+        value = ExistingTextOperandValue(encoded, "target_ref").value_or(
+            JsonTextField(encoded, "target_ref").value_or(TextLineValue(encoded, "target_ref").value_or("")));
+      } else if (field == "migration_action" && (value.empty() || IsPublicRegistryPlaceholder(value))) {
+        value = ExistingTextOperandValue(encoded, "secondary_ref").value_or(
+            JsonTextField(encoded, "secondary_ref").value_or(
+                TextLineValue(encoded, "secondary_ref").value_or("")));
+      }
+      return value;
+    };
+    const std::vector<std::string_view> migration_fields =
+        dispatch_operation_id == "op.migration.begin_from_reference"
+            ? std::vector<std::string_view>{"reference_profile", "reference_package"}
+        : dispatch_operation_id == "op.migration.alter"
+            ? std::vector<std::string_view>{"migration_ref", "migration_action"}
+            : std::vector<std::string_view>{"migration_ref"};
+    for (const auto field : migration_fields) {
+      const auto value = migration_field_value(field);
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;
@@ -3008,16 +3158,29 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "target_object_uuid", "target_object_kind",
         "table_object_uuid", "table_name",
         "target_schema_uuid", "schema_uuid",
+        "schema_parent_uuid", "schema_parent_path",
         "column_count", "column_definition_count",
-        "canonical_type_name",
-        "column_0_name", "column_0_type", "column_0_descriptor",
-        "column_0_nullable"};
+        "canonical_type_name"};
     for (const auto field : kTableFields) {
       const auto value = JsonTextField(encoded, field).value_or(
           JsonPrimitiveField(encoded, field).value_or(
               TextLineValue(encoded, field).value_or("")));
       if (value.empty()) continue;
       AppendOperationOperand(&operation_envelope, field, value);
+    }
+    const std::string column_count_value = JsonPrimitiveField(encoded, "column_count").value_or(
+        TextLineValue(encoded, "column_count").value_or(""));
+    const std::uint64_t column_count = ParseU64Text(column_count_value);
+    for (std::uint64_t ordinal = 0; ordinal < column_count; ++ordinal) {
+      const std::string prefix = "column_" + std::to_string(ordinal) + "_";
+      for (const auto suffix : {"name", "type", "descriptor", "nullable", "default"}) {
+        const std::string field = prefix + suffix;
+        const auto value = JsonTextField(encoded, field).value_or(
+            JsonPrimitiveField(encoded, field).value_or(
+                TextLineValue(encoded, field).value_or("")));
+        if (value.empty()) continue;
+        AppendOperationOperand(&operation_envelope, field, value);
+      }
     }
     const std::string table_uuid = JsonTextField(encoded, "table_object_uuid").value_or(
         TextLineValue(encoded, "table_object_uuid").value_or(""));
@@ -3571,6 +3734,29 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     operation_envelope += "operand=text\trecursive_iterations\t";
     operation_envelope += EscapeOperationOperandField(recursive_iterations.empty() ? "32" : recursive_iterations);
     operation_envelope += "\n";
+    constexpr std::string_view kRecursiveCteFields[] = {
+        "recursive_step_mode",
+        "recursive_counter_column",
+        "recursive_counter_step",
+        "recursive_counter_limit",
+        "recursive_counter_predicate",
+        "result_projection",
+        "aggregate_function",
+        "aggregate_value_field",
+        "assertion_id",
+        "actual_column_name",
+        "expected_column_name",
+        "expected_value"};
+    for (const auto field : kRecursiveCteFields) {
+      const auto value = JsonTextField(encoded, field).value_or(
+          TextLineValue(encoded, field).value_or(""));
+      if (value.empty()) continue;
+      operation_envelope += "operand=text\t";
+      operation_envelope += field;
+      operation_envelope += "\t";
+      operation_envelope += EscapeOperationOperandField(value);
+      operation_envelope += "\n";
+    }
     if (column_count) {
       for (std::uint64_t relation = 0; relation < 2; ++relation) {
         const auto row_count = parse_u64(JsonTextField(encoded, "relation_" + std::to_string(relation) + "_row_count").value_or(
@@ -3609,7 +3795,10 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       (encoded.find("\"query_envelope_kind\":\"table_inner_join\"") != std::string_view::npos ||
        encoded.find("query_envelope_kind=table_inner_join") != std::string_view::npos)) {
     operation_envelope += "operand=text\texecute\ttrue\n";
-    operation_envelope += "operand=text\tquery_operation\tinner_join\n";
+    operation_envelope += "operand=text\tquery_operation\t";
+    operation_envelope += EscapeOperationOperandField(JsonTextField(encoded, "query_operation").value_or(
+        TextLineValue(encoded, "query_operation").value_or("inner_join")));
+    operation_envelope += "\n";
     operation_envelope += "operand=text\tjoin_algorithm\t";
     operation_envelope += EscapeOperationOperandField(JsonTextField(encoded, "join_algorithm").value_or(
         TextLineValue(encoded, "join_algorithm").value_or("hash")));
@@ -3619,7 +3808,32 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "related_object_0_uuid", "related_object_0_kind",
         "left_key_field", "right_key_field",
         "left_key_column", "right_key_column",
-        "limit", "offset", "order_column", "order"};
+        "right_null_filter_field",
+        "group_key_field", "aggregate_value_field",
+        "distinct_count_field",
+        "left_filter_count",
+        "left_filter_0_kind", "left_filter_0_column",
+        "left_filter_0_value", "left_filter_0_value_type",
+        "left_filter_1_kind", "left_filter_1_column",
+        "left_filter_1_value", "left_filter_1_value_type",
+        "left_filter_2_kind", "left_filter_2_column",
+        "left_filter_2_value", "left_filter_2_value_type",
+        "left_filter_3_kind", "left_filter_3_column",
+        "left_filter_3_value", "left_filter_3_value_type",
+        "left_filter_4_kind", "left_filter_4_column",
+        "left_filter_4_value", "left_filter_4_value_type",
+        "left_filter_5_kind", "left_filter_5_column",
+        "left_filter_5_value", "left_filter_5_value_type",
+        "left_filter_6_kind", "left_filter_6_column",
+        "left_filter_6_value", "left_filter_6_value_type",
+        "left_filter_7_kind", "left_filter_7_column",
+        "left_filter_7_value", "left_filter_7_value_type",
+        "having_threshold",
+        "partition_key_field", "order_by",
+        "limit", "offset", "order_column", "order",
+        "result_projection", "aggregate_function",
+        "assertion_id", "actual_column_name",
+        "expected_column_name", "expected_count", "expected_value"};
     for (const auto field : kJoinFields) {
       const auto value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
@@ -3646,7 +3860,10 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     constexpr std::string_view kTableSetFields[] = {
         "target_object_uuid", "target_object_kind",
         "related_object_0_uuid", "related_object_0_kind",
-        "set_by_name", "limit", "offset"};
+        "set_by_name", "left_project_field", "right_project_field",
+        "result_projection", "aggregate_function",
+        "assertion_id", "actual_column_name", "expected_column_name",
+        "expected_count", "limit", "offset"};
     for (const auto field : kTableSetFields) {
       std::string value = JsonTextField(encoded, field).value_or(
           TextLineValue(encoded, field).value_or(""));
@@ -3659,6 +3876,31 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
           value = "false";
         }
       }
+      if (value.empty()) continue;
+      operation_envelope += "operand=text\t";
+      operation_envelope += field;
+      operation_envelope += "\t";
+      operation_envelope += EscapeOperationOperandField(value);
+      operation_envelope += "\n";
+    }
+    for (std::size_t index = 1; index < 16; ++index) {
+      const std::string prefix = "related_object_" + std::to_string(index) + "_";
+      for (const auto suffix : {"uuid", "kind"}) {
+        const std::string field = prefix + suffix;
+        const auto value = JsonTextField(encoded, field).value_or(
+            TextLineValue(encoded, field).value_or(""));
+        if (value.empty()) continue;
+        operation_envelope += "operand=text\t";
+        operation_envelope += field;
+        operation_envelope += "\t";
+        operation_envelope += EscapeOperationOperandField(value);
+        operation_envelope += "\n";
+      }
+    }
+    for (std::size_t index = 0; index < 16; ++index) {
+      const std::string field = "relation_" + std::to_string(index) + "_project_field";
+      const auto value = JsonTextField(encoded, field).value_or(
+          TextLineValue(encoded, field).value_or(""));
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;
@@ -3737,10 +3979,15 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     constexpr std::string_view kCountFields[] = {
         "target_object_uuid", "target_object_kind",
         "aggregate_function", "aggregate_value_field",
-        "count_all", "limit", "offset"};
+        "count_all", "count_distinct", "limit", "offset",
+        "result_projection", "assertion_id", "actual_column_name",
+        "expected_column_name", "expected_count", "expected_value",
+        "predicate_kind", "predicate_column", "predicate_value",
+        "predicate_value_type"};
     for (const auto field : kCountFields) {
       const auto value = JsonTextField(encoded, field).value_or(
-          TextLineValue(encoded, field).value_or(""));
+          JsonPrimitiveField(encoded, field).value_or(
+              TextLineValue(encoded, field).value_or("")));
       if (value.empty()) continue;
       operation_envelope += "operand=text\t";
       operation_envelope += field;
@@ -3798,11 +4045,28 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
         "encoding", "line_ending", "delimiter", "quote", "escape",
         "header_policy", "estimated_row_count", "order_by", "order_direction",
         "limit", "offset",
+        "result_projection", "aggregate_function",
+        "assertion_id", "actual_column_name",
+        "expected_column_name", "expected_count", "expected_value",
         "predicate_kind", "predicate_column", "predicate_value",
         "predicate_value_type", "assignment_column", "assignment_value",
-        "assignment_value_type",
+        "assignment_value_type", "assignment_plan",
+        "on_conflict_action", "conflict_target_column",
+        "on_conflict_update_column", "on_conflict_update_source_column",
+        "on_conflict_assignment_plan",
         "strict_bulk_load_requested", "reference_relaxed_semantics_requested",
+        "bulk.allow_opaque_columns", "bulk.allow_triggers",
+        "bulk.allow_foreign_keys", "bulk.target_empty_required",
         "duplicate_mode", "insert_mode", "require_generated_row_uuid", "reject_mode",
+        "insert_select_source_kind", "insert_select_cte_name",
+        "insert_select_counter_column", "insert_select_counter_start",
+        "insert_select_counter_step", "insert_select_counter_limit",
+        "insert_select_counter_predicate", "insert_select_projection_count",
+        "insert_select_projection_0", "insert_select_projection_1",
+        "insert_select_projection_2", "insert_select_projection_3",
+        "insert_select_projection_4", "insert_select_projection_5",
+        "insert_select_projection_6", "insert_select_projection_7",
+        "insert_select_projection_8", "insert_select_projection_9",
         "reject_limit_rows", "reject_limit_percent", "reject_payload_policy",
         "native_bulk_ingest_enabled", "native_bulk_ingest",
         "result_payload_policy", "resume_policy", "reject_target_uuid", "reject_target_kind",
@@ -3822,6 +4086,18 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
     }
   }
   AppendExistingOperationOperands(encoded, &operation_envelope);
+
+  if (const char* trace_path = std::getenv("SCRATCHBIRD_PUBLIC_ABI_ENVELOPE_TRACE");
+      trace_path != nullptr && trace_path[0] != '\0') {
+    std::ofstream trace(trace_path, std::ios::app);
+    if (trace) {
+      trace << "----- " << CurrentUtcTimestampText() << " -----\n";
+      trace << operation_envelope;
+      if (!operation_envelope.empty() && operation_envelope.back() != '\n') {
+        trace << '\n';
+      }
+    }
+  }
 
   const auto binary = scratchbird::engine::sblr::EnvelopeBuilder()
                           .operation(PublicAbiFamilyForServerFamily(dispatch_operation_family), 1)

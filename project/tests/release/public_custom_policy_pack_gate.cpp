@@ -125,6 +125,7 @@ void RehashPolicyPackManifest(const std::filesystem::path& pack_root) {
       "policies/groups.json",
       "policies/grants.json",
       "policies/policy_profiles.json",
+      "policies/default_policy_catalog.json",
       "catalog_materialization.json",
   };
   std::string manifest = ReadText(pack_root / "POLICY_PACK_MANIFEST.json");
@@ -314,6 +315,19 @@ void ProveFailClosedDiagnostics(const std::filesystem::path& root) {
   ExpectCreateDiagnostic(root / "unknown_policy.sbdb",
                          unknown_policy,
                          "SB-POLICY-PACK-PROFILES-UNKNOWN");
+
+  const auto unknown_default_policy = CopyPack(root, "unknown-default-policy-pack");
+  {
+    std::string defaults = ReadText(unknown_default_policy / "policies/default_policy_catalog.json");
+    ReplaceOnce(&defaults,
+                "\"policy_key\": \"diagnostics.message_vector\"",
+                "\"policy_key\": \"diagnostics.unknown_policy\"");
+    WriteText(unknown_default_policy / "policies/default_policy_catalog.json", defaults);
+    RehashPolicyPackManifest(unknown_default_policy);
+  }
+  ExpectCreateDiagnostic(root / "unknown_default_policy.sbdb",
+                         unknown_default_policy,
+                         "SB-POLICY-PACK-DEFAULT-POLICIES-UNKNOWN");
 }
 
 void ProvePostCreatePackMutationStillRefuses(const std::filesystem::path& database_path) {

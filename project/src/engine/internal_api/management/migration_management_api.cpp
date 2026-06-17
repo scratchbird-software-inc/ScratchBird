@@ -54,11 +54,17 @@ EngineApiDiagnostic ValidateMigrationSecurity(const EngineApiRequest& request) {
 }
 
 std::string MigrationActionState(std::string_view action) {
-  if (action == "start") return "running";
-  if (action == "pause") return "paused";
-  if (action == "resume") return "running";
-  if (action == "abort") return "aborted";
-  if (action == "finalize") return "finalized";
+  std::string normalized(action);
+  for (char& ch : normalized) {
+    if (ch >= 'A' && ch <= 'Z') {
+      ch = static_cast<char>(ch - 'A' + 'a');
+    }
+  }
+  if (normalized == "start") return "running";
+  if (normalized == "pause") return "paused";
+  if (normalized == "resume") return "running";
+  if (normalized == "abort") return "aborted";
+  if (normalized == "finalize") return "finalized";
   return {};
 }
 

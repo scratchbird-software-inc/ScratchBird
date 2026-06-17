@@ -1003,10 +1003,31 @@
       return MakeFunctionSuccess(request, {MakeTextValue(target_descriptor, ValueAsText(value))});
     }
     if (target_descriptor == "int64" || target_descriptor == "integer" ||
-        target_descriptor == "bigint") {
+        target_descriptor == "bigint" || target_descriptor == "int32" ||
+        target_descriptor == "int16" || target_descriptor == "int8") {
       std::int64_t parsed = 0;
       if (!ValueAsInt64Strict(value, &parsed)) return RefuseFunctionInvalidInput(request, "cast to int64 requires exact integer text/value");
-      return MakeFunctionSuccess(request, {MakeInt64Value("int64", parsed)});
+      if (target_descriptor == "int32" &&
+          (parsed < std::numeric_limits<std::int32_t>::min() ||
+           parsed > std::numeric_limits<std::int32_t>::max())) {
+        return RefuseFunctionInvalidInput(request, "cast to int32 is outside the int32 range");
+      }
+      if (target_descriptor == "int16" &&
+          (parsed < std::numeric_limits<std::int16_t>::min() ||
+           parsed > std::numeric_limits<std::int16_t>::max())) {
+        return RefuseFunctionInvalidInput(request, "cast to int16 is outside the int16 range");
+      }
+      if (target_descriptor == "int8" &&
+          (parsed < std::numeric_limits<std::int8_t>::min() ||
+           parsed > std::numeric_limits<std::int8_t>::max())) {
+        return RefuseFunctionInvalidInput(request, "cast to int8 is outside the int8 range");
+      }
+      const std::string descriptor =
+          (target_descriptor == "integer" || target_descriptor == "bigint") ? "int64"
+                                                                            : target_descriptor;
+      return MakeFunctionSuccess(request, {MakeInt64Value(descriptor, parsed)});
     }
-    if (target_descriptor == "uint64" || target_descriptor == "unsigned_bigint") {
+    if (target_descriptor == "uint64" || target_descriptor == "unsigned_bigint" ||
+        target_descriptor == "uint32" || target_descriptor == "uint16" ||
+        target_descriptor == "uint8") {
       std::uint64_t parsed = 0;

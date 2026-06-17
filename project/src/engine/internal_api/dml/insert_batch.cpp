@@ -533,8 +533,38 @@ void AddInsertBatchEvidenceToResult(const InsertBatchContext& context, EngineApi
   for (const auto& evidence : context.evidence) {
     result->evidence.push_back(evidence);
   }
-  for (const auto& trace : context.trace_events) {
+  constexpr std::size_t kMaxInlineInsertTraceEvidence = 128;
+  constexpr std::size_t kHeadInsertTraceEvidence = 48;
+  constexpr std::size_t kTailInsertTraceEvidence = 24;
+  const auto append_trace = [result](const InsertBatchTraceEvent& trace) {
     result->evidence.push_back({"insert_trace", trace.event_name + ":" + trace.phase + ":" + trace.detail});
+  };
+  if (context.trace_events.size() <= kMaxInlineInsertTraceEvidence) {
+    for (const auto& trace : context.trace_events) {
+      append_trace(trace);
+    }
+  } else {
+    result->evidence.push_back({"insert_trace_compacted", "true"});
+    result->evidence.push_back({"insert_trace_event_count",
+                                std::to_string(context.trace_events.size())});
+    const std::size_t head_count =
+        std::min(kHeadInsertTraceEvidence, context.trace_events.size());
+    for (std::size_t index = 0; index < head_count; ++index) {
+      append_trace(context.trace_events[index]);
+    }
+    const std::size_t tail_start =
+        context.trace_events.size() > kTailInsertTraceEvidence
+            ? context.trace_events.size() - kTailInsertTraceEvidence
+            : head_count;
+    if (tail_start > head_count) {
+      result->evidence.push_back({"insert_trace_omitted_count",
+                                  std::to_string(tail_start - head_count)});
+    }
+    for (std::size_t index = std::max(head_count, tail_start);
+         index < context.trace_events.size();
+         ++index) {
+      append_trace(context.trace_events[index]);
+    }
   }
   result->evidence.push_back({"insert_feature_gate.secondary_index_delta_ledger", InsertFeatureStateName(context.feature_gates.secondary_index_delta_ledger)});
   result->evidence.push_back({"insert_runtime.deferred_secondary_index", context.delta_ledger_policy.runtime_enabled ? "enabled" : "disabled"});

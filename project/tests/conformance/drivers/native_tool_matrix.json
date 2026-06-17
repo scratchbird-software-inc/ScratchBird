@@ -3,7 +3,7 @@
   "driver_tools": [
     {
       "driver": "cpp",
-      "path": "project/drivers/driver/cpp/tools/sb_isql_cpp.cpp",
+      "path": "project/drivers/driver/cpp/tools/sb_regress_cpp.cpp",
       "native_tokens": ["scratchbird::client::Connection", "connect", "prepare", "execute", "executeQuery", "metadataQuery", "commit", "rollback", "ResultSet::next"]
     },
     {

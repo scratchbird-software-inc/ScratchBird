@@ -133,6 +133,7 @@ constexpr uint32_t kQueryFlagBinaryResult = 0x04;
 constexpr uint32_t kQueryFlagIncludePlan = 0x08;
 constexpr uint32_t kQueryFlagReturnSblr = 0x10;
 constexpr uint32_t kQueryFlagNoCache = 0x20;
+constexpr uint32_t kQueryFlagAutocommit = 0x40;
 
 constexpr uint8_t kFormatText = 0;
 constexpr uint8_t kFormatBinary = 1;

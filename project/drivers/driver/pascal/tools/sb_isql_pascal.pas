@@ -229,17 +229,32 @@ end;
 procedure WriteSummary(const Path: string; const Results: TStatementResults; FailureCount: Integer);
 var
   I: Integer;
-  Text, SuiteStatus: string;
+  Text, SuiteStatus, SslMode, TransportMode: string;
 begin
   if FailureCount = 0 then
-    SuiteStatus := 'passed'
+    SuiteStatus := 'pass'
   else
-    SuiteStatus := 'failed';
+    SuiteStatus := 'fail';
+  SslMode := ArgValue('--sslmode', 'require');
+  if LowerCase(SslMode) = 'disable' then
+    TransportMode := 'tls_disabled'
+  else
+    TransportMode := 'tls_required';
   Text := '{' + LineEnding +
-    '  "driver": "pascal",' + LineEnding +
+    '  "run_id": "' + JsonEscape(ArgValue('--run-id', 'manual')) + '",' + LineEnding +
+    '  "driver_name": "pascal",' + LineEnding +
+    '  "route": "' + JsonEscape(ArgValue('--route', '')) + '",' + LineEnding +
+    '  "parser_mode": "' + JsonEscape(ArgValue('--parser-mode', '')) + '",' + LineEnding +
+    '  "page_size": "' + JsonEscape(ArgValue('--page-size', '')) + '",' + LineEnding +
+    '  "namespace": "' + JsonEscape(ArgValue('--namespace', '')) + '",' + LineEnding +
+    '  "sslmode": "' + JsonEscape(SslMode) + '",' + LineEnding +
+    '  "transport_mode": "' + JsonEscape(TransportMode) + '",' + LineEnding +
     '  "status": "' + SuiteStatus + '",' + LineEnding +
     '  "statement_count": ' + IntToStr(Length(Results)) + ',' + LineEnding +
     '  "failure_count": ' + IntToStr(FailureCount) + ',' + LineEnding +
+    '  "server_revalidation_required": true,' + LineEnding +
+    '  "driver_or_parser_finality": "forbidden",' + LineEnding +
+    '  "mga_authority": "engine",' + LineEnding +
     '  "results": [' + LineEnding;
   for I := 0 to High(Results) do
   begin

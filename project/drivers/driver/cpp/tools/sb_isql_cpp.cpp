@@ -10,6 +10,8 @@
 
 #include <openssl/sha.h>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -103,6 +105,11 @@ std::vector<std::string> splitStatements(const std::string& script) {
     std::string current;
     bool single = false;
     bool dbl = false;
+    const auto hasNonWhitespace = [](const std::string& value) {
+        return std::any_of(value.begin(), value.end(), [](unsigned char ch) {
+            return !std::isspace(ch);
+        });
+    };
     for (char ch : script) {
         if (ch == '\'' && !dbl) {
             single = !single;
@@ -110,7 +117,7 @@ std::vector<std::string> splitStatements(const std::string& script) {
             dbl = !dbl;
         }
         if (ch == ';' && !single && !dbl) {
-            if (!current.empty()) {
+            if (hasNonWhitespace(current)) {
                 out.push_back(current);
             }
             current.clear();
@@ -118,7 +125,7 @@ std::vector<std::string> splitStatements(const std::string& script) {
         }
         current.push_back(ch);
     }
-    if (!current.empty()) {
+    if (hasNonWhitespace(current)) {
         out.push_back(current);
     }
     return out;
@@ -141,6 +148,18 @@ std::string classify(const std::string& sql) {
     if (first == "commit" || first == "rollback" || first == "savepoint" || first == "begin" || first == "start") return "transaction";
     if (first == "grant" || first == "revoke") return "security_refusal";
     return sql.find("sys.") != std::string::npos ? "metadata" : "query";
+}
+
+bool statementReturnsRows(const std::string& sql) {
+    const auto first = firstTokenLower(sql);
+    if (first == "select" || first == "with" || first == "values" || first == "show" || first == "explain") {
+        return true;
+    }
+    std::string lowered = sql;
+    for (char& ch : lowered) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return (" " + lowered + " ").find(" returning ") != std::string::npos;
 }
 
 std::map<std::string, std::string> parseArgs(int argc, char** argv) {
@@ -222,8 +241,17 @@ int main(int argc, char** argv) {
         config.password = required(args, "--password");
         config.role = valueOrDefault(args, "--role", "");
         config.ssl_mode = valueOrDefault(args, "--sslmode", "require");
+        config.ssl_root_cert = valueOrDefault(args, "--sslrootcert", "");
+        config.ssl_cert = valueOrDefault(args, "--sslcert", "");
+        config.ssl_key = valueOrDefault(args, "--sslkey", "");
         config.front_door_mode = required(args, "--route") == "manager-listener-parser" ? "manager_proxy" : "direct";
         config.application_name = "SBIsqlCpp";
+        config.query_timeout_ms = static_cast<uint32_t>(
+            std::stoul(valueOrDefault(args, "--statement-timeout-ms", "30000")));
+        config.read_timeout_ms = config.query_timeout_ms;
+        config.write_timeout_ms = config.query_timeout_ms;
+        config.enable_copy_streaming = true;
+        config.binary_transfer = true;
 
         scratchbird::core::ErrorContext ctx;
         const int64_t connectStarted = nowNs();
@@ -270,17 +298,18 @@ int main(int argc, char** argv) {
                     rowCount = 0;
                     resultDigest = sha256Text("transaction");
                 } else {
-                    scratchbird::client::PreparedStatement stmt;
-                    status = conn.prepare(sql, &stmt, &ctx);
-                    api["prepare"]++;
                     scratchbird::client::ResultSet results;
-                    if (status == scratchbird::core::Status::OK) {
-                        status = stmt.executeQuery(&results, &ctx);
+                    int64_t rowsAffected = 0;
+                    if (statementReturnsRows(sql)) {
+                        status = conn.executeQuery(sql, &results, &ctx);
                         api["executeQuery"]++;
+                        api["execute"]++;
+                    } else {
+                        status = conn.execute(sql, &rowsAffected, &ctx);
                         api["execute"]++;
                     }
                     json rows = json::array();
-                    if (status == scratchbird::core::Status::OK) {
+                    if (status == scratchbird::core::Status::OK && statementReturnsRows(sql)) {
                         while (results.next()) {
                             api["ResultSet::next"]++;
                             json row = json::array();
@@ -292,6 +321,11 @@ int main(int argc, char** argv) {
                         rowCount = static_cast<int64_t>(rows.size());
                         resultDigest = sha256Text(rows.dump());
                         appendText(required(args, "--output"), json({{"statement_id", statementId}, {"rows", rows}}).dump() + "\n");
+                    } else if (status == scratchbird::core::Status::OK) {
+                        rowCount = rowsAffected;
+                        resultDigest = sha256Text("rows_affected:" + std::to_string(rowsAffected));
+                        appendText(required(args, "--output"),
+                                   json({{"statement_id", statementId}, {"rows_affected", rowsAffected}}).dump() + "\n");
                     }
                 }
 
@@ -351,12 +385,16 @@ int main(int argc, char** argv) {
 
         conn.disconnect();
         timings["overall"] = nowNs() - started;
+        const std::string sslmode = valueOrDefault(args, "--sslmode", "require");
+        const std::string transportMode = sslmode == "disable" ? "tls_disabled" : "tls_required";
         const json summaryJson{{"run_id", valueOrDefault(args, "--run-id", "manual")},
                                {"driver_name", "cpp"},
                                {"route", required(args, "--route")},
                                {"parser_mode", required(args, "--parser-mode")},
                                {"page_size", required(args, "--page-size")},
                                {"namespace", required(args, "--namespace")},
+                               {"sslmode", sslmode},
+                               {"transport_mode", transportMode},
                                {"status", failures.empty() ? "pass" : "fail"},
                                {"failure_count", failures.size()},
                                {"elapsed_ns", timings["overall"]},

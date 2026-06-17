@@ -526,6 +526,7 @@ void populatePublicConfigFromNetwork(const NetworkClientConfig& net_cfg,
     config->ssl_root_cert = net_cfg.ssl_root_cert;
     config->binary_transfer = net_cfg.binary_transfer;
     config->enable_compression = net_cfg.enable_compression;
+    config->auto_commit = net_cfg.autocommit;
 }
 
 } // namespace
@@ -1106,6 +1107,7 @@ core::Status Connection::connect(const ConnectionConfig& config,
     net_cfg.ssl_root_cert = config.ssl_root_cert;
     net_cfg.binary_transfer = config.binary_transfer;
     net_cfg.enable_compression = config.enable_compression;
+    net_cfg.autocommit = config.auto_commit;
 
     impl_->config = config;
     impl_->state = ConnectionState::CONNECTING;
@@ -1454,6 +1456,7 @@ core::Status Connection::rollbackTo(const std::string& name,
 void Connection::setAutoCommit(bool enabled) {
     if (impl_) {
         impl_->config.auto_commit = enabled;
+        impl_->client.setAutocommit(enabled);
     }
 }
 

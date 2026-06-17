@@ -25,6 +25,7 @@
 #include <memory>
 #include <random>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 #include <openssl/evp.h>
@@ -174,6 +175,29 @@ bool canAdoptFreshNativeBoundary(const NetworkClient::TransactionOptions& option
            options.deferrable == 0 &&
            options.wait_mode == 0 &&
            options.timeout_ms == 0;
+}
+
+bool querySupportsServerAutocommit(std::string_view sql) {
+    std::size_t i = 0;
+    while (i < sql.size() && std::isspace(static_cast<unsigned char>(sql[i]))) {
+        ++i;
+    }
+    std::string token;
+    while (i < sql.size() &&
+           (std::isalnum(static_cast<unsigned char>(sql[i])) || sql[i] == '_')) {
+        token.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(sql[i]))));
+        ++i;
+    }
+    if (token == "BEGIN" ||
+        token == "COMMIT" ||
+        token == "COPY" ||
+        token == "RELEASE" ||
+        token == "ROLLBACK" ||
+        token == "SAVEPOINT" ||
+        token == "START") {
+        return false;
+    }
+    return !token.empty();
 }
 
 bool isManagedTransport(const std::string& value) {
@@ -1487,6 +1511,8 @@ void NetworkClient::disconnectSocketForReconnect() {
     next_sequence_ = 0;
     last_query_sequence_ = 0;
     in_transaction_ = false;
+    explicit_transaction_active_ = false;
+    server_autocommit_requested_ = false;
     current_txn_id_ = 0;
     resolved_auth_context_.attached = false;
     network_guard_.reset();
@@ -1568,6 +1594,8 @@ void NetworkClient::disconnect() {
     disconnectSocketForReconnect();
     connected_ = false;
     in_transaction_ = false;
+    explicit_transaction_active_ = false;
+    server_autocommit_requested_ = false;
     current_txn_id_ = 0;
     last_error_.clear();
 }
@@ -1587,6 +1615,7 @@ core::Status NetworkClient::buildStartupParams(uint64_t& features_out,
 
     features_out = protocol::kFeatureSblr |
                    protocol::kFeatureNotifications |
+                   protocol::kFeatureSavepoints |
                    protocol::kFeatureQueryPlan;
     if (config_.enable_copy_streaming) {
         features_out |= protocol::kFeatureStreaming | protocol::kFeatureBulkRejects;
@@ -1766,12 +1795,19 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                      in_transaction_ ? 1 : 0);
         std::fflush(stderr);
     }
-    auto payload = protocol::buildQueryPayload(sql, protocol::kQueryFlagBinaryResult, 0, 0);
+    uint32_t query_flags = protocol::kQueryFlagBinaryResult;
+    if (config_.autocommit && !explicit_transaction_active_ &&
+        querySupportsServerAutocommit(sql)) {
+        query_flags |= protocol::kQueryFlagAutocommit;
+    }
+    auto payload = protocol::buildQueryPayload(sql, query_flags, 0, 0);
     auto status = sendMessage(protocol::MessageType::Query, payload, 0, false, &seq, ctx);
     if (status != core::Status::OK) {
+        server_autocommit_requested_ = false;
         return status;
     }
     last_query_sequence_ = seq;
+    server_autocommit_requested_ = (query_flags & protocol::kQueryFlagAutocommit) != 0;
 
     std::vector<protocol::ColumnInfo> cols;
     while (true) {
@@ -1838,10 +1874,10 @@ core::Status NetworkClient::executeQuery(const std::string& sql,
                 break;
             }
             case protocol::MessageType::Error:
-                return handleErrorResponse(msg, ctx);
+                return errorAfterStatement(msg, ctx);
             case protocol::MessageType::Ready:
                 last_query_sequence_ = 0;
-                return parseReadyAndTrackTransaction(msg.body, in_transaction_, current_txn_id_, ctx);
+                return readyAfterStatement(msg.body, ctx);
             default:
                 break;
         }
@@ -1855,16 +1891,19 @@ core::Status NetworkClient::prepare(const std::string& sql,
     stmt.sql_ = sql;
     stmt.statement_name_ = "stmt_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
 
+    traceWireEvent("prepare_parse_send", protocol::MessageType::Parse, next_sequence_, in_transaction_);
     auto parse_payload = protocol::buildParsePayload(stmt.statement_name_, sql, {});
     auto status = sendMessage(protocol::MessageType::Parse, parse_payload, 0, false, nullptr, ctx);
     if (status != core::Status::OK) {
         return status;
     }
+    traceWireEvent("prepare_describe_send", protocol::MessageType::Describe, next_sequence_, in_transaction_);
     auto describe_payload = protocol::buildDescribePayload(kDescribeStatement, stmt.statement_name_);
     status = sendMessage(protocol::MessageType::Describe, describe_payload, 0, false, nullptr, ctx);
     if (status != core::Status::OK) {
         return status;
     }
+    traceWireEvent("prepare_sync_send", protocol::MessageType::Sync, next_sequence_, in_transaction_);
     status = sendMessage(protocol::MessageType::Sync, {}, 0, false, nullptr, ctx);
     if (status != core::Status::OK) {
         return status;
@@ -1876,6 +1915,7 @@ core::Status NetworkClient::prepare(const std::string& sql,
         if (status != core::Status::OK) {
             return status;
         }
+        traceWireEvent("prepare_recv", msg.header.type, msg.header.sequence, in_transaction_);
         if (handleAsyncMessage(msg, ctx) == core::Status::OK &&
             isAsyncMessageType(msg.header.type)) {
             continue;
@@ -1910,8 +1950,10 @@ core::Status NetworkClient::executePrepared(NetworkPreparedStatement& stmt,
         return setError(ctx, core::Status::INVALID_ARGUMENT, "Prepared statement is not valid");
     }
     results = NetworkResultSet{};
+    server_autocommit_requested_ = false;
 
     std::string portal_name = "portal_" + std::to_string(next_sequence_);
+    traceWireEvent("execute_prepared_bind_send", protocol::MessageType::Bind, next_sequence_, in_transaction_);
     auto bind_payload = protocol::buildBindPayload(portal_name, stmt.statement_name_, stmt.params_, {protocol::kFormatBinary});
     auto status = sendMessage(protocol::MessageType::Bind, bind_payload, 0, false, nullptr, ctx);
     if (status != core::Status::OK) {
@@ -1919,11 +1961,17 @@ core::Status NetworkClient::executePrepared(NetworkPreparedStatement& stmt,
     }
     auto exec_payload = protocol::buildExecutePayload(portal_name, 0);
     uint32_t seq = 0;
+    traceWireEvent("execute_prepared_execute_send", protocol::MessageType::Execute, next_sequence_, in_transaction_);
     status = sendMessage(protocol::MessageType::Execute, exec_payload, 0, false, &seq, ctx);
     if (status != core::Status::OK) {
         return status;
     }
     last_query_sequence_ = seq;
+    traceWireEvent("execute_prepared_sync_send", protocol::MessageType::Sync, next_sequence_, in_transaction_);
+    status = sendMessage(protocol::MessageType::Sync, {}, 0, false, nullptr, ctx);
+    if (status != core::Status::OK) {
+        return status;
+    }
 
     std::vector<protocol::ColumnInfo> cols;
     while (true) {
@@ -1932,6 +1980,7 @@ core::Status NetworkClient::executePrepared(NetworkPreparedStatement& stmt,
         if (status != core::Status::OK) {
             return status;
         }
+        traceWireEvent("execute_prepared_recv", msg.header.type, msg.header.sequence, in_transaction_);
         if (handleAsyncMessage(msg, ctx) == core::Status::OK &&
             isAsyncMessageType(msg.header.type)) {
             continue;
@@ -1979,10 +2028,10 @@ core::Status NetworkClient::executePrepared(NetworkPreparedStatement& stmt,
                 break;
             }
             case protocol::MessageType::Error:
-                return handleErrorResponse(msg, ctx);
+                return errorAfterStatement(msg, ctx);
             case protocol::MessageType::Ready:
                 last_query_sequence_ = 0;
-                return parseReadyAndTrackTransaction(msg.body, in_transaction_, current_txn_id_, ctx);
+                return readyAfterStatement(msg.body, ctx);
             default:
                 break;
         }
@@ -2015,6 +2064,7 @@ core::Status NetworkClient::executeServerStatement(uint32_t stmt_id,
         return setError(ctx, core::Status::INVALID_ARGUMENT, "Statement not found");
     }
     results = NetworkResultSet{};
+    server_autocommit_requested_ = false;
     if (portal_suspended_out) {
         *portal_suspended_out = false;
     }
@@ -2032,6 +2082,10 @@ core::Status NetworkClient::executeServerStatement(uint32_t stmt_id,
         return status;
     }
     last_query_sequence_ = seq;
+    status = sendMessage(protocol::MessageType::Sync, {}, 0, false, nullptr, ctx);
+    if (status != core::Status::OK) {
+        return status;
+    }
 
     std::vector<protocol::ColumnInfo> cols;
     while (true) {
@@ -2091,16 +2145,12 @@ core::Status NetworkClient::executeServerStatement(uint32_t stmt_id,
                     *portal_suspended_out = true;
                 }
                 last_query_sequence_ = 0;
-                status = sendMessage(protocol::MessageType::Sync, {}, 0, false, nullptr, ctx);
-                if (status != core::Status::OK) {
-                    return status;
-                }
                 return drainUntilReady(nullptr, nullptr, nullptr, ctx);
             case protocol::MessageType::Error:
-                return handleErrorResponse(msg, ctx);
+                return errorAfterStatement(msg, ctx);
             case protocol::MessageType::Ready:
                 last_query_sequence_ = 0;
-                return parseReadyAndTrackTransaction(msg.body, in_transaction_, current_txn_id_, ctx);
+                return readyAfterStatement(msg.body, ctx);
             default:
                 break;
         }
@@ -2310,6 +2360,7 @@ core::Status NetworkClient::executeSblr(uint64_t sblr_hash,
                                         NetworkResultSet& results,
                                         core::ErrorContext* ctx) {
     results = NetworkResultSet{};
+    server_autocommit_requested_ = false;
     auto payload = protocol::buildSblrExecutePayload(sblr_hash, bytecode, params);
     uint32_t seq = 0;
     auto status = sendMessage(protocol::MessageType::SblrExecute, payload, 0, false, &seq, ctx);
@@ -2372,10 +2423,10 @@ core::Status NetworkClient::executeSblr(uint64_t sblr_hash,
                 break;
             }
             case protocol::MessageType::Error:
-                return handleErrorResponse(msg, ctx);
+                return errorAfterStatement(msg, ctx);
             case protocol::MessageType::Ready:
                 last_query_sequence_ = 0;
-                return parseReadyAndTrackTransaction(msg.body, in_transaction_, current_txn_id_, ctx);
+                return readyAfterStatement(msg.body, ctx);
             default:
                 break;
         }
@@ -2415,6 +2466,7 @@ core::Status NetworkClient::beginTransaction(const TransactionOptions& options,
         if (canAdoptFreshNativeBoundary(options)) {
             // Native MGA sessions are always inside an engine-owned
             // transaction. A default begin adopts the current boundary.
+            explicit_transaction_active_ = true;
             return core::Status::OK;
         }
         // Optioned begin is a request to validate/apply transaction
@@ -2445,7 +2497,11 @@ core::Status NetworkClient::beginTransaction(const TransactionOptions& options,
     if (status != core::Status::OK) {
         return status;
     }
-    return drainUntilReady(nullptr, nullptr, nullptr, ctx);
+    status = drainUntilReady(nullptr, nullptr, nullptr, ctx);
+    if (status == core::Status::OK) {
+        explicit_transaction_active_ = true;
+    }
+    return status;
 }
 
 core::Status NetworkClient::beginTransaction(core::ErrorContext* ctx) {
@@ -2462,7 +2518,11 @@ core::Status NetworkClient::commit(core::ErrorContext* ctx) {
     if (status != core::Status::OK) {
         return status;
     }
-    return drainUntilReady(nullptr, nullptr, nullptr, ctx);
+    status = drainUntilReady(nullptr, nullptr, nullptr, ctx);
+    if (status == core::Status::OK) {
+        explicit_transaction_active_ = false;
+    }
+    return status;
 }
 
 core::Status NetworkClient::rollback(core::ErrorContext* ctx) {
@@ -2471,7 +2531,11 @@ core::Status NetworkClient::rollback(core::ErrorContext* ctx) {
     if (status != core::Status::OK) {
         return status;
     }
-    return drainUntilReady(nullptr, nullptr, nullptr, ctx);
+    status = drainUntilReady(nullptr, nullptr, nullptr, ctx);
+    if (status == core::Status::OK) {
+        explicit_transaction_active_ = false;
+    }
+    return status;
 }
 
 core::Status NetworkClient::savepoint(const std::string& name,
@@ -2735,6 +2799,9 @@ core::Status NetworkClient::sendMessage(const protocol::ProtocolMessage& msg,
     if (tls_active_) {
         size_t total = 0;
         while (total < buf.size()) {
+            if (socket_ && !socket_->waitWritable(static_cast<int>(config_.write_timeout_ms))) {
+                return setError(ctx, core::Status::IO_ERROR, "TLS write timeout");
+            }
             int rc = tls_conn_->write(buf.data() + total, static_cast<int>(buf.size() - total));
             if (rc <= 0) {
                 return setError(ctx, core::Status::CONNECTION_FAILURE, "TLS write failed");
@@ -2783,6 +2850,11 @@ core::Status NetworkClient::readExactWithTimeout(void* buffer, size_t size,
     size_t total = 0;
     while (total < size) {
         if (tls_active_) {
+            if (tls_conn_->pending() <= 0 &&
+                socket_ &&
+                !socket_->waitReadable(static_cast<int>(config_.read_timeout_ms))) {
+                return setError(ctx, core::Status::IO_ERROR, "TLS read timeout");
+            }
             int rc = tls_conn_->read(static_cast<uint8_t*>(buffer) + total,
                                      static_cast<int>(size - total));
             if (rc <= 0) {
@@ -3004,6 +3076,71 @@ core::Status NetworkClient::drainUntilReady(std::string* command_tag,
                 break;
         }
     }
+}
+
+core::Status NetworkClient::finishAutocommitStatement(bool statement_succeeded,
+                                                      core::ErrorContext* ctx) {
+    if (!config_.autocommit || explicit_transaction_active_ || !in_transaction_ ||
+        serverAutocommitRequested()) {
+        return core::Status::OK;
+    }
+    const protocol::MessageType finality_type =
+        statement_succeeded ? protocol::MessageType::TxnCommit : protocol::MessageType::TxnRollback;
+    traceWireEvent(statement_succeeded ? "autocommit_commit_send" : "autocommit_rollback_send",
+                   finality_type,
+                   next_sequence_,
+                   in_transaction_);
+    const auto payload = statement_succeeded
+        ? protocol::buildTxnCommitPayload(0)
+        : protocol::buildTxnRollbackPayload(0);
+    auto status = sendMessage(finality_type, payload, 0, false, nullptr, ctx);
+    if (status != core::Status::OK) {
+        return status;
+    }
+    return drainUntilReady(nullptr, nullptr, nullptr, ctx);
+}
+
+bool NetworkClient::serverAutocommitRequested() const {
+    return server_autocommit_requested_;
+}
+
+core::Status NetworkClient::readyAfterStatement(const std::vector<uint8_t>& payload,
+                                                core::ErrorContext* ctx) {
+    const bool server_finality_requested = serverAutocommitRequested();
+    const uint64_t transaction_before_ready = current_txn_id_;
+    auto status = parseReadyAndTrackTransaction(payload, in_transaction_, current_txn_id_, ctx);
+    if (status != core::Status::OK) {
+        return status;
+    }
+    const bool server_finality_completed =
+        server_finality_requested && current_txn_id_ != transaction_before_ready;
+    if (server_finality_requested && !server_finality_completed) {
+        server_autocommit_requested_ = false;
+    }
+    status = finishAutocommitStatement(true, ctx);
+    if (server_finality_requested) {
+        server_autocommit_requested_ = false;
+        last_query_sequence_ = 0;
+    }
+    return status;
+}
+
+core::Status NetworkClient::errorAfterStatement(const protocol::ProtocolMessage& msg,
+                                                core::ErrorContext* ctx) {
+    const bool server_finality_requested = serverAutocommitRequested();
+    const uint64_t transaction_before_error = current_txn_id_;
+    const core::Status statement_status = handleErrorResponse(msg, ctx);
+    const bool server_finality_completed =
+        server_finality_requested && current_txn_id_ != transaction_before_error;
+    if (server_finality_requested && !server_finality_completed) {
+        server_autocommit_requested_ = false;
+    }
+    const auto finality_status = finishAutocommitStatement(false, ctx);
+    if (server_finality_requested) {
+        server_autocommit_requested_ = false;
+        last_query_sequence_ = 0;
+    }
+    return finality_status == core::Status::OK ? statement_status : finality_status;
 }
 
 core::Status NetworkClient::sendMessage(protocol::MessageType type,

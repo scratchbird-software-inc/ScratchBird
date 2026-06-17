@@ -9,6 +9,7 @@
 #include "sblr_dispatch.hpp"
 
 #include <iostream>
+#include <cstdio>
 #include <string>
 
 namespace {
@@ -71,6 +72,31 @@ int main() {
   missing_transaction.envelope.requires_transaction_context = true;
   const auto missing_txn = sblr::DispatchSblrOperation(missing_transaction);
 
+  std::remove("/tmp/sb_sblr_dispatch_probe.sbdb.sb.api_events");
+  sblr::SblrDispatchRequest migration_begin;
+  migration_begin.context = Context();
+  migration_begin.context.local_transaction_id = 42;
+  migration_begin.context.snapshot_visible_through_local_transaction_id = 42;
+  migration_begin.envelope = sblr::MakeSblrEnvelope("op.migration.begin_from_reference",
+                                                    "SBLR_MIGRATION_BEGIN_FROM_REFERENCE",
+                                                    "TRACE-SBLR-MIGRATION-BEGIN");
+  migration_begin.envelope.requires_transaction_context = true;
+  migration_begin.api_request.option_envelopes = {
+      "reference_profile:postgres",
+      "reference_package:pg_compat_pack"};
+  const auto migration_started = sblr::DispatchSblrOperation(migration_begin);
+
+  sblr::SblrDispatchRequest migration_alter;
+  migration_alter.context = migration_begin.context;
+  migration_alter.envelope = sblr::MakeSblrEnvelope("op.migration.alter",
+                                                    "SBLR_MIGRATION_ALTER",
+                                                    "TRACE-SBLR-MIGRATION-ALTER");
+  migration_alter.envelope.requires_transaction_context = true;
+  migration_alter.api_request.option_envelopes = {
+      "migration_ref:019f0000-0000-7000-8000-00000000a001",
+      "migration_action:start"};
+  const auto migration_altered = sblr::DispatchSblrOperation(migration_alter);
+
   const bool ok = show.accepted && show.dispatched_to_api && show.api_result.ok &&
                   !cluster.accepted && cluster.api_result.cluster_authority_required &&
                   !unknown.accepted &&
@@ -78,7 +104,15 @@ int main() {
                   !unresolved_names.accepted && HasDispatchDiagnostic(unresolved_names, "SB_SBLR_NAMES_NOT_RESOLVED_TO_UUIDS") &&
                   !opcode_mismatch.accepted && HasDispatchDiagnostic(opcode_mismatch, "SB_SBLR_DISPATCH_OPCODE_MISMATCH") &&
                   !missing_security.accepted && HasDispatchDiagnostic(missing_security, "SB_SBLR_DISPATCH_SECURITY_CONTEXT_REQUIRED") &&
-                  !missing_txn.accepted && HasDispatchDiagnostic(missing_txn, "SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED");
+                  !missing_txn.accepted && HasDispatchDiagnostic(missing_txn, "SB_SBLR_DISPATCH_TRANSACTION_CONTEXT_REQUIRED") &&
+                  migration_started.accepted && migration_started.dispatched_to_api && migration_started.api_result.ok &&
+                  migration_altered.accepted && migration_altered.dispatched_to_api && migration_altered.api_result.ok;
+  if (!migration_started.api_result.ok || !migration_altered.api_result.ok) {
+    std::cerr << "migration_started="
+              << sblr::SerializeSblrDispatchResultToJson(migration_started);
+    std::cerr << "migration_altered="
+              << sblr::SerializeSblrDispatchResultToJson(migration_altered);
+  }
   std::cout << "{\"ok\":" << (ok ? "true" : "false")
             << ",\"show_ok\":" << (show.api_result.ok ? "true" : "false")
             << ",\"cluster_required\":" << (cluster.api_result.cluster_authority_required ? "true" : "false")
@@ -88,6 +122,8 @@ int main() {
             << ",\"opcode_mismatch_rejected\":" << (!opcode_mismatch.accepted ? "true" : "false")
             << ",\"forged_security_rejected\":" << (!missing_security.accepted ? "true" : "false")
             << ",\"missing_transaction_rejected\":" << (!missing_txn.accepted ? "true" : "false")
+            << ",\"migration_started\":" << (migration_started.api_result.ok ? "true" : "false")
+            << ",\"migration_altered\":" << (migration_altered.api_result.ok ? "true" : "false")
             << "}\n";
   return ok ? 0 : 1;
 }

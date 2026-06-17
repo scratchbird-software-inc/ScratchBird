@@ -195,6 +195,27 @@ std::uint32_t CountKindFromPack(const std::vector<DecodedRecord>& records,
   return count;
 }
 
+std::uint32_t CountDefaultPoliciesFromPack(const std::vector<DecodedRecord>& records) {
+  std::uint32_t count = 0;
+  for (const auto& record : records) {
+    if (record.record.header.kind != catalog::CatalogRecordKind::policy ||
+        record.fields.count("policy_pack_uuid") == 0 ||
+        record.fields.count("default_profile") == 0) {
+      continue;
+    }
+    const auto tx1_seed = record.fields.find("tx1_seed_required");
+    const auto loaded = record.fields.find("loaded_at_database_create");
+    const auto authority = record.fields.find("catalog_authority");
+    if (tx1_seed != record.fields.end() && tx1_seed->second == "1" &&
+        loaded != record.fields.end() && loaded->second == "1" &&
+        authority != record.fields.end() &&
+        authority->second == "durable_catalog_after_create") {
+      ++count;
+    }
+  }
+  return count;
+}
+
 void RequireImportedRecordsCreatedByTx1(const std::vector<DecodedRecord>& records) {
   for (const auto& record : records) {
     if (record.fields.count("policy_pack_uuid") == 0) {
@@ -233,6 +254,8 @@ void RequirePolicyPackSummary(const std::vector<page::CatalogPageRow>& rows,
             "policy pack summary missing create transaction materialization");
     Require(fields.at("requires_mga_catalog_commit") == "1",
             "policy pack summary missing MGA catalog commit requirement");
+    Require(fields.at("default_policy_records") == "58",
+            "policy pack summary did not record all default policies");
   }
   Require(summaries == 1, "expected exactly one policy seed pack summary row");
 }
@@ -258,6 +281,8 @@ void RequirePolicyCatalogImport(const std::filesystem::path& database_path,
           "state policy pack did not require MGA catalog commit");
   Require(state.policy_seed_catalog.enabled_local_password_provider_records == 1,
           "state did not report exactly one local password provider");
+  Require(state.policy_seed_catalog.default_policy_records == 58,
+          "state did not report all default policy records");
 
   const auto rows = ReadCatalogRows(database_path, state.header.page_size);
   const auto records = DecodeTypedRecords(rows);
@@ -268,6 +293,8 @@ void RequirePolicyCatalogImport(const std::filesystem::path& database_path,
           "security provider policy rows were not imported");
   Require(CountPolicyClass(records, "policy_profile") == 14,
           "policy profile rows were not imported");
+  Require(CountDefaultPoliciesFromPack(records) == 58,
+          "default policy rows were not imported from the policy pack");
   Require(CountKindFromPack(records, catalog::CatalogRecordKind::role_account) == 5,
           "standard policy roles were not imported");
   Require(CountKindFromPack(records, catalog::CatalogRecordKind::group_account) == 6,

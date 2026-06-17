@@ -1073,6 +1073,14 @@ struct PolicyProfileSeed {
   std::string mode;
 };
 
+struct PolicyDefaultSeed {
+  std::string policy_key;
+  std::string default_profile;
+  std::string state;
+  std::string override_class;
+  std::string required_properties;
+};
+
 struct LoadedPolicySeedPack {
   PolicySeedPackCatalogImage image;
   std::vector<PolicyProviderSeed> providers;
@@ -1081,6 +1089,7 @@ struct LoadedPolicySeedPack {
   std::vector<PolicyGroupMembershipSeed> memberships;
   std::vector<PolicyGrantSeed> grants;
   std::vector<PolicyProfileSeed> profiles;
+  std::vector<PolicyDefaultSeed> default_policies;
 };
 
 struct PolicyPackLoadResult {
@@ -1232,6 +1241,55 @@ bool ExtractArrayBody(const std::string& text, const std::string& key, std::stri
   return false;
 }
 
+std::vector<std::string> ExtractStringArrayField(const std::string& text,
+                                                 const std::string& key) {
+  std::vector<std::string> values;
+  std::string body;
+  if (!ExtractArrayBody(text, key, &body)) {
+    return values;
+  }
+
+  bool in_string = false;
+  bool escaped = false;
+  std::string current;
+  for (char ch : body) {
+    if (!in_string) {
+      if (ch == '"') {
+        in_string = true;
+        current.clear();
+      }
+      continue;
+    }
+    if (escaped) {
+      current.push_back(ch);
+      escaped = false;
+      continue;
+    }
+    if (ch == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch == '"') {
+      values.push_back(current);
+      in_string = false;
+      continue;
+    }
+    current.push_back(ch);
+  }
+  return values;
+}
+
+std::string JoinComma(const std::vector<std::string>& values) {
+  std::string joined;
+  for (const auto& value : values) {
+    if (!joined.empty()) {
+      joined.push_back(',');
+    }
+    joined += value;
+  }
+  return joined;
+}
+
 std::vector<std::string> SplitTopLevelObjects(const std::string& array_body) {
   std::vector<std::string> objects;
   bool in_string = false;
@@ -1335,6 +1393,74 @@ const std::set<std::string>& RequiredPolicyProfileAreas() {
 
 bool PolicyProfileAreasExactlyCovered(const std::vector<std::string>& areas) {
   return std::set<std::string>(areas.begin(), areas.end()) == RequiredPolicyProfileAreas();
+}
+
+const std::set<std::string>& RequiredDefaultPolicyKeys() {
+  static const std::set<std::string> keys = {
+      "admin.management_command_authorization",
+      "backup.archive_restore_snapshot_shadow",
+      "cache.checkpoint_preload_flush",
+      "capability.feature_gate",
+      "cluster.boundary_fail_closed",
+      "concurrency.lock_wait_deadlock",
+      "configuration.override_reload",
+      "configuration.source_precedence",
+      "database.bootstrap.tx1",
+      "database.create.failure_cleanup",
+      "database.first_open.tx2_activation",
+      "database.identity",
+      "diagnostics.message_vector",
+      "event.queue_notification",
+      "evidence.retention",
+      "executable.side_effect",
+      "ipc.frame_auth_backpressure",
+      "job.scheduler",
+      "lifecycle.maintenance_restricted",
+      "lifecycle.ownership_stale_owner",
+      "lifecycle.recovery_dirty_open",
+      "lifecycle.shutdown_force",
+      "lifecycle.shutdown_graceful_drain",
+      "listener.bind_tls_pool",
+      "observability.metrics_log",
+      "parser.package_admission",
+      "policy.catalog.bootstrap",
+      "reference.emulation_profile",
+      "replication.cdc_changefeed_boundary",
+      "resource.seed_i18n",
+      "resource.signature_provenance",
+      "schema.bootstrap.roots",
+      "security.audit",
+      "security.authentication_provider",
+      "security.authorization_default",
+      "security.authority_selection",
+      "security.bootstrap_password",
+      "security.encryption_key_admission",
+      "security.principal_role_group_seed",
+      "security.protected_material",
+      "security.redaction",
+      "security.user_home_schema",
+      "sequence.generator_cache",
+      "server.route_listener_startup",
+      "session.disconnect_timeout",
+      "storage.allocation_freespace_pagemap",
+      "storage.filespace_lifecycle",
+      "storage.filespace_profile",
+      "support.bundle",
+      "temp.spill_workspace",
+      "transaction.admission",
+      "transaction.commit_durability",
+      "transaction.default_isolation_snapshot",
+      "transaction.mga_gc_retention",
+      "transaction.rollback_savepoint_limbo",
+      "udr.extension_trust_resource",
+      "upgrade.migration_refusal",
+      "workload.resource_quota",
+  };
+  return keys;
+}
+
+bool DefaultPolicyKeysExactlyCovered(const std::set<std::string>& keys) {
+  return keys == RequiredDefaultPolicyKeys();
 }
 
 PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_text) {
@@ -1478,7 +1604,8 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
       !ArrayContainsString(materialization, "catalog_row_families", "SecurityRoleRecord") ||
       !ArrayContainsString(materialization, "catalog_row_families", "SecurityGroupRecord") ||
       !ArrayContainsString(materialization, "catalog_row_families", "SecurityGrantRecord") ||
-      !ArrayContainsString(materialization, "catalog_row_families", "PolicyProfileRecord")) {
+      !ArrayContainsString(materialization, "catalog_row_families", "PolicyProfileRecord") ||
+      !ArrayContainsString(materialization, "catalog_row_families", "DefaultPolicyRecord")) {
     return PolicyPackLoadError("SB-POLICY-PACK-MATERIALIZATION-INVALID",
                                materialization_path);
   }
@@ -1496,6 +1623,8 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/grants.json"); }
   const std::string profiles_json = load_content("policies/policy_profiles.json");
   if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/policy_profiles.json"); }
+  const std::string default_policies_json = load_content("policies/default_policy_catalog.json");
+  if (!read_ok) { return PolicyPackLoadError("SB-POLICY-PACK-CONTENT-FILE-MISSING", "policies/default_policy_catalog.json"); }
 
   std::string array_body;
   if (!ExtractArrayBody(providers_json, "providers", &array_body)) {
@@ -1636,10 +1765,82 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
     return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-UNKNOWN",
                                "policy profile area coverage");
   }
+
+  u32 default_policy_schema_version = 0;
+  u32 default_policy_generation = 0;
+  u32 declared_default_policy_count = 0;
+  bool default_policy_create_time_only = false;
+  bool default_policy_post_create_authority = true;
+  std::string default_policy_identity_authority;
+  std::string default_policy_catalog_authority;
+  if (!ExtractU32Field(default_policies_json, "schema_version", &default_policy_schema_version) ||
+      !ExtractU32Field(default_policies_json, "policy_generation", &default_policy_generation) ||
+      !ExtractU32Field(default_policies_json, "default_policy_count", &declared_default_policy_count) ||
+      !ExtractBoolField(default_policies_json, "create_time_only", &default_policy_create_time_only) ||
+      !ExtractBoolField(default_policies_json, "post_create_filesystem_authority", &default_policy_post_create_authority) ||
+      !ExtractStringField(default_policies_json, "identity_authority", &default_policy_identity_authority) ||
+      !ExtractStringField(default_policies_json, "catalog_authority", &default_policy_catalog_authority) ||
+      default_policy_schema_version != 1 ||
+      default_policy_generation != image.policy_generation ||
+      declared_default_policy_count != RequiredDefaultPolicyKeys().size() ||
+      !default_policy_create_time_only ||
+      default_policy_post_create_authority ||
+      default_policy_identity_authority != "uuid" ||
+      default_policy_catalog_authority != "durable_catalog_after_create") {
+    return PolicyPackLoadError("SB-POLICY-PACK-DEFAULT-POLICIES-INVALID",
+                               "default_policy_catalog header");
+  }
+  if (!ExtractArrayBody(default_policies_json, "policies", &array_body)) {
+    return PolicyPackLoadError("SB-POLICY-PACK-DEFAULT-POLICIES-INVALID",
+                               "policies");
+  }
+  std::set<std::string> default_policy_keys;
+  for (const std::string& object : SplitTopLevelObjects(array_body)) {
+    PolicyDefaultSeed policy;
+    std::vector<std::string> required_properties = ExtractStringArrayField(object, "required_properties");
+    const std::vector<std::string> authority_invariants = ExtractStringArrayField(object, "authority_invariants");
+    const std::set<std::string> authority_set(authority_invariants.begin(), authority_invariants.end());
+    if (!ExtractStringField(object, "policy_key", &policy.policy_key) ||
+        !ExtractStringField(object, "default_profile", &policy.default_profile) ||
+        !ExtractStringField(object, "state", &policy.state) ||
+        !ExtractStringField(object, "override_class", &policy.override_class) ||
+        !IsSafePolicyPackId(policy.policy_key) ||
+        policy.default_profile.empty() ||
+        (policy.state != "enabled" && policy.state != "fail_closed") ||
+        (policy.override_class != "no_override" &&
+         policy.override_class != "create_database_only" &&
+         policy.override_class != "security_admin" &&
+         policy.override_class != "sysarch" &&
+         policy.override_class != "policy_defined" &&
+         policy.override_class != "cluster_only") ||
+        required_properties.empty() ||
+        object.find("\"required\": true") == std::string::npos ||
+        object.find("\"policy_generation\": 1") == std::string::npos ||
+        object.find("\"created_txn\": \"tx1\"") == std::string::npos ||
+        object.find("\"uuid_source\": \"fresh_uuidv7\"") == std::string::npos ||
+        authority_set.count("policy_catalog_is_authority") == 0 ||
+        authority_set.count("mga_visibility_required") == 0 ||
+        authority_set.count("wal_not_authority") == 0 ||
+        authority_set.count("parser_not_authority") == 0 ||
+        authority_set.count("reference_not_authority") == 0 ||
+        authority_set.count("uuid_order_not_finality") == 0 ||
+        !default_policy_keys.insert(policy.policy_key).second) {
+      return PolicyPackLoadError("SB-POLICY-PACK-DEFAULT-POLICIES-INVALID",
+                                 policy.policy_key.empty() ? "policy" : policy.policy_key);
+    }
+    policy.required_properties = JoinComma(required_properties);
+    loaded.default_policies.push_back(std::move(policy));
+  }
+  image.default_policy_records = static_cast<u32>(loaded.default_policies.size());
+  if (!DefaultPolicyKeysExactlyCovered(default_policy_keys)) {
+    return PolicyPackLoadError("SB-POLICY-PACK-DEFAULT-POLICIES-UNKNOWN",
+                               "default policy key coverage");
+  }
   if (image.role_records < 5 || image.group_records < 6 ||
-      image.grant_records == 0 || image.policy_profile_records == 0) {
+      image.grant_records == 0 || image.policy_profile_records == 0 ||
+      image.default_policy_records != RequiredDefaultPolicyKeys().size()) {
     return PolicyPackLoadError("SB-POLICY-PACK-MATERIALIZATION-INCOMPLETE",
-                               "role/group/grant/profile counts");
+                               "role/group/grant/profile/default-policy counts");
   }
 
   return PolicyPackLoadOk(std::move(loaded));
@@ -1779,6 +1980,7 @@ CatalogRowsBuildResult MaterializePolicySeedPackRows(std::vector<CatalogPageRow>
                        {"group_membership_records", std::to_string(pack.image.group_membership_records)},
                        {"grant_records", std::to_string(pack.image.grant_records)},
                        {"policy_profile_records", std::to_string(pack.image.policy_profile_records)},
+                       {"default_policy_records", std::to_string(pack.image.default_policy_records)},
                        {"loaded_at_database_create", "1"},
                        {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
                        {"uuid_source", "policy_pack_manifest"},
@@ -1995,7 +2197,12 @@ std::string PolicyClassFromKey(const char* policy_key) {
   return split == std::string::npos ? key : key.substr(0, split);
 }
 
-std::vector<BootstrapRecordSeed> DefaultRegistryPolicyRecords() {
+std::string PolicyClassFromKey(const std::string& policy_key) {
+  const std::size_t split = policy_key.find('.');
+  return split == std::string::npos ? policy_key : policy_key.substr(0, split);
+}
+
+std::vector<BootstrapRecordSeed> FallbackDefaultRegistryPolicyRecords() {
   static constexpr std::array<DefaultPolicySeed, 58> kPolicies = {{
       {"policy.catalog.bootstrap", "strict_v1", "enabled", "no_override", "generation_start,missing_policy,unknown_policy,mutation_requires_audit,policy_rows_uuidv7"},
       {"database.identity", "uuidv7_local_v1", "enabled", "no_override", "database_uuid,row_uuid,name_uuid_registry,uuid_order_not_finality"},
@@ -2078,8 +2285,38 @@ std::vector<BootstrapRecordSeed> DefaultRegistryPolicyRecords() {
   return records;
 }
 
-std::vector<BootstrapRecordSeed> DefaultBootstrapCatalogRecords(const DatabaseCreateConfig& config) {
-  std::vector<BootstrapRecordSeed> records = DefaultRegistryPolicyRecords();
+std::vector<BootstrapRecordSeed> PackDefaultRegistryPolicyRecords(const LoadedPolicySeedPack& pack) {
+  std::vector<BootstrapRecordSeed> records;
+  if (!pack.image.active) {
+    return FallbackDefaultRegistryPolicyRecords();
+  }
+  records.reserve(pack.default_policies.size());
+  for (const auto& policy : pack.default_policies) {
+    records.push_back({CatalogRecordKind::policy,
+                       KeyValuePayload({{"policy_key", policy.policy_key},
+                                        {"policy_name", policy.policy_key},
+                                        {"policy_class", PolicyClassFromKey(policy.policy_key)},
+                                        {"default_profile", policy.default_profile},
+                                        {"state", policy.state},
+                                        {"override_class", policy.override_class},
+                                        {"required_properties", policy.required_properties},
+                                        {"policy_generation", std::to_string(pack.image.policy_generation)},
+                                        {"created_txn", std::to_string(kBootstrapCatalogTransactionId)},
+                                        {"tx1_seed_required", "1"},
+                                        {"uuid_source", "fresh_uuidv7"},
+                                        {"mga_visibility_required", "1"},
+                                        {"engine_owned", "1"},
+                                        {"policy_pack_uuid", pack.image.policy_pack_uuid},
+                                        {"policy_pack_version", pack.image.policy_pack_version},
+                                        {"loaded_at_database_create", "1"},
+                                        {"catalog_authority", "durable_catalog_after_create"}})});
+  }
+  return records;
+}
+
+std::vector<BootstrapRecordSeed> DefaultBootstrapCatalogRecords(const DatabaseCreateConfig& config,
+                                                               const LoadedPolicySeedPack& policy_seed_pack) {
+  std::vector<BootstrapRecordSeed> records = PackDefaultRegistryPolicyRecords(policy_seed_pack);
   const std::array<BootstrapRecordSeed, 15> additional_records = {{
       {CatalogRecordKind::config_profile, KeyValuePayload({{"profile_name", "default_local_node_profile"}, {"scope", "local_database"}, {"unsafe_combinations_fail_closed", "1"}})},
       {CatalogRecordKind::user_account, KeyValuePayload({{"principal_name", "ROOT"}, {"account_class", "break_glass"}, {"enabled", "0"}})},
@@ -2364,7 +2601,7 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
     domain_seed += 2;
   }
 
-  const auto bootstrap_records = DefaultBootstrapCatalogRecords(config);
+  const auto bootstrap_records = DefaultBootstrapCatalogRecords(config, policy_seed_pack);
   u64 bootstrap_seed = config.creation_unix_epoch_millis + 14000;
   for (const auto& bootstrap_record : bootstrap_records) {
     typed = AddTypedCatalogRecord(&result.rows,
@@ -3019,6 +3256,7 @@ ResourceSeedCatalogImage BuildResourceImageFromCatalogRows(const std::vector<Cat
 PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<CatalogPageRow>& rows) {
   PolicySeedPackCatalogImage image;
   std::set<std::string> profile_areas;
+  u32 default_policy_records_from_catalog = 0;
   for (const CatalogPageRow& row : rows) {
     if (row.kind == CatalogPageRowKind::policy_seed_pack) {
       const auto fields = ParseKeyValuePayload(row.payload);
@@ -3048,6 +3286,7 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
       image.group_membership_records = ParseU32Field(fields, "group_membership_records");
       image.grant_records = ParseU32Field(fields, "grant_records");
       image.policy_profile_records = ParseU32Field(fields, "policy_profile_records");
+      image.default_policy_records = ParseU32Field(fields, "default_policy_records");
       continue;
     }
     if (row.kind != CatalogPageRowKind::typed_catalog_record) {
@@ -3075,11 +3314,23 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
         if (area != fields.end()) {
           profile_areas.insert(area->second);
         }
+      } else if (fields.count("default_profile") != 0 &&
+                 fields.count("tx1_seed_required") != 0 &&
+                 fields.at("tx1_seed_required") == "1" &&
+                 fields.count("policy_pack_uuid") != 0) {
+        ++default_policy_records_from_catalog;
       }
     }
   }
   if (!profile_areas.empty()) {
     image.policy_profile_areas.assign(profile_areas.begin(), profile_areas.end());
+  }
+  if (default_policy_records_from_catalog != 0 &&
+      image.default_policy_records != 0 &&
+      image.default_policy_records != default_policy_records_from_catalog) {
+    image.default_policy_records = 0;
+  } else if (image.default_policy_records == 0) {
+    image.default_policy_records = default_policy_records_from_catalog;
   }
   return image;
 }
@@ -3109,6 +3360,7 @@ DatabaseLifecycleResult ValidatePolicySeedCatalogImage(const PolicySeedPackCatal
       image.group_records < 6 ||
       image.grant_records == 0 ||
       image.policy_profile_records == 0 ||
+      image.default_policy_records != RequiredDefaultPolicyKeys().size() ||
       !PolicyProfileAreasExactlyCovered(image.policy_profile_areas)) {
     return LifecycleError("SB-POLICY-PACK-CATALOG-INVALID",
                           "storage.database_lifecycle.policy_pack_catalog_invalid",
@@ -4588,11 +4840,29 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   descriptor.manifest_relative_path =
       "resources/policy-packs/default-local-password/POLICY_PACK_MANIFEST.json";
   descriptor.content_sha256 =
-      "4aeda2923bbe2c2ff853c0bdc9cebafc17e5c757ed1eecbcbe80e5745a382220";
+      "992acf2a852b96db5cd49ae21aefe6a9d4d436298ebb39abc9a55c70363ba3f6";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;
   return descriptor;
+}
+
+std::string ResolveCreatePolicySeedPackRoot(const DatabaseCreateConfig& config) {
+  if (!config.policy_seed_pack_root.empty()) {
+    return config.policy_seed_pack_root;
+  }
+  if (config.resource_seed_pack_root.empty()) {
+    return {};
+  }
+
+  const std::filesystem::path resource_root(config.resource_seed_pack_root);
+  const std::filesystem::path resources_root = resource_root.parent_path().parent_path();
+  const std::filesystem::path candidate =
+      resources_root / "policy-packs" / "default-local-password";
+  if (std::filesystem::is_regular_file(candidate / "POLICY_PACK_MANIFEST.json")) {
+    return candidate.string();
+  }
+  return {};
 }
 
 const char* DatabaseLifecyclePhaseName(DatabaseLifecyclePhase phase) {
@@ -4649,8 +4919,9 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
   }
 
   LoadedPolicySeedPack policy_seed_pack;
-  if (!config.policy_seed_pack_root.empty()) {
-    const auto loaded_policy_pack = LoadSelectedPolicySeedPack(config.policy_seed_pack_root);
+  const std::string effective_policy_seed_pack_root = ResolveCreatePolicySeedPackRoot(config);
+  if (!effective_policy_seed_pack_root.empty()) {
+    const auto loaded_policy_pack = LoadSelectedPolicySeedPack(effective_policy_seed_pack_root);
     if (!loaded_policy_pack.ok()) {
       return PropagateDiagnostic(loaded_policy_pack.status, loaded_policy_pack.diagnostic);
     }

@@ -107,6 +107,9 @@ defmodule SBIsqlElixir do
           password: required!(args, "--password"),
           role: Map.get(args, "--role", ""),
           sslmode: Map.get(args, "--sslmode", "require"),
+          sslrootcert: Map.get(args, "--sslrootcert", ""),
+          sslcert: Map.get(args, "--sslcert", ""),
+          sslkey: Map.get(args, "--sslkey", ""),
           front_door_mode:
             if(required!(args, "--route") == "manager-listener-parser",
               do: "manager_proxy",
@@ -211,6 +214,7 @@ defmodule SBIsqlElixir do
 
     elapsed = monotonic_ns() - started
     timings = Map.put(state.timings, "overall", elapsed)
+    sslmode = Map.get(args, "--sslmode", "require")
 
     summary = %{
       run_id: Map.get(args, "--run-id", "manual"),
@@ -219,6 +223,8 @@ defmodule SBIsqlElixir do
       parser_mode: required!(args, "--parser-mode"),
       page_size: required!(args, "--page-size"),
       namespace: required!(args, "--namespace"),
+      sslmode: sslmode,
+      transport_mode: if(sslmode == "disable", do: "tls_disabled", else: "tls_required"),
       status: if(state.failures == [], do: "pass", else: "fail"),
       failure_count: length(state.failures),
       elapsed_ns: elapsed,

@@ -1382,6 +1382,7 @@ scratchbird::client::NetworkClientConfig makeLoopbackConfig(uint16_t port) {
     cfg.read_timeout_ms = 2000;
     cfg.write_timeout_ms = 2000;
     cfg.database = "main";
+    cfg.autocommit = false;
     return cfg;
 }
 
@@ -1681,7 +1682,7 @@ TEST(DriverConnectivitySmokeTest, ConnectsWithCompressionCompatibilityParamsFrom
     scratchbird::core::ErrorContext ctx;
     const std::string conn_str = "scratchbird://alice:pw@127.0.0.1:" +
                                  std::to_string(harness.port) +
-                                 "/main?sslmode=disable&binary_transfer=false&compression=zstd";
+                                 "/main?sslmode=disable&autocommit=false&binary_transfer=false&compression=zstd";
     auto status = scratchbird::client::parseDriverConnectionString(conn_str, cfg, &ctx);
     ASSERT_EQ(status, scratchbird::core::Status::OK) << ctx.message;
     EXPECT_FALSE(cfg.binary_transfer);
@@ -1739,7 +1740,7 @@ TEST(DriverCppApiClosureTest, CApiProbeAuthSurfaceJsonReportsDirectScramSha512) 
     harness.start();
 
     const std::string conn_str =
-        "scratchbird://alice:pw@127.0.0.1:" + std::to_string(harness.port) + "/main?sslmode=disable";
+        "scratchbird://alice:pw@127.0.0.1:" + std::to_string(harness.port) + "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     char* json_text = sb_probe_auth_surface_json(conn_str.c_str(), &err);
     ASSERT_NE(json_text, nullptr) << err.message;
@@ -1768,7 +1769,7 @@ TEST(DriverCppApiClosureTest, CApiResolvedAuthContextJsonReflectsConnectedSessio
 
     const std::string conn_str =
         "scratchbird://alice:pw-secret@127.0.0.1:" + std::to_string(harness.port) +
-        "/main?sslmode=disable";
+        "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -2042,7 +2043,7 @@ TEST(DriverTxnExecParityTest, CApiTxnBeginExEncodesEnterpriseOptions) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -2087,7 +2088,7 @@ TEST(DriverTxnExecParityTest, CApiNotificationQueueAndListenerEnterpriseSurface)
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -2146,7 +2147,7 @@ TEST(DriverTxnExecParityTest, CApiDiagnosticsAndTelemetrySummaries) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -2460,8 +2461,9 @@ TEST(DriverTxnExecParityTest, PrepareAndExecutePreparedRoundTrip) {
         {scratchbird::protocol::MessageType::Bind, {}},
         {scratchbird::protocol::MessageType::Execute,
          {{scratchbird::protocol::MessageType::CommandComplete,
-           buildCommandCompletePayload(0, 1, 0, "UPDATE 1")},
-          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 21, 21)}}}
+           buildCommandCompletePayload(0, 1, 0, "UPDATE 1")}}},
+        {scratchbird::protocol::MessageType::Sync,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 21, 21)}}}
     };
 
     ServerHarness harness(std::move(harness_cfg));
@@ -2689,7 +2691,7 @@ TEST(DriverTxnExecParityTest, MetadataQueryReturnsColumnMetadataAndTypedValues) 
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -2746,7 +2748,7 @@ TEST(DriverTxnExecParityTest, CApiSavepointAndSqlStateMappingAtBoundary) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -2778,7 +2780,7 @@ TEST(DriverTxnExecParityTest, FeatureNotSupportedMapsToCNotImplemented) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -2854,7 +2856,7 @@ TEST(DriverTxnExecParityTest, CApiPreparedAndDormantCapabilitiesStayExplicit) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -2958,6 +2960,7 @@ TEST(DriverTxnExecParityTest, CppPreparedDormantAndCapabilitySurfacesStayExplici
     config.host = "127.0.0.1";
     config.tcp_port = harness.port;
     config.ssl_mode = "disable";
+    config.auto_commit = false;
 
     scratchbird::client::Connection conn;
     scratchbird::core::ErrorContext connect_ctx;
@@ -3045,8 +3048,9 @@ TEST(DriverTxnExecParityTest, ArrayBindUsesDefaultOutboundOidMapping) {
          }},
         {scratchbird::protocol::MessageType::Execute,
          {{scratchbird::protocol::MessageType::CommandComplete,
-           buildCommandCompletePayload(0, 1, 0, "SELECT 1")},
-          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 71, 71)}}}
+           buildCommandCompletePayload(0, 1, 0, "SELECT 1")}}},
+        {scratchbird::protocol::MessageType::Sync,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 71, 71)}}}
     };
 
     ServerHarness harness(std::move(harness_cfg));
@@ -3054,7 +3058,7 @@ TEST(DriverTxnExecParityTest, ArrayBindUsesDefaultOutboundOidMapping) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -3111,7 +3115,7 @@ TEST(DriverTxnExecParityTest, StatementCacheAndLeakDetectorLifecycle) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -3162,7 +3166,7 @@ TEST(DriverTxnExecParityTest, PoolAcquireReleaseAndRetryUtility) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_pool_config cfg = sb_pool_config_default();
     cfg.min_connections = 1;
     cfg.max_connections = 2;
@@ -3283,8 +3287,9 @@ TEST(DriverTxnExecParityTest, BatchExecuteSupportsParameterizedOperations) {
            buildRowDescriptionPayload({{"v", scratchbird::protocol::kOidInt4}})},
           {scratchbird::protocol::MessageType::DataRow, buildDataRowPayload({encodeI32Le(7)})},
           {scratchbird::protocol::MessageType::CommandComplete,
-           buildCommandCompletePayload(0, 1, 0, "SELECT 1")},
-          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 92, 92)}}}
+           buildCommandCompletePayload(0, 1, 0, "SELECT 1")}}},
+        {scratchbird::protocol::MessageType::Sync,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 92, 92)}}}
     };
 
     ServerHarness harness(std::move(harness_cfg));
@@ -3292,7 +3297,7 @@ TEST(DriverTxnExecParityTest, BatchExecuteSupportsParameterizedOperations) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -3352,13 +3357,15 @@ TEST(DriverTxnExecParityTest, BulkInsertExecutesPreparedInsertRows) {
         {scratchbird::protocol::MessageType::Bind, {}},
         {scratchbird::protocol::MessageType::Execute,
          {{scratchbird::protocol::MessageType::CommandComplete,
-           buildCommandCompletePayload(0, 1, 0, "INSERT 1")},
-          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 94, 94)}}},
+           buildCommandCompletePayload(0, 1, 0, "INSERT 1")}}},
+        {scratchbird::protocol::MessageType::Sync,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 94, 94)}}},
         {scratchbird::protocol::MessageType::Bind, {}},
         {scratchbird::protocol::MessageType::Execute,
          {{scratchbird::protocol::MessageType::CommandComplete,
-           buildCommandCompletePayload(0, 1, 0, "INSERT 1")},
-          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 95, 95)}}}
+           buildCommandCompletePayload(0, 1, 0, "INSERT 1")}}},
+        {scratchbird::protocol::MessageType::Sync,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 95, 95)}}}
     };
 
     ServerHarness harness(std::move(harness_cfg));
@@ -3366,7 +3373,7 @@ TEST(DriverTxnExecParityTest, BulkInsertExecutesPreparedInsertRows) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -3445,7 +3452,7 @@ TEST(DriverTxnExecParityTest, CApiMetadataSchemaPayloadIncludesDdlEditorFields) 
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;
@@ -3491,7 +3498,7 @@ TEST(DriverCppApiClosureTest, ConnectionTracksReadyTransactionStatusLifecycle) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
 
     scratchbird::client::Connection conn;
     scratchbird::core::ErrorContext ctx;
@@ -3673,7 +3680,7 @@ TEST(DriverCppApiClosureTest, MetadataHelpersExecuteStableFilteredQueries) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
 
     scratchbird::client::Connection conn;
     scratchbird::core::ErrorContext ctx;
@@ -3728,8 +3735,9 @@ TEST(DriverCppApiClosureTest, PreparedStatementWrapperExecutesRoundTrip) {
         {scratchbird::protocol::MessageType::Bind, {}},
         {scratchbird::protocol::MessageType::Execute,
          {{scratchbird::protocol::MessageType::CommandComplete,
-           buildCommandCompletePayload(0, 1, 0, "UPDATE 1")},
-          {scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 41, 41)}}}
+           buildCommandCompletePayload(0, 1, 0, "UPDATE 1")}}},
+        {scratchbird::protocol::MessageType::Sync,
+         {{scratchbird::protocol::MessageType::Ready, buildReadyPayload(1, 41, 41)}}}
     };
 
     ServerHarness harness(std::move(harness_cfg));
@@ -3737,7 +3745,7 @@ TEST(DriverCppApiClosureTest, PreparedStatementWrapperExecutesRoundTrip) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
 
     scratchbird::client::Connection conn;
     scratchbird::core::ErrorContext ctx;
@@ -3770,7 +3778,7 @@ TEST(DriverCppApiClosureTest, ConnectionPoolLeaseAutoReleasesToPool) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
 
     sb_pool_config pool_cfg = sb_pool_config_default();
     pool_cfg.min_connections = 1;
@@ -3835,7 +3843,7 @@ TEST(DriverCppApiClosureTest, MetadataSchemaPayloadBuildsEditorJson) {
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
 
     scratchbird::client::Connection conn;
     scratchbird::core::ErrorContext ctx;
@@ -3892,7 +3900,7 @@ TEST(DriverCppApiClosureTest, CApiComplexTypeStringAccessReturnsBinaryBackedPayl
     harness.start();
 
     const std::string conn_str = "scratchbird://127.0.0.1:" + std::to_string(harness.port) +
-                                 "/main?sslmode=disable";
+                                 "/main?sslmode=disable&autocommit=false";
     sb_error err{};
     sb_connection* conn = sb_connect(conn_str.c_str(), &err);
     ASSERT_NE(conn, nullptr) << err.message;

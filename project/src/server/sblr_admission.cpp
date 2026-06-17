@@ -16,6 +16,7 @@
 #include <array>
 #include <cctype>
 #include <optional>
+#include <string>
 #include <string_view>
 
 namespace scratchbird::server {
@@ -344,6 +345,7 @@ bool IsPublicExactOperationId(std::string_view operation_id) {
          operation_id == "op.show.transaction" ||
          operation_id == "op.show.transaction_isolation" ||
          operation_id == "op.show.transactions" ||
+         operation_id == "op.sbsql.surface_replay" ||
          operation_id == "op.show.users" ||
          operation_id == "op.show.version" ||
          operation_id == "op.show.wait_events";
@@ -379,6 +381,11 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
   if (IsClusterOperationId(operation_id)) {
     return FamilyForClusterOperationId(operation_id).value_or("");
   }
+  if (StartsWith(operation_id, "op.migration.") ||
+      operation_id == "op.show.migration" ||
+      operation_id == "op.show.migrations") {
+    return "sblr.migration.operation.v3";
+  }
   if (operation_id == "op.show.audit" ||
       operation_id == "op.show.discovery_rights" ||
       operation_id == "op.show.grants" ||
@@ -398,11 +405,6 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
       return "sblr.policy.operation.v3";
     }
     return "sblr.catalog.introspect.v3";
-  }
-  if (StartsWith(operation_id, "op.migration.") ||
-      operation_id == "op.show.migration" ||
-      operation_id == "op.show.migrations") {
-    return "sblr.migration.operation.v3";
   }
   if (operation_id == "management.control_runtime" ||
       StartsWith(operation_id, "agents.") ||
@@ -435,6 +437,7 @@ std::string PublicExactFamilyForOperationId(std::string_view operation_id) {
     return "sblr.security.mutation.v3";
   }
   if (operation_id == "management.inspect_runtime" ||
+      operation_id == "op.sbsql.surface_replay" ||
       operation_id == "op.show.management.config" ||
       operation_id == "op.show.management.drift" ||
       operation_id == "op.show.management.instructions" ||
@@ -605,14 +608,88 @@ bool RequiresEnginePublicAbiDispatch(std::string_view operation_id) {
          operation_id == "security.policy.show";
 }
 
+bool TextFieldIsTrue(std::string_view encoded, std::string_view key) {
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const std::size_t end = encoded.find('\n', start);
+    const std::string_view line =
+        encoded.substr(start, end == std::string_view::npos ? encoded.size() - start : end - start);
+    const std::size_t equals = line.find('=');
+    if (equals != std::string_view::npos && Trim(line.substr(0, equals)) == key) {
+      return Trim(line.substr(equals + 1)) == "true";
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return false;
+}
+
+bool TextFieldExists(std::string_view encoded, std::string_view key) {
+  std::size_t start = 0;
+  while (start <= encoded.size()) {
+    const std::size_t end = encoded.find('\n', start);
+    const std::string_view line =
+        encoded.substr(start, end == std::string_view::npos ? encoded.size() - start : end - start);
+    const std::size_t equals = line.find('=');
+    if (equals != std::string_view::npos && Trim(line.substr(0, equals)) == key) {
+      return true;
+    }
+    if (end == std::string_view::npos) break;
+    start = end + 1;
+  }
+  return false;
+}
+
+bool JsonFieldIsTrue(std::string_view encoded, std::string_view key) {
+  const std::string needle = "\"" + std::string(key) + "\"";
+  std::size_t start = 0;
+  while (start < encoded.size()) {
+    const std::size_t key_pos = encoded.find(needle, start);
+    if (key_pos == std::string_view::npos) return false;
+    std::size_t cursor = key_pos + needle.size();
+    while (cursor < encoded.size() &&
+           std::isspace(static_cast<unsigned char>(encoded[cursor]))) {
+      ++cursor;
+    }
+    if (cursor < encoded.size() && encoded[cursor] == ':') {
+      ++cursor;
+      while (cursor < encoded.size() &&
+             std::isspace(static_cast<unsigned char>(encoded[cursor]))) {
+        ++cursor;
+      }
+      return encoded.substr(cursor, 4) == "true";
+    }
+    start = key_pos + needle.size();
+  }
+  return false;
+}
+
+bool JsonFieldExists(std::string_view encoded, std::string_view key) {
+  const std::string needle = "\"" + std::string(key) + "\"";
+  std::size_t start = 0;
+  while (start < encoded.size()) {
+    const std::size_t key_pos = encoded.find(needle, start);
+    if (key_pos == std::string_view::npos) return false;
+    std::size_t cursor = key_pos + needle.size();
+    while (cursor < encoded.size() &&
+           std::isspace(static_cast<unsigned char>(encoded[cursor]))) {
+      ++cursor;
+    }
+    if (cursor < encoded.size() && encoded[cursor] == ':') return true;
+    start = key_pos + needle.size();
+  }
+  return false;
+}
+
 bool ContainsSqlTextMarker(std::string_view encoded) {
-  return Contains(encoded, "contains_sql_text=true") ||
-         Contains(encoded, "\"contains_sql_text\":true") ||
-         Contains(encoded, "\"contains_sql_text\": true") ||
-         Contains(encoded, "\"source_payload_embedded\":true") ||
-         Contains(encoded, "\"source_payload_embedded\": true") ||
-         Contains(encoded, "\"source_text\"") ||
-         Contains(encoded, "\"sql_text\"");
+  return TextFieldIsTrue(encoded, "contains_sql_text") ||
+         TextFieldIsTrue(encoded, "source_payload_embedded") ||
+         TextFieldExists(encoded, "sql_text") ||
+         TextFieldExists(encoded, "source_text") ||
+         JsonFieldIsTrue(encoded, "contains_sql_text") ||
+         JsonFieldIsTrue(encoded, "source_payload_embedded") ||
+         JsonFieldExists(encoded, "source_text") ||
+         JsonFieldExists(encoded, "sql_text");
 }
 
 std::optional<std::string> TextField(std::string_view encoded, std::string_view key) {

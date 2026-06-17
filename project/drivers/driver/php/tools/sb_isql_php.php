@@ -79,11 +79,14 @@ function run_tool(array $args): int
 
     try {
         $dsn = sprintf(
-            'scratchbird:host=%s;port=%s;database=%s;sslmode=%s;front_door_mode=%s;metadata_expand_schema_parents=true',
+            'scratchbird:host=%s;port=%s;database=%s;sslmode=%s;sslrootcert=%s;sslcert=%s;sslkey=%s;front_door_mode=%s;metadata_expand_schema_parents=true',
             required($args, '--host'),
             required($args, '--port'),
             required($args, '--database'),
             value_or_default($args, '--sslmode', 'require'),
+            value_or_default($args, '--sslrootcert', ''),
+            value_or_default($args, '--sslcert', ''),
+            value_or_default($args, '--sslkey', ''),
             required($args, '--route') === 'manager-listener-parser' ? 'manager_proxy' : 'direct'
         );
         $connectStarted = hrtime(true);
@@ -215,6 +218,7 @@ function run_tool(array $args): int
 
     $elapsed = hrtime(true) - $started;
     $timings['overall'] = $elapsed;
+    $sslmode = value_or_default($args, '--sslmode', 'require');
     $summary = [
         'run_id' => value_or_default($args, '--run-id', 'manual'),
         'driver_name' => 'php',
@@ -222,6 +226,8 @@ function run_tool(array $args): int
         'parser_mode' => required($args, '--parser-mode'),
         'page_size' => required($args, '--page-size'),
         'namespace' => required($args, '--namespace'),
+        'sslmode' => $sslmode,
+        'transport_mode' => $sslmode === 'disable' ? 'tls_disabled' : 'tls_required',
         'status' => empty($failures) ? 'pass' : 'fail',
         'failure_count' => count($failures),
         'elapsed_ns' => $elapsed,

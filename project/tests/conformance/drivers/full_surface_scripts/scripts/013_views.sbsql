@@ -1,0 +1,153 @@
+-- script_id: SBDFS-013
+-- Purpose: View lifecycle - create base table and rows, CREATE VIEW, assert
+--          rows match, CREATE MATERIALIZED VIEW + REFRESH MATERIALIZED VIEW,
+--          mutate base, refresh, assert change, DROP VIEW.
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 1. Create a base table with a status column suitable for view filtering.
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE TABLE __SB_NAMESPACE__.view_base (
+    item_id    INTEGER NOT NULL PRIMARY KEY,
+    item_label VARCHAR(120) NOT NULL,
+    item_state VARCHAR(16) NOT NULL DEFAULT 'active',
+    item_score DECIMAL(10, 2) NOT NULL DEFAULT 0.00
+);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 2. Seed rows: two active, one retired.
+-- ──────────────────────────────────────────────────────────────────────────
+INSERT INTO __SB_NAMESPACE__.view_base (item_id, item_label, item_state, item_score)
+VALUES (1, 'alpha', 'active', 10.00);
+
+INSERT INTO __SB_NAMESPACE__.view_base (item_id, item_label, item_state, item_score)
+VALUES (2, 'beta', 'active', 20.00);
+
+INSERT INTO __SB_NAMESPACE__.view_base (item_id, item_label, item_state, item_score)
+VALUES (3, 'gamma', 'retired', 5.00);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 3. CREATE VIEW over active rows only.
+--    Syntax grounded in: syntax_reference/view.md
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE VIEW __SB_NAMESPACE__.active_items AS
+SELECT item_id,
+       item_label,
+       item_score
+FROM __SB_NAMESPACE__.view_base
+WHERE item_state = 'active';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 4. Assert view appears in sys.tables (views are relation-like objects in the
+--    catalog surface used by the established harness convention from 080).
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-013-001' AS assertion_id,
+       COUNT(*) >= 1   AS actual_view_in_catalog,
+       TRUE            AS expected_view_in_catalog
+FROM sys.tables
+WHERE schema_id IN (
+    SELECT schema_id
+    FROM sys.schemas
+    WHERE schema_name = '__SB_NAMESPACE__'
+);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 5. Assert view returns exactly the two active rows.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-013-002' AS assertion_id,
+       COUNT(*)        AS actual_active_count,
+       2               AS expected_active_count
+FROM __SB_NAMESPACE__.active_items;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 6. Assert the retired row is invisible through the view.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-013-003' AS assertion_id,
+       COUNT(*)        AS actual_retired_via_view,
+       0               AS expected_retired_via_view
+FROM __SB_NAMESPACE__.active_items
+WHERE item_id = 3;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 7. COMMENT ON VIEW — documented surface in view.md lifecycle table.
+-- ──────────────────────────────────────────────────────────────────────────
+COMMENT ON VIEW __SB_NAMESPACE__.active_items IS 'Conformance test view over active items';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 8. CREATE MATERIALIZED VIEW that summarizes scores by state.
+--    Syntax grounded in: syntax_reference/view.md — CREATE MATERIALIZED VIEW
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE MATERIALIZED VIEW __SB_NAMESPACE__.state_score_summary AS
+SELECT item_state,
+       COUNT(*)        AS item_count,
+       SUM(item_score) AS total_score
+FROM __SB_NAMESPACE__.view_base
+GROUP BY item_state;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 9. Assert materialized view returns the correct initial count for 'active'.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-013-004' AS assertion_id,
+       item_count      AS actual_active_item_count,
+       2               AS expected_active_item_count
+FROM __SB_NAMESPACE__.state_score_summary
+WHERE item_state = 'active';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 10. Mutate the base table: add a new active row.
+-- ──────────────────────────────────────────────────────────────────────────
+INSERT INTO __SB_NAMESPACE__.view_base (item_id, item_label, item_state, item_score)
+VALUES (4, 'delta', 'active', 15.00);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 11. REFRESH MATERIALIZED VIEW — rebuild the stored generation.
+--     Syntax: REFRESH MATERIALIZED VIEW <qualified_name>
+-- ──────────────────────────────────────────────────────────────────────────
+REFRESH MATERIALIZED VIEW __SB_NAMESPACE__.state_score_summary;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 12. Assert materialized view reflects the mutation after refresh.
+--     'active' now has 3 rows (alpha, beta, delta).
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-013-005' AS assertion_id,
+       item_count      AS actual_active_after_refresh,
+       3               AS expected_active_after_refresh
+FROM __SB_NAMESPACE__.state_score_summary
+WHERE item_state = 'active';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 13. Assert the normal view also reflects the new row without explicit refresh
+--     (normal views read source at query time).
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-013-006' AS assertion_id,
+       COUNT(*)        AS actual_view_count_after_insert,
+       3               AS expected_view_count_after_insert
+FROM __SB_NAMESPACE__.active_items;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 14. DROP MATERIALIZED VIEW.
+-- ──────────────────────────────────────────────────────────────────────────
+DROP MATERIALIZED VIEW __SB_NAMESPACE__.state_score_summary RESTRICT;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 15. DROP VIEW.
+-- ──────────────────────────────────────────────────────────────────────────
+DROP VIEW __SB_NAMESPACE__.active_items RESTRICT;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 16. DROP base table (no view dependencies remain).
+-- ──────────────────────────────────────────────────────────────────────────
+DROP TABLE __SB_NAMESPACE__.view_base RESTRICT;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 17. Assert all objects are gone from the schema catalog.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-013-007' AS assertion_id,
+       COUNT(*)        AS actual_objects_remain,
+       0               AS expected_objects_remain
+FROM sys.tables
+WHERE schema_id IN (
+    SELECT schema_id
+    FROM sys.schemas
+    WHERE schema_name = '__SB_NAMESPACE__'
+)
+  AND table_name IN ('view_base', 'active_items', 'state_score_summary');

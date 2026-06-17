@@ -920,6 +920,11 @@ bool DirectOptionTruthy(const DirectPhysicalBulkAppendRequest& request,
   return !value.empty() && IsDirectTruthyValue(value);
 }
 
+bool DirectOpaqueColumnsAllowed(const DirectPhysicalBulkAppendRequest& request) {
+  return DirectOptionEnabled(request, "bulk.allow_opaque_columns=true") ||
+         DirectOptionTruthy(request, "bulk.allow_opaque_columns");
+}
+
 bool DirectDeferredIndexBenchmarkCleanRequired(
     const DirectPhysicalBulkAppendRequest& request) {
   return DirectOptionTruthy(
@@ -2670,7 +2675,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                      "temporary_table_requires_session_uuid"),
         "temporary_table_requires_session_uuid");
   }
-  if (CrudRowsTouchOpaqueColumn(*table, request.borrowed_input_rows)) {
+  if (CrudRowsTouchOpaqueColumn(*table, request.borrowed_input_rows) &&
+      !DirectOpaqueColumnsAllowed(request)) {
     return DirectBulkFailure(
         request,
         UnsupportedCrudFeatureDiagnostic("dml.direct_physical_bulk_append",

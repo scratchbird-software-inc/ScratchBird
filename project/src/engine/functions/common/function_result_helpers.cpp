@@ -8,9 +8,18 @@
 
 #include "common/function_result_helpers.hpp"
 
+#include <iomanip>
+#include <limits>
+#include <sstream>
 #include <utility>
 
 namespace scratchbird::engine::functions {
+
+std::string FormatReal64(double value) {
+  std::ostringstream encoded;
+  encoded << std::setprecision(std::numeric_limits<double>::max_digits10) << value;
+  return encoded.str();
+}
 
 scratchbird::engine::sblr::SblrValue MakeNullValue(std::string descriptor_id) {
   scratchbird::engine::sblr::SblrValue value;
@@ -67,7 +76,7 @@ scratchbird::engine::sblr::SblrValue MakeReal64Value(std::string descriptor_id, 
   value.real64_value = real_value;
   value.has_real64_value = true;
   value.payload_kind = scratchbird::engine::sblr::SblrValuePayloadKind::real64;
-  value.encoded_value = std::to_string(real_value);
+  value.encoded_value = FormatReal64(real_value);
   value.text_value = value.encoded_value;
   value.is_null = false;
   return value;
@@ -98,7 +107,7 @@ std::string ValueAsText(const scratchbird::engine::sblr::SblrValue& value) {
   if (value.is_null) return {};
   if (value.has_int64_value) return std::to_string(value.int64_value);
   if (value.has_uint64_value) return std::to_string(value.uint64_value);
-  if (value.has_real64_value) return std::to_string(value.real64_value);
+  if (value.has_real64_value) return FormatReal64(value.real64_value);
   if (!value.encoded_value.empty()) return value.encoded_value;
   return value.text_value;
 }

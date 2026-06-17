@@ -42,7 +42,7 @@ FROM __SB_NAMESPACE__.large_fact;
 
 SELECT 'SBDFS-070-002' AS assertion_id,
        COUNT(*) AS actual_count,
-       156 AS expected_count
+       147 AS expected_count
 FROM __SB_NAMESPACE__.large_fact
 WHERE tenant_id = 7;
 

@@ -78,26 +78,113 @@ EngineProjectionExpression ReadProjectionExpression(const EngineApiRequest& requ
                                                     const std::string& prefix,
                                                     std::uint32_t depth = 0) {
   EngineProjectionExpression expression;
+  expression.name = ProjectionOptionValue(request, prefix + "name:");
   expression.expression_kind = ProjectionOptionValue(request, prefix + "expr_kind:");
   if (expression.expression_kind.empty()) expression.expression_kind = "literal";
   expression.type_name = ProjectionOptionValue(request, prefix + "type:");
   expression.encoded_value = ProjectionOptionValue(request, prefix + "value:");
   expression.is_null = ProjectionOptionIsTrue(request, prefix + "is_null:");
+  expression.function_id = ProjectionOptionValue(request, prefix + "function_id:");
   expression.operator_id = ProjectionOptionValue(request, prefix + "operator_id:");
   expression.canonical_operator_id = ProjectionOptionValue(request, prefix + "canonical_operator_id:");
   expression.special_form_id = ProjectionOptionValue(request, prefix + "special_form_id:");
   expression.sblr_binding = ProjectionOptionValue(request, prefix + "sblr_binding:");
   if (depth > 4) return expression;
 
-  std::uint64_t arg_count = ParseU64(ProjectionOptionValue(request, prefix + "operator_arg_count:"));
-  if (arg_count == 0) {
-    arg_count = ParseU64(ProjectionOptionValue(request, prefix + "special_form_arg_count:"));
-  }
+  std::uint64_t arg_count = ParseU64(ProjectionOptionValue(request, prefix + "function_arg_count:"));
+  const std::uint64_t operator_arg_count =
+      ParseU64(ProjectionOptionValue(request, prefix + "operator_arg_count:"));
+  if (operator_arg_count > arg_count) arg_count = operator_arg_count;
+  const std::uint64_t special_form_arg_count =
+      ParseU64(ProjectionOptionValue(request, prefix + "special_form_arg_count:"));
+  if (special_form_arg_count > arg_count) arg_count = special_form_arg_count;
   for (std::uint64_t arg_index = 0; arg_index < arg_count; ++arg_index) {
     expression.arguments.push_back(ReadProjectionExpression(
         request, prefix + "arg_" + std::to_string(arg_index) + "_", depth + 1));
   }
   return expression;
+}
+
+EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
+    const EngineEvaluateProjectionRequest& request,
+    const EngineProjectionExpression& expression) {
+  if (expression.expression_kind.empty() || expression.expression_kind == "literal") {
+    EngineProjectionFunctionResult out;
+    out.ok = true;
+    out.value.descriptor = ProjectionDescriptor(expression.type_name);
+    out.value.encoded_value = expression.encoded_value;
+    out.value.is_null = expression.is_null;
+    return out;
+  }
+
+  if (expression.expression_kind == "parameter") {
+    EngineProjectionFunctionResult out;
+    out.ok = true;
+    out.value.descriptor.descriptor_kind = "parameter";
+    out.value.descriptor.canonical_type_name =
+        expression.type_name.empty() ? "unknown" : expression.type_name;
+    out.value.descriptor.encoded_descriptor =
+        "kind=input;type=" + out.value.descriptor.canonical_type_name;
+    out.value.encoded_value = "unbound_parameter_descriptor";
+    out.value.is_null = false;
+    out.evidence.push_back({"query_parameter_value_execution", "false"});
+    return out;
+  }
+
+  if (expression.expression_kind == "function") {
+    if (!request.function_evaluator) {
+      EngineProjectionFunctionResult out;
+      out.ok = false;
+      out.diagnostics.push_back(MakeInvalidRequestDiagnostic("query.evaluate_projection",
+                                                             "function_projection_evaluator_required"));
+      return out;
+    }
+    if (expression.function_id.empty()) {
+      EngineProjectionFunctionResult out;
+      out.ok = false;
+      out.diagnostics.push_back(MakeInvalidRequestDiagnostic("query.evaluate_projection",
+                                                             "function_projection_id_required"));
+      return out;
+    }
+
+    EngineProjectionFunctionRequest function_request;
+    function_request.context = request.context;
+    function_request.function_id = expression.function_id;
+    for (std::size_t arg_index = 0; arg_index < expression.arguments.size(); ++arg_index) {
+      auto arg_result = EvaluateProjectionExpressionTree(request, expression.arguments[arg_index]);
+      if (!arg_result.ok) return arg_result;
+      EngineProjectionFunctionArgument argument;
+      argument.name = expression.arguments[arg_index].name.empty()
+                          ? "arg" + std::to_string(arg_index)
+                          : expression.arguments[arg_index].name;
+      argument.type_name = arg_result.value.descriptor.canonical_type_name;
+      argument.encoded_value = arg_result.value.encoded_value;
+      argument.is_null = arg_result.value.is_null;
+      function_request.arguments.push_back(std::move(argument));
+    }
+    return request.function_evaluator(function_request);
+  }
+
+  if (expression.expression_kind == "operator" ||
+      expression.expression_kind == "special_form") {
+    if (!request.operator_evaluator) {
+      EngineProjectionFunctionResult out;
+      out.ok = false;
+      out.diagnostics.push_back(MakeInvalidRequestDiagnostic("query.evaluate_projection",
+                                                             "operator_projection_evaluator_required"));
+      return out;
+    }
+    EngineProjectionOperatorRequest operator_request;
+    operator_request.context = request.context;
+    operator_request.expression = expression;
+    return request.operator_evaluator(operator_request);
+  }
+
+  EngineProjectionFunctionResult out;
+  out.ok = false;
+  out.diagnostics.push_back(MakeInvalidRequestDiagnostic("query.evaluate_projection",
+                                                         "unsupported_projection_expression_kind"));
+  return out;
 }
 
 }  // namespace
@@ -136,79 +223,17 @@ EngineEvaluateProjectionResult EngineEvaluateProjection(const EngineEvaluateProj
     const std::string prefix = "projection_" + std::to_string(index) + "_";
     std::string name = SecurityOptionValue(request, prefix + "name:");
     EngineTypedValue value;
-    const std::string expression_kind = SecurityOptionValue(request, prefix + "expr_kind:");
-    if (expression_kind == "function") {
-      if (!request.function_evaluator) {
-        return ProjectionFailure(request, "function_projection_evaluator_required");
+    auto expression_result = EvaluateProjectionExpressionTree(
+        request, ReadProjectionExpression(request, prefix));
+    if (!expression_result.ok) {
+      if (expression_result.diagnostics.empty()) {
+        return ProjectionFailure(request, "projection_expression_execution_failed");
       }
-      EngineProjectionFunctionRequest function_request;
-      function_request.context = request.context;
-      function_request.function_id = SecurityOptionValue(request, prefix + "function_id:");
-      if (function_request.function_id.empty()) {
-        return ProjectionFailure(request, "function_projection_id_required");
-      }
-      const std::uint64_t arg_count = ParseU64(SecurityOptionValue(
-          request, prefix + "function_arg_count:"));
-      for (std::uint64_t arg_index = 0; arg_index < arg_count; ++arg_index) {
-        const std::string arg_prefix = prefix + "arg_" + std::to_string(arg_index) + "_";
-        EngineProjectionFunctionArgument argument;
-        argument.name = SecurityOptionValue(request, arg_prefix + "name:");
-        if (argument.name.empty()) argument.name = "arg" + std::to_string(arg_index);
-        argument.type_name = SecurityOptionValue(request, arg_prefix + "type:");
-        argument.encoded_value = SecurityOptionValue(request, arg_prefix + "value:");
-        argument.is_null = ProjectionOptionIsTrue(request, arg_prefix + "is_null:");
-        function_request.arguments.push_back(std::move(argument));
-      }
-      auto function_result = request.function_evaluator(function_request);
-      if (!function_result.ok) {
-        if (function_result.diagnostics.empty()) {
-          return ProjectionFailure(request, "function_projection_execution_failed");
-        }
-        return ProjectionFailure(request, std::move(function_result.diagnostics.front()));
-      }
-      value = std::move(function_result.value);
-      for (auto& evidence : function_result.evidence) {
-        result.evidence.push_back(std::move(evidence));
-      }
-    } else if (expression_kind == "operator" || expression_kind == "special_form") {
-      if (!request.operator_evaluator) {
-        return ProjectionFailure(request, "operator_projection_evaluator_required");
-      }
-      EngineProjectionOperatorRequest operator_request;
-      operator_request.context = request.context;
-      operator_request.expression = ReadProjectionExpression(request, prefix);
-      auto operator_result = request.operator_evaluator(operator_request);
-      if (!operator_result.ok) {
-        if (operator_result.diagnostics.empty()) {
-          return ProjectionFailure(request, "operator_projection_execution_failed");
-        }
-        return ProjectionFailure(request, std::move(operator_result.diagnostics.front()));
-      }
-      value = std::move(operator_result.value);
-      for (auto& evidence : operator_result.evidence) {
-        result.evidence.push_back(std::move(evidence));
-      }
-    } else if (expression_kind == "parameter") {
-      const std::string marker_kind = SecurityOptionValue(request, prefix + "parameter_marker_kind:");
-      const std::string ordinal = SecurityOptionValue(request, prefix + "parameter_ordinal:");
-      const std::string type = SecurityOptionValue(request, prefix + "parameter_type:").empty()
-                                   ? SecurityOptionValue(request, prefix + "type:")
-                                   : SecurityOptionValue(request, prefix + "parameter_type:");
-      value.descriptor.descriptor_kind = "parameter";
-      value.descriptor.canonical_type_name = type.empty() ? "unknown" : type;
-      value.descriptor.encoded_descriptor =
-          "kind=input;marker=" + (marker_kind.empty() ? "anonymous" : marker_kind) +
-          ";ordinal=" + (ordinal.empty() ? "1" : ordinal) +
-          ";type=" + value.descriptor.canonical_type_name;
-      value.encoded_value = "unbound_parameter_descriptor";
-      value.is_null = false;
-      result.evidence.push_back({"query_parameter_descriptor",
-                                 marker_kind.empty() ? "anonymous" : marker_kind});
-      result.evidence.push_back({"query_parameter_ordinal",
-                                 ordinal.empty() ? "1" : ordinal});
-      result.evidence.push_back({"query_parameter_value_execution", "false"});
-    } else {
-      value = LiteralProjectionValue(request, prefix);
+      return ProjectionFailure(request, std::move(expression_result.diagnostics.front()));
+    }
+    value = std::move(expression_result.value);
+    for (auto& evidence : expression_result.evidence) {
+      result.evidence.push_back(std::move(evidence));
     }
     if (name.empty()) name = "column" + std::to_string(index + 1);
     row.fields.push_back({std::move(name), std::move(value)});

@@ -82,6 +82,9 @@ struct SBIsqlSwift {
                 user: try required(args, "--user"),
                 password: try required(args, "--password"),
                 sslmode: args["--sslmode"] ?? "require",
+                sslrootcert: args["--sslrootcert"],
+                sslcert: args["--sslcert"],
+                sslkey: args["--sslkey"],
                 applicationName: "SBIsqlSwift",
                 role: args["--role"],
                 fetchSize: Int(args["--fetch-size"] ?? "1000") ?? 1000
@@ -186,6 +189,7 @@ struct SBIsqlSwift {
         }
 
         timings["overall"] = nowNs() - started
+        let sslmode = args["--sslmode"] ?? "require"
         let summary: [String: Any?] = [
             "run_id": args["--run-id"] ?? "manual",
             "driver_name": "swift",
@@ -193,6 +197,8 @@ struct SBIsqlSwift {
             "parser_mode": try required(args, "--parser-mode"),
             "page_size": try required(args, "--page-size"),
             "namespace": try required(args, "--namespace"),
+            "sslmode": sslmode,
+            "transport_mode": sslmode == "disable" ? "tls_disabled" : "tls_required",
             "status": failures.isEmpty ? "pass" : "fail",
             "failure_count": failures.count,
             "elapsed_ns": timings["overall"] ?? 0,

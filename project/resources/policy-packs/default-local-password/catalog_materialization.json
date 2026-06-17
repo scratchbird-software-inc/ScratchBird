@@ -12,7 +12,8 @@
     "SecurityRoleRecord",
     "SecurityGroupRecord",
     "SecurityGrantRecord",
-    "PolicyProfileRecord"
+    "PolicyProfileRecord",
+    "DefaultPolicyRecord"
   ],
   "catalog_identity_authority": "uuid",
   "materialization_evidence": {

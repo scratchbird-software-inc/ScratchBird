@@ -11,6 +11,7 @@
 #include "agent_runtime.hpp"
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "catalog/sbsql_language_elements_catalog.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/name_registry.hpp"
 #include "catalog/schema_tree_api.hpp"
@@ -51,6 +52,155 @@ std::vector<std::string> SplitOptionList(std::string_view value) {
     value.remove_prefix(pos + 1);
   }
   return out;
+}
+
+std::vector<std::string> SplitCommaList(std::string_view value) {
+  std::vector<std::string> out;
+  while (!value.empty()) {
+    const std::size_t pos = value.find(',');
+    std::string_view token =
+        pos == std::string_view::npos ? value : value.substr(0, pos);
+    while (!token.empty() && token.front() == ' ') { token.remove_prefix(1); }
+    while (!token.empty() && token.back() == ' ') { token.remove_suffix(1); }
+    out.emplace_back(token);
+    if (pos == std::string_view::npos) { break; }
+    value.remove_prefix(pos + 1);
+  }
+  return out;
+}
+
+std::string RowFieldTextValue(const SysInformationProjectionRow& row, std::string_view field_name) {
+  for (const auto& field : row.fields) {
+    if (field.first == field_name) { return field.second; }
+  }
+  return {};
+}
+
+bool CatalogProjectionPredicateMatches(const SysInformationProjectionRow& row,
+                                       const std::string& predicate_kind,
+                                       const std::string& predicate_columns,
+                                       const std::string& predicate_values) {
+  if (predicate_kind.empty() || predicate_columns.empty()) { return true; }
+  if (predicate_kind == "columns_all_null") {
+    for (const auto& column : SplitCommaList(predicate_columns)) {
+      if (!RowFieldTextValue(row, column).empty()) { return false; }
+    }
+    return true;
+  }
+  if (predicate_kind != "column_equals" && predicate_kind != "columns_all_equal") {
+    return false;
+  }
+  const auto columns = SplitCommaList(predicate_columns);
+  const auto values = SplitCommaList(predicate_values);
+  if (columns.empty() || values.size() < columns.size()) { return false; }
+  for (std::size_t index = 0; index < columns.size(); ++index) {
+    if (RowFieldTextValue(row, columns[index]) != values[index]) { return false; }
+  }
+  return true;
+}
+
+std::vector<SysInformationProjectionRow> FilterCatalogProjectionRows(
+    const std::vector<SysInformationProjectionRow>& rows,
+    const EngineShowCatalogRequest& request,
+    const SysInformationProjectionContext& projection_context,
+    const std::vector<SysInformationCatalogObjectSource>& catalog_objects,
+    const std::vector<SysInformationResolverNameSource>& resolver_names,
+    const std::vector<SysInformationColumnSource>& columns) {
+  const std::string predicate_kind = OptionValue(request, "predicate_kind:");
+  const std::string predicate_column = OptionValue(request, "predicate_column:");
+  const std::string predicate_value = OptionValue(request, "predicate_value:");
+  if (predicate_kind.empty() || predicate_column.empty()) { return rows; }
+
+  if (predicate_kind == "column_in_projection") {
+    const std::string subquery_projection = OptionValue(request, "subquery_projection:");
+    const std::string subquery_select_column = OptionValue(request, "subquery_select_column:");
+    const std::string subquery_predicate_kind = OptionValue(request, "subquery_predicate_kind:");
+    const std::string subquery_predicate_column = OptionValue(request, "subquery_predicate_column:");
+    const std::string subquery_predicate_value = OptionValue(request, "subquery_predicate_value:");
+    if (subquery_projection.empty() || subquery_select_column.empty() ||
+        subquery_predicate_kind.empty() || subquery_predicate_column.empty()) {
+      return {};
+    }
+    const auto subquery_rows = BuildSysInformationProjection(subquery_projection,
+                                                             projection_context,
+                                                             catalog_objects,
+                                                             resolver_names,
+                                                             {},
+                                                             {},
+                                                             columns);
+    if (!subquery_rows.ok) { return {}; }
+    std::set<std::string> nested_admitted_values;
+    if (subquery_predicate_kind == "column_in_projection") {
+      const std::string nested_projection = OptionValue(request, "subquery_nested_projection:");
+      const std::string nested_select_column =
+          OptionValue(request, "subquery_nested_select_column:");
+      const std::string nested_predicate_kind =
+          OptionValue(request, "subquery_nested_predicate_kind:");
+      const std::string nested_predicate_column =
+          OptionValue(request, "subquery_nested_predicate_column:");
+      const std::string nested_predicate_value =
+          OptionValue(request, "subquery_nested_predicate_value:");
+      if (nested_projection.empty() || nested_select_column.empty() ||
+          nested_predicate_kind.empty() || nested_predicate_column.empty()) {
+        return {};
+      }
+      const auto nested_rows = BuildSysInformationProjection(nested_projection,
+                                                             projection_context,
+                                                             catalog_objects,
+                                                             resolver_names,
+                                                             {},
+                                                             {},
+                                                             columns);
+      if (!nested_rows.ok) { return {}; }
+      for (const auto& nested_row : nested_rows.rows) {
+        if (!CatalogProjectionPredicateMatches(nested_row,
+                                               nested_predicate_kind,
+                                               nested_predicate_column,
+                                               nested_predicate_value)) {
+          continue;
+        }
+        const std::string admitted = RowFieldTextValue(nested_row, nested_select_column);
+        if (!admitted.empty()) { nested_admitted_values.insert(admitted); }
+      }
+    }
+    std::set<std::string> admitted_values;
+    for (const auto& row : subquery_rows.rows) {
+      if (subquery_predicate_kind == "column_in_projection") {
+        const std::string candidate = RowFieldTextValue(row, subquery_predicate_column);
+        if (candidate.empty() ||
+            nested_admitted_values.find(candidate) == nested_admitted_values.end()) {
+          continue;
+        }
+      } else {
+        if (!CatalogProjectionPredicateMatches(row,
+                                               subquery_predicate_kind,
+                                               subquery_predicate_column,
+                                               subquery_predicate_value)) {
+          continue;
+        }
+      }
+      const std::string admitted = RowFieldTextValue(row, subquery_select_column);
+      if (!admitted.empty()) { admitted_values.insert(admitted); }
+    }
+    std::vector<SysInformationProjectionRow> filtered;
+    filtered.reserve(rows.size());
+    for (const auto& row : rows) {
+      const std::string candidate = RowFieldTextValue(row, predicate_column);
+      if (!candidate.empty() && admitted_values.find(candidate) != admitted_values.end()) {
+        filtered.push_back(row);
+      }
+    }
+    return filtered;
+  }
+
+  std::vector<SysInformationProjectionRow> filtered;
+  filtered.reserve(rows.size());
+  for (const auto& row : rows) {
+    if (CatalogProjectionPredicateMatches(row, predicate_kind, predicate_column, predicate_value)) {
+      filtered.push_back(row);
+    }
+  }
+  return filtered;
 }
 
 void PopulateSessionSecurityProjectionContext(
@@ -870,10 +1020,46 @@ EngineShowCatalogResult BuildReadableCatalogProjectionResult(const EngineShowCat
                                 projection.diagnostic_detail,
                                 true));
   }
-  for (const auto& row : projection.rows) {
-    AddApiBehaviorRow(&result, row.fields);
+  const auto filtered_rows = FilterCatalogProjectionRows(projection.rows,
+                                                         request,
+                                                         projection_context,
+                                                         objects,
+                                                         resolver_names,
+                                                         columns);
+  const std::string result_projection = OptionValue(request, "result_projection:");
+  const std::string aggregate_function = OptionValue(request, "aggregate_function:");
+  if (result_projection == "count_assertion" ||
+      aggregate_function == "sb.aggregate.count") {
+    const std::string actual_column_name =
+        OptionValue(request, "actual_column_name:").empty()
+            ? "actual_count"
+            : OptionValue(request, "actual_column_name:");
+    const std::string expected_column_name =
+        OptionValue(request, "expected_column_name:").empty()
+            ? "expected_count"
+            : OptionValue(request, "expected_column_name:");
+    const std::string expected_value =
+        OptionValue(request, "expected_count:").empty()
+            ? OptionValue(request, "expected_value:")
+            : OptionValue(request, "expected_count:");
+    std::vector<std::pair<std::string, std::string>> fields;
+    const std::string assertion_id = OptionValue(request, "assertion_id:");
+    if (!assertion_id.empty()) {
+      fields.push_back({"assertion_id", assertion_id});
+    }
+    fields.emplace_back(actual_column_name, std::to_string(filtered_rows.size()));
+    if (!expected_value.empty()) {
+      fields.emplace_back(expected_column_name, expected_value);
+    }
+    AddApiBehaviorRow(&result, std::move(fields));
+  } else {
+    for (const auto& row : filtered_rows) {
+      AddApiBehaviorRow(&result, row.fields);
+    }
   }
   AddApiBehaviorEvidence(&result, "catalog_projection", projection_path);
+  AddApiBehaviorEvidence(&result, "catalog_source_rows", std::to_string(projection.rows.size()));
+  AddApiBehaviorEvidence(&result, "catalog_filtered_rows", std::to_string(filtered_rows.size()));
   AddApiBehaviorEvidence(&result, "catalog_rows", std::to_string(result.result_shape.rows.size()));
   result.result_shape.result_kind = projection_path + ".v1";
   return result;
@@ -1218,6 +1404,42 @@ EngineShowAccelerationExtendedResult EngineShowAccelerationExtended(
 EngineInspectShowOperationResult EngineInspectShowOperation(
     const EngineInspectShowOperationRequest& request) {
   const std::string operation_id = OperationIdOr(request, "observability.show_operation");
+  if (operation_id == "op.sbsql.surface_replay") {
+    const std::string surface_id = OptionValue(request, "surface_id:").empty()
+                                       ? OptionValue(request, "target_ref:")
+                                       : OptionValue(request, "surface_id:");
+    for (const auto& row : SbsqlLanguageElementCatalogRows()) {
+      if (row.surface_id != surface_id) continue;
+      auto result =
+          MakeApiBehaviorSuccess<EngineInspectShowOperationResult>(request.context, operation_id);
+      AddApiBehaviorEvidence(&result, "public_sbsql_operation", operation_id);
+      AddApiBehaviorEvidence(&result, "engine_api_function", "EngineInspectShowOperation");
+      AddApiBehaviorEvidence(&result, "parser_executes_sql", "false");
+      AddApiBehaviorEvidence(&result, "surface_registry_source", "sys.sbsql.surface_registry");
+      AddApiBehaviorRow(
+          &result,
+          {{"surface_id", std::string(row.surface_id)},
+           {"canonical_name", std::string(row.canonical_name)},
+           {"element_kind", std::string(row.element_kind)},
+           {"surface_kind", std::string(row.surface_kind)},
+           {"family", std::string(row.family)},
+           {"sblr_operation_family", std::string(row.sblr_operation_family)},
+           {"support_state", std::string(row.support_state)},
+           {"release_status", std::string(row.release_status)},
+           {"predictive_state", std::string(row.predictive_state)},
+           {"keyword_text", std::string(row.keyword_text)},
+           {"keyword_class", std::string(row.keyword_class)}});
+      result.result_shape.result_kind = "rs.sbsql.surface_replay.v1";
+      return result;
+    }
+    return MakeApiBehaviorDiagnostic<EngineInspectShowOperationResult>(
+        request.context,
+        operation_id,
+        MakeEngineApiDiagnostic("SBSQL.SURFACE_REPLAY.NOT_FOUND",
+                                "sbsql.surface_replay.not_found",
+                                surface_id,
+                                true));
+  }
   auto result =
       MakeApiBehaviorSuccess<EngineInspectShowOperationResult>(request.context, operation_id);
   AddShowOperationResult(&result,

@@ -9,6 +9,7 @@
 #include "catalog/sys_information_projection.hpp"
 
 #include "catalog_index_profile.hpp"
+#include "catalog/sbsql_language_elements_catalog.hpp"
 #include "datatype_descriptor.hpp"
 #include "datatype_wire_metadata.hpp"
 
@@ -320,6 +321,7 @@ sys.catalog_readable.jobs,catalog_readable,jobs,job_path;job_name;job_kind;statu
 sys.catalog_readable.remote_connections,catalog_readable,remote_connections,connection_path;connection_name;connection_kind;endpoint_display;credential_state;visibility_state,Credentials redacted.
 sys.catalog_readable.emulation_profiles,catalog_readable,emulation_profiles,profile_path;profile_name;reference_family;parser_binding;udr_binding;status;visibility_state,Reference/emulation profile metadata.
 sys.parser.dialects,frontend_projection,parser_profiles,dialect_name;base_dialect;compatibility_state;parser_family,Frontend-safe parser dialect inventory for drivers and management tools.
+sys.parser.language_elements,frontend_projection,parser_profiles,surface_id;canonical_name;element_kind;surface_kind;family;sblr_operation_family;support_state;release_status;predictive_state;keyword_text;keyword_class,Frontend-safe SBSQL language element manifest for drivers; predictive text; and conformance tests.
 sys.information.schemata,information_schema,driver_metadata,catalog_name;schema_name;schema_owner;sql_path,Standard-compatible schema metadata.
 sys.information.tables,information_schema,driver_metadata,table_catalog;table_schema;table_name;table_type;is_insertable_into,Standard-compatible table metadata.
 sys.information.views,information_schema,driver_metadata,table_catalog;table_schema;table_name;view_definition,View metadata redacted by policy.
@@ -1778,6 +1780,57 @@ const std::vector<SysInformationProjectionDefinition>& BuiltinSysInformationProj
                   SysInformationSourceKind::security_policy},
                  false,
                  false),
+      Definition("sys.schemas",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {Column("schema_id", "uuid", false, false, false, true, true),
+                  Column("schema_name", "text", false, true, false, false, true),
+                  Column("parent_schema_id", "uuid", true, false, false, true, true),
+                  Column("schema_owner", "text", true, true, false, false, true),
+                  Column("visibility_state", "text", false, false, false, false, true)},
+                 {SysInformationSourceKind::catalog_object_identity,
+                  SysInformationSourceKind::identity_resolver,
+                  SysInformationSourceKind::security_policy},
+                 true,
+                 false,
+                 "driver_metadata",
+                 {"schema_id", "schema_name"},
+                 "Driver-safe local schema metadata with stable join identifiers."),
+      Definition("sys.tables",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {Column("table_id", "uuid", false, false, false, true, true),
+                  Column("schema_id", "uuid", false, false, false, true, true),
+                  Column("table_name", "text", false, true, false, false, true),
+                  Column("table_type", "text", false, false, false, false, true),
+                  Column("is_insertable_into", "yes_no", false, false, false, false, true),
+                  Column("visibility_state", "text", false, false, false, false, true)},
+                 {SysInformationSourceKind::catalog_object_identity,
+                  SysInformationSourceKind::identity_resolver,
+                  SysInformationSourceKind::security_policy},
+                 true,
+                 false,
+                 "driver_metadata",
+                 {"table_id", "schema_id", "table_name"},
+                 "Driver-safe local table and view metadata with stable join identifiers."),
+      Definition("sys.columns",
+                 SysInformationProjectionFamily::catalog_readable,
+                 {Column("column_id", "text", false, false, false, false, true),
+                  Column("table_id", "uuid", false, false, false, true, true),
+                  Column("schema_id", "uuid", false, false, false, true, true),
+                  Column("column_name", "text", false, false, false, false, true),
+                  Column("ordinal_position", "uint32", false, false, false, false, true),
+                  Column("data_type", "text", false, false, false, false, true),
+                  Column("is_nullable", "yes_no", false, false, false, false, true),
+                  Column("column_default", "text", true, false, false, false, true),
+                  Column("visibility_state", "text", false, false, false, false, true)},
+                 {SysInformationSourceKind::catalog_object_identity,
+                  SysInformationSourceKind::identity_resolver,
+                  SysInformationSourceKind::datatype_descriptor,
+                  SysInformationSourceKind::security_policy},
+                 true,
+                 false,
+                 "driver_metadata",
+                 {"table_id", "ordinal_position", "column_name"},
+                 "Driver-safe local column metadata with stable table join identifiers."),
       Definition("sys.agents",
                  SysInformationProjectionFamily::catalog_readable,
                  {ExplicitUuidColumn("agent_uuid"),
@@ -2369,6 +2422,81 @@ SysInformationProjectionResult BuildSysInformationProjection(
     return result;
   }
 
+  if (canonical_view_path == "sys.schemas") {
+    for (const auto& object : catalog_objects) {
+      if (object.object_class != "schema" || !ObjectVisible(object, context)) { continue; }
+      bool found_schema = false;
+      const std::string schema_name = SelectResolverDisplayName(
+          resolver_names, context, object.object_uuid, "schema", &found_schema);
+      if (!found_schema) {
+        if (context.strict_mode) {
+          return Failure(kSysInformationDiagnosticNameNotFound, object.object_uuid);
+        }
+        continue;
+      }
+      SysInformationProjectionRow row;
+      AddField(&row, "schema_id", object.object_uuid);
+      AddField(&row, "schema_name", schema_name);
+      AddField(&row, "parent_schema_id", object.parent_object_uuid);
+      AddField(&row, "schema_owner", "");
+      AddField(&row, "visibility_state", "visible");
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.tables") {
+    for (const auto& object : catalog_objects) {
+      if (!IsTableLikeObject(object) || !ObjectVisible(object, context)) { continue; }
+      bool found_table = false;
+      const std::string table_name = SelectResolverDisplayName(
+          resolver_names, context, object.object_uuid, object.object_class, &found_table);
+      if (!found_table) {
+        if (context.strict_mode) {
+          return Failure(kSysInformationDiagnosticNameNotFound, object.object_uuid);
+        }
+        continue;
+      }
+      SysInformationProjectionRow row;
+      AddField(&row, "table_id", object.object_uuid);
+      AddField(&row, "schema_id", object.schema_uuid);
+      AddField(&row, "table_name", table_name);
+      AddField(&row, "table_type", TableTypeForObject(object));
+      AddField(&row, "is_insertable_into", "YES");
+      AddField(&row, "visibility_state", "visible");
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
+  if (canonical_view_path == "sys.columns") {
+    for (const auto& column : columns) {
+      if (!ProjectionSourceVisible(column.hidden, column.catalog_generation_id, context)) { continue; }
+      const auto* relation = FindObject(catalog_objects, column.relation_object_uuid, context);
+      if (relation == nullptr || !IsTableLikeObject(*relation)) {
+        if (context.strict_mode) {
+          return Failure(kSysInformationDiagnosticNameNotFound, column.relation_object_uuid);
+        }
+        continue;
+      }
+      const std::string column_id =
+          column.relation_object_uuid + ":" + std::to_string(column.ordinal_position);
+      SysInformationProjectionRow row;
+      AddField(&row, "column_id", column_id);
+      AddField(&row, "table_id", column.relation_object_uuid);
+      AddField(&row, "schema_id", relation->schema_uuid.empty() ? column.schema_uuid
+                                                                 : relation->schema_uuid);
+      AddField(&row, "column_name", column.column_name);
+      AddField(&row, "ordinal_position", std::to_string(column.ordinal_position));
+      AddField(&row, "data_type", column.datatype_name);
+      AddField(&row, "is_nullable", column.is_nullable);
+      AddField(&row, "column_default", column.column_default);
+      AddField(&row, "visibility_state", "visible");
+      result.rows.push_back(std::move(row));
+    }
+    return result;
+  }
+
   if (canonical_view_path == "sys.information.enabled_roles") {
     const auto role_uuids = EffectiveRoleUuids(context);
     for (std::size_t index = 0; index < role_uuids.size(); ++index) {
@@ -2662,6 +2790,25 @@ SysInformationProjectionResult BuildSysInformationProjection(
     AddField(&row, "compatibility_state", "supported");
     AddField(&row, "parser_family", "native_sbsql");
     result.rows.push_back(std::move(row));
+    return result;
+  }
+
+  if (canonical_view_path == "sys.parser.language_elements") {
+    for (const auto& element : SbsqlLanguageElementCatalogRows()) {
+      SysInformationProjectionRow row;
+      AddField(&row, "surface_id", std::string(element.surface_id));
+      AddField(&row, "canonical_name", std::string(element.canonical_name));
+      AddField(&row, "element_kind", std::string(element.element_kind));
+      AddField(&row, "surface_kind", std::string(element.surface_kind));
+      AddField(&row, "family", std::string(element.family));
+      AddField(&row, "sblr_operation_family", std::string(element.sblr_operation_family));
+      AddField(&row, "support_state", std::string(element.support_state));
+      AddField(&row, "release_status", std::string(element.release_status));
+      AddField(&row, "predictive_state", std::string(element.predictive_state));
+      AddField(&row, "keyword_text", std::string(element.keyword_text));
+      AddField(&row, "keyword_class", std::string(element.keyword_class));
+      result.rows.push_back(std::move(row));
+    }
     return result;
   }
 

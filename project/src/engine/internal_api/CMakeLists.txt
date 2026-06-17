@@ -118,6 +118,7 @@ add_library(sb_engine_internal_api
   catalog/name_resolution_api.cpp
   catalog/pinned_descriptor_cache.cpp
   catalog/schema_tree_api.cpp
+  catalog/sbsql_language_elements_catalog.cpp
   catalog/sys_information_projection.cpp
   catalog/wire_driver_metadata_api.cpp
   cluster/cluster_control_api.cpp

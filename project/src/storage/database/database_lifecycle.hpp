@@ -87,6 +87,7 @@ struct PolicySeedPackCatalogImage {
   u32 group_membership_records = 0;
   u32 grant_records = 0;
   u32 policy_profile_records = 0;
+  u32 default_policy_records = 0;
   std::vector<std::string> policy_profile_areas;
 };
 

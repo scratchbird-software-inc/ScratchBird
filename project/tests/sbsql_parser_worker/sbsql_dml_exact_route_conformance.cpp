@@ -40,6 +40,7 @@ using scratchbird::core::platform::UuidKind;
 
 constexpr std::string_view kTargetUuid = "019f0000-0000-7000-8000-000000002101";
 constexpr std::string_view kRelatedUuid = "019f0000-0000-7000-8000-000000002102";
+constexpr std::string_view kThirdRelationUuid = "019f0000-0000-7000-8000-000000002103";
 constexpr std::string_view kBoundedOrderedSelectSql =
     "SELECT * FROM customer ORDER BY id DESC LIMIT 2 OFFSET 1";
 constexpr std::string_view kBoundedTopSelectSql = "SELECT TOP 2 * FROM customer";
@@ -1028,9 +1029,39 @@ api::EngineApiRequest EngineCreateCustomerTableApiRequest() {
   return request;
 }
 
+api::EngineApiRequest EngineCreateSchemaApiRequest() {
+  api::EngineApiRequest request;
+  request.target_object.uuid.canonical = std::string(kSchemaUuid);
+  request.target_object.object_kind = "schema";
+  request.localized_names.push_back({"en", "primary", "", "dml_exact_route", true});
+  return request;
+}
+
 void PrepareEngineDispatchContext() {
   const auto database_uuid = CreateMinimalDatabaseForEngineDispatch();
   auto context = BeginEngineTransaction(database_uuid);
+  auto schema_envelope = sblr::MakeSblrEnvelope("ddl.create_schema",
+                                                "SBLR_DDL_CREATE_SCHEMA",
+                                                "trace.dml.exact_route.seed_schema");
+  schema_envelope.requires_security_context = true;
+  schema_envelope.requires_transaction_context = true;
+  schema_envelope.contains_sql_text = false;
+  const sblr::SblrDispatchRequest schema_request{
+      context,
+      schema_envelope,
+      EngineCreateSchemaApiRequest()};
+  const auto schema_result = sblr::DispatchSblrOperation(schema_request);
+  for (const auto& diagnostic : schema_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+  }
+  for (const auto& diagnostic : schema_result.api_result.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(schema_result.envelope_validated, "seed schema envelope did not validate");
+  Require(schema_result.accepted, "seed schema dispatch did not accept");
+  Require(schema_result.dispatched_to_api, "seed schema dispatch did not route to engine API");
+  Require(schema_result.api_result.ok, "seed schema create did not return success");
+
   auto envelope = sblr::MakeSblrEnvelope("ddl.create_table",
                                          "SBLR_DDL_CREATE_TABLE",
                                          "trace.dml.exact_route.seed_table");
@@ -1197,7 +1228,11 @@ void RequireExactLowering(std::string_view sql,
                           std::string_view opcode,
                           std::string_view required_right,
                           std::string_view surface_variant) {
-  const auto artifacts = RunPipeline(sql, {std::string(kTargetUuid)});
+  std::vector<std::string> resolved{std::string(kTargetUuid)};
+  if (operation_id == "dml.merge_rows") {
+    resolved.push_back(std::string(kRelatedUuid));
+  }
+  const auto artifacts = RunPipeline(sql, resolved);
   Require(artifacts.bound.bound, "DML/query statement did not bind after UUID resolution");
   Require(artifacts.verifier.admitted, "DML/query SBLR verifier rejected exact route");
   Require(artifacts.envelope.operation_family == operation_family,
@@ -1912,6 +1947,137 @@ void RequireInsertSourceExactRouteEvidence() {
   RequireEngineDispatch("dml.insert_rows", "SBLR_DML_INSERT_ROWS");
 }
 
+void RequireInsertValuesKeywordStringLiteralEvidence() {
+  const auto grants = RunPipeline(
+      "INSERT INTO customer VALUES "
+      "('grant_direct_select', 'user_direct', 'principal', 'object_direct', 'SELECT', FALSE, TRUE, 11), "
+      "('grant_role_update', 'role_reporting', 'role', 'object_role', 'UPDATE', FALSE, TRUE, 11), "
+      "('grant_security_reader', 'role_security_reader', 'role', 'object_security_catalog', 'VISIBLE', FALSE, TRUE, 11)",
+      {std::string(kTargetUuid)});
+  Require(grants.bound.bound, "keyword-string INSERT route did not bind");
+  Require(grants.verifier.admitted, "keyword-string INSERT verifier rejected exact route");
+  Require(grants.envelope.operation_id == "dml.insert_rows",
+          std::string("keyword-string INSERT operation id mismatch: ") +
+              grants.envelope.operation_id);
+  Require(Contains(grants.envelope.payload, "\"insert_values_row_count\":\"3\""),
+          "keyword-string INSERT payload missing row count");
+  Require(Contains(grants.envelope.payload, "\"insert_values_column_count\":\"8\""),
+          "keyword-string INSERT payload missing column count");
+  Require(Contains(grants.envelope.payload, "\"insert_values_0_4_value\":\"SELECT\""),
+          "keyword-string INSERT lost SELECT literal");
+  Require(Contains(grants.envelope.payload, "\"insert_values_1_4_value\":\"UPDATE\""),
+          "keyword-string INSERT lost UPDATE literal");
+  Require(Contains(grants.envelope.payload, "\"insert_values_2_4_value\":\"VISIBLE\""),
+          "keyword-string INSERT lost VISIBLE literal");
+  Require(Contains(grants.envelope.payload, "\"insert_values_0_5_type\":\"boolean\""),
+          "keyword-string INSERT lost boolean literal type");
+  Require(Contains(grants.envelope.payload, "\"insert_values_0_7_type\":\"bigint\""),
+          "keyword-string INSERT lost numeric literal type");
+
+  const auto replay = RunPipeline(
+      "INSERT INTO customer VALUES "
+      "('case_replay_cross_user', 'user_nested', 'user_none', 'object_nested', 'SELECT', 'SECURITY.AUTHORIZATION.PRINCIPAL_MISMATCH'), "
+      "('case_replay_role_change', 'user_role_nested', 'user_direct', 'object_role', 'UPDATE', 'SECURITY.AUTHORIZATION.PRINCIPAL_MISMATCH')",
+      {std::string(kTargetUuid)});
+  Require(replay.bound.bound, "diagnostic-string INSERT route did not bind");
+  Require(replay.verifier.admitted, "diagnostic-string INSERT verifier rejected exact route");
+  Require(replay.envelope.operation_id == "dml.insert_rows",
+          "diagnostic-string INSERT operation id mismatch");
+  Require(Contains(replay.envelope.payload, "\"insert_values_row_count\":\"2\""),
+          "diagnostic-string INSERT payload missing row count");
+  Require(Contains(replay.envelope.payload,
+                   "\"insert_values_0_5_value\":\"SECURITY.AUTHORIZATION.PRINCIPAL_MISMATCH\""),
+          "diagnostic-string INSERT lost refusal diagnostic literal");
+
+  const auto replay_command_literal = RunPipeline(
+      "INSERT INTO customer VALUES "
+      "('SBSQL-SURFACE-671B00230945', 'SBSQL-E57785E2BD95', "
+      "'SBSQL_SURFACE_REPLAY SBSQL-E57785E2BD95')",
+      {std::string(kTargetUuid)});
+  Require(replay_command_literal.bound.bound,
+          "surface-replay command literal INSERT route did not bind");
+  Require(replay_command_literal.verifier.admitted,
+          "surface-replay command literal INSERT verifier rejected exact route");
+  Require(replay_command_literal.envelope.operation_id == "dml.insert_rows",
+          "surface-replay command literal INSERT operation id mismatch");
+  Require(Contains(replay_command_literal.envelope.payload,
+                   "\"insert_values_0_2_value\":\"SBSQL_SURFACE_REPLAY SBSQL-E57785E2BD95\""),
+          "surface-replay command literal INSERT lost replay command literal");
+  const auto replay_command_admission = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::server::ServerSblrAdmissionRequest{
+          replay_command_literal.envelope.payload, false});
+  for (const auto& diagnostic : replay_command_admission.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+  }
+  Require(replay_command_admission.admitted,
+          "server admission rejected surface-replay command literal INSERT");
+
+  const auto quoted_system_variable_literal = RunPipeline(
+      "INSERT INTO customer VALUES "
+      "('SBSQL-SURFACE-F63A40BE0271', 'SBSQL-4798C99894E7', '@@tx_isolation')",
+      {std::string(kTargetUuid)});
+  Require(quoted_system_variable_literal.bound.bound,
+          "quoted system-variable literal INSERT route did not bind");
+  Require(quoted_system_variable_literal.verifier.admitted,
+          "quoted system-variable literal INSERT verifier rejected exact route");
+  Require(quoted_system_variable_literal.envelope.operation_id == "dml.insert_rows",
+          "quoted system-variable literal INSERT operation id mismatch");
+  Require(Contains(quoted_system_variable_literal.envelope.payload,
+                   "\"insert_values_0_2_type\":\"text\""),
+          "quoted system-variable literal INSERT lost text literal type");
+  Require(Contains(quoted_system_variable_literal.envelope.payload,
+                   "\"insert_values_0_2_value\":\"@@tx_isolation\""),
+          "quoted system-variable literal INSERT lost @@tx_isolation string payload");
+
+  const auto generated_surface_manifest_literal = RunPipeline(
+      "INSERT INTO customer VALUES "
+      "('SBSQL-SURFACE-F63A40BE0271', 'SBSQL-4798C99894E7', 'BATCH-0032', "
+      "'@@tx_isolation', 'expression_runtime', 'operator', 'native_now', "
+      "'sblr.expression.runtime.v3', 'parser_parse_only', "
+      "'parser_parse_only;parser_bind_lower;diagnostic;server_admission;udr_sql_to_sblr;engine_behavior;full_route', "
+      "'SBSQL_SURFACE_REPLAY SBSQL-4798C99894E7', "
+      "'accepted-or-exact-canonical-refusal;admit_revalidate_route_stream_cancel_and_return_message_vector', "
+      "'execute-sblr-internal-procedure-only-no-sql-text', "
+      "'project/tests/sbsql_parser_worker/generated/replay/DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl#SBSQL-SURFACE-F63A40BE0271')",
+      {std::string(kTargetUuid)});
+  Require(generated_surface_manifest_literal.bound.bound,
+          "generated surface manifest literal INSERT route did not bind");
+  Require(generated_surface_manifest_literal.verifier.admitted,
+          "generated surface manifest literal INSERT verifier rejected exact route");
+  Require(generated_surface_manifest_literal.envelope.operation_id == "dml.insert_rows",
+          "generated surface manifest literal INSERT operation id mismatch");
+  Require(Contains(generated_surface_manifest_literal.envelope.payload,
+                   "\"insert_values_column_count\":\"14\""),
+          "generated surface manifest literal INSERT lost generated row column count");
+  Require(Contains(generated_surface_manifest_literal.envelope.payload,
+                   "\"insert_values_0_3_value\":\"@@tx_isolation\""),
+          "generated surface manifest literal INSERT lost generated @@tx_isolation field");
+  Require(Contains(generated_surface_manifest_literal.envelope.payload,
+                   "\"insert_values_0_13_value\":\"project/tests/sbsql_parser_worker/generated/replay/DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl#SBSQL-SURFACE-F63A40BE0271\""),
+          "generated surface manifest literal INSERT lost payload-ref field");
+
+  const auto generated_cast_manifest_literal = RunPipeline(
+      "INSERT INTO customer VALUES "
+      "('SBSQL-SURFACE-5091F71AEE3D', 'SBSQL-C6EDE941F4E9', 'BATCH-0029', "
+      "'CAST', 'expression_runtime', 'function', 'native_now', "
+      "'sblr.expression.runtime.v3', 'parser_parse_only', "
+      "'parser_parse_only;parser_bind_lower;diagnostic;server_admission;udr_sql_to_sblr;engine_behavior;full_route', "
+      "'SBSQL_SURFACE_REPLAY SBSQL-C6EDE941F4E9', "
+      "'accepted-or-exact-canonical-refusal;admit_revalidate_route_stream_cancel_and_return_message_vector', "
+      "'execute-sblr-internal-procedure-only-no-sql-text', "
+      "'project/tests/sbsql_parser_worker/generated/replay/DIFFERENTIAL_REPLAY_EXPECTED_PAYLOADS.jsonl#SBSQL-SURFACE-5091F71AEE3D')",
+      {std::string(kTargetUuid)});
+  Require(generated_cast_manifest_literal.bound.bound,
+          "generated CAST manifest literal INSERT route did not bind");
+  Require(generated_cast_manifest_literal.verifier.admitted,
+          "generated CAST manifest literal INSERT verifier rejected exact route");
+  Require(generated_cast_manifest_literal.envelope.operation_id == "dml.insert_rows",
+          "generated CAST manifest literal INSERT operation id mismatch");
+  Require(Contains(generated_cast_manifest_literal.envelope.payload,
+                   "\"insert_values_0_3_value\":\"CAST\""),
+          "generated CAST manifest literal INSERT lost quoted CAST literal");
+}
+
 void RequireUnresolvedNamesFailClosed() {
   const auto artifacts = RunPipeline("INSERT INTO customer VALUES (1)");
   Require(!artifacts.bound.bound || artifacts.envelope.messages.has_errors() ||
@@ -2113,7 +2279,7 @@ void RequireContextualKeywordExactRouteEvidence() {
 
   const auto merge_route = RunPipeline(
       "MERGE INTO customer USING staging ON customer.id = staging.id WHEN MATCHED THEN UPDATE SET name = staging.name",
-      {std::string(kTargetUuid)});
+      {std::string(kTargetUuid), std::string(kRelatedUuid)});
   Require(merge_route.bound.bound, "contextual MERGE keyword route did not bind");
   Require(merge_route.verifier.admitted,
           "contextual MERGE keyword verifier rejected exact route");
@@ -2570,6 +2736,25 @@ void RequireTableJoinLowering() {
           "server admission table join operation id mismatch");
   Require(admission.operation_family == "sblr.query.relational.v3",
           "server admission table join family mismatch");
+
+  const auto count_assertion = RunPipeline(
+      "SELECT 'join_count' AS assertion_id, COUNT(*) AS actual_count, "
+      "2 AS expected_count FROM customer JOIN orders ON customer.id = orders.id",
+      {std::string(kTargetUuid), std::string(kRelatedUuid)});
+  Require(count_assertion.bound.bound, "table join count assertion did not bind");
+  Require(count_assertion.verifier.admitted,
+          "table join count assertion verifier rejected exact route");
+  Require(count_assertion.envelope.operation_id == "query.plan_operation",
+          "table join count assertion operation id mismatch");
+  Require(!DiagnosticsContain(count_assertion.envelope.messages,
+                              "SBSQL.QUERY.COUNT_ROUTE_UNSUPPORTED"),
+          "table join count assertion was also routed through generic count analysis");
+  Require(Contains(count_assertion.envelope.payload,
+                   "\"query_envelope_kind\":\"table_inner_join\""),
+          "table join count assertion did not stay on join route");
+  Require(!Contains(count_assertion.envelope.payload,
+                    "\"query_envelope_kind\":\"table_count\""),
+          "table join count assertion emitted table_count payload");
 }
 
 void RequireTableSetOperationLowering() {
@@ -2652,6 +2837,62 @@ void RequireTableSetOperationLowering() {
     Require(admission.operation_family == "sblr.query.relational.v3",
             "server admission table set operation family mismatch");
   }
+
+  const auto count_union = RunPipeline(
+      "SELECT 'SBDFS-085-010' AS assertion_id, "
+      "COUNT(*) AS actual_security_matrix_cases, "
+      "13 AS expected_security_matrix_cases "
+      "FROM ("
+      "SELECT case_id FROM security_authorization_cases "
+      "UNION ALL "
+      "SELECT case_id FROM security_sblr_replay_cases "
+      "UNION ALL "
+      "SELECT case_id FROM security_uuid_resolution_cases"
+      ") AS security_case_union",
+      {std::string(kTargetUuid),
+       std::string(kRelatedUuid),
+       std::string(kThirdRelationUuid)});
+  Require(count_union.bound.bound, "set-operation count assertion did not bind");
+  Require(count_union.verifier.admitted,
+          "set-operation count assertion verifier rejected exact route");
+  Require(count_union.envelope.operation_family == "sblr.query.relational.v3",
+          "set-operation count assertion family mismatch");
+  Require(count_union.envelope.operation_id == "query.plan_operation",
+          "set-operation count assertion operation id mismatch");
+  Require(Contains(count_union.envelope.payload,
+                   "\"query_envelope_kind\":\"table_set_operation\""),
+          "set-operation count assertion payload marker missing");
+  Require(Contains(count_union.envelope.payload, "\"set_operation\":\"union_all\""),
+          "set-operation count assertion payload missing union_all");
+  Require(Contains(count_union.envelope.payload, "\"relation_count\":\"3\""),
+          "set-operation count assertion payload missing relation count");
+  Require(Contains(count_union.envelope.payload,
+                   std::string("\"target_object_uuid\":\"") +
+                       std::string(kTargetUuid) + "\""),
+          "set-operation count assertion payload missing first relation UUID");
+  Require(Contains(count_union.envelope.payload,
+                   std::string("\"related_object_0_uuid\":\"") +
+                       std::string(kRelatedUuid) + "\""),
+          "set-operation count assertion payload missing second relation UUID");
+  Require(Contains(count_union.envelope.payload,
+                   std::string("\"related_object_1_uuid\":\"") +
+                       std::string(kThirdRelationUuid) + "\""),
+          "set-operation count assertion payload missing third relation UUID");
+  Require(Contains(count_union.envelope.payload, "\"result_projection\":\"count_assertion\""),
+          "set-operation count assertion payload missing count projection");
+  Require(Contains(count_union.envelope.payload, "\"expected_count\":\"13\""),
+          "set-operation count assertion payload missing expected count");
+  Require(!Contains(count_union.envelope.payload, "security_authorization_cases"),
+          "set-operation count assertion payload embedded source relation name");
+  Require(!Contains(count_union.envelope.payload, "UNION ALL"),
+          "set-operation count assertion payload embedded SQL text");
+
+  const auto count_union_admission = scratchbird::server::AdmitServerSblrEnvelope(
+      scratchbird::server::ServerSblrAdmissionRequest{count_union.envelope.payload, false});
+  Require(count_union_admission.admitted,
+          "server admission rejected set-operation count assertion route");
+  Require(count_union_admission.requires_public_abi_dispatch,
+          "server admission did not require public ABI dispatch for set-operation count assertion");
 }
 
 void RequireRowNumberWindowLowering() {
@@ -3802,6 +4043,52 @@ void RequireTableCountLowering() {
   Require(Contains(count_field.envelope.payload,
                    "\"count_all\":false"),
           "COUNT(field) payload did not mark non-star count");
+
+  const auto count_like = RunPipeline(
+      "SELECT 'SBDFS-100-002' AS assertion_id, COUNT(*) AS actual_full_route_rows, "
+      "2560 AS expected_full_route_rows FROM customer WHERE route_set LIKE '%full_route%'",
+      {std::string(kTargetUuid)});
+  Require(count_like.bound.bound, "COUNT LIKE assertion statement did not bind");
+  Require(count_like.verifier.admitted, "COUNT LIKE assertion verifier rejected exact route");
+  Require(Contains(count_like.envelope.payload,
+                   "\"query_envelope_kind\":\"table_count\""),
+          "COUNT LIKE assertion payload missing table_count route marker");
+  Require(Contains(count_like.envelope.payload,
+                   "\"result_projection\":\"count_assertion\""),
+          "COUNT LIKE assertion payload missing assertion projection marker");
+  Require(Contains(count_like.envelope.payload, "\"predicate_kind\":\"column_like\""),
+          "COUNT LIKE assertion payload missing LIKE predicate kind");
+  Require(Contains(count_like.envelope.payload, "\"predicate_column\":\"route_set\""),
+          "COUNT LIKE assertion payload missing predicate column");
+  Require(Contains(count_like.envelope.payload, "\"predicate_value\":\"%full_route%\""),
+          "COUNT LIKE assertion payload missing predicate value");
+  Require(!Contains(count_like.envelope.payload, "SELECT 'SBDFS-100-002'"),
+          "COUNT LIKE assertion payload embedded SQL text");
+
+  const auto count_not_in = RunPipeline(
+      "SELECT 'SBDFS-100-004' AS assertion_id, COUNT(*) AS actual_statement_surface_rows, "
+      "1083 AS expected_statement_surface_rows FROM customer "
+      "WHERE surface_kind NOT IN ('function', 'operator', 'variable')",
+      {std::string(kTargetUuid)});
+  Require(count_not_in.bound.bound, "COUNT NOT IN assertion statement did not bind");
+  Require(count_not_in.verifier.admitted,
+          "COUNT NOT IN assertion verifier rejected exact route");
+  Require(Contains(count_not_in.envelope.payload,
+                   "\"query_envelope_kind\":\"table_count\""),
+          "COUNT NOT IN assertion payload missing table_count route marker");
+  Require(Contains(count_not_in.envelope.payload,
+                   "\"result_projection\":\"count_assertion\""),
+          "COUNT NOT IN assertion payload missing assertion projection marker");
+  Require(Contains(count_not_in.envelope.payload,
+                   "\"predicate_kind\":\"column_not_in_list\""),
+          "COUNT NOT IN assertion payload missing NOT IN predicate kind");
+  Require(Contains(count_not_in.envelope.payload, "\"predicate_column\":\"surface_kind\""),
+          "COUNT NOT IN assertion payload missing predicate column");
+  Require(Contains(count_not_in.envelope.payload,
+                   "\"predicate_value\":\"function,operator,variable\""),
+          "COUNT NOT IN assertion payload missing predicate values");
+  Require(!Contains(count_not_in.envelope.payload, "SELECT 'SBDFS-100-004'"),
+          "COUNT NOT IN assertion payload embedded SQL text");
 }
 
 void RequireMaterializedCteLowering() {
@@ -3898,6 +4185,28 @@ void RequireMaterializedCteLowering() {
     Require(!Contains(artifacts.envelope.payload, "WITH c"),
             CteEvidenceMessage(row, "fixture", "payload embedded SQL text"));
   }
+}
+
+void RequireExplainWithCteAliasLowering() {
+  const auto artifacts = RunPipeline(
+      "EXPLAIN WITH recent AS (VALUES (1)) SELECT * FROM recent");
+  Require(artifacts.bound.bound, "EXPLAIN WITH local CTE alias did not bind");
+  Require(artifacts.verifier.admitted,
+          "EXPLAIN WITH local CTE alias verifier rejected exact route");
+  Require(artifacts.envelope.operation_family == "sblr.observability.inspect.v3",
+          "EXPLAIN WITH operation family mismatch");
+  Require(artifacts.envelope.operation_id == "observability.explain_operation",
+          "EXPLAIN WITH operation id mismatch");
+  Require(artifacts.envelope.sblr_opcode == "SBLR_OBSERVABILITY_EXPLAIN_OPERATION",
+          "EXPLAIN WITH opcode mismatch");
+  Require(HasValue(artifacts.envelope.required_authority_steps,
+                   "authority.parser.no_sql_text_execution"),
+          "EXPLAIN WITH parser SQL execution boundary missing");
+  Require(!DiagnosticsContain(artifacts.envelope.messages,
+                              "SBSQL.NAME_RESOLUTION"),
+          "EXPLAIN WITH local CTE alias produced name-resolution diagnostic");
+  Require(!Contains(artifacts.envelope.payload, "recent"),
+          "EXPLAIN WITH envelope embedded local CTE alias text");
 }
 
 void RequireRecursiveCteLowering() {
@@ -4170,6 +4479,7 @@ int main() {
                        "insert");
   PrepareEngineDispatchContext();
   RequireInsertSourceExactRouteEvidence();
+  RequireInsertValuesKeywordStringLiteralEvidence();
   RequireExactLowering("UPDATE customer SET name = 'x'",
                        "sblr.dml.operation.v3",
                        "dml.update_rows",
@@ -4190,8 +4500,8 @@ int main() {
                        "merge");
   RequireExactLowering("UPSERT INTO customer VALUES (1)",
                        "sblr.dml.operation.v3",
-                       "dml.merge_rows",
-                       "SBLR_DML_MERGE_ROWS",
+                       "dml.insert_rows",
+                       "SBLR_DML_INSERT_ROWS",
                        "right.write",
                        "upsert");
   RequireExactLowering("COPY customer FROM STDIN",
@@ -4216,6 +4526,7 @@ int main() {
   RequireGroupByAggregateLowering();
   RequireTableCountLowering();
   RequireMaterializedCteLowering();
+  RequireExplainWithCteAliasLowering();
   RequireRecursiveCteLowering();
   RequireScalarSubqueryLowering();
   RequireHavingClauseLowering();

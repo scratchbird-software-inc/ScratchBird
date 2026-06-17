@@ -12,6 +12,8 @@
     "full_create_database_required": true,
     "minimal_resource_bootstrap_allowed": false,
     "resource_seed_pack_required": true,
+    "policy_seed_pack_required": true,
+    "default_policy_records_required": 58,
     "restart_policy": "stop_then_start_from_recorded_command_bundle"
   },
   "shutdown": {

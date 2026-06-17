@@ -54,6 +54,55 @@ bool MergeOptionEnabled(const EngineMergeRowsRequest& request,
   return false;
 }
 
+std::string MergeOptionValue(const EngineMergeRowsRequest& request,
+                             const std::string& prefix) {
+  for (const auto& candidate : request.option_envelopes) {
+    if (candidate.starts_with(prefix)) {
+      return candidate.substr(prefix.size());
+    }
+  }
+  for (const auto& candidate : request.diagnostic_options) {
+    if (candidate.starts_with(prefix)) {
+      return candidate.substr(prefix.size());
+    }
+  }
+  return {};
+}
+
+EngineTypedValue MergeTypedValueFromCrudValue(const std::string& encoded) {
+  EngineTypedValue value;
+  value.descriptor.descriptor_kind = "scalar";
+  value.descriptor.canonical_type_name = "text";
+  value.descriptor.encoded_descriptor = "type=text";
+  if (encoded == "<NULL>") {
+    value.setState(EngineValueState::sql_null);
+    return value;
+  }
+  value.encoded_value = encoded;
+  return value;
+}
+
+EngineRowValue MergeRowFromCrudRow(const CrudRowVersionRecord& source_row) {
+  EngineRowValue row;
+  row.fields.reserve(source_row.values.size());
+  for (const auto& [field, encoded] : source_row.values) {
+    row.fields.push_back({field, MergeTypedValueFromCrudValue(encoded)});
+  }
+  return row;
+}
+
+std::vector<EngineRowValue> MergeRowsFromSourceTable(
+    const CrudState& state,
+    const EngineRequestContext& context,
+    const std::string& source_table_uuid) {
+  std::vector<EngineRowValue> rows;
+  for (const auto& source_row :
+       VisibleCrudRowsForContext(state, source_table_uuid, context)) {
+    rows.push_back(MergeRowFromCrudRow(source_row));
+  }
+  return rows;
+}
+
 EnginePredicateEnvelope MergePredicateForRow(const EngineMergeRowsRequest& request,
                                              const EngineRowValue& row) {
   EnginePredicateEnvelope predicate = !request.match_predicate.predicate_kind.empty() ? request.match_predicate
@@ -327,6 +376,97 @@ struct MergeMatchLookupResult {
   std::optional<CrudRowVersionRecord> row;
 };
 
+struct MergeTargetKeyLookup {
+  bool enabled = false;
+  std::string column;
+  std::vector<CrudRowVersionRecord> visible_rows;
+  std::unordered_map<std::string, std::size_t> first_row_index_by_key;
+  std::size_t duplicate_keys = 0;
+};
+
+bool MergePredicateEligibleForTargetKeyLookup(
+    const EnginePredicateEnvelope& predicate,
+    const std::string& source_table_uuid) {
+  return !source_table_uuid.empty() &&
+         predicate.predicate_kind == "column_equals" &&
+         !predicate.canonical_predicate_envelope.empty() &&
+         predicate.bound_values.empty();
+}
+
+MergeTargetKeyLookup BuildMergeTargetKeyLookup(
+    const CrudState& state,
+    const std::string& table_uuid,
+    const EngineRequestContext& context,
+    const EnginePredicateEnvelope& predicate,
+    const std::string& source_table_uuid) {
+  MergeTargetKeyLookup lookup;
+  if (!MergePredicateEligibleForTargetKeyLookup(predicate, source_table_uuid)) {
+    return lookup;
+  }
+  lookup.enabled = true;
+  lookup.column = predicate.canonical_predicate_envelope;
+  lookup.visible_rows = VisibleCrudRowsForContext(state, table_uuid, context);
+  lookup.first_row_index_by_key.reserve(lookup.visible_rows.size());
+  for (std::size_t index = 0; index < lookup.visible_rows.size(); ++index) {
+    const std::string key = CrudFieldValue(lookup.visible_rows[index].values,
+                                           lookup.column);
+    const auto [ignored, inserted] =
+        lookup.first_row_index_by_key.emplace(key, index);
+    if (!inserted) {
+      ++lookup.duplicate_keys;
+    }
+  }
+  return lookup;
+}
+
+std::optional<std::string> MergeSourceKeyForLookup(
+    const MergeTargetKeyLookup& lookup,
+    const EngineRowValue& source_row) {
+  if (!lookup.enabled || lookup.column.empty()) {
+    return std::nullopt;
+  }
+  for (const auto& [field, value] : source_row.fields) {
+    if (field == lookup.column) {
+      return value.encoded_value;
+    }
+  }
+  return std::nullopt;
+}
+
+MergeMatchLookupResult FindMergeMatchWithTargetKeyLookup(
+    const MergeTargetKeyLookup& lookup,
+    const EngineRowValue& source_row,
+    const EnginePredicateEnvelope& predicate,
+    std::vector<EngineEvidenceReference>* evidence) {
+  MergeMatchLookupResult result;
+  evidence->push_back({"merge_row_candidate_stream", "target_key_map"});
+  evidence->push_back({"merge_target_key_map_mga_visibility", "pre_filtered"});
+  evidence->push_back({"merge_target_key_map_security_visibility",
+                       "context_filtered"});
+  evidence->push_back({"index_or_cache_finality_authority", "false"});
+  const auto key = MergeSourceKeyForLookup(lookup, source_row);
+  if (!key) {
+    evidence->push_back({"merge_target_key_map_result", "source_key_missing"});
+    return result;
+  }
+  const auto found = lookup.first_row_index_by_key.find(*key);
+  if (found == lookup.first_row_index_by_key.end() ||
+      found->second >= lookup.visible_rows.size()) {
+    evidence->push_back({"merge_target_key_map_result", "not_found"});
+    return result;
+  }
+  const CrudRowVersionRecord& candidate = lookup.visible_rows[found->second];
+  if (!CrudRowMatchesPredicate(candidate, predicate)) {
+    evidence->push_back({"merge_target_key_map_result",
+                         "predicate_recheck_miss"});
+    return result;
+  }
+  evidence->push_back({"merge_target_key_map_result", "matched"});
+  evidence->push_back({"mga_visibility_recheck", "required"});
+  result.row = candidate;
+  return result;
+}
+
 MergeMatchLookupResult FindMergeMatchWithPlan(
     const CrudState& state,
     const std::string& table_uuid,
@@ -589,12 +729,9 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "local_transaction_id_required"));
   }
   const EngineObjectReference target = MergeTarget(request);
-  const std::vector<EngineRowValue> source_rows = MergeRows(request);
+  std::vector<EngineRowValue> source_rows = MergeRows(request);
   if (target.uuid.canonical.empty()) {
     return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "target_table_uuid_required"));
-  }
-  if (source_rows.empty()) {
-    return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "source_row_required"));
   }
   bool delete_branch_requested = request.delete_when_matched;
   for (const auto& option : request.option_envelopes) {
@@ -611,6 +748,31 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
   const auto loaded = LoadMgaRelationStoreState(request.context);
   if (!loaded.ok) { return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", loaded.diagnostic); }
   CrudState state = BuildCrudCompatibilityStateFromMga(loaded.state);
+  const std::string source_table_uuid = MergeOptionValue(request, "source_uuid:");
+  if (source_rows.empty() && !source_table_uuid.empty()) {
+    const auto source_table =
+        FindVisibleCrudTable(state,
+                             source_table_uuid,
+                             request.context.local_transaction_id);
+    if (!source_table) {
+      return MakeCrudDiagnosticResult<EngineMergeRowsResult>(
+          request.context,
+          "dml.merge_rows",
+          MakeInvalidRequestDiagnostic("dml.merge_rows",
+                                       "source_table_not_visible"));
+    }
+    if (source_table->temporary && request.context.session_uuid.canonical.empty()) {
+      return MakeCrudDiagnosticResult<EngineMergeRowsResult>(
+          request.context,
+          "dml.merge_rows",
+          MakeInvalidRequestDiagnostic("dml.merge_rows",
+                                       "temporary_source_table_requires_session_uuid"));
+    }
+    source_rows = MergeRowsFromSourceTable(state, request.context, source_table_uuid);
+  }
+  if (source_rows.empty()) {
+    return MakeCrudDiagnosticResult<EngineMergeRowsResult>(request.context, "dml.merge_rows", MakeInvalidRequestDiagnostic("dml.merge_rows", "source_row_required"));
+  }
   const std::string table_uuid = target.uuid.canonical;
   const auto table = FindVisibleCrudTable(state, table_uuid, request.context.local_transaction_id);
   if (!table) {
@@ -624,9 +786,33 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
                                      "temporary_table_requires_session_uuid"));
   }
   auto result = MakeCrudSuccessResult<EngineMergeRowsResult>(request.context, "dml.merge_rows");
+  if (!source_table_uuid.empty()) {
+    result.evidence.push_back({"merge_source_kind", "table"});
+    result.evidence.push_back({"merge_source_visibility", "mga_filtered"});
+  }
   AddMutationOptimizerEvidence("merge", request.context.local_transaction_id != 0, true, &result.evidence);
   const auto visible_indexes =
       VisibleCrudIndexesForTable(state, table_uuid, request.context.local_transaction_id);
+  const EnginePredicateEnvelope base_merge_predicate =
+      !request.match_predicate.predicate_kind.empty() ? request.match_predicate
+                                                      : request.predicate;
+  const MergeTargetKeyLookup target_key_lookup =
+      BuildMergeTargetKeyLookup(state,
+                                table_uuid,
+                                request.context,
+                                base_merge_predicate,
+                                source_table_uuid);
+  if (target_key_lookup.enabled) {
+    result.evidence.push_back({"merge_target_key_map", "prepared"});
+    result.evidence.push_back({"merge_target_key_map_column",
+                               target_key_lookup.column});
+    result.evidence.push_back({"merge_target_key_map_visible_rows",
+                               std::to_string(target_key_lookup.visible_rows.size())});
+    result.evidence.push_back({"merge_target_key_map_duplicate_keys",
+                               std::to_string(target_key_lookup.duplicate_keys)});
+    result.evidence.push_back({"merge_target_key_map_authority",
+                               "candidate_stream_only"});
+  }
   std::vector<MergeActionPartition> partitions;
   partitions.reserve(source_rows.size());
   EngineApiU64 matched_source_rows = 0;
@@ -658,7 +844,11 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
       rejected.evidence = std::move(result.evidence);
       return rejected;
     }
-    if (plan.access_kind == DmlTargetAccessKind::table_scan) {
+    const bool use_target_key_lookup =
+        target_key_lookup.enabled &&
+        plan.access_kind == DmlTargetAccessKind::table_scan;
+    if (plan.access_kind == DmlTargetAccessKind::table_scan &&
+        !use_target_key_lookup) {
       repeated_full_scan = true;
       result.evidence.push_back({"merge_target_access_fallback",
                                  unsupported_predicate
@@ -670,13 +860,18 @@ EngineMergeRowsResult EngineMergeRows(const EngineMergeRowsRequest& request) {
       unique_conflict_proof_index_backed = true;
     }
     const auto lookup =
-        FindMergeMatchWithPlan(state,
-                               table_uuid,
-                               predicate,
-                               request.context,
-                               plan_request,
-                               plan,
-                               &result.evidence);
+        use_target_key_lookup
+            ? FindMergeMatchWithTargetKeyLookup(target_key_lookup,
+                                                source_row,
+                                                predicate,
+                                                &result.evidence)
+            : FindMergeMatchWithPlan(state,
+                                     table_uuid,
+                                     predicate,
+                                     request.context,
+                                     plan_request,
+                                     plan,
+                                     &result.evidence);
     if (!lookup.ok) {
       auto rejected = MakeCrudDiagnosticResult<EngineMergeRowsResult>(
           request.context,

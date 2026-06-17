@@ -44,6 +44,11 @@ constexpr std::string_view kAliceVerifierFingerprint =
     "local-password-verifier:v1:sha256:dff18f8159477ed5c5de86a0378a8d6a4826d026ad9be6962d87c2e851b369d2";
 constexpr std::string_view kAppSchemaUuid = "018f0a2b-0000-7000-9000-000000000100";
 
+struct CreatedDatabaseFixture {
+  std::string database_uuid;
+  db::DatabaseLifecycleState state;
+};
+
 const std::vector<std::string>& SysarchRights() {
   static const std::vector<std::string> rights = {
       "CONNECT",
@@ -325,7 +330,7 @@ std::string SchemaUuidForPath(const api::EngineRequestContext& context, const st
   return {};
 }
 
-std::string CreateDatabase(const Args& args) {
+CreatedDatabaseFixture CreateDatabase(const Args& args) {
   if (std::filesystem::exists(args.output)) {
     if (!args.overwrite) {
       Fail("driver test database already exists");
@@ -361,7 +366,10 @@ std::string CreateDatabase(const Args& args) {
   if (!opened.ok() || !opened.state.resource_seed_catalog_present) {
     Fail("driver test database full resource seed activation failed");
   }
-  return uuid::UuidToString(database_uuid.value);
+  CreatedDatabaseFixture fixture;
+  fixture.database_uuid = uuid::UuidToString(database_uuid.value);
+  fixture.state = created.state;
+  return fixture;
 }
 
 void CreateAppSchema(const api::EngineRequestContext& context) {
@@ -506,7 +514,9 @@ void WriteAuthStore(const Args& args) {
   }
 }
 
-void WriteManifest(const Args& args, const std::string& database_uuid) {
+void WriteManifest(const Args& args,
+                   const std::string& database_uuid,
+                   const db::DatabaseLifecycleState& state) {
   std::filesystem::create_directories(args.manifest.parent_path());
   std::ofstream out(args.manifest, std::ios::trunc);
   if (!out) {
@@ -520,6 +530,11 @@ void WriteManifest(const Args& args, const std::string& database_uuid) {
   out << "  \"creation_unix_epoch_millis\": " << kDriverFixtureCreationMillis << ",\n";
   out << "  \"full_create_database\": true,\n";
   out << "  \"resource_seed_pack_active\": true,\n";
+  out << "  \"policy_seed_pack_active\": "
+      << (state.policy_seed_catalog_present ? "true" : "false") << ",\n";
+  out << "  \"policy_pack_id\": \"" << state.policy_seed_catalog.policy_pack_id << "\",\n";
+  out << "  \"default_policy_records\": "
+      << state.policy_seed_catalog.default_policy_records << ",\n";
   out << "  \"minimal_resource_bootstrap\": false,\n";
   out << "  \"fixture_objects_seeded\": [\n";
   const auto tables = FixtureTables();
@@ -561,12 +576,12 @@ int main(int argc, char** argv) {
   }
 
   ConfigureMemory();
-  const std::string database_uuid = CreateDatabase(args);
-  const auto context = Begin(BaseContext(args, database_uuid));
+  const CreatedDatabaseFixture fixture = CreateDatabase(args);
+  const auto context = Begin(BaseContext(args, fixture.database_uuid));
   SeedFixtureObjects(context);
   Commit(context);
   WriteAuthStore(args);
-  WriteManifest(args, database_uuid);
+  WriteManifest(args, fixture.database_uuid, fixture.state);
 
   std::cout << "public_driver_test_database_seed=passed database="
             << args.output.filename().string()

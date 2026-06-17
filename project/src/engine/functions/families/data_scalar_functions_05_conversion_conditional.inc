@@ -9,7 +9,21 @@
 // SBSQL source-layout fragment. Included only by data_scalar_functions.cpp.
 // This fragment preserves pre-existing behavior; do not add unrelated future work here.
       if (!ValueAsUint64Strict(value, &parsed)) return RefuseFunctionInvalidInput(request, "cast to uint64 requires exact non-negative integer text/value");
-      return MakeFunctionSuccess(request, {MakeUint64Value("uint64", parsed)});
+      if (target_descriptor == "uint32" &&
+          parsed > std::numeric_limits<std::uint32_t>::max()) {
+        return RefuseFunctionInvalidInput(request, "cast to uint32 is outside the uint32 range");
+      }
+      if (target_descriptor == "uint16" &&
+          parsed > std::numeric_limits<std::uint16_t>::max()) {
+        return RefuseFunctionInvalidInput(request, "cast to uint16 is outside the uint16 range");
+      }
+      if (target_descriptor == "uint8" &&
+          parsed > std::numeric_limits<std::uint8_t>::max()) {
+        return RefuseFunctionInvalidInput(request, "cast to uint8 is outside the uint8 range");
+      }
+      const std::string descriptor =
+          target_descriptor == "unsigned_bigint" ? "uint64" : target_descriptor;
+      return MakeFunctionSuccess(request, {MakeUint64Value(descriptor, parsed)});
     }
     if (target_descriptor == "real64" || target_descriptor == "double" ||
         target_descriptor == "float64") {
@@ -60,17 +74,52 @@
       return MakeFunctionSuccess(request, {MakeTextValue(target_descriptor, ValueAsText(value))});
     }
     if (target_descriptor == "int64" || target_descriptor == "integer" ||
-        target_descriptor == "bigint") {
-      if (IsSqlNull(value)) return null_result("int64");
+        target_descriptor == "bigint" || target_descriptor == "int32" ||
+        target_descriptor == "int16" || target_descriptor == "int8") {
+      const std::string descriptor =
+          (target_descriptor == "integer" || target_descriptor == "bigint") ? "int64"
+                                                                            : target_descriptor;
+      if (IsSqlNull(value)) return null_result(descriptor);
       std::int64_t parsed = 0;
-      if (!ValueAsInt64Strict(value, &parsed)) return null_result("int64");
-      return MakeFunctionSuccess(request, {MakeInt64Value("int64", parsed)});
+      if (!ValueAsInt64Strict(value, &parsed)) return null_result(descriptor);
+      if (target_descriptor == "int32" &&
+          (parsed < std::numeric_limits<std::int32_t>::min() ||
+           parsed > std::numeric_limits<std::int32_t>::max())) {
+        return null_result(descriptor);
+      }
+      if (target_descriptor == "int16" &&
+          (parsed < std::numeric_limits<std::int16_t>::min() ||
+           parsed > std::numeric_limits<std::int16_t>::max())) {
+        return null_result(descriptor);
+      }
+      if (target_descriptor == "int8" &&
+          (parsed < std::numeric_limits<std::int8_t>::min() ||
+           parsed > std::numeric_limits<std::int8_t>::max())) {
+        return null_result(descriptor);
+      }
+      return MakeFunctionSuccess(request, {MakeInt64Value(descriptor, parsed)});
     }
-    if (target_descriptor == "uint64" || target_descriptor == "unsigned_bigint") {
-      if (IsSqlNull(value)) return null_result("uint64");
+    if (target_descriptor == "uint64" || target_descriptor == "unsigned_bigint" ||
+        target_descriptor == "uint32" || target_descriptor == "uint16" ||
+        target_descriptor == "uint8") {
+      const std::string descriptor =
+          target_descriptor == "unsigned_bigint" ? "uint64" : target_descriptor;
+      if (IsSqlNull(value)) return null_result(descriptor);
       std::uint64_t parsed = 0;
-      if (!ValueAsUint64Strict(value, &parsed)) return null_result("uint64");
-      return MakeFunctionSuccess(request, {MakeUint64Value("uint64", parsed)});
+      if (!ValueAsUint64Strict(value, &parsed)) return null_result(descriptor);
+      if (target_descriptor == "uint32" &&
+          parsed > std::numeric_limits<std::uint32_t>::max()) {
+        return null_result(descriptor);
+      }
+      if (target_descriptor == "uint16" &&
+          parsed > std::numeric_limits<std::uint16_t>::max()) {
+        return null_result(descriptor);
+      }
+      if (target_descriptor == "uint8" &&
+          parsed > std::numeric_limits<std::uint8_t>::max()) {
+        return null_result(descriptor);
+      }
+      return MakeFunctionSuccess(request, {MakeUint64Value(descriptor, parsed)});
     }
     if (target_descriptor == "real64" || target_descriptor == "double" ||
         target_descriptor == "float64") {
@@ -497,7 +546,32 @@
     return UnaryReal(request, std::floor, "floor");
   }
   if (IdIs(id, {"data.scalar.round", "sb.fn.numeric.round", "sb.scalar.round", "round"})) {
-    return UnaryReal(request, std::round, "round");
+    if (request.arguments.size() == 1) return UnaryReal(request, std::round, "round");
+    if (request.arguments.size() != 2) {
+      return RefuseFunctionInvalidInput(request, "round expects numeric value and optional integer scale");
+    }
+    if (IsSqlNull(request.arguments[0].value) || IsSqlNull(request.arguments[1].value)) {
+      return MakeFunctionSuccess(request, {MakeNullValue("real64")});
+    }
+    double input = 0.0;
+    std::int64_t scale = 0;
+    if (!ValueAsReal64(request.arguments[0].value, &input) ||
+        !ValueAsInt64Strict(request.arguments[1].value, &scale)) {
+      return RefuseFunctionInvalidInput(request, "round optional scale form requires numeric value and int64 scale");
+    }
+    if (scale < -308 || scale > 308) {
+      return RefuseFunctionNumericDomain(request, "round scale must be in range -308 to 308 for real64 runtime");
+    }
+    const double factor = std::pow(10.0, static_cast<double>(scale < 0 ? -scale : scale));
+    if (!std::isfinite(factor) || factor == 0.0) {
+      return RefuseFunctionOverflow(request, "round scale factor is not finite");
+    }
+    const double output = scale >= 0 ? std::round(input * factor) / factor
+                                    : std::round(input / factor) * factor;
+    if (!std::isfinite(output)) {
+      return RefuseFunctionOverflow(request, "round produced a non-finite result");
+    }
+    return MakeFunctionSuccess(request, {MakeReal64Value("real64", output)});
   }
   if (IdIs(id, {"data.scalar.trunc", "data.scalar.truncate", "sb.fn.numeric.trunc", "sb.scalar.trunc", "sb.scalar.truncate", "trunc", "truncate"})) {
     if (request.arguments.size() == 1) return UnaryReal(request, std::trunc, "trunc");

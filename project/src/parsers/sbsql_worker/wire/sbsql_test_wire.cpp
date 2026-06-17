@@ -405,8 +405,205 @@ std::optional<ObjectReference> ExtractObjectReferenceAt(const CstDocument& cst,
   return ref;
 }
 
+std::string LowerObjectReferenceName(std::string_view text) {
+  std::string out;
+  out.reserve(text.size());
+  for (const unsigned char ch : text) {
+    out.push_back(static_cast<char>(std::tolower(ch)));
+  }
+  return out;
+}
+
+std::vector<std::string> ExtractLeadingCteNames(const CstDocument& cst) {
+  std::vector<std::string> names;
+  std::size_t index = cst.tokens.size();
+  for (std::size_t i = 0; i < cst.tokens.size(); ++i) {
+    if (!IsTriviaToken(cst.tokens[i])) {
+      index = i;
+      break;
+    }
+  }
+  if (index < cst.tokens.size() && IsWord(cst.tokens[index], "EXPLAIN")) {
+    ++index;
+    while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+  }
+  if (index >= cst.tokens.size() || !IsWord(cst.tokens[index], "WITH")) return names;
+  ++index;
+  while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+  if (index < cst.tokens.size() && IsWord(cst.tokens[index], "RECURSIVE")) ++index;
+
+  while (index < cst.tokens.size()) {
+    while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+    if (index >= cst.tokens.size() ||
+        (cst.tokens[index].kind != TokenKind::kIdentifier &&
+         cst.tokens[index].kind != TokenKind::kKeyword)) {
+      break;
+    }
+    names.push_back(LowerObjectReferenceName(cst.tokens[index].text));
+    ++index;
+    while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+    if (index < cst.tokens.size() && cst.tokens[index].kind == TokenKind::kSymbol &&
+        cst.tokens[index].text == "(") {
+      std::size_t depth = 1;
+      ++index;
+      while (index < cst.tokens.size() && depth != 0) {
+        if (cst.tokens[index].kind == TokenKind::kSymbol && cst.tokens[index].text == "(") {
+          ++depth;
+        } else if (cst.tokens[index].kind == TokenKind::kSymbol && cst.tokens[index].text == ")") {
+          --depth;
+        }
+        ++index;
+      }
+    }
+    while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+    if (index >= cst.tokens.size() || !IsWord(cst.tokens[index], "AS")) break;
+    ++index;
+    while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+    if (index >= cst.tokens.size() || cst.tokens[index].kind != TokenKind::kSymbol ||
+        cst.tokens[index].text != "(") {
+      break;
+    }
+    std::size_t depth = 1;
+    ++index;
+    while (index < cst.tokens.size() && depth != 0) {
+      if (cst.tokens[index].kind == TokenKind::kSymbol && cst.tokens[index].text == "(") {
+        ++depth;
+      } else if (cst.tokens[index].kind == TokenKind::kSymbol && cst.tokens[index].text == ")") {
+        --depth;
+      }
+      ++index;
+    }
+    while (index < cst.tokens.size() && IsTriviaToken(cst.tokens[index])) ++index;
+    if (index >= cst.tokens.size() || cst.tokens[index].kind != TokenKind::kSymbol ||
+        cst.tokens[index].text != ",") {
+      break;
+    }
+    ++index;
+  }
+  return names;
+}
+
+std::vector<std::string> ExtractDerivedCteNames(const CstDocument& cst) {
+  std::vector<std::string> names;
+  for (std::size_t index = 0; index < cst.tokens.size(); ++index) {
+    if (!IsWord(cst.tokens[index], "FROM")) continue;
+    std::size_t cursor = index + 1;
+    while (cursor < cst.tokens.size() && IsTriviaToken(cst.tokens[cursor])) ++cursor;
+    if (cursor >= cst.tokens.size() ||
+        cst.tokens[cursor].kind != TokenKind::kSymbol ||
+        cst.tokens[cursor].text != "(") {
+      continue;
+    }
+    ++cursor;
+    while (cursor < cst.tokens.size() && IsTriviaToken(cst.tokens[cursor])) ++cursor;
+    if (cursor >= cst.tokens.size() || !IsWord(cst.tokens[cursor], "WITH")) continue;
+    ++cursor;
+    while (cursor < cst.tokens.size() && IsTriviaToken(cst.tokens[cursor])) ++cursor;
+    if (cursor < cst.tokens.size() && IsWord(cst.tokens[cursor], "RECURSIVE")) ++cursor;
+    while (cursor < cst.tokens.size() && IsTriviaToken(cst.tokens[cursor])) ++cursor;
+    if (cursor >= cst.tokens.size() ||
+        (cst.tokens[cursor].kind != TokenKind::kIdentifier &&
+         cst.tokens[cursor].kind != TokenKind::kKeyword)) {
+      continue;
+    }
+    const std::string name = LowerObjectReferenceName(cst.tokens[cursor].text);
+    if (std::find(names.begin(), names.end(), name) == names.end()) {
+      names.push_back(name);
+    }
+  }
+  return names;
+}
+
+bool IsLocalCteReference(const ObjectReference& ref,
+                         const std::vector<std::string>& local_cte_names) {
+  if (ref.presented_name.empty() ||
+      ref.presented_name.find('.') != std::string::npos) {
+    return false;
+  }
+  const std::string lowered = LowerObjectReferenceName(ref.presented_name);
+  return std::find(local_cte_names.begin(), local_cte_names.end(), lowered) !=
+         local_cte_names.end();
+}
+
+std::vector<ObjectReference> ExtractMergeObjectReferences(const CstDocument& cst,
+                                                          std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  bool target_seen = false;
+  bool source_seen = false;
+  for (std::size_t i = first_token + 1; i < cst.tokens.size(); ++i) {
+    const auto& token = cst.tokens[i];
+    if (IsTriviaToken(token)) continue;
+    if (token.kind == TokenKind::kEnd) break;
+    if (!target_seen && IsWord(token, "INTO")) {
+      if (auto ref = ExtractObjectReferenceAt(cst, i + 1)) {
+        refs.push_back(*ref);
+        target_seen = true;
+      }
+      continue;
+    }
+    if (!source_seen && IsWord(token, "USING")) {
+      if (auto ref = ExtractObjectReferenceAt(cst, i + 1)) {
+        refs.push_back(*ref);
+        source_seen = true;
+      }
+      continue;
+    }
+    if (target_seen && source_seen) break;
+  }
+  return refs;
+}
+
+std::vector<ObjectReference> ExtractInsertObjectReferences(const CstDocument& cst,
+                                                           std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  for (std::size_t i = first_token + 1; i < cst.tokens.size(); ++i) {
+    const auto& token = cst.tokens[i];
+    if (IsTriviaToken(token)) continue;
+    if (token.kind == TokenKind::kEnd) break;
+    if (IsWord(token, "INTO")) {
+      if (auto ref = ExtractObjectReferenceAt(cst, i + 1)) {
+        refs.push_back(*ref);
+      }
+      return refs;
+    }
+    if (token.kind != TokenKind::kKeyword && token.kind != TokenKind::kIdentifier) {
+      break;
+    }
+  }
+  return refs;
+}
+
+std::vector<ObjectReference> ExtractCreateIndexObjectReferences(const CstDocument& cst,
+                                                                std::size_t first_token) {
+  std::vector<ObjectReference> refs;
+  bool saw_index = false;
+  for (std::size_t i = first_token + 1; i < cst.tokens.size(); ++i) {
+    const auto& token = cst.tokens[i];
+    if (IsTriviaToken(token)) continue;
+    if (token.kind == TokenKind::kEnd) break;
+    if (!saw_index && IsWord(token, "INDEX")) {
+      saw_index = true;
+      continue;
+    }
+    if (saw_index && IsWord(token, "ON")) {
+      if (auto ref = ExtractObjectReferenceAt(cst, i + 1)) {
+        refs.push_back(*ref);
+      }
+      return refs;
+    }
+  }
+  return refs;
+}
+
 std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
   std::vector<ObjectReference> refs;
+  auto local_cte_names = ExtractLeadingCteNames(cst);
+  for (const auto& name : ExtractDerivedCteNames(cst)) {
+    if (std::find(local_cte_names.begin(), local_cte_names.end(), name) ==
+        local_cte_names.end()) {
+      local_cte_names.push_back(name);
+    }
+  }
   std::size_t first_token = cst.tokens.size();
   for (std::size_t i = 0; i < cst.tokens.size(); ++i) {
     if (!IsTriviaToken(cst.tokens[i])) {
@@ -420,6 +617,19 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
     if (auto ref = ExtractObjectReferenceAt(cst, first_token + 1)) refs.push_back(*ref);
     return refs;
   }
+  if (IsWord(cst.tokens[first_token], "MERGE")) {
+    return ExtractMergeObjectReferences(cst, first_token);
+  }
+  if (IsWord(cst.tokens[first_token], "INSERT") ||
+      IsWord(cst.tokens[first_token], "UPSERT")) {
+    return ExtractInsertObjectReferences(cst, first_token);
+  }
+  if (IsWord(cst.tokens[first_token], "CREATE")) {
+    auto create_index_refs = ExtractCreateIndexObjectReferences(cst, first_token);
+    if (!create_index_refs.empty()) {
+      return create_index_refs;
+    }
+  }
 
   for (std::size_t i = first_token; i < cst.tokens.size(); ++i) {
     const auto& token = cst.tokens[i];
@@ -432,12 +642,15 @@ std::vector<ObjectReference> ExtractObjectReferences(const CstDocument& cst) {
     }
     auto ref = ExtractObjectReferenceAt(cst, i + 1);
     if (!ref) continue;
+    if (IsLocalCteReference(*ref, local_cte_names)) continue;
     refs.push_back(*ref);
     if (refs.size() >= 8) break;
   }
 
   if (refs.empty()) {
-    if (auto ref = ExtractFirstObjectReference(cst)) refs.push_back(*ref);
+    if (auto ref = ExtractFirstObjectReference(cst)) {
+      if (!IsLocalCteReference(*ref, local_cte_names)) refs.push_back(*ref);
+    }
   }
   return refs;
 }
@@ -1028,6 +1241,16 @@ std::string ExactOperationEnvelope(std::string_view operation_id,
   return out;
 }
 
+void InjectAutocommitEmulation(std::string* payload) {
+  if (payload == nullptr || payload->empty() ||
+      payload->find("autocommit_emulation=") != std::string::npos ||
+      payload->find("\"autocommit_emulation\"") != std::string::npos) {
+    return;
+  }
+  if (!payload->empty() && payload->back() != '\n') payload->push_back('\n');
+  payload->append("autocommit_emulation=true\n");
+}
+
 std::string TransactionBeginOperationEnvelope() {
   return ExactOperationEnvelope("transaction.begin",
                                 "SBLR_TRANSACTION_BEGIN",
@@ -1235,7 +1458,8 @@ PipelineResult SbsqlTestWireSession::RunServerManagementCommand(
 PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                                                  bool submit,
                                                  bool cursor_requested,
-                                                 std::uint64_t stream_row_count) {
+                                                 std::uint64_t stream_row_count,
+                                                 bool autocommit_emulation) {
   if (metrics_) metrics_->Increment("sys.metrics.parsers.parse_pipeline.attempts_total");
   ScopedParserState active(metrics_,
                            submit && session_.authenticated && HasExecutionRoute(),
@@ -1290,23 +1514,15 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   if (!result.messages.has_errors() && ast.requires_name_resolution &&
       HasExecutionRoute() && session_.authenticated) {
     const auto refs = ExtractObjectReferences(cst);
-    if (refs.empty()) {
-      result.messages.diagnostics.push_back(MakeDiagnostic(
-          "SBSQL.NAME_RESOLUTION.REFERENCE_MISSING",
-          "ERROR",
-          "statement requires an object reference but no resolvable name was found",
-          "sbp_sbsql.wire"));
-    } else {
-      for (const auto& ref : refs) {
-        auto resolved = ResolveNameOnRoute(ref.presented_name, ref.quoted, "relation");
-        if (!resolved.resolved) {
-          result.messages = std::move(resolved.messages);
-          break;
-        }
-        resolved_object_uuids.push_back(resolved.object_uuid);
-        session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
-        session_.security_policy_epoch = std::max(session_.security_policy_epoch, resolved.security_epoch);
+    for (const auto& ref : refs) {
+      auto resolved = ResolveNameOnRoute(ref.presented_name, ref.quoted, "relation");
+      if (!resolved.resolved) {
+        result.messages = std::move(resolved.messages);
+        break;
       }
+      resolved_object_uuids.push_back(resolved.object_uuid);
+      session_.catalog_epoch = std::max(session_.catalog_epoch, resolved.catalog_epoch);
+      session_.security_policy_epoch = std::max(session_.security_policy_epoch, resolved.security_epoch);
     }
   }
   if (result.messages.has_errors()) {
@@ -1373,6 +1589,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
       if (auto create_table_execution =
               CreateTableRouteExecutionEnvelope(cst, result.operation_family)) {
         execution_payload = std::move(*create_table_execution);
+      }
+      if (autocommit_emulation && !cursor_requested) {
+        InjectAutocommitEmulation(&execution_payload);
       }
       const auto executed = ExecuteSblrOnRoute(execution_payload, cursor_requested);
       if (!executed.accepted) {

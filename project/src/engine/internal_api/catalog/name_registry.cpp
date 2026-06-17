@@ -299,6 +299,58 @@ std::vector<std::string> ScopeCandidates(const EngineApiRequest& request) {
   return scopes;
 }
 
+std::vector<std::string> ResolveQualifiedNameRegistryScopes(
+    const EngineApiRequest& request,
+    const NameRegistryState& state,
+    const std::vector<std::string>& languages) {
+  if (request.sql_object_reference.path_components.empty()) {
+    return ScopeCandidates(request);
+  }
+
+  std::vector<std::string> current_scopes = ScopeCandidates(request);
+  for (const auto& segment : request.sql_object_reference.path_components) {
+    const std::string raw_name = segment.raw_text;
+    if (raw_name.empty()) { return {}; }
+    const std::string profile = segment.identifier_profile_uuid.empty()
+                                    ? NameRegistryDefaultIdentifierProfile(request.context)
+                                    : segment.identifier_profile_uuid;
+    const bool exact = segment.requires_exact_match || segment.was_quoted;
+    const std::string lookup_key = exact ? NameRegistryLookupKey(raw_name, profile, true)
+                                         : NameRegistryLookupKey(raw_name, profile, false);
+
+    std::vector<std::string> next_scopes;
+    auto push_next = [&](const std::string& value) {
+      if (value.empty()) { return; }
+      if (std::find(next_scopes.begin(), next_scopes.end(), value) == next_scopes.end()) {
+        next_scopes.push_back(value);
+      }
+    };
+
+    for (const auto& language : languages) {
+      for (const auto& scope : current_scopes) {
+        for (const auto& entry : state.entries) {
+          if (entry.deleted || entry.lifecycle_state != "active") { continue; }
+          if (entry.object_class != "schema") { continue; }
+          if (entry.scope_uuid != scope) { continue; }
+          if (entry.language_tag != language) { continue; }
+          const std::string entry_profile = entry.identifier_profile_uuid.empty() ? "sbsql_v3" : entry.identifier_profile_uuid;
+          if (ProfileName(entry_profile) != ProfileName(profile)) { continue; }
+          if (!exact && entry.requires_exact_match) { continue; }
+          const std::string entry_key = exact ? entry.exact_lookup_key : entry.normalized_lookup_key;
+          if (entry_key != lookup_key) { continue; }
+          push_next(entry.object_uuid);
+        }
+      }
+      if (!next_scopes.empty()) { break; }
+    }
+
+    current_scopes = std::move(next_scopes);
+    if (current_scopes.empty()) { return {}; }
+  }
+
+  return current_scopes;
+}
+
 std::string StandardNameNotFoundMessageKey() { return "message_vector.item_not_found_or_does_not_exist"; }
 
 }  // namespace
@@ -604,7 +656,7 @@ NameRegistryResolveResult ResolveNameRegistryPrivate(const EngineApiRequest& req
     return result;
   }
   const auto languages = LanguageCandidates(request.context);
-  const auto scopes = ScopeCandidates(request);
+  const auto scopes = ResolveQualifiedNameRegistryScopes(request, loaded.state, languages);
   std::set<std::string> seen_objects;
   for (const auto& wanted : wanted_names) {
     const std::string raw_name = !wanted.raw_name_text.empty() ? wanted.raw_name_text : wanted.name;

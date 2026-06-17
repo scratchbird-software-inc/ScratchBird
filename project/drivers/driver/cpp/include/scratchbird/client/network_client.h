@@ -88,6 +88,7 @@ struct NetworkClientConfig {
     bool allow_password_fallback{false};
     bool binary_transfer{true};
     bool enable_compression{false};
+    bool autocommit{true};
 };
 
 struct AuthMethodSurface {
@@ -210,6 +211,8 @@ public:
     }
     const std::string& lastError() const { return last_error_; }
     ResolvedAuthContext getResolvedAuthContext() const { return resolved_auth_context_; }
+    void setAutocommit(bool enabled) { config_.autocommit = enabled; }
+    bool getAutocommit() const { return config_.autocommit; }
 
     core::Status executeQuery(const std::string& sql,
                               NetworkResultSet& results,
@@ -345,6 +348,13 @@ private:
                                  uint64_t* rows,
                                  uint64_t* last_id,
                                  core::ErrorContext* ctx = nullptr);
+    core::Status finishAutocommitStatement(bool statement_succeeded,
+                                           core::ErrorContext* ctx = nullptr);
+    bool serverAutocommitRequested() const;
+    core::Status readyAfterStatement(const std::vector<uint8_t>& payload,
+                                     core::ErrorContext* ctx = nullptr);
+    core::Status errorAfterStatement(const protocol::ProtocolMessage& msg,
+                                     core::ErrorContext* ctx = nullptr);
     core::Status handshake(core::ErrorContext* ctx);
 
     NetworkClientConfig config_{};
@@ -363,6 +373,8 @@ private:
 
     bool connected_{false};
     bool in_transaction_{false};
+    bool explicit_transaction_active_{false};
+    bool server_autocommit_requested_{false};
     uint64_t current_txn_id_{0};
     std::string last_error_;
     ResolvedAuthContext resolved_auth_context_{};

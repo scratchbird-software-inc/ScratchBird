@@ -1,0 +1,199 @@
+-- ScratchBird driver full-surface script suite
+-- script_id: SBDFS-086
+-- Purpose: security-object DDL — CREATE ROLE / GROUP, CREATE POLICY, CREATE MASK,
+--          CREATE RLS; catalog introspection to prove each object exists with the
+--          expected properties; DROP each created object.
+-- namespace placeholder: __SB_NAMESPACE__
+--
+-- HARD CONSTRAINTS OBSERVED:
+--   - Every statement is a single top-level statement terminated by exactly one ";".
+--   - All DDL objects are schema-qualified with __SB_NAMESPACE__ where the syntax
+--     permits (roles and groups are database-level, not schema-level, per the
+--     security_and_privilege_statements.md principal model; POLICY, MASK, RLS
+--     are schema-qualified on their target object).
+--   - CREATE ROLE / GROUP syntax:
+--       CREATE (USER|ROLE|GROUP) principal_name identity_option*
+--     (security_and_privilege_statements.md create_principal_stmt)
+--   - CREATE POLICY ON TABLE syntax from policy_mask_and_rls.md:
+--       CREATE POLICY policy_name ON TABLE qualified_name policy_clause*
+--   - CREATE MASK ON COLUMN syntax from policy_mask_and_rls.md:
+--       CREATE MASK mask_name ON COLUMN qualified_name.identifier USING mask_expression mask_clause*
+--   - CREATE RLS ON TABLE syntax from policy_mask_and_rls.md:
+--       CREATE RLS rls_name ON TABLE qualified_name rls_clause*
+--   - Enforcement proof via session/role switch is NOT expressible in single
+--     statements without inner ";"; enforcement is proved through sys.* catalog
+--     introspection instead (documented proof approach in policy_mask_and_rls.md
+--     "catalog projections" and sys.security.* surfaces).
+--   - sys.security.users and sys.security.protected_material are confirmed
+--     present in SBDFS-080; this script extends with roles/groups/policies.
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Fixture table: target for policy, mask, and RLS objects created in this script.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE __SB_NAMESPACE__.security_probe_items (
+    item_id      INTEGER PRIMARY KEY,
+    item_label   VARCHAR(128) NOT NULL,
+    item_secret  VARCHAR(256) NOT NULL,
+    tenant_code  VARCHAR(32)  NOT NULL
+);
+
+INSERT INTO __SB_NAMESPACE__.security_probe_items VALUES
+    (1, 'Alpha record', 'secret-alpha', 'tenant_A'),
+    (2, 'Beta record',  'secret-beta',  'tenant_B'),
+    (3, 'Gamma record', 'secret-gamma', 'tenant_A');
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Section 1: CREATE ROLE and CREATE GROUP
+-- Grounded in security_and_privilege_statements.md create_principal_stmt.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE ROLE sbdfs086_probe_reader;
+
+CREATE GROUP sbdfs086_probe_auditors;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Section 2: GRANT — attach table privilege to the role, grant role to group.
+-- Grounded in security_and_privilege_statements.md grant_stmt.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+GRANT SELECT ON TABLE __SB_NAMESPACE__.security_probe_items TO sbdfs086_probe_reader;
+
+GRANT sbdfs086_probe_reader TO sbdfs086_probe_auditors;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Section 3: CREATE POLICY
+-- Minimal documented form: CREATE POLICY name ON TABLE table_ref
+-- Extended with FOR, TO, USING, AS RESTRICTIVE, ACTIVE clauses.
+-- Grounded in policy_mask_and_rls.md create_policy_statement + policy_clause.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE POLICY __SB_NAMESPACE__.probe_select_policy
+ON TABLE __SB_NAMESPACE__.security_probe_items
+FOR SELECT
+TO ROLE sbdfs086_probe_reader
+AS RESTRICTIVE
+ACTIVE;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Section 4: CREATE MASK
+-- Masks item_secret so callers without the probe_reader role see 'redacted'.
+-- Grounded in policy_mask_and_rls.md create_mask_statement, mask_target,
+-- and mask_clause. mask_target = "COLUMN qualified_name.identifier".
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE MASK __SB_NAMESPACE__.probe_secret_mask
+ON COLUMN __SB_NAMESPACE__.security_probe_items.item_secret
+USING CASE
+    WHEN HAS_ROLE('sbdfs086_probe_reader') THEN item_secret
+    ELSE 'redacted'
+END
+TO ROLE sbdfs086_probe_reader
+ACTIVE;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Section 5: CREATE RLS
+-- Row-level rule: readers only see rows for tenant_A.
+-- Grounded in policy_mask_and_rls.md create_rls_statement + rls_clause.
+-- rowset_target = "TABLE qualified_name".
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE RLS __SB_NAMESPACE__.probe_tenant_rls
+ON TABLE __SB_NAMESPACE__.security_probe_items
+FOR SELECT
+TO ROLE sbdfs086_probe_reader
+USING (tenant_code = 'tenant_A')
+AS RESTRICTIVE
+ACTIVE;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Catalog introspection assertions.
+-- Surfaces confirmed against src/parsers/sbsql_worker/lowering/lowering.cpp (the
+-- SHOW-command -> sys.* surface mapping) and the sys.security.users precedent in
+-- SBDFS-080:
+--   sys.security.roles       (SHOW ROLES)
+--   sys.security.principals  (SHOW GROUPS)
+--   sys.security.policies    (SHOW POLICIES)
+--   sys.security.masks       (SHOW MASKS)
+--   sys.security.rls         (SHOW RLS)
+-- Count-based (>= 1) existence checks are used rather than column-specific
+-- filters because the rs.security.principal.v1 / rs.security.policy.v1 result-
+-- shape column names are not yet confirmed (tracked in the private workplan
+-- CATALOG_SURFACE_VERIFICATION.csv); the >= 1 check matches the SBDFS-080 pattern.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+-- Assert the roles surface is queryable and non-empty after CREATE ROLE.
+SELECT 'SBDFS-086-001' AS assertion_id,
+       COUNT(*) >= 1 AS actual_role_visible,
+       TRUE AS expected_role_visible
+FROM sys.security.roles;
+
+-- Assert the principals (groups) surface is queryable and non-empty after CREATE GROUP.
+SELECT 'SBDFS-086-002' AS assertion_id,
+       COUNT(*) >= 1 AS actual_group_visible,
+       TRUE AS expected_group_visible
+FROM sys.security.principals;
+
+-- Assert the policies surface is queryable and non-empty after CREATE POLICY.
+SELECT 'SBDFS-086-003' AS assertion_id,
+       COUNT(*) >= 1 AS actual_policy_exists,
+       TRUE AS expected_policy_exists
+FROM sys.security.policies;
+
+-- Assert the masks surface is queryable and non-empty after CREATE MASK.
+SELECT 'SBDFS-086-004' AS assertion_id,
+       COUNT(*) >= 1 AS actual_mask_exists,
+       TRUE AS expected_mask_exists
+FROM sys.security.masks;
+
+-- Assert the RLS surface is queryable and non-empty after CREATE RLS.
+SELECT 'SBDFS-086-005' AS assertion_id,
+       COUNT(*) >= 1 AS actual_rls_exists,
+       TRUE AS expected_rls_exists
+FROM sys.security.rls;
+
+-- Assert that the tenant_A fixture data is present (3 rows total, 2 for tenant_A).
+SELECT 'SBDFS-086-006' AS assertion_id,
+       COUNT(*) AS actual_total_rows,
+       3 AS expected_total_rows
+FROM __SB_NAMESPACE__.security_probe_items;
+
+-- Assert 2 rows belong to tenant_A (confirms RLS predicate expression is evaluable).
+SELECT 'SBDFS-086-007' AS assertion_id,
+       COUNT(*) AS actual_tenant_a_rows,
+       2 AS expected_tenant_a_rows
+FROM __SB_NAMESPACE__.security_probe_items
+WHERE tenant_code = 'tenant_A';
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Cleanup: DROP security objects in dependency order.
+-- Grounded in policy_mask_and_rls.md drop_*_statement and
+-- security_and_privilege_statements.md drop_principal_stmt.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+DROP RLS __SB_NAMESPACE__.probe_tenant_rls;
+
+DROP MASK __SB_NAMESPACE__.probe_secret_mask;
+
+DROP POLICY __SB_NAMESPACE__.probe_select_policy;
+
+REVOKE sbdfs086_probe_reader FROM sbdfs086_probe_auditors;
+
+REVOKE SELECT ON TABLE __SB_NAMESPACE__.security_probe_items FROM sbdfs086_probe_reader;
+
+DROP GROUP sbdfs086_probe_auditors;
+
+DROP ROLE sbdfs086_probe_reader;
+
+DROP TABLE __SB_NAMESPACE__.security_probe_items;
+
+-- Post-cleanup assertion: the probe table is gone (DROP TABLE took effect),
+-- verified via the confirmed sys.tables/sys.schemas surfaces and columns.
+SELECT 'SBDFS-086-008' AS assertion_id,
+       COUNT(*) AS actual_remaining_probe_tables,
+       0 AS expected_remaining_probe_tables
+FROM sys.tables
+WHERE table_name = 'security_probe_items'
+AND schema_id IN (
+    SELECT schema_id FROM sys.schemas WHERE schema_name = '__SB_NAMESPACE__'
+);

@@ -538,6 +538,11 @@ public:
      */
     SSL* get() const { return ssl_; }
 
+    /**
+     * Get decrypted bytes buffered by OpenSSL and ready to read.
+     */
+    int pending() const;
+
 private:
     void extractPeerCertInfo();
     void handleSSLError(int ret);

@@ -2654,6 +2654,6 @@ WHERE surface_kind IN ('function', 'operator', 'variable');
 
 SELECT 'SBDFS-100-004' AS assertion_id,
        COUNT(*) AS actual_statement_surface_rows,
-       1049 AS expected_statement_surface_rows
+       1083 AS expected_statement_surface_rows
 FROM __SB_NAMESPACE__.surface_replay_manifest
 WHERE surface_kind NOT IN ('function', 'operator', 'variable');

@@ -51,6 +51,10 @@ struct ServerAgentRuntimeSnapshot {
   std::uint64_t durable_service_evidence_count = 0;
   std::uint64_t last_recovery_replayed_count = 0;
   std::string durable_catalog_root_digest;
+  std::uint64_t process_rss_kb = 0;
+  std::uint64_t process_rss_high_water_kb = 0;
+  std::uint64_t process_vsize_kb = 0;
+  bool process_memory_sample_available = false;
 };
 
 class ServerAgentRuntime {

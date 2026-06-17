@@ -202,6 +202,9 @@ int main(int argc, char** argv) {
                                     ";UID=" + required(args, "--user") +
                                     ";PWD=" + required(args, "--password") +
                                     ";SSLMode=" + valueOrDefault(args, "--sslmode", "require") +
+                                    ";SSLRootCert=" + valueOrDefault(args, "--sslrootcert", "") +
+                                    ";SSLCert=" + valueOrDefault(args, "--sslcert", "") +
+                                    ";SSLKey=" + valueOrDefault(args, "--sslkey", "") +
                                     ";Role=" + valueOrDefault(args, "--role", "");
         SQLCHAR outConn[256] = {};
         SQLSMALLINT outLen = 0;
@@ -289,12 +292,16 @@ int main(int argc, char** argv) {
         if (env) SQLFreeHandle(SQL_HANDLE_ENV, env);
 
         timings["overall"] = nowNs() - started;
+        const std::string sslmode = valueOrDefault(args, "--sslmode", "require");
+        const std::string transportMode = sslmode == "disable" ? "tls_disabled" : "tls_required";
         const json summary{{"run_id", valueOrDefault(args, "--run-id", "manual")},
                            {"driver_name", "odbc"},
                            {"route", required(args, "--route")},
                            {"parser_mode", required(args, "--parser-mode")},
                            {"page_size", required(args, "--page-size")},
                            {"namespace", required(args, "--namespace")},
+                           {"sslmode", sslmode},
+                           {"transport_mode", transportMode},
                            {"status", failures.empty() ? "pass" : "fail"},
                            {"failure_count", failures.size()},
                            {"elapsed_ns", timings["overall"]},

@@ -1,0 +1,147 @@
+-- script_id: SBDFS-014
+-- Purpose: Schema tree and name resolution - CREATE a nested child schema
+--          under __SB_NAMESPACE__, create an object in it, resolve by
+--          fully-qualified name, introspect via sys.schemas, DROP.
+--          Grounded in syntax_reference/schema.md and
+--          syntax_reference/schema_tree_and_name_resolution.md
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 1. Verify the parent namespace schema already exists (created by 000_bootstrap).
+--    sys.schemas columns used: schema_id, schema_name (grounded in 080 harness).
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-014-001' AS assertion_id,
+       COUNT(*) >= 1   AS actual_parent_exists,
+       TRUE            AS expected_parent_exists
+FROM sys.schemas
+WHERE schema_name = '__SB_NAMESPACE__';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 2. CREATE a child schema nested under the test namespace.
+--    Syntax: CREATE SCHEMA <qualified_name>
+--    The qualified path __SB_NAMESPACE__.sub makes the parent explicit.
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE SCHEMA __SB_NAMESPACE__.sub;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 3. Assert the child schema 'sub' appears in sys.schemas by name.
+--    (parent_schema_id is not confirmed in catalog_reference/*.md - we use
+--     schema_name lookup and rely on the functional table-access tests below
+--     to confirm the recursive path is correct.)
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-014-002' AS assertion_id,
+       COUNT(*) >= 1   AS actual_child_schema_exists,
+       TRUE            AS expected_child_schema_exists
+FROM sys.schemas
+WHERE schema_name = 'sub';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 4. COMMENT ON SCHEMA for the child branch.
+--    Syntax: COMMENT ON SCHEMA <schema_ref> IS <string_literal>
+-- ──────────────────────────────────────────────────────────────────────────
+COMMENT ON SCHEMA __SB_NAMESPACE__.sub IS 'Nested child schema for conformance test';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 5. Create an object inside the nested schema using its fully-qualified name.
+--    This tests that the resolver honors the recursive schema path.
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE TABLE __SB_NAMESPACE__.sub.nested_items (
+    item_id    INTEGER NOT NULL PRIMARY KEY,
+    item_label VARCHAR(64) NOT NULL
+);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 6. Assert the nested table exists in sys.tables under the 'sub' schema.
+--    Using schema_name = 'sub' to find the schema_id, then looking up tables.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-014-003' AS assertion_id,
+       COUNT(*) >= 1   AS actual_nested_table_exists,
+       TRUE            AS expected_nested_table_exists
+FROM sys.tables
+WHERE schema_id IN (
+    SELECT schema_id
+    FROM sys.schemas
+    WHERE schema_name = 'sub'
+);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 7. Insert a row using the fully-qualified name — resolution must traverse
+--    the recursive schema path __SB_NAMESPACE__ -> sub -> nested_items.
+-- ──────────────────────────────────────────────────────────────────────────
+INSERT INTO __SB_NAMESPACE__.sub.nested_items (item_id, item_label)
+VALUES (1, 'nested-row-one');
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 8. Verify the insert landed by querying the fully-qualified name.
+--    This is the primary proof that qualified-name resolution works recursively.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-014-004' AS assertion_id,
+       item_label        AS actual_label,
+       'nested-row-one'  AS expected_label
+FROM __SB_NAMESPACE__.sub.nested_items
+WHERE item_id = 1;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 9. Assert total row count in nested table is 1.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-014-005' AS assertion_id,
+       COUNT(*)        AS actual_nested_row_count,
+       1               AS expected_nested_row_count
+FROM __SB_NAMESPACE__.sub.nested_items;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 10. Create a second child schema to exercise sibling isolation.
+--     Siblings under the same parent must not share names.
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE SCHEMA __SB_NAMESPACE__.sub2;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 11. Assert both child schemas exist by name in sys.schemas.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-014-006' AS assertion_id,
+       COUNT(*)        AS actual_child_schema_count,
+       2               AS expected_child_schema_count
+FROM sys.schemas
+WHERE schema_name IN ('sub', 'sub2');
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 12. Create a table in the second child schema to prove isolation from sub.
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE TABLE __SB_NAMESPACE__.sub2.sibling_items (
+    item_id INTEGER NOT NULL PRIMARY KEY
+);
+
+INSERT INTO __SB_NAMESPACE__.sub2.sibling_items (item_id) VALUES (100);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 13. Assert sub2 table and sub table are resolved independently.
+--     sub2 row count must be 1 and sub row count must still be 1.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-014-007' AS assertion_id,
+       COUNT(*)        AS actual_sub2_row_count,
+       1               AS expected_sub2_row_count
+FROM __SB_NAMESPACE__.sub2.sibling_items;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 14. Clean up: drop objects in dependency order -
+--     tables first, then child schemas.
+-- ──────────────────────────────────────────────────────────────────────────
+DROP TABLE __SB_NAMESPACE__.sub2.sibling_items RESTRICT;
+
+DROP TABLE __SB_NAMESPACE__.sub.nested_items RESTRICT;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 15. DROP child schemas.
+--     Syntax: DROP SCHEMA <schema_ref> RESTRICT
+-- ──────────────────────────────────────────────────────────────────────────
+DROP SCHEMA __SB_NAMESPACE__.sub2 RESTRICT;
+
+DROP SCHEMA __SB_NAMESPACE__.sub RESTRICT;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 16. Assert neither child schema remains in sys.schemas.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-014-008' AS assertion_id,
+       COUNT(*)        AS actual_child_schemas_after_drop,
+       0               AS expected_child_schemas_after_drop
+FROM sys.schemas
+WHERE schema_name IN ('sub', 'sub2');

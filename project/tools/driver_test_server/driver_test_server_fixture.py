@@ -221,6 +221,8 @@ def validate_fixture_manifest(manifest: dict[str, Any], issues: list[str]) -> No
         issues.append("fixture_manifest:minimal_resource_bootstrap_not_forbidden")
     if startup.get("resource_seed_pack_required") is not True:
         issues.append("fixture_manifest:resource_seed_pack_not_required")
+    if startup.get("policy_seed_pack_required") is not True:
+        issues.append("fixture_manifest:policy_seed_pack_not_required")
     required_sections = (
         "startup",
         "shutdown",
@@ -337,6 +339,11 @@ def validate_latest_runtime(latest: dict[str, Any], issues: list[str]) -> None:
         issues.append("fixture_runtime:database_not_full_create")
     if database_fixture.get("resource_seed_pack_active") is not True:
         issues.append("fixture_runtime:resource_seed_pack_not_active")
+    if database_fixture.get("policy_seed_pack_active") is not True:
+        issues.append("fixture_runtime:policy_seed_pack_not_active")
+    required_default_policy_records = manifest.get("startup", {}).get("default_policy_records_required", 58)
+    if database_fixture.get("default_policy_records") != required_default_policy_records:
+        issues.append("fixture_runtime:default_policy_records_not_loaded")
     if database_fixture.get("minimal_resource_bootstrap") is not False:
         issues.append("fixture_runtime:minimal_resource_bootstrap_present")
     expected_paths = {

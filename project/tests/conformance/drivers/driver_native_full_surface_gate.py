@@ -60,6 +60,7 @@ def validate_gate_input(doc: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     expected_page_sizes = ["4k", "8k", "16k", "32k", "64k", "128k"]
     expected_routes = ["embedded", "ipc_local", "listener-parser", "manager-listener-parser"]
+    expected_transport_modes = ["tls_required", "tls_disabled"]
     expected_parser_modes = ["server-parser", "standalone-parser", "driver-sblr-uuid"]
     required_args = {
         "--database",
@@ -69,6 +70,9 @@ def validate_gate_input(doc: dict[str, Any]) -> list[str]:
         "--password",
         "--role",
         "--sslmode",
+        "--sslrootcert",
+        "--sslcert",
+        "--sslkey",
         "--route",
         "--parser-mode",
         "--page-size",
@@ -96,6 +100,7 @@ def validate_gate_input(doc: dict[str, Any]) -> list[str]:
         "timing-groups.json",
         "result-digests.json",
         "metadata-snapshots.json",
+        "process-metrics.jsonl",
         "security-refusals.json",
         "native-api-coverage.json",
         "code-example-review.json",
@@ -109,6 +114,8 @@ def validate_gate_input(doc: dict[str, Any]) -> list[str]:
         errors.append("gate_input:required_page_sizes_drift")
     if as_list(doc.get("required_routes")) != expected_routes:
         errors.append("gate_input:required_routes_drift")
+    if as_list(doc.get("required_transport_modes")) != expected_transport_modes:
+        errors.append("gate_input:required_transport_modes_drift")
     if as_list(doc.get("required_parser_modes")) != expected_parser_modes:
         errors.append("gate_input:required_parser_modes_drift")
     if set(as_list(doc.get("required_tool_arguments"))) != required_args:
@@ -192,6 +199,8 @@ def validate_artifacts(repo_root: Path, artifact_root: Path, gate_input: dict[st
     run_dirs = [path for path in artifact_root.rglob("summary.json") if path.is_file()]
     if not run_dirs:
         return [f"artifact_schema:no_summary_json_under:{artifact_root}"]
+    transport_by_driver: dict[str, set[str]] = {}
+    sslmode_by_driver: dict[str, set[str]] = {}
     for summary_path in run_dirs:
         run_root = summary_path.parent
         try:
@@ -212,6 +221,47 @@ def validate_artifacts(repo_root: Path, artifact_root: Path, gate_input: dict[st
             errors.append(f"artifact_schema:{summary_path}:server_revalidation_required_not_true")
         if summary.get("driver_or_parser_finality") not in (False, "forbidden"):
             errors.append(f"artifact_schema:{summary_path}:driver_or_parser_finality_not_forbidden")
+        process_metrics = summary.get("process_metrics")
+        if not isinstance(process_metrics, dict) or not process_metrics:
+            errors.append(f"artifact_schema:{summary_path}:missing_process_metrics")
+        else:
+            for role, metrics in process_metrics.items():
+                if not isinstance(metrics, dict):
+                    errors.append(f"artifact_schema:{summary_path}:process_metrics:{role}:not_object")
+                    continue
+                for key in ("max_rss_kb", "max_vsize_kb", "last_rss_kb", "last_vsize_kb"):
+                    value = metrics.get(key)
+                    if not isinstance(value, int) or value <= 0:
+                        errors.append(f"artifact_schema:{summary_path}:process_metrics:{role}:{key}_invalid")
+        driver_name = str(summary.get("driver_name") or run_root.name)
+        transport_modes = set(str(value) for value in as_list(summary.get("transport_modes")))
+        if summary.get("transport_mode") is not None:
+            transport_modes.add(str(summary.get("transport_mode")))
+        sslmodes = set(str(value) for value in as_list(summary.get("sslmodes")))
+        if summary.get("sslmode") is not None:
+            sslmodes.add(str(summary.get("sslmode")))
+        if not transport_modes:
+            errors.append(f"artifact_schema:{summary_path}:missing_transport_mode")
+        if not sslmodes:
+            errors.append(f"artifact_schema:{summary_path}:missing_sslmode")
+        unknown_transport_modes = sorted(transport_modes - {"tls_required", "tls_disabled"})
+        if unknown_transport_modes:
+            errors.append(
+                f"artifact_schema:{summary_path}:unknown_transport_modes:{','.join(unknown_transport_modes)}"
+            )
+        unknown_sslmodes = sorted(sslmodes - {"require", "disable"})
+        if unknown_sslmodes:
+            errors.append(f"artifact_schema:{summary_path}:unknown_sslmodes:{','.join(unknown_sslmodes)}")
+        transport_by_driver.setdefault(driver_name, set()).update(transport_modes)
+        sslmode_by_driver.setdefault(driver_name, set()).update(sslmodes)
+    for driver_name, observed in sorted(transport_by_driver.items()):
+        if not {"tls_required", "tls_disabled"}.issubset(observed):
+            errors.append(
+                f"artifact_schema:{driver_name}:missing_tls_and_non_tls_transport_modes"
+            )
+    for driver_name, observed in sorted(sslmode_by_driver.items()):
+        if not {"require", "disable"}.issubset(observed):
+            errors.append(f"artifact_schema:{driver_name}:missing_sslmode_require_and_disable")
     return errors
 
 

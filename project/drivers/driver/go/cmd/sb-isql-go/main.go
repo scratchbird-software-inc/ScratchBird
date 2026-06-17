@@ -34,6 +34,9 @@ type config struct {
 	Password           string
 	Role               string
 	SSLMode            string
+	SSLRootCert        string
+	SSLCert            string
+	SSLKey             string
 	Route              string
 	ParserMode         string
 	PageSize           string
@@ -80,6 +83,9 @@ func parseFlags() config {
 	flag.StringVar(&cfg.Password, "password", "", "password")
 	flag.StringVar(&cfg.Role, "role", "", "role")
 	flag.StringVar(&cfg.SSLMode, "sslmode", "require", "TLS mode")
+	flag.StringVar(&cfg.SSLRootCert, "sslrootcert", "", "TLS root certificate path")
+	flag.StringVar(&cfg.SSLCert, "sslcert", "", "TLS client certificate path")
+	flag.StringVar(&cfg.SSLKey, "sslkey", "", "TLS client key path")
 	flag.StringVar(&cfg.Route, "route", "listener-parser", "route")
 	flag.StringVar(&cfg.ParserMode, "parser-mode", "server-parser", "parser mode")
 	flag.StringVar(&cfg.PageSize, "page-size", "8k", "page size")
@@ -285,6 +291,15 @@ func openDB(cfg config) (*sql.DB, error) {
 	}
 	dsn := fmt.Sprintf("scratchbird://%s:%s@%s:%d/%s?sslmode=%s&front_door_mode=%s&application_name=sb-isql-go",
 		urlEscape(cfg.User), urlEscape(cfg.Password), cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode, frontDoor)
+	if cfg.SSLRootCert != "" {
+		dsn += "&sslrootcert=" + urlEscape(cfg.SSLRootCert)
+	}
+	if cfg.SSLCert != "" {
+		dsn += "&sslcert=" + urlEscape(cfg.SSLCert)
+	}
+	if cfg.SSLKey != "" {
+		dsn += "&sslkey=" + urlEscape(cfg.SSLKey)
+	}
 	return sql.Open("scratchbird", dsn)
 }
 
@@ -328,10 +343,15 @@ func finish(
 ) error {
 	runRoot := filepath.Dir(cfg.Summary)
 	timings["overall"] = elapsed.Nanoseconds()
+	transportMode := "tls_required"
+	if cfg.SSLMode == "disable" {
+		transportMode = "tls_disabled"
+	}
 	summary := map[string]any{
 		"run_id": cfg.RunID, "driver_name": "go", "route": cfg.Route,
 		"parser_mode": cfg.ParserMode, "page_size": cfg.PageSize,
 		"namespace": cfg.Namespace, "status": status(failures),
+		"sslmode": cfg.SSLMode, "transport_mode": transportMode,
 		"failure_count": len(failures), "elapsed_ns": elapsed.Nanoseconds(),
 		"server_revalidation_required": true,
 		"driver_or_parser_finality":    "forbidden",

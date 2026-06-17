@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstddef>
+#include <cstdlib>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_set>
@@ -27,6 +29,84 @@ namespace {
 std::string LowerAscii(std::string value) {
   for (char& c : value) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
   return value;
+}
+
+std::string OptionValue(const EngineApiRequest& request, const std::string& prefix) {
+  for (const auto& option : request.option_envelopes) {
+    if (option.rfind(prefix, 0) == 0) { return option.substr(prefix.size()); }
+  }
+  return {};
+}
+
+bool TryParseI64Value(const std::string& value, std::int64_t* out) {
+  if (value.empty()) { return false; }
+  char* end = nullptr;
+  const long long parsed = std::strtoll(value.c_str(), &end, 10);
+  if (end == nullptr || *end != '\0') { return false; }
+  if (out != nullptr) { *out = static_cast<std::int64_t>(parsed); }
+  return true;
+}
+
+EngineDescriptor TextDescriptor() {
+  EngineDescriptor descriptor;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "text";
+  descriptor.encoded_descriptor = "canonical=text";
+  return descriptor;
+}
+
+EngineDescriptor Int64Descriptor() {
+  EngineDescriptor descriptor;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor = "canonical=int64";
+  return descriptor;
+}
+
+EngineTypedValue TextValue(std::string value) {
+  EngineTypedValue typed;
+  typed.descriptor = TextDescriptor();
+  typed.encoded_value = std::move(value);
+  return typed;
+}
+
+EngineTypedValue Int64Value(std::int64_t value) {
+  EngineTypedValue typed;
+  typed.descriptor = Int64Descriptor();
+  typed.encoded_value = std::to_string(value);
+  return typed;
+}
+
+EngineResultShape CountAssertionResultShape(const EngineSelectRowsRequest& request,
+                                            std::uint64_t actual_count,
+                                            std::string* error_detail) {
+  const std::string assertion_id = OptionValue(request, "assertion_id:");
+  std::string actual_column = OptionValue(request, "actual_column_name:");
+  if (actual_column.empty()) { actual_column = "actual_count"; }
+  std::string expected_column = OptionValue(request, "expected_column_name:");
+  if (expected_column.empty()) { expected_column = "expected_count"; }
+
+  std::int64_t expected_count = 0;
+  if (!TryParseI64Value(OptionValue(request, "expected_count:"), &expected_count)) {
+    if (error_detail != nullptr) { *error_detail = "dml_select_count_assertion_expected_count_invalid"; }
+    return {};
+  }
+  if (actual_count > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+    if (error_detail != nullptr) { *error_detail = "dml_select_count_assertion_actual_count_overflow"; }
+    return {};
+  }
+
+  EngineResultShape shape;
+  shape.result_kind = "query_rowset";
+  shape.columns.push_back(TextDescriptor());
+  shape.columns.push_back(Int64Descriptor());
+  shape.columns.push_back(Int64Descriptor());
+  EngineRowValue out;
+  out.fields.push_back({"assertion_id", TextValue(assertion_id)});
+  out.fields.push_back({actual_column, Int64Value(static_cast<std::int64_t>(actual_count))});
+  out.fields.push_back({expected_column, Int64Value(expected_count)});
+  shape.rows.push_back(std::move(out));
+  return shape;
 }
 
 std::string OrderingColumn(const EngineOrderingEnvelope& ordering) {
@@ -87,6 +167,11 @@ void ApplyProjection(const EngineProjectionEnvelope& projection, std::vector<Cru
 
 bool PredicateCanRowScan(const EnginePredicateEnvelope& predicate) {
   return predicate.predicate_kind == "column_equals" ||
+         predicate.predicate_kind == "columns_all_equal" ||
+         predicate.predicate_kind == "columns_all_null" ||
+         predicate.predicate_kind == "columns_all_not_null" ||
+         predicate.predicate_kind == "column_equals_column_or_left_null" ||
+         predicate.predicate_kind == "column_mod_equals" ||
          predicate.predicate_kind == "column_in_list" ||
          predicate.predicate_kind == "column_range" ||
          predicate.predicate_kind == "text_term_contains" ||
@@ -302,10 +387,22 @@ EngineSelectRowsResult EngineSelectRows(const EngineSelectRowsRequest& request) 
   }
   const EngineProjectionEnvelope& projection =
       !request.select_projection.canonical_projection_envelopes.empty() ? request.select_projection : request.projection;
-  ApplyProjection(projection, &rows);
   auto result = MakeCrudSuccessResult<EngineSelectRowsResult>(request.context, "dml.select_rows");
   result.visible_count = rows.size();
-  result.result_shape = CrudRowsToResultShape(rows);
+  if (OptionValue(request, "result_projection:") == "count_assertion") {
+    std::string error_detail;
+    result.result_shape = CountAssertionResultShape(request, rows.size(), &error_detail);
+    if (!error_detail.empty()) {
+      return MakeCrudDiagnosticResult<EngineSelectRowsResult>(
+          request.context,
+          "dml.select_rows",
+          MakeInvalidRequestDiagnostic("dml.select_rows", error_detail));
+    }
+    result.evidence.push_back({"dml_result_projection", "count_assertion"});
+  } else {
+    ApplyProjection(projection, &rows);
+    result.result_shape = CrudRowsToResultShape(rows);
+  }
   if (!index_uuid_used.empty()) { result.evidence.push_back({"index_lookup", index_uuid_used}); }
   if (!row_scan_predicate.empty()) { result.evidence.push_back({"row_scan_predicate", row_scan_predicate}); }
   result.evidence.insert(result.evidence.end(),
