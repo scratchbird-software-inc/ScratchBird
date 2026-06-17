@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -52,11 +53,17 @@
 
 namespace scratchbird::parser::sbsql {
 namespace {
+constexpr std::uint32_t kQueryFlagAutocommit = 0x40;
+
 
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 constexpr std::size_t kSbwpHeaderSize = 40;
+constexpr std::size_t kMaxPreparedStatementsPerSession = 256;
+constexpr std::size_t kMaxPreparedStatementSqlBytesPerSession = 4u * 1024u * 1024u;
+constexpr std::size_t kMaxBoundPortalsPerSession = 256;
+constexpr std::size_t kMaxBoundPortalSqlBytesPerSession = 4u * 1024u * 1024u;
 constexpr std::uint8_t kSbwpMajor = 1;
 constexpr std::uint8_t kSbwpMinor = 1;
 constexpr std::uint16_t kSbwpVersionMin = 0x0100;
@@ -187,7 +194,8 @@ constexpr std::uint64_t kP1OnlyFeatureMask =
     kFeatureCopyBackpressure | kFeatureSessionReset | kFeatureReauth |
     kFeatureFailoverHints | kFeatureTraceContext;
 constexpr std::uint64_t kServerSupportedFeatureMask =
-    kFeatureStreaming | kFeatureNotifications | kFeatureBatch | kFeaturePipeline | kFeatureMultiResult |
+    kFeatureStreaming | kFeatureNotifications | kFeatureBatch | kFeaturePipeline |
+    kFeatureSavepoints | kFeatureMultiResult |
     kFeatureGeneratedKeys | kFeatureOutParameters | kFeatureArrayBind |
     kFeatureBulkRejects | kFeatureLobLocator | kFeatureCursors |
     kFeatureSessionReset | kFeatureReauth | kFeatureTraceContext;
@@ -281,7 +289,11 @@ struct SbwpSessionState {
   std::string resource_version_identity;
   std::map<std::string, std::string> session_parameters;
   std::map<std::string, PreparedStatement> statements;
+  std::deque<std::string> statement_lru;
+  std::size_t prepared_statement_bytes{0};
   std::map<std::string, BoundPortal> portals;
+  std::deque<std::string> portal_lru;
+  std::size_t bound_portal_bytes{0};
   CopyImportState copy_import;
 };
 
@@ -426,6 +438,92 @@ std::string ReadSizedString(const std::vector<std::uint8_t>& payload, std::size_
   return out;
 }
 
+std::size_t PreparedStatementBytes(const PreparedStatement& statement) {
+  return statement.sql.size() + statement.param_types.size() * sizeof(std::uint32_t);
+}
+
+std::size_t BoundPortalBytes(const BoundPortal& portal) {
+  return portal.sql.size() + portal.param_types.size() * sizeof(std::uint32_t);
+}
+
+void RemovePreparedStatement(SbwpSessionState* state, const std::string& name) {
+  if (state == nullptr) return;
+  if (const auto found = state->statements.find(name); found != state->statements.end()) {
+    state->prepared_statement_bytes -=
+        std::min(state->prepared_statement_bytes, PreparedStatementBytes(found->second));
+    state->statements.erase(found);
+  }
+  state->statement_lru.erase(std::remove(state->statement_lru.begin(),
+                                         state->statement_lru.end(),
+                                         name),
+                             state->statement_lru.end());
+}
+
+bool StorePreparedStatement(SbwpSessionState* state,
+                            const std::string& name,
+                            PreparedStatement statement) {
+  if (state == nullptr) return false;
+  const std::size_t bytes = PreparedStatementBytes(statement);
+  if (bytes > kMaxPreparedStatementSqlBytesPerSession) return false;
+  RemovePreparedStatement(state, name);
+  state->prepared_statement_bytes += bytes;
+  state->statement_lru.push_back(name);
+  state->statements[name] = std::move(statement);
+  while ((state->statements.size() > kMaxPreparedStatementsPerSession ||
+          state->prepared_statement_bytes > kMaxPreparedStatementSqlBytesPerSession) &&
+         !state->statement_lru.empty()) {
+    RemovePreparedStatement(state, state->statement_lru.front());
+  }
+  return true;
+}
+
+void RemoveBoundPortal(SbwpSessionState* state, const std::string& name) {
+  if (state == nullptr) return;
+  if (const auto found = state->portals.find(name); found != state->portals.end()) {
+    state->bound_portal_bytes -= std::min(state->bound_portal_bytes, BoundPortalBytes(found->second));
+    state->portals.erase(found);
+  }
+  state->portal_lru.erase(std::remove(state->portal_lru.begin(), state->portal_lru.end(), name),
+                          state->portal_lru.end());
+}
+
+bool StoreBoundPortal(SbwpSessionState* state, const std::string& name, BoundPortal portal) {
+  if (state == nullptr) return false;
+  const std::size_t bytes = BoundPortalBytes(portal);
+  if (bytes > kMaxBoundPortalSqlBytesPerSession) return false;
+  RemoveBoundPortal(state, name);
+  state->bound_portal_bytes += bytes;
+  state->portal_lru.push_back(name);
+  state->portals[name] = std::move(portal);
+  while ((state->portals.size() > kMaxBoundPortalsPerSession ||
+          state->bound_portal_bytes > kMaxBoundPortalSqlBytesPerSession) &&
+         !state->portal_lru.empty()) {
+    RemoveBoundPortal(state, state->portal_lru.front());
+  }
+  return true;
+}
+
+bool IsSafeSavepointIdentifier(std::string_view name) {
+  if (name.empty()) return false;
+  const unsigned char first = static_cast<unsigned char>(name.front());
+  if (!std::isalpha(first) && name.front() != '_') return false;
+  return std::all_of(name.begin() + 1, name.end(), [](char ch) {
+    const unsigned char byte = static_cast<unsigned char>(ch);
+    return std::isalnum(byte) || ch == '_';
+  });
+}
+
+std::optional<std::string> SavepointSqlFromFrame(const Frame& frame, std::string_view prefix) {
+  std::size_t off = 0;
+  const std::string name = ReadSizedString(frame.payload, &off);
+  if (off != frame.payload.size() || !IsSafeSavepointIdentifier(name)) {
+    return std::nullopt;
+  }
+  std::string sql(prefix);
+  sql += name;
+  return sql;
+}
+
 std::string ReadNullTerminatedSql(const std::vector<std::uint8_t>& payload, std::size_t off) {
   if (off >= payload.size()) return {};
   std::size_t end = off;
@@ -436,6 +534,11 @@ std::string ReadNullTerminatedSql(const std::vector<std::uint8_t>& payload, std:
 std::string ParseQuerySql(const std::vector<std::uint8_t>& payload) {
   if (payload.size() < 12) return {};
   return ReadNullTerminatedSql(payload, 12);
+}
+
+std::uint32_t ParseQueryFlags(const std::vector<std::uint8_t>& payload) {
+  if (payload.size() < 4) return 0;
+  return ReadU32(payload, 0);
 }
 
 std::optional<PreparedStatement> ParsePreparedStatement(const std::vector<std::uint8_t>& payload,
@@ -2220,9 +2323,11 @@ std::string SubstituteParams(std::string sql, const std::vector<std::string>& li
 }
 
 std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& payload,
-                                            const std::map<std::string, PreparedStatement>& statements) {
+                                            const std::map<std::string, PreparedStatement>& statements,
+                                            std::string* portal_name) {
   std::size_t off = 0;
-  (void)ReadSizedString(payload, &off);
+  const std::string parsed_portal_name = ReadSizedString(payload, &off);
+  if (portal_name != nullptr) *portal_name = parsed_portal_name;
   const std::string statement_name = ReadSizedString(payload, &off);
   const auto statement_it = statements.find(statement_name);
   if (statement_it == statements.end()) return std::nullopt;
@@ -2263,11 +2368,17 @@ std::optional<BoundPortal> ParseBindPayload(const std::vector<std::uint8_t>& pay
   return bound;
 }
 
+std::string ParsePortalName(const std::vector<std::uint8_t>& payload) {
+  std::size_t off = 0;
+  return ReadSizedString(payload, &off);
+}
+
 bool ExecuteSql(SbsqlTestWireSession* session,
                 ClientIo* io,
                 SbwpSessionState* state,
                 std::string_view raw_sql,
-                bool send_ready) {
+                bool send_ready,
+                bool autocommit_emulation = false) {
   state->ready_sent_for_current_operation = false;
   const std::string sql = StripSqlTerminator(std::string(raw_sql));
   if (sql.empty()) {
@@ -2275,7 +2386,11 @@ bool ExecuteSql(SbsqlTestWireSession* session,
     return !send_ready || SendReady(io, state);
   }
   const bool auto_cursor = ShouldAutoCursor(sql);
-  const auto result = session->RunPipeline(sql, true, auto_cursor);
+  const auto result = session->RunPipeline(sql,
+                                           true,
+                                           auto_cursor,
+                                           0,
+                                           autocommit_emulation && !auto_cursor);
   if (!result.accepted || result.messages.has_errors()) {
     if (!SendError(io,
                    state,
@@ -2694,22 +2809,36 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
               !SendReady(&io, &state)) rc = 1;
         } else if (!AdmitFrameTransaction(&io, &state, frame, "QUERY")) {
           break;
-        } else if (!ExecuteSql(this, &io, &state, ParseQuerySql(frame.payload), true)) {
+        } else if (!ExecuteSql(this,
+                               &io,
+                               &state,
+                               ParseQuerySql(frame.payload),
+                               true,
+                               (ParseQueryFlags(frame.payload) & kQueryFlagAutocommit) != 0)) {
           rc = 1;
         }
         break;
       case kParse: {
+        state.ready_sent_for_current_operation = false;
         std::string name;
         auto prepared = ParsePreparedStatement(frame.payload, &name);
         if (!prepared) {
           if (!SendError(&io, &state, "08P01", "invalid PARSE payload")) rc = 1;
           break;
         }
-        state.statements[name] = *prepared;
+        if (!StorePreparedStatement(&state, name, std::move(*prepared))) {
+          if (!SendError(&io,
+                         &state,
+                         "54000",
+                         "prepared statement cache limit exceeded",
+                         "prepared statement exceeds the per-session server cache budget")) rc = 1;
+          break;
+        }
         if (!SendFrame(&io, &state, kParseComplete, {})) rc = 1;
         break;
       }
       case kDescribe: {
+        state.ready_sent_for_current_operation = false;
         std::size_t off = 4;
         const std::string name = ReadSizedString(frame.payload, &off);
         PreparedStatement statement;
@@ -2726,6 +2855,7 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
         break;
       }
       case kBind: {
+        state.ready_sent_for_current_operation = false;
         if (state.p1_payloads && frame.payload.size() >= 4 && ReadU16(frame.payload, 0) == 1 &&
             frame.payload[3] != 0) {
           if (!FeatureNegotiated(state, kFeatureArrayBind)) {
@@ -2735,20 +2865,32 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
           }
           break;
         }
-        const auto bound = ParseBindPayload(frame.payload, state.statements);
+        std::string portal_name;
+        const auto bound = ParseBindPayload(frame.payload, state.statements, &portal_name);
         if (!bound) {
           if (!SendError(&io, &state, "08P01", "invalid BIND payload")) rc = 1;
           break;
         }
-        state.portals[""] = *bound;
+        if (!StoreBoundPortal(&state, portal_name, std::move(*bound))) {
+          if (!SendError(&io,
+                         &state,
+                         "54000",
+                         "bound portal cache limit exceeded",
+                         "bound portal exceeds the per-session server cache budget")) rc = 1;
+          break;
+        }
         if (!SendFrame(&io, &state, kBindComplete, {})) rc = 1;
         break;
       }
       case kExecute: {
-        const auto found = state.portals.find("");
+        state.ready_sent_for_current_operation = false;
+        const std::string portal_name = ParsePortalName(frame.payload);
+        const auto found = state.portals.find(portal_name);
         const std::string sql = found == state.portals.end() ? std::string{} : found->second.sql;
         if (!state.authenticated) {
           if (!SendError(&io, &state, "28000", "authentication required")) rc = 1;
+        } else if (found == state.portals.end()) {
+          if (!SendError(&io, &state, "34000", "bound portal not found")) rc = 1;
         } else if (!AdmitFrameTransaction(&io, &state, frame, "EXECUTE")) {
           break;
         } else if (!ExecuteSql(this, &io, &state, sql, false)) {
@@ -2761,6 +2903,16 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
         state.ready_sent_for_current_operation = false;
         break;
       case kClose:
+        state.ready_sent_for_current_operation = false;
+        if (!frame.payload.empty()) {
+          std::size_t off = 4;
+          const std::string name = ReadSizedString(frame.payload, &off);
+          if (frame.payload[0] == 'S') {
+            RemovePreparedStatement(&state, name);
+          } else if (frame.payload[0] == 'P') {
+            RemoveBoundPortal(&state, name);
+          }
+        }
         if (!SendFrame(&io, &state, kCloseComplete, {})) rc = 1;
         break;
       case kTxnBegin:
@@ -2778,6 +2930,35 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
         }
         if (!ExecuteSql(this, &io, &state, "ROLLBACK", true)) rc = 1;
         break;
+      case kTxnSavepoint:
+      case kTxnRelease:
+      case kTxnRollbackTo: {
+        const char* operation = frame.header.msg_type == kTxnSavepoint
+                                    ? "TXN_SAVEPOINT"
+                                    : frame.header.msg_type == kTxnRelease ? "TXN_RELEASE"
+                                                                            : "TXN_ROLLBACK_TO";
+        const char* prefix = frame.header.msg_type == kTxnSavepoint
+                                 ? "SAVEPOINT "
+                                 : frame.header.msg_type == kTxnRelease ? "RELEASE SAVEPOINT "
+                                                                         : "ROLLBACK TO SAVEPOINT ";
+        if (!AdmitFrameTransaction(&io, &state, frame, operation)) {
+          break;
+        }
+        const auto sql = SavepointSqlFromFrame(frame, prefix);
+        if (!sql.has_value()) {
+          if (!SendError(&io,
+                         &state,
+                         "08P01",
+                         "SBWP.SAVEPOINT.INVALID_PAYLOAD",
+                         "savepoint frames require one simple identifier payload") ||
+              !SendReady(&io, &state, ReadyReason::kErrorRecovered)) {
+            rc = 1;
+          }
+          break;
+        }
+        if (!ExecuteSql(this, &io, &state, *sql, true)) rc = 1;
+        break;
+      }
       case kCancel:
         if (!HandleCancel(&io, &state, frame)) rc = 1;
         break;
@@ -2822,9 +3003,6 @@ int SbsqlTestWireSession::ServeSbwp(std::intptr_t fd) {
         break;
       case kSblrExecute:
       case kStreamControl:
-      case kTxnSavepoint:
-      case kTxnRelease:
-      case kTxnRollbackTo:
       case kLobClose:
         if (!SendUnsupportedFeature(&io, &state, "native extension frame") ||
             !SendReady(&io, &state, ReadyReason::kErrorRecovered)) {

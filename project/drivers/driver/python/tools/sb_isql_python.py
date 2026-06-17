@@ -143,6 +143,9 @@ def connect_with_public_api(args: argparse.Namespace):
         "password": args.password,
         "role": args.role,
         "sslmode": args.sslmode,
+        "sslrootcert": args.sslrootcert,
+        "sslcert": args.sslcert,
+        "sslkey": args.sslkey,
         "application_name": "sb_isql_python",
         "connect_timeout": max(1, int(args.statement_timeout_ms / 1000))
         if args.statement_timeout_ms
@@ -408,6 +411,7 @@ def run_script(args: argparse.Namespace) -> int:
 
     total_elapsed = now_ns() - run_started
     timing_groups["overall"] = total_elapsed
+    transport_mode = "tls_disabled" if args.sslmode == "disable" else "tls_required"
     summary = {
         "run_id": args.run_id,
         "driver_name": "python",
@@ -415,6 +419,8 @@ def run_script(args: argparse.Namespace) -> int:
         "parser_mode": args.parser_mode,
         "page_size": args.page_size,
         "namespace": args.namespace,
+        "sslmode": args.sslmode,
+        "transport_mode": transport_mode,
         "status": "fail" if failures else "pass",
         "statement_count": len(statements),
         "failure_count": len(failures),
@@ -474,6 +480,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--password", required=True)
     parser.add_argument("--role", default="")
     parser.add_argument("--sslmode", default="require")
+    parser.add_argument("--sslrootcert")
+    parser.add_argument("--sslcert")
+    parser.add_argument("--sslkey")
     parser.add_argument("--route", choices=sorted(ROUTES), default="listener-parser")
     parser.add_argument("--parser-mode", choices=sorted(PARSER_MODES), default="server-parser")
     parser.add_argument("--page-size", choices=sorted(PAGE_SIZES), default="8k")

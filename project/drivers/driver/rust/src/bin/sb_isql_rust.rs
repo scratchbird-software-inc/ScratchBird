@@ -27,6 +27,9 @@ struct Args {
     password: String,
     role: String,
     sslmode: String,
+    sslrootcert: String,
+    sslcert: String,
+    sslkey: String,
     route: String,
     parser_mode: String,
     page_size: String,
@@ -118,6 +121,9 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     config.password = args.password.clone();
     config.role = args.role.clone();
     config.sslmode = args.sslmode.clone();
+    config.sslrootcert = if args.sslrootcert.is_empty() { None } else { Some(args.sslrootcert.clone()) };
+    config.sslcert = if args.sslcert.is_empty() { None } else { Some(args.sslcert.clone()) };
+    config.sslkey = if args.sslkey.is_empty() { None } else { Some(args.sslkey.clone()) };
     config.front_door_mode = if args.route == "manager-listener-parser" {
         "manager_proxy".to_string()
     } else {
@@ -286,6 +292,7 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
     client.close().await;
 
     timings.insert("overall".to_string(), started.elapsed().as_nanos());
+    let transport_mode = if args.sslmode == "disable" { "tls_disabled" } else { "tls_required" };
     let summary = json!({
         "run_id": args.run_id,
         "driver_name": "rust",
@@ -293,6 +300,8 @@ async fn run(args: Args) -> Result<i32, Box<dyn std::error::Error>> {
         "parser_mode": args.parser_mode,
         "page_size": args.page_size,
         "namespace": args.namespace,
+        "sslmode": args.sslmode,
+        "transport_mode": transport_mode,
         "status": if failures.is_empty() { "pass" } else { "fail" },
         "failure_count": failures.len(),
         "elapsed_ns": started.elapsed().as_nanos(),
@@ -429,6 +438,9 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             .get("--sslmode")
             .cloned()
             .unwrap_or_else(|| "require".to_string()),
+        sslrootcert: values.get("--sslrootcert").cloned().unwrap_or_default(),
+        sslcert: values.get("--sslcert").cloned().unwrap_or_default(),
+        sslkey: values.get("--sslkey").cloned().unwrap_or_default(),
         route: values
             .get("--route")
             .cloned()

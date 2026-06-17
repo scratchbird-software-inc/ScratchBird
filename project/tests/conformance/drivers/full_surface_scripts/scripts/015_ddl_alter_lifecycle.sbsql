@@ -1,0 +1,255 @@
+-- script_id: SBDFS-015
+-- Purpose: DDL ALTER lifecycle - ADD COLUMN, DROP COLUMN, ALTER COLUMN SET DEFAULT,
+--          ADD CONSTRAINT, DROP CONSTRAINT, RENAME TABLE, RENAME COLUMN,
+--          COMMENT ON TABLE, COMMENT ON COLUMN.
+--          Assert via sys.* catalog after each ALTER, DROP at end with RESTRICT.
+--          Grounded in syntax_reference/table.md
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 1. Create the table under test.
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE TABLE __SB_NAMESPACE__.alter_lifecycle_t (
+    rec_id    INTEGER NOT NULL PRIMARY KEY,
+    rec_label VARCHAR(120) NOT NULL,
+    rec_score DECIMAL(10, 2) NOT NULL DEFAULT 0.00
+);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 2. Seed initial data so later mutations can be exercised against real rows.
+-- ──────────────────────────────────────────────────────────────────────────
+INSERT INTO __SB_NAMESPACE__.alter_lifecycle_t (rec_id, rec_label, rec_score)
+VALUES (1, 'initial-row', 5.00);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 3. Assert baseline: the table has 1 row.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-001' AS assertion_id,
+       COUNT(*)        AS actual_base_row_count,
+       1               AS expected_base_row_count
+FROM __SB_NAMESPACE__.alter_lifecycle_t;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 4. ALTER TABLE — ADD COLUMN.
+--    Syntax: ALTER TABLE <t> ADD COLUMN <name> <type>
+--    The new nullable column gets NULL for the existing row.
+-- ──────────────────────────────────────────────────────────────────────────
+ALTER TABLE __SB_NAMESPACE__.alter_lifecycle_t
+    ADD COLUMN rec_note VARCHAR(256);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 5. Assert the new column appears in sys.columns.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-002' AS assertion_id,
+       COUNT(*) >= 1   AS actual_new_col_in_catalog,
+       TRUE            AS expected_new_col_in_catalog
+FROM sys.columns
+WHERE table_id IN (
+    SELECT table_id
+    FROM sys.tables
+    WHERE schema_id IN (
+        SELECT schema_id
+        FROM sys.schemas
+        WHERE schema_name = '__SB_NAMESPACE__'
+    )
+    AND table_name = 'alter_lifecycle_t'
+)
+  AND column_name = 'rec_note';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 6. Assert the existing row has NULL for the new column.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-003' AS assertion_id,
+       rec_note IS NULL AS actual_new_col_null_for_existing,
+       TRUE             AS expected_new_col_null_for_existing
+FROM __SB_NAMESPACE__.alter_lifecycle_t
+WHERE rec_id = 1;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 7. ALTER TABLE — ALTER COLUMN SET DEFAULT.
+--    Syntax: ALTER TABLE <t> ALTER COLUMN <col> SET DEFAULT <expr>
+-- ──────────────────────────────────────────────────────────────────────────
+ALTER TABLE __SB_NAMESPACE__.alter_lifecycle_t
+    ALTER COLUMN rec_score SET DEFAULT 99.99;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 8. Insert a new row without specifying rec_score — new default should apply.
+-- ──────────────────────────────────────────────────────────────────────────
+INSERT INTO __SB_NAMESPACE__.alter_lifecycle_t (rec_id, rec_label)
+VALUES (2, 'default-score-row');
+
+SELECT 'SBDFS-015-004' AS assertion_id,
+       rec_score       AS actual_default_score,
+       99.99           AS expected_default_score
+FROM __SB_NAMESPACE__.alter_lifecycle_t
+WHERE rec_id = 2;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 9. ADD CONSTRAINT — a named CHECK constraint.
+--    Syntax: ALTER TABLE <t> ADD CONSTRAINT <id> CHECK (<predicate>)
+-- ──────────────────────────────────────────────────────────────────────────
+ALTER TABLE __SB_NAMESPACE__.alter_lifecycle_t
+    ADD CONSTRAINT alter_lifecycle_score_nn CHECK (rec_score >= 0);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 10. Assert catalog still reflects the table (constraint addition is
+--     transactional - the table must still be visible).
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-005' AS assertion_id,
+       COUNT(*) >= 1   AS actual_table_still_exists,
+       TRUE            AS expected_table_still_exists
+FROM sys.tables
+WHERE schema_id IN (
+    SELECT schema_id
+    FROM sys.schemas
+    WHERE schema_name = '__SB_NAMESPACE__'
+)
+  AND table_name = 'alter_lifecycle_t';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 11. DROP CONSTRAINT — remove the named CHECK.
+--     Syntax: ALTER TABLE <t> DROP CONSTRAINT <id>
+-- ──────────────────────────────────────────────────────────────────────────
+ALTER TABLE __SB_NAMESPACE__.alter_lifecycle_t
+    DROP CONSTRAINT alter_lifecycle_score_nn;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 12. Assert the table is still intact after constraint drop.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-006' AS assertion_id,
+       COUNT(*)        AS actual_rows_after_drop_constraint,
+       2               AS expected_rows_after_drop_constraint
+FROM __SB_NAMESPACE__.alter_lifecycle_t;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 13. DROP COLUMN — remove rec_note.
+--     Syntax: ALTER TABLE <t> DROP COLUMN <col>
+-- ──────────────────────────────────────────────────────────────────────────
+ALTER TABLE __SB_NAMESPACE__.alter_lifecycle_t
+    DROP COLUMN rec_note;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 14. Assert rec_note is gone from sys.columns.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-007' AS assertion_id,
+       COUNT(*)        AS actual_dropped_col_count,
+       0               AS expected_dropped_col_count
+FROM sys.columns
+WHERE table_id IN (
+    SELECT table_id
+    FROM sys.tables
+    WHERE schema_id IN (
+        SELECT schema_id
+        FROM sys.schemas
+        WHERE schema_name = '__SB_NAMESPACE__'
+    )
+    AND table_name = 'alter_lifecycle_t'
+)
+  AND column_name = 'rec_note';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 15. RENAME COLUMN.
+--     Syntax: ALTER TABLE <t> RENAME COLUMN <old> TO <new>
+-- ──────────────────────────────────────────────────────────────────────────
+ALTER TABLE __SB_NAMESPACE__.alter_lifecycle_t
+    RENAME COLUMN rec_label TO item_label;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 16. Assert the renamed column is queryable under the new name.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-008' AS assertion_id,
+       item_label      AS actual_renamed_col_value,
+       'initial-row'   AS expected_renamed_col_value
+FROM __SB_NAMESPACE__.alter_lifecycle_t
+WHERE rec_id = 1;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 17. Assert renamed column appears under new name in sys.columns.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-009' AS assertion_id,
+       COUNT(*) >= 1   AS actual_new_col_name_in_catalog,
+       TRUE            AS expected_new_col_name_in_catalog
+FROM sys.columns
+WHERE table_id IN (
+    SELECT table_id
+    FROM sys.tables
+    WHERE schema_id IN (
+        SELECT schema_id
+        FROM sys.schemas
+        WHERE schema_name = '__SB_NAMESPACE__'
+    )
+    AND table_name = 'alter_lifecycle_t'
+)
+  AND column_name = 'item_label';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 18. COMMENT ON TABLE.
+--     Syntax: COMMENT ON TABLE <qualified_name> IS <string_literal>
+-- ──────────────────────────────────────────────────────────────────────────
+COMMENT ON TABLE __SB_NAMESPACE__.alter_lifecycle_t IS 'DDL ALTER lifecycle conformance table';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 19. COMMENT ON COLUMN.
+--     Syntax: COMMENT ON COLUMN <table>.<column> IS <string_literal>
+-- ──────────────────────────────────────────────────────────────────────────
+COMMENT ON COLUMN __SB_NAMESPACE__.alter_lifecycle_t.item_label IS 'Renamed from rec_label during conformance test';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 20. RENAME TABLE.
+--     Syntax: RENAME TABLE <old_name> TO <new_name>
+-- ──────────────────────────────────────────────────────────────────────────
+RENAME TABLE __SB_NAMESPACE__.alter_lifecycle_t TO alter_lifecycle_renamed;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 21. Assert the renamed table resolves and its data is accessible.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-010' AS assertion_id,
+       COUNT(*)        AS actual_rows_after_rename,
+       2               AS expected_rows_after_rename
+FROM __SB_NAMESPACE__.alter_lifecycle_renamed;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 22. Assert the renamed table appears in sys.tables under its new name.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-011' AS assertion_id,
+       COUNT(*) >= 1   AS actual_renamed_table_in_catalog,
+       TRUE            AS expected_renamed_table_in_catalog
+FROM sys.tables
+WHERE schema_id IN (
+    SELECT schema_id
+    FROM sys.schemas
+    WHERE schema_name = '__SB_NAMESPACE__'
+)
+  AND table_name = 'alter_lifecycle_renamed';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 23. Assert the old name is gone from sys.tables.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-012' AS assertion_id,
+       COUNT(*)        AS actual_old_name_in_catalog,
+       0               AS expected_old_name_in_catalog
+FROM sys.tables
+WHERE schema_id IN (
+    SELECT schema_id
+    FROM sys.schemas
+    WHERE schema_name = '__SB_NAMESPACE__'
+)
+  AND table_name = 'alter_lifecycle_t';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 24. DROP TABLE with RESTRICT — no dependencies remain.
+-- ──────────────────────────────────────────────────────────────────────────
+DROP TABLE __SB_NAMESPACE__.alter_lifecycle_renamed RESTRICT;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 25. Final catalog assertion: table is gone.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-015-013' AS assertion_id,
+       COUNT(*)        AS actual_table_count_after_drop,
+       0               AS expected_table_count_after_drop
+FROM sys.tables
+WHERE schema_id IN (
+    SELECT schema_id
+    FROM sys.schemas
+    WHERE schema_name = '__SB_NAMESPACE__'
+)
+  AND table_name IN ('alter_lifecycle_t', 'alter_lifecycle_renamed');

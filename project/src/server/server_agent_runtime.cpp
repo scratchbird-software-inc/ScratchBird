@@ -235,6 +235,46 @@ struct ServerAgentAuthorityEpochs {
   std::uint64_t name_resolution_epoch = 1;
 };
 
+struct ProcessMemorySnapshot {
+  bool available = false;
+  std::uint64_t rss_kb = 0;
+  std::uint64_t rss_high_water_kb = 0;
+  std::uint64_t vsize_kb = 0;
+};
+
+std::optional<std::uint64_t> ParseProcStatusKb(const std::string& line,
+                                               const std::string& key) {
+  if (line.rfind(key + ":", 0) != 0) {
+    return std::nullopt;
+  }
+  std::istringstream in(line.substr(key.size() + 1));
+  std::uint64_t value = 0;
+  in >> value;
+  return in ? std::optional<std::uint64_t>(value) : std::nullopt;
+}
+
+ProcessMemorySnapshot ReadCurrentProcessMemorySnapshot() {
+  ProcessMemorySnapshot snapshot;
+#ifndef _WIN32
+  std::ifstream status("/proc/self/status");
+  if (!status) {
+    return snapshot;
+  }
+  std::string line;
+  while (std::getline(status, line)) {
+    if (const auto value = ParseProcStatusKb(line, "VmRSS")) {
+      snapshot.rss_kb = *value;
+    } else if (const auto value = ParseProcStatusKb(line, "VmHWM")) {
+      snapshot.rss_high_water_kb = *value;
+    } else if (const auto value = ParseProcStatusKb(line, "VmSize")) {
+      snapshot.vsize_kb = *value;
+    }
+  }
+  snapshot.available = snapshot.rss_kb != 0 || snapshot.vsize_kb != 0;
+#endif
+  return snapshot;
+}
+
 ServerAgentAuthorityEpochs AuthorityEpochsFromDatabase(
     const HostedDatabaseSnapshot& database) {
   ServerAgentAuthorityEpochs epochs;
@@ -922,6 +962,7 @@ void ServerAgentRuntime::Stop() {
 }
 
 ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
+  const auto memory = ReadCurrentProcessMemorySnapshot();
   std::lock_guard<std::mutex> guard(state_mutex_);
   ServerAgentRuntimeSnapshot snapshot;
   snapshot.started = started_;
@@ -952,6 +993,10 @@ ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
   snapshot.durable_service_evidence_count = durable_service_evidence_count_;
   snapshot.last_recovery_replayed_count = last_recovery_replayed_count_;
   snapshot.durable_catalog_root_digest = durable_catalog_root_digest_;
+  snapshot.process_memory_sample_available = memory.available;
+  snapshot.process_rss_kb = memory.rss_kb;
+  snapshot.process_rss_high_water_kb = memory.rss_high_water_kb;
+  snapshot.process_vsize_kb = memory.vsize_kb;
   return snapshot;
 }
 
@@ -1400,6 +1445,7 @@ void ServerAgentRuntime::WriteStatusSnapshot() const {
 }
 
 std::string ServerAgentRuntime::StatusJson() const {
+  const auto memory = ReadCurrentProcessMemorySnapshot();
   std::lock_guard<std::mutex> guard(state_mutex_);
   std::uint64_t total_ticks = 0;
   std::uint64_t total_accepted = 0;
@@ -1437,6 +1483,11 @@ std::string ServerAgentRuntime::StatusJson() const {
       << "\"last_recovery_replayed_count\":"
       << last_recovery_replayed_count_ << ','
       << "\"durable_catalog_root_digest\":\"" << JsonEscape(durable_catalog_root_digest_) << "\","
+      << "\"process_memory_sample_available\":"
+      << (memory.available ? "true" : "false") << ','
+      << "\"process_rss_kb\":" << memory.rss_kb << ','
+      << "\"process_rss_high_water_kb\":" << memory.rss_high_water_kb << ','
+      << "\"process_vsize_kb\":" << memory.vsize_kb << ','
       << "\"worker_thread_count\":" << worker_evidence_.size() << ','
       << "\"total_worker_ticks\":" << total_ticks << ','
       << "\"total_actions_accepted\":" << total_accepted << ','

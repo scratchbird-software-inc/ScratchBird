@@ -531,12 +531,19 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
   }
 
   auto* result = make_result(SB_ENGINE_RESULT_ROW_BATCH, dispatch_result.api_result.operation_id);
+  const bool summary_only_requested =
+      has_text_line_option(encoded, "result_payload_policy", "summary_only");
   const bool summary_only_import =
       dispatch_result.api_result.operation_id == "dml.execute_import_rows" &&
-      has_text_line_option(encoded, "result_payload_policy", "summary_only");
+      summary_only_requested;
   const bool summary_only_native_bulk =
       dispatch_result.api_result.operation_id == "dml.execute_native_bulk_ingest" &&
-      has_text_line_option(encoded, "result_payload_policy", "summary_only");
+      summary_only_requested;
+  const bool summary_only_dml_write =
+      summary_only_requested &&
+      !summary_only_import &&
+      !summary_only_native_bulk &&
+      dispatch_result.api_result.operation_id.rfind("dml.", 0) == 0;
   result->result_kind = dispatch_result.api_result.result_shape.result_kind;
   if (summary_only_import) {
     result->rows_produced = api_evidence_u64(
@@ -559,13 +566,18 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
     if (result->result_kind.empty()) {
       result->result_kind = "native_bulk_ingest_summary";
     }
+  } else if (summary_only_dml_write) {
+    result->rows_produced = dispatch_result.api_result.dml_summary.rows_changed;
+    if (result->result_kind.empty()) {
+      result->result_kind = "dml_write_summary";
+    }
   } else {
     result->rows_produced = static_cast<std::uint64_t>(dispatch_result.api_result.result_shape.rows.size());
     result->row_values = api_row_values(dispatch_result.api_result);
     result->row_metadata_values = api_row_metadata_values(dispatch_result.api_result);
   }
   result->evidence_values = api_evidence_values(dispatch_result.api_result);
-  if (summary_only_import) {
+  if (summary_only_import || summary_only_dml_write) {
     result->payload = api_result_payload(dispatch_result.api_result.operation_id,
                                          result->result_kind,
                                          result->row_values,

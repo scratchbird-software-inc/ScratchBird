@@ -83,7 +83,7 @@ run_tool <- function(args) {
 
   tryCatch({
     dsn <- sprintf(
-      "host=%s port=%s database=%s user=%s password=%s role=%s sslmode=%s front_door_mode=%s metadata_expand_schema_parents=true",
+      "host=%s port=%s database=%s user=%s password=%s role=%s sslmode=%s sslrootcert=%s sslcert=%s sslkey=%s front_door_mode=%s metadata_expand_schema_parents=true",
       required(args, "--host"),
       required(args, "--port"),
       required(args, "--database"),
@@ -91,6 +91,9 @@ run_tool <- function(args) {
       required(args, "--password"),
       value_or_default(args, "--role", ""),
       value_or_default(args, "--sslmode", "require"),
+      value_or_default(args, "--sslrootcert", ""),
+      value_or_default(args, "--sslcert", ""),
+      value_or_default(args, "--sslkey", ""),
       if (required(args, "--route") == "manager-listener-parser") "manager_proxy" else "direct"
     )
     connect_started <- nanotime()
@@ -201,6 +204,7 @@ run_tool <- function(args) {
 
   elapsed <- nanotime() - started
   timings[["overall"]] <- elapsed
+  sslmode <- value_or_default(args, "--sslmode", "require")
   summary <- list(
     run_id = value_or_default(args, "--run-id", "manual"),
     driver_name = "r",
@@ -208,6 +212,8 @@ run_tool <- function(args) {
     parser_mode = required(args, "--parser-mode"),
     page_size = required(args, "--page-size"),
     namespace = required(args, "--namespace"),
+    sslmode = sslmode,
+    transport_mode = if (sslmode == "disable") "tls_disabled" else "tls_required",
     status = if (length(failures) == 0) "pass" else "fail",
     failure_count = length(failures),
     elapsed_ns = elapsed,

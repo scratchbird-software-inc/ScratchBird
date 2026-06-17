@@ -1113,6 +1113,13 @@ int TLSConnection::write(const void* buffer, int size) {
     return ret;
 }
 
+int TLSConnection::pending() const {
+    if (!ssl_ || state_ != TLSState::ESTABLISHED) {
+        return 0;
+    }
+    return SSL_pending(ssl_);
+}
+
 core::Status TLSConnection::shutdown() {
     if (!ssl_) {
         return core::Status::INVALID_ARGUMENT;

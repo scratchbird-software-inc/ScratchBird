@@ -250,6 +250,8 @@ public final class SBIsqlJdbc {
 
         long elapsed = System.nanoTime() - started;
         timings.put("overall", elapsed);
+        String sslmode = args.required("--sslmode");
+        String transportMode = "disable".equalsIgnoreCase(sslmode) ? "tls_disabled" : "tls_required";
         Map<String, Object> summary = mapOf(
             "run_id", args.valueOrDefault("--run-id", "manual"),
             "driver_name", "jdbc",
@@ -257,6 +259,8 @@ public final class SBIsqlJdbc {
             "parser_mode", args.required("--parser-mode"),
             "page_size", args.required("--page-size"),
             "namespace", args.required("--namespace"),
+            "sslmode", sslmode,
+            "transport_mode", transportMode,
             "status", failures.isEmpty() ? "pass" : "fail",
             "failure_count", failures.size(),
             "elapsed_ns", elapsed,
@@ -287,6 +291,15 @@ public final class SBIsqlJdbc {
             + "?sslmode=" + args.required("--sslmode")
             + "&binary_transfer=true"
             + "&ApplicationName=SBIsqlJdbc";
+        if (!args.valueOrDefault("--sslrootcert", "").isBlank()) {
+            url += "&sslrootcert=" + args.valueOrDefault("--sslrootcert", "");
+        }
+        if (!args.valueOrDefault("--sslcert", "").isBlank()) {
+            url += "&sslcert=" + args.valueOrDefault("--sslcert", "");
+        }
+        if (!args.valueOrDefault("--sslkey", "").isBlank()) {
+            url += "&sslkey=" + args.valueOrDefault("--sslkey", "");
+        }
         Properties props = new Properties();
         props.setProperty("user", args.required("--user"));
         props.setProperty("password", args.required("--password"));

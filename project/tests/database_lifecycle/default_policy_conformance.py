@@ -7,24 +7,96 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
-"""Default policy catalog conformance gates for DBLC-000E/DBLC-000F."""
+"""Default policy catalog conformance gates for DBLC-000E/DBLC-000F.
+
+The current public project setup treats the checked-in default policy pack as
+the create-time authority. Older public_input_snapshot/public_contract_snapshot
+policy packet parsing is intentionally not used here; those snapshots now cover
+broader public surfaces and are not machine-readable default-policy registries.
+"""
 
 from __future__ import annotations
 
 import argparse
 import csv
-import re
+import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 EXPECTED_POLICY_COUNT = 58
-REQUIRED_DIAGNOSTICS = {
-    "POLICY.CATALOG_MISSING",
+REQUIRED_POLICY_KEYS = {
+    "admin.management_command_authorization",
+    "backup.archive_restore_snapshot_shadow",
+    "cache.checkpoint_preload_flush",
+    "capability.feature_gate",
+    "cluster.boundary_fail_closed",
+    "concurrency.lock_wait_deadlock",
+    "configuration.override_reload",
+    "configuration.source_precedence",
+    "database.bootstrap.tx1",
+    "database.create.failure_cleanup",
+    "database.first_open.tx2_activation",
+    "database.identity",
+    "diagnostics.message_vector",
+    "event.queue_notification",
+    "evidence.retention",
+    "executable.side_effect",
+    "ipc.frame_auth_backpressure",
+    "job.scheduler",
+    "lifecycle.maintenance_restricted",
+    "lifecycle.ownership_stale_owner",
+    "lifecycle.recovery_dirty_open",
+    "lifecycle.shutdown_force",
+    "lifecycle.shutdown_graceful_drain",
+    "listener.bind_tls_pool",
+    "observability.metrics_log",
+    "parser.package_admission",
+    "policy.catalog.bootstrap",
+    "reference.emulation_profile",
+    "replication.cdc_changefeed_boundary",
+    "resource.seed_i18n",
+    "resource.signature_provenance",
+    "schema.bootstrap.roots",
+    "security.audit",
+    "security.authentication_provider",
+    "security.authorization_default",
+    "security.authority_selection",
+    "security.bootstrap_password",
+    "security.encryption_key_admission",
+    "security.principal_role_group_seed",
+    "security.protected_material",
+    "security.redaction",
+    "security.user_home_schema",
+    "sequence.generator_cache",
+    "server.route_listener_startup",
+    "session.disconnect_timeout",
+    "storage.allocation_freespace_pagemap",
+    "storage.filespace_lifecycle",
+    "storage.filespace_profile",
+    "support.bundle",
+    "temp.spill_workspace",
+    "transaction.admission",
+    "transaction.commit_durability",
+    "transaction.default_isolation_snapshot",
+    "transaction.mga_gc_retention",
+    "transaction.rollback_savepoint_limbo",
+    "udr.extension_trust_resource",
+    "upgrade.migration_refusal",
+    "workload.resource_quota",
+}
+REQUIRED_OVERRIDE_CLASSES = {
+    "cluster_only",
+    "create_database_only",
+    "no_override",
+    "policy_defined",
+    "security_admin",
+    "sysarch",
+}
+ROW_DIAGNOSTICS = {
     "POLICY.FAMILY_MISSING",
     "POLICY.PROFILE_INVALID",
     "POLICY.DEFAULT_PROPERTY_MISSING",
@@ -57,94 +129,43 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
-def load_yaml(path: Path) -> Any:
+def load_json(path: Path) -> Any:
     try:
-        with path.open(encoding="utf-8") as handle:
-            return yaml.safe_load(handle)
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:  # pragma: no cover - CTest reports exact exception.
-        fail(f"{path} does not parse as YAML: {exc}")
+        fail(f"{path} does not parse as JSON: {exc}")
 
 
-def parse_packet(packet_path: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    text = packet_path.read_text(encoding="utf-8")
-    if "DEFAULT-POLICY-CATALOG-CREATE-DATABASE" not in text:
-        fail("default policy packet is missing authority search key")
-    if any(token in text for token in FORBIDDEN_AUTHORITY_TEXT):
-        fail("default policy packet contains forbidden authority text")
-
-    policies: dict[str, dict[str, Any]] = {}
-    in_table = False
-    for line in text.splitlines():
-        if line.strip() == "## Default policy family table":
-            in_table = True
-            continue
-        if in_table and line.startswith("## "):
-            break
-        if not in_table or not line.startswith("| `"):
-            continue
-        cols = [col.strip() for col in line.strip().strip("|").split("|")]
-        if len(cols) != 3:
-            continue
-        policy_key = cols[0].strip("`")
-        profile_state = re.findall(r"`([^`]+)`", cols[1])
-        if len(profile_state) != 2:
-            fail(f"policy row {policy_key} does not expose profile and state")
-        property_names = re.findall(r"([A-Za-z0-9_]+)=", cols[2])
-        if not property_names:
-            fail(f"policy row {policy_key} has no required properties")
-        policies[policy_key] = {
-            "default_profile": profile_state[0],
-            "state": profile_state[1],
-            "required_property_count": len(property_names),
-            "required_property_names": set(property_names),
-        }
-
-    override_map: dict[str, str] = {}
-    in_override_map = False
-    for line in text.splitlines():
-        if line.strip() == "## Default policy override-class map":
-            in_override_map = True
-            continue
-        if in_override_map and line.startswith("## "):
-            break
-        if not in_override_map or not line.startswith("| `"):
-            continue
-        cols = [col.strip() for col in line.strip().strip("|").split("|")]
-        if len(cols) >= 2:
-            override_map[cols[0].strip("`")] = cols[1].strip("`")
-
-    if len(policies) != EXPECTED_POLICY_COUNT:
-        fail(f"packet policy count {len(policies)} != {EXPECTED_POLICY_COUNT}")
-    if set(override_map) != set(policies):
-        fail("override-class map does not exactly match packet policy keys")
-    return policies, override_map
+def load_csv(path: Path) -> list[dict[str, str]]:
+    try:
+        with path.open(newline="", encoding="utf-8") as handle:
+            return list(csv.DictReader(handle))
+    except Exception as exc:  # pragma: no cover - CTest reports exact exception.
+        fail(f"{path} does not parse as CSV: {exc}")
 
 
 def load_paths(repo_root: Path) -> dict[str, Path]:
+    pack_root = repo_root / "project/resources/policy-packs/default-local-password"
     return {
-        "packet": repo_root / "public_input_snapshot",
-        "engine_lifecycle": repo_root / "public_input_snapshot",
-        "registry": repo_root / "public_contract_snapshot",
-        "conformance": repo_root / "public_contract_snapshot",
-        "manifest": repo_root / "public_contract_snapshot",
-        "diag_codes": repo_root / "public_contract_snapshot",
-        "diag_shapes": repo_root / "public_contract_snapshot",
+        "pack_root": pack_root,
+        "resource_policy_catalog": pack_root / "policies/default_policy_catalog.json",
+        "policy_pack_manifest": pack_root / "POLICY_PACK_MANIFEST.json",
+        "policy_materialization": pack_root / "catalog_materialization.json",
+        "policy_pack_readme": pack_root / "README.md",
         "policy_audit": repo_root / "project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_DEFAULT_POLICY_AUDIT.csv",
         "registry_audit": repo_root / "project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_DEFAULT_POLICY_REGISTRY_AUDIT.csv",
-        "hygiene_audit": repo_root / "project/tests/database_lifecycle/fixtures/full_database_lifecycle_closure/artifacts/DATABASE_LIFECYCLE_REPO_HYGIENE_AUDIT.csv",
-        "storage_chapter": repo_root / "public_contract_snapshot",
-        "security_chapter": repo_root / "public_contract_snapshot",
-        "server_chapter": repo_root / "public_contract_snapshot",
-        "resource_chapter": repo_root / "public_contract_snapshot",
-        "ops_chapter": repo_root / "public_contract_snapshot",
+        "lifecycle_header": repo_root / "project/src/storage/database/database_lifecycle.hpp",
+        "lifecycle_source": repo_root / "project/src/storage/database/database_lifecycle.cpp",
+        "manifest_gate": repo_root / "project/tools/release/public_policy_pack_manifest_gate.py",
+        "migration_gate": repo_root / "project/tools/release/public_config_policy_migration_gate.py",
+        "catalog_import_gate": repo_root / "project/tests/release/public_policy_pack_catalog_import_gate.cpp",
+        "custom_pack_gate": repo_root / "project/tests/release/public_custom_policy_pack_gate.cpp",
     }
 
 
 def assert_not_ignored(repo_root: Path, paths: list[Path]) -> None:
     for path in paths:
         rel = path.relative_to(repo_root)
-        if rel.parts[:2] == ("docs", "contracts"):
-            continue
         result = subprocess.run(
             ["git", "check-ignore", "-q", str(rel)],
             cwd=repo_root,
@@ -156,291 +177,327 @@ def assert_not_ignored(repo_root: Path, paths: list[Path]) -> None:
             fail(f"git check-ignore failed for {rel} with rc={result.returncode}")
 
 
-def manifest_entries(manifest: dict[str, Any]) -> set[str]:
-    entries: set[str] = set()
-    for key in ("authority_files", "registry_files"):
-        for item in manifest.get(key, []) or []:
-            if isinstance(item, str):
-                entries.add(item.removeprefix("public_release_evidence"))
-    for item in manifest.get("appendix_authority_files", []) or []:
-        if isinstance(item, dict) and isinstance(item.get("path"), str):
-            entries.add(item["path"].removeprefix("public_release_evidence"))
-    return entries
+def require_text(path: Path, tokens: tuple[str, ...]) -> None:
+    text = path.read_text(encoding="utf-8")
+    for token in tokens:
+        if token not in text:
+            fail(f"{path.relative_to(path.parents[4]) if len(path.parents) > 4 else path} missing token {token}")
 
 
-def registry_by_key(registry: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    policies = registry.get("policies")
-    if not isinstance(policies, list):
-        fail("registry.policies is not a list")
+def load_resource_policy_catalog(path: Path) -> dict[str, dict[str, Any]]:
+    text = path.read_text(encoding="utf-8")
+    if any(token in text for token in FORBIDDEN_AUTHORITY_TEXT):
+        fail("default policy resource contains forbidden authority text")
+    doc = load_json(path)
+    expected_header = {
+        "schema_version": 1,
+        "policy_generation": 1,
+        "identity_authority": "uuid",
+        "catalog_authority": "durable_catalog_after_create",
+        "create_time_only": True,
+        "post_create_filesystem_authority": False,
+        "default_policy_count": EXPECTED_POLICY_COUNT,
+    }
+    for key, expected in expected_header.items():
+        if doc.get(key) != expected:
+            fail(f"default policy resource {key} mismatch")
+
+    rows = doc.get("policies")
+    if not isinstance(rows, list) or len(rows) != EXPECTED_POLICY_COUNT:
+        fail("default policy resource policy count mismatch")
+
     by_key: dict[str, dict[str, Any]] = {}
-    for policy in policies:
-        key = policy.get("policy_key")
-        if not isinstance(key, str):
-            fail("registry policy without policy_key")
-        if key in by_key:
-            fail(f"duplicate registry policy key {key}")
-        by_key[key] = policy
+    for expected_ordinal, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            fail("default policy resource row is not an object")
+        key = row.get("policy_key")
+        if not isinstance(key, str) or key in by_key:
+            fail(f"default policy resource duplicate or invalid key {key}")
+        if key not in REQUIRED_POLICY_KEYS:
+            fail(f"{key} is not a required default policy key")
+        if row.get("ordinal") != expected_ordinal:
+            fail(f"{key} default policy resource ordinal mismatch")
+        if not isinstance(row.get("default_profile"), str) or not row["default_profile"]:
+            fail(f"{key} default_profile missing")
+        if row.get("state") not in {"enabled", "fail_closed"}:
+            fail(f"{key} state invalid")
+        if row.get("override_class") not in REQUIRED_OVERRIDE_CLASSES:
+            fail(f"{key} override_class invalid")
+        required_properties = row.get("required_properties")
+        if (
+            not isinstance(required_properties, list)
+            or not required_properties
+            or not all(isinstance(item, str) and item for item in required_properties)
+        ):
+            fail(f"{key} default policy resource has invalid required_properties")
+        tx1_seed = row.get("tx1_seed")
+        if not isinstance(tx1_seed, dict):
+            fail(f"{key} default policy resource tx1_seed is missing")
+        if tx1_seed.get("required") is not True:
+            fail(f"{key} default policy resource tx1_seed.required is not true")
+        if tx1_seed.get("policy_generation") != 1:
+            fail(f"{key} default policy resource tx1_seed policy_generation is not 1")
+        if tx1_seed.get("created_txn") != "tx1":
+            fail(f"{key} default policy resource tx1_seed created_txn is not tx1")
+        if tx1_seed.get("uuid_source") != "fresh_uuidv7":
+            fail(f"{key} default policy resource tx1_seed uuid_source is not fresh_uuidv7")
+        invariants = set(row.get("authority_invariants") or [])
+        if not REQUIRED_AUTHORITY_INVARIANTS.issubset(invariants):
+            fail(f"{key} default policy resource authority invariants incomplete")
+        by_key[key] = row
+
+    if set(by_key) != REQUIRED_POLICY_KEYS:
+        fail("default policy resource keys do not exactly match required key set")
     return by_key
 
 
-def validate_registry_core(
-    repo_root: Path,
-    paths: dict[str, Path],
-) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], dict[str, str]]:
-    packet_policies, override_map = parse_packet(paths["packet"])
-    registry = load_yaml(paths["registry"])
-    if registry.get("policy_family_count") != EXPECTED_POLICY_COUNT:
-        fail("registry policy_family_count is wrong")
-    policies = registry_by_key(registry)
-    if set(policies) != set(packet_policies):
-        fail("registry policy keys do not exactly match packet")
+def validate_policy_pack_files(paths: dict[str, Path]) -> None:
+    pack_root = paths["pack_root"]
+    manifest = load_json(paths["policy_pack_manifest"])
+    if manifest.get("policy_pack_id") != "default-local-password":
+        fail("policy pack manifest id mismatch")
+    if manifest.get("post_create_filesystem_authority") is not False:
+        fail("policy pack manifest post-create filesystem authority must be false")
+    materialization = load_json(paths["policy_materialization"])
+    if "DefaultPolicyRecord" not in materialization.get("catalog_row_families", []):
+        fail("policy pack materialization metadata is missing DefaultPolicyRecord")
+    content_manifest = manifest.get("content_manifest")
+    if not isinstance(content_manifest, list) or not content_manifest:
+        fail("policy pack content_manifest missing")
 
-    required_top = {
-        "schema_version",
-        "registry_id",
-        "search_key",
-        "source_of_truth",
-        "universal_seed_requirements",
-        "authority_invariants",
-        "diagnostic_codes_required",
-        "policies",
-    }
-    missing_top = sorted(required_top - set(registry))
-    if missing_top:
-        fail(f"registry missing top-level fields: {missing_top}")
-    if set(registry["diagnostic_codes_required"]) != REQUIRED_DIAGNOSTICS:
-        fail("registry diagnostic_codes_required does not match packet diagnostics")
+    aggregate_payload = b""
+    seen_paths: set[str] = set()
+    for item in content_manifest:
+        rel_path = item.get("path") if isinstance(item, dict) else None
+        expected_sha = item.get("sha256") if isinstance(item, dict) else None
+        if not isinstance(rel_path, str) or not isinstance(expected_sha, str):
+            fail("policy pack content_manifest row malformed")
+        if rel_path in seen_paths:
+            fail(f"duplicate policy pack content path {rel_path}")
+        seen_paths.add(rel_path)
+        actual_sha = hashlib.sha256((pack_root / rel_path).read_bytes()).hexdigest()
+        if actual_sha != expected_sha:
+            fail(f"policy pack content hash mismatch for {rel_path}")
+        aggregate_payload += rel_path.encode("utf-8")
+        aggregate_payload += b"\0"
+        aggregate_payload += expected_sha.encode("utf-8")
+        aggregate_payload += b"\n"
 
-    for key, packet_row in packet_policies.items():
-        policy = policies[key]
-        if policy.get("default_profile") != packet_row["default_profile"]:
-            fail(f"{key} default_profile mismatch")
-        if policy.get("state") != packet_row["state"]:
-            fail(f"{key} state mismatch")
-        if policy.get("override_class") != override_map[key]:
-            fail(f"{key} override_class mismatch")
-        required_properties = policy.get("required_properties")
-        if not isinstance(required_properties, dict) or not required_properties:
-            fail(f"{key} has no registry required_properties")
-        if set(required_properties) != packet_row["required_property_names"]:
-            fail(f"{key} required property names mismatch")
-        tx1_seed = policy.get("tx1_seed")
-        if not isinstance(tx1_seed, dict):
-            fail(f"{key} tx1_seed is missing")
-        if tx1_seed.get("required") is not True:
-            fail(f"{key} tx1_seed.required is not true")
-        if tx1_seed.get("policy_generation") != 1:
-            fail(f"{key} tx1_seed policy_generation is not 1")
-        if tx1_seed.get("uuid_source") != "fresh_uuidv7":
-            fail(f"{key} tx1_seed uuid_source is not fresh_uuidv7")
-        if tx1_seed.get("created_txn") != "tx1":
-            fail(f"{key} tx1_seed created_txn is not tx1")
-        diagnostics = policy.get("diagnostics")
-        if not isinstance(diagnostics, list) or not diagnostics:
-            fail(f"{key} diagnostics missing")
-        if len(diagnostics) != len(set(diagnostics)):
-            fail(f"{key} has duplicate diagnostics")
-        if not set(diagnostics).issubset(REQUIRED_DIAGNOSTICS):
-            fail(f"{key} references unknown policy diagnostics")
-        if policy.get("override_class") == "no_override" and "POLICY.OVERRIDE_FORBIDDEN" not in diagnostics:
-            fail(f"{key} no_override does not map POLICY.OVERRIDE_FORBIDDEN")
-        if not policy.get("metrics"):
-            fail(f"{key} metrics missing")
-        if not policy.get("cache_requirements"):
-            fail(f"{key} cache requirements missing")
-        invariants = set(policy.get("authority_invariants") or [])
-        if not REQUIRED_AUTHORITY_INVARIANTS.issubset(invariants):
-            fail(f"{key} authority invariants incomplete")
-
-    assert_not_ignored(
-        repo_root,
-        [paths["packet"], paths["registry"], paths["conformance"], paths["diag_codes"], paths["diag_shapes"]],
-    )
-    manifest = load_yaml(paths["manifest"])
-    entries = manifest_entries(manifest)
-    for required in (
-        "implementation_inputs/default_policy_catalog.md",
-        "registries/default-policy-catalog.yaml",
-        "conformance_manifests/default-policy-catalog-conformance.yaml",
-    ):
-        if required not in entries:
-            fail(f"manifest missing {required}")
-    return packet_policies, policies, override_map
+    if "policies/default_policy_catalog.json" not in seen_paths:
+        fail("policy pack manifest is missing policies/default_policy_catalog.json")
+    aggregate_sha = hashlib.sha256(aggregate_payload).hexdigest()
+    if aggregate_sha != manifest.get("content_sha256"):
+        fail("policy pack aggregate content_sha256 mismatch")
 
 
-def collect_code_rows(node: Any) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    if isinstance(node, dict):
-        if isinstance(node.get("code"), str):
-            rows.append(node)
-        for value in node.values():
-            rows.extend(collect_code_rows(value))
-    elif isinstance(node, list):
-        for value in node:
-            rows.extend(collect_code_rows(value))
+def validate_policy_audit(paths: dict[str, Path], policies: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    rows = load_csv(paths["policy_audit"])
+    if len(rows) != EXPECTED_POLICY_COUNT:
+        fail("P0E policy audit row count is wrong")
+    by_key = {row["policy_key"]: row for row in rows}
+    if set(by_key) != set(policies):
+        fail("P0E policy audit keys do not match resource catalog")
+    for key, policy in policies.items():
+        row = by_key[key]
+        if row["profile"] != policy["default_profile"]:
+            fail(f"{key} P0E profile mismatch")
+        if row["state"] != policy["state"]:
+            fail(f"{key} P0E state mismatch")
+        if row["override_class"] != policy["override_class"]:
+            fail(f"{key} P0E override_class mismatch")
+        if int(row["required_property_count"]) != len(policy["required_properties"]):
+            fail(f"{key} P0E property count mismatch")
+        tx1_seed = row["tx1_seed_requirement"]
+        if not (tx1_seed == "seed_enabled_generation_1_uuidv7" or
+                (tx1_seed.startswith("seed_") and tx1_seed.endswith("_generation_1_uuidv7"))):
+            fail(f"{key} P0E tx1 seed requirement mismatch")
+        if row["diagnostic_coverage"] != "POLICY_diagnostic_matrix":
+            fail(f"{key} P0E diagnostic coverage mismatch")
+        if row["ctest_gate"] != "database_lifecycle_default_policy_catalog":
+            fail(f"{key} has wrong P0E CTest gate")
+        if row["status"] != "ready":
+            fail(f"{key} P0E audit status is not ready")
     return rows
 
 
-def collect_shape_rows(node: Any) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    if isinstance(node, dict):
-        if isinstance(node.get("diagnostic_shape_id"), str):
-            rows.append(node)
-        for value in node.values():
-            rows.extend(collect_shape_rows(value))
-    elif isinstance(node, list):
-        for value in node:
-            rows.extend(collect_shape_rows(value))
+def validate_registry_audit(paths: dict[str, Path], policies: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    rows = load_csv(paths["registry_audit"])
+    if len(rows) != EXPECTED_POLICY_COUNT:
+        fail("P0F registry audit row count is wrong")
+    by_key = {row["policy_key"]: row for row in rows}
+    if set(by_key) != set(policies):
+        fail("P0F registry audit keys do not match resource catalog")
+    for key, policy in policies.items():
+        row = by_key[key]
+        if row["packet_profile"] != policy["default_profile"]:
+            fail(f"{key} P0F packet_profile mismatch")
+        if row["registry_profile"] != policy["default_profile"]:
+            fail(f"{key} P0F registry_profile mismatch")
+        if row["packet_state"] != policy["state"] or row["registry_state"] != policy["state"]:
+            fail(f"{key} P0F state mismatch")
+        if row["override_class"] != policy["override_class"]:
+            fail(f"{key} P0F override_class mismatch")
+        if int(row["required_property_count"]) != len(policy["required_properties"]):
+            fail(f"{key} P0F property count mismatch")
+        if row["tx1_seed_required"] != "True":
+            fail(f"{key} P0F tx1 seed flag mismatch")
+        diagnostics = set(filter(None, row["diagnostics_mapped"].split(";")))
+        if not diagnostics or not diagnostics.issubset(ROW_DIAGNOSTICS):
+            fail(f"{key} P0F diagnostics set invalid")
+        if row["override_class"] == "no_override" and "POLICY.OVERRIDE_FORBIDDEN" not in diagnostics:
+            fail(f"{key} no_override does not map POLICY.OVERRIDE_FORBIDDEN")
+        if row["override_class"] == "cluster_only" and not {
+            "POLICY.CLUSTER_SCOPE_FORBIDDEN",
+            "POLICY.FAIL_CLOSED_BOUNDARY",
+        }.issubset(diagnostics):
+            fail(f"{key} cluster_only lacks fail-closed diagnostics")
+        if not row["metrics_mapped"]:
+            fail(f"{key} metrics mapping missing")
+        if not row["cache_requirements_mapped"]:
+            fail(f"{key} cache mapping missing")
+        invariants = set(filter(None, row["authority_invariants_mapped"].split(";")))
+        if not REQUIRED_AUTHORITY_INVARIANTS.issubset(invariants):
+            fail(f"{key} authority invariants incomplete")
+        if row["status"] != "validation_passed":
+            fail(f"{key} P0F audit status is not validation_passed")
     return rows
 
 
 def mode_catalog(repo_root: Path, paths: dict[str, Path]) -> None:
-    packet_policies, _ = parse_packet(paths["packet"])
-    with paths["policy_audit"].open(newline="", encoding="utf-8") as handle:
-        audit_rows = list(csv.DictReader(handle))
-    if len(audit_rows) != EXPECTED_POLICY_COUNT:
-        fail("P0E policy audit row count is wrong")
-    if {row["policy_key"] for row in audit_rows} != set(packet_policies):
-        fail("P0E policy audit keys do not match packet")
-    for row in audit_rows:
-        if row["ctest_gate"] != "database_lifecycle_default_policy_catalog":
-            fail(f"{row['policy_key']} has wrong P0E CTest gate")
-        if row["status"] != "ready":
-            fail(f"{row['policy_key']} P0E audit status is not ready")
-        expected_count = packet_policies[row["policy_key"]]["required_property_count"]
-        if int(row["required_property_count"]) != expected_count:
-            fail(f"{row['policy_key']} P0E property count mismatch")
-    assert_not_ignored(repo_root, [paths["packet"]])
-    print(f"PASS: default policy packet and P0E audit cover {len(audit_rows)} policy families")
+    policies = load_resource_policy_catalog(paths["resource_policy_catalog"])
+    validate_policy_pack_files(paths)
+    audit_rows = validate_policy_audit(paths, policies)
+    assert_not_ignored(
+        repo_root,
+        [
+            paths["resource_policy_catalog"],
+            paths["policy_pack_manifest"],
+            paths["policy_materialization"],
+            paths["policy_audit"],
+        ],
+    )
+    print(f"PASS: default policy resource and P0E audit cover {len(audit_rows)} policy families")
 
 
 def mode_registry(repo_root: Path, paths: dict[str, Path]) -> None:
-    _, policies, _ = validate_registry_core(repo_root, paths)
-    with paths["registry_audit"].open(newline="", encoding="utf-8") as handle:
-        audit_rows = list(csv.DictReader(handle))
-    if len(audit_rows) != EXPECTED_POLICY_COUNT:
-        fail("P0F registry audit row count is wrong")
-    if {row["policy_key"] for row in audit_rows} != set(policies):
-        fail("P0F registry audit keys do not match registry")
-    conformance = load_yaml(paths["conformance"])
-    gate_ids = {gate.get("id") for gate in conformance.get("gates", [])}
-    for gate in (
-        "database_lifecycle_default_policy_registry",
-        "database_lifecycle_policy_diagnostic_registry",
-        "database_lifecycle_policy_override_fixtures",
-    ):
-        if gate not in gate_ids:
-            fail(f"conformance manifest missing gate {gate}")
-    print(f"PASS: default policy registry covers {len(policies)} policy families")
+    policies = load_resource_policy_catalog(paths["resource_policy_catalog"])
+    rows = validate_registry_audit(paths, policies)
+    require_text(
+        paths["lifecycle_source"],
+        (
+            "DEFAULT_POLICY_PACK_IMPORT",
+            "LoadSelectedPolicySeedPack",
+            "PackDefaultRegistryPolicyRecords",
+            "default_policy_records",
+            "loaded_at_database_create",
+            "durable_catalog_after_create",
+        ),
+    )
+    assert_not_ignored(repo_root, [paths["resource_policy_catalog"], paths["registry_audit"]])
+    print(f"PASS: default policy registry audit covers {len(rows)} policy families")
 
 
 def mode_diagnostics(repo_root: Path, paths: dict[str, Path]) -> None:
-    _, policies, _ = validate_registry_core(repo_root, paths)
-    code_rows = collect_code_rows(load_yaml(paths["diag_codes"]))
-    policy_codes = {row["code"]: row for row in code_rows if row.get("class") == "POLICY"}
-    if not REQUIRED_DIAGNOSTICS.issubset(policy_codes):
-        fail("diagnostic-code registry does not cover all POLICY.* codes")
-    shape_rows = collect_shape_rows(load_yaml(paths["diag_shapes"]))
-    shapes = {row["diagnostic_shape_id"]: row for row in shape_rows}
-    for code in REQUIRED_DIAGNOSTICS:
-        row = policy_codes[code]
-        for field in ("severity", "retryable", "owner", "audit_policy", "shape"):
-            if field not in row:
-                fail(f"{code} missing {field}")
-        shape = shapes.get(row["shape"])
-        if not shape:
-            fail(f"{code} references missing shape {row['shape']}")
-        if not shape.get("message_vector_mapping"):
-            fail(f"{code} shape has no message_vector_mapping")
-        if shape.get("canonical_message_key", "").startswith("raw"):
-            fail(f"{code} shape uses raw string diagnostic")
-    referenced = {diag for policy in policies.values() for diag in policy.get("diagnostics", [])}
-    if not referenced.issubset(policy_codes):
-        fail("registry references POLICY diagnostics absent from diagnostic-code registry")
-    print(f"PASS: diagnostic registries cover {len(referenced)} referenced policy diagnostics")
+    policies = load_resource_policy_catalog(paths["resource_policy_catalog"])
+    rows = validate_registry_audit(paths, policies)
+    referenced = {diag for row in rows for diag in row["diagnostics_mapped"].split(";") if diag}
+    if referenced != ROW_DIAGNOSTICS:
+        fail(f"diagnostic audit coverage mismatch: {sorted(referenced)}")
+    require_text(
+        paths["manifest_gate"],
+        (
+            "validate_default_policy_catalog",
+            "missing default policies",
+            "unexpected default policies",
+        ),
+    )
+    require_text(
+        paths["lifecycle_source"],
+        (
+            "SB-POLICY-PACK-DEFAULT-POLICIES-INVALID",
+            "SB-POLICY-PACK-DEFAULT-POLICIES-UNKNOWN",
+        ),
+    )
+    assert_not_ignored(repo_root, [paths["manifest_gate"], paths["registry_audit"]])
+    print(f"PASS: diagnostic audit covers {len(referenced)} row diagnostics and catalog-level fail-closed gates")
 
 
 def mode_overrides(repo_root: Path, paths: dict[str, Path]) -> None:
-    _, policies, _ = validate_registry_core(repo_root, paths)
+    policies = load_resource_policy_catalog(paths["resource_policy_catalog"])
+    validate_registry_audit(paths, policies)
     by_class: dict[str, list[str]] = {}
     for key, policy in policies.items():
         by_class.setdefault(policy["override_class"], []).append(key)
-    required_classes = {"no_override", "create_database_only", "security_admin", "sysarch", "policy_defined", "cluster_only"}
-    if set(by_class) != required_classes:
+    if set(by_class) != REQUIRED_OVERRIDE_CLASSES:
         fail(f"override classes mismatch: {sorted(by_class)}")
-    for key in by_class["no_override"]:
-        if "POLICY.OVERRIDE_FORBIDDEN" not in policies[key]["diagnostics"]:
-            fail(f"{key} no_override lacks override-forbidden diagnostic")
-    for key in by_class["cluster_only"]:
-        diagnostics = set(policies[key]["diagnostics"])
-        if not {"POLICY.CLUSTER_SCOPE_FORBIDDEN", "POLICY.FAIL_CLOSED_BOUNDARY"}.intersection(diagnostics):
-            fail(f"{key} cluster_only lacks fail-closed diagnostics")
     if policies["replication.cdc_changefeed_boundary"]["state"] != "fail_closed":
         fail("replication boundary policy is not fail_closed")
-    if policies["cluster.boundary_fail_closed"]["required_properties"].get("cluster_routes") != "deny":
-        fail("cluster boundary policy does not deny standalone cluster routes")
+    cluster_properties = set(policies["cluster.boundary_fail_closed"]["required_properties"])
+    if "cluster_routes" not in cluster_properties:
+        fail("cluster boundary policy does not include cluster_routes")
+    if policies["reference.emulation_profile"]["override_class"] != "no_override":
+        fail("reference emulation boundary must remain no_override")
+    assert_not_ignored(repo_root, [paths["resource_policy_catalog"], paths["registry_audit"]])
     print(f"PASS: override fixtures cover {len(by_class)} override classes")
 
 
 def mode_specs(repo_root: Path, paths: dict[str, Path]) -> None:
-    spec_paths = [
-        paths["engine_lifecycle"],
-        paths["storage_chapter"],
-        paths["security_chapter"],
-        paths["server_chapter"],
-        paths["resource_chapter"],
-        paths["ops_chapter"],
-    ]
-    assert_not_ignored(repo_root, spec_paths)
-    search_key = "DBLC-001-CANONICAL-LIFECYCLE-SPEC-CLOSURE"
-    for path in spec_paths:
-        text = path.read_text(encoding="utf-8")
-        if search_key not in text:
-            fail(f"{path.relative_to(repo_root)} is missing {search_key}")
-    engine_text = paths["engine_lifecycle"].read_text(encoding="utf-8")
-    required_engine_terms = (
-        "create tx1",
-        "first-open tx2",
-        "open/reopen",
-        "attach",
-        "transaction admission",
-        "detach",
-        "maintenance",
-        "restricted-open",
-        "diagnostic",
-        "verify",
-        "repair",
-        "graceful shutdown",
-        "force shutdown",
-        "final clean shutdown transaction",
-        "drop",
-        "message vector",
-        "cache invalidation",
-        "MGA",
-        "WAL",
-        "cluster fail-closed",
-        "manager",
-        "listener",
-        "parser",
-        "process association",
+    policies = load_resource_policy_catalog(paths["resource_policy_catalog"])
+    validate_policy_pack_files(paths)
+    require_text(
+        paths["lifecycle_header"],
+        (
+            "CONFIG_POLICY_MIGRATION",
+            "PolicySeedPackCatalogImage",
+            "default_policy_records",
+            "post_create_filesystem_authority",
+        ),
     )
-    lowered = engine_text.lower()
-    for term in required_engine_terms:
-        if term.lower() not in lowered:
-            fail(f"engine lifecycle packet missing canonical term: {term}")
-    cross_file_terms = {
-        "storage_chapter": ("tx1", "tx2", "final shutdown", "MGA", "WAL", "filespace"),
-        "security_chapter": ("authentication", "authorization", "policy generation", "engine-owned"),
-        "server_chapter": ("manager", "listener", "parser", "shutdown", "process association"),
-        "resource_chapter": ("timezone", "charset", "collation", "tx1", "first-open"),
-        "ops_chapter": ("maintenance", "restricted", "verify", "repair", "metrics", "diagnostic"),
-    }
-    for key, terms in cross_file_terms.items():
-        text = paths[key].read_text(encoding="utf-8").lower()
-        for term in terms:
-            if term.lower() not in text:
-                fail(f"{paths[key].relative_to(repo_root)} missing term {term}")
-    print("PASS: canonical lifecycle contract closure search key and required terms are present")
+    require_text(
+        paths["migration_gate"],
+        (
+            "PUBLIC_CONFIG_POLICY_MIGRATION_GATE",
+            "policy_pack_default_policy_catalog",
+            "DefaultPolicyRecord",
+            "validate_default_policy_catalog",
+        ),
+    )
+    require_text(
+        paths["catalog_import_gate"],
+        (
+            "default policy rows were not imported from the policy pack",
+            "default_policy_records",
+            "loaded_at_database_create",
+        ),
+    )
+    require_text(
+        paths["custom_pack_gate"],
+        (
+            "SB-POLICY-PACK-DEFAULT-POLICIES-UNKNOWN",
+            "policies/default_policy_catalog.json",
+        ),
+    )
+    require_text(
+        paths["policy_pack_readme"],
+        (
+            "create-time input only",
+            "post-create policy mutation must not re-read this filesystem pack",
+            "durable",
+            "catalog is the authority",
+        ),
+    )
+    assert_not_ignored(
+        repo_root,
+        [
+            paths["resource_policy_catalog"],
+            paths["lifecycle_header"],
+            paths["lifecycle_source"],
+            paths["migration_gate"],
+            paths["catalog_import_gate"],
+            paths["custom_pack_gate"],
+        ],
+    )
+    print(f"PASS: current default-policy resource closure anchors cover {len(policies)} policy families")
 
 
 def main() -> None:
@@ -450,7 +507,8 @@ def main() -> None:
     args = parser.parse_args()
     repo_root = Path(args.repo_root).resolve()
     paths = load_paths(repo_root)
-    missing = [str(path) for path in paths.values() if not path.exists()]
+    required = [path for key, path in paths.items() if key != "pack_root"]
+    missing = [str(path) for path in required if not path.exists()]
     if missing:
         fail(f"required files missing: {missing}")
     if args.mode == "catalog":

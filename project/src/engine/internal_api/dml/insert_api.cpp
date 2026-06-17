@@ -24,10 +24,12 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <iomanip>
 #include <iterator>
 #include <map>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -282,11 +284,325 @@ std::vector<std::string> ConflictUpdateColumns(
   if (!request.conflict_update_columns.empty()) return request.conflict_update_columns;
   auto option_columns = InsertOptionValues(request, "conflict_update_column:");
   if (!option_columns.empty()) return option_columns;
+  option_columns = InsertOptionValues(request, "on_conflict_update_column:");
+  if (!option_columns.empty()) return option_columns;
+  if (!InsertOptionValue(request, "on_conflict_assignment_plan:").empty()) {
+    return {};
+  }
   for (const auto& [field, ignored] : values) {
     (void)ignored;
     if (field != target_column) { option_columns.push_back(field); }
   }
   return option_columns;
+}
+
+std::vector<std::string> SplitText(const std::string& value, char delimiter) {
+  std::vector<std::string> parts;
+  std::string current;
+  std::istringstream in(value);
+  while (std::getline(in, current, delimiter)) { parts.push_back(current); }
+  return parts;
+}
+
+std::optional<EngineApiU64> ParseInsertOptionU64(const EngineInsertRowsRequest& request,
+                                                 std::string_view prefix) {
+  const std::string value = InsertOptionValue(request, prefix);
+  if (value.empty()) return std::nullopt;
+  try {
+    return static_cast<EngineApiU64>(std::stoull(value));
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
+EngineTypedValue GeneratedInsertValue(std::string value, std::string type_name) {
+  EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = std::move(type_name);
+  if (typed.descriptor.canonical_type_name.empty()) {
+    typed.descriptor.canonical_type_name = "text";
+  }
+  typed.descriptor.encoded_descriptor = "type=" + typed.descriptor.canonical_type_name;
+  typed.encoded_value = std::move(value);
+  typed.is_null = false;
+  typed.state = EngineValueState::value;
+  return typed;
+}
+
+std::string GeneratedProjectionValue(const std::string& descriptor, EngineApiU64 counter) {
+  if (descriptor == "counter") return std::to_string(counter);
+  const auto parts = SplitText(descriptor, ':');
+  if (parts.empty()) return {};
+  if (parts[0] == "literal_text" && parts.size() >= 2) {
+    return parts[1];
+  }
+  if (parts[0] == "literal_boolean" && parts.size() == 2) {
+    return parts[1];
+  }
+  if (parts[0] == "literal_integer" && parts.size() == 2) {
+    return parts[1];
+  }
+  if (parts[0] == "mod" && parts.size() == 2) {
+    try {
+      const auto modulus = static_cast<EngineApiU64>(std::stoull(parts[1]));
+      return modulus == 0 ? std::string{} : std::to_string(counter % modulus);
+    } catch (...) {
+      return {};
+    }
+  }
+  if (parts[0] == "prefix_counter" && parts.size() >= 2) {
+    return parts[1] + std::to_string(counter);
+  }
+  if (parts[0] == "prefix_counter_offset" && parts.size() == 3) {
+    try {
+      const auto adjusted = static_cast<long long>(counter) + std::stoll(parts[2]);
+      if (adjusted < 0) return {};
+      return parts[1] + std::to_string(adjusted);
+    } catch (...) {
+      return {};
+    }
+  }
+  if (parts[0] == "case_zero_literal_else_literal" && parts.size() == 3) {
+    return counter == 0 ? parts[1] : parts[2];
+  }
+  if (parts[0] == "case_zero_literal_else_prefix_counter_offset" &&
+      parts.size() == 4) {
+    if (counter == 0) return parts[1];
+    try {
+      const auto adjusted = static_cast<long long>(counter) + std::stoll(parts[3]);
+      if (adjusted < 0) return {};
+      return parts[2] + std::to_string(adjusted);
+    } catch (...) {
+      return {};
+    }
+  }
+  if (parts[0] == "cast_divide" && parts.size() >= 4) {
+    try {
+      const long double divisor = std::stold(parts[2]);
+      const int scale = std::stoi(parts[3]);
+      if (divisor == 0.0L || scale < 0 || scale > 18) return {};
+      std::ostringstream out;
+      out << std::fixed << std::setprecision(scale)
+          << (static_cast<long double>(counter) / divisor);
+      return out.str();
+    } catch (...) {
+      return {};
+    }
+  }
+  if (parts[0] == "mod_equals" && parts.size() == 3) {
+    try {
+      const auto modulus = static_cast<EngineApiU64>(std::stoull(parts[1]));
+      const auto expected = static_cast<EngineApiU64>(std::stoull(parts[2]));
+      if (modulus == 0) return {};
+      return (counter % modulus) == expected ? "true" : "false";
+    } catch (...) {
+      return {};
+    }
+  }
+  return {};
+}
+
+std::string GeneratedProjectionType(const std::string& descriptor,
+                                    const std::string& target_descriptor) {
+  if (descriptor == "counter") return "integer";
+  if (descriptor.rfind("literal_text:", 0) == 0) return "text";
+  if (descriptor.rfind("literal_boolean:", 0) == 0) return "boolean";
+  if (descriptor.rfind("literal_integer:", 0) == 0) return "integer";
+  if (descriptor.rfind("mod:", 0) == 0) return "integer";
+  if (descriptor.rfind("prefix_counter:", 0) == 0) return "text";
+  if (descriptor.rfind("prefix_counter_offset:", 0) == 0) return "text";
+  if (descriptor.rfind("case_zero_literal_else_", 0) == 0) return "text";
+  if (descriptor.rfind("cast_divide:", 0) == 0) return "decimal";
+  if (descriptor.rfind("mod_equals:", 0) == 0) return "boolean";
+  if (target_descriptor.rfind("type=", 0) == 0) return target_descriptor.substr(5);
+  return target_descriptor.empty() ? "text" : target_descriptor;
+}
+
+std::vector<EngineRowValue> BuildRecursiveCounterInsertRows(
+    const EngineInsertRowsRequest& request,
+    const CrudTableRecord& table,
+    EngineApiDiagnostic* diagnostic) {
+  if (diagnostic != nullptr) {
+    *diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  }
+  const std::string source_kind =
+      InsertOptionValue(request, "insert_select_source_kind:");
+  if (source_kind != "recursive_counter_cte") return {};
+  const auto start = ParseInsertOptionU64(request, "insert_select_counter_start:");
+  const auto step = ParseInsertOptionU64(request, "insert_select_counter_step:");
+  const auto limit = ParseInsertOptionU64(request, "insert_select_counter_limit:");
+  const auto projection_count =
+      ParseInsertOptionU64(request, "insert_select_projection_count:");
+  if (!start || !step || *step == 0 || !limit || !projection_count ||
+      *projection_count == 0 || *projection_count > table.columns.size()) {
+    if (diagnostic != nullptr) {
+      *diagnostic = MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                                 "insert_select_generator_descriptor_invalid");
+    }
+    return {};
+  }
+  if (*limit < *start || ((*limit - *start) / *step) + 1 > 1000000ULL) {
+    if (diagnostic != nullptr) {
+      *diagnostic = MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                                 "insert_select_generator_bound_refused");
+    }
+    return {};
+  }
+
+  std::vector<std::string> projections;
+  projections.reserve(static_cast<std::size_t>(*projection_count));
+  for (EngineApiU64 index = 0; index < *projection_count; ++index) {
+    const std::string descriptor =
+        InsertOptionValue(request, "insert_select_projection_" + std::to_string(index) + ":");
+    if (descriptor.empty()) {
+      if (diagnostic != nullptr) {
+        *diagnostic = MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                                   "insert_select_projection_descriptor_missing");
+      }
+      return {};
+    }
+    projections.push_back(descriptor);
+  }
+
+  std::vector<EngineRowValue> rows;
+  rows.reserve(static_cast<std::size_t>(((*limit - *start) / *step) + 1));
+  for (EngineApiU64 counter = *start; counter <= *limit; counter += *step) {
+    EngineRowValue row;
+    row.requested_row_uuid.canonical = GenerateCrudEngineUuid("row");
+    for (std::size_t column = 0; column < projections.size(); ++column) {
+      const auto& target_column = table.columns[column];
+      const std::string value = GeneratedProjectionValue(projections[column], counter);
+      if (value.empty() && projections[column] != "prefix_counter:") {
+        if (diagnostic != nullptr) {
+          *diagnostic = MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                                     "insert_select_projection_evaluation_failed");
+        }
+        return {};
+      }
+      row.fields.push_back({
+          target_column.first,
+          GeneratedInsertValue(value,
+                               GeneratedProjectionType(projections[column],
+                                                       target_column.second))});
+    }
+    rows.push_back(std::move(row));
+    if (*limit - counter < *step) break;
+  }
+  return rows;
+}
+
+struct InsertConflictAssignmentExpression {
+  std::string target_column;
+  std::string source_column;
+  std::string operation;
+  std::string literal_value;
+  std::string literal_type;
+};
+
+std::vector<InsertConflictAssignmentExpression> ParseInsertConflictAssignmentPlan(
+    const EngineInsertRowsRequest& request,
+    bool* invalid) {
+  if (invalid != nullptr) { *invalid = false; }
+  const std::string plan = InsertOptionValue(request, "on_conflict_assignment_plan:");
+  if (plan.empty()) { return {}; }
+
+  std::vector<InsertConflictAssignmentExpression> expressions;
+  for (const auto& item : SplitText(plan, ';')) {
+    const auto parts = SplitText(item, '|');
+    if (parts.size() != 5 || parts[0].empty() || parts[2].empty()) {
+      if (invalid != nullptr) { *invalid = true; }
+      return {};
+    }
+    InsertConflictAssignmentExpression expression;
+    expression.target_column = parts[0];
+    expression.source_column = parts[1];
+    expression.operation = parts[2];
+    expression.literal_value = parts[3];
+    expression.literal_type = parts[4];
+    if (expression.operation != "literal" &&
+        expression.operation != "add" &&
+        expression.operation != "subtract") {
+      if (invalid != nullptr) { *invalid = true; }
+      return {};
+    }
+    if (expression.operation != "literal" && expression.source_column.empty()) {
+      if (invalid != nullptr) { *invalid = true; }
+      return {};
+    }
+    expressions.push_back(std::move(expression));
+  }
+  return expressions;
+}
+
+bool ParseLongDoubleValue(const std::string& value, long double* out) {
+  if (out == nullptr || value.empty() || value == "<NULL>") { return false; }
+  try {
+    std::size_t consumed = 0;
+    const long double parsed = std::stold(value, &consumed);
+    if (consumed != value.size()) { return false; }
+    *out = parsed;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool LooksIntegralText(const std::string& value) {
+  if (value.empty()) { return false; }
+  std::size_t index = value.front() == '-' ? 1 : 0;
+  if (index >= value.size()) { return false; }
+  for (; index < value.size(); ++index) {
+    if (value[index] < '0' || value[index] > '9') { return false; }
+  }
+  return true;
+}
+
+std::string FormatArithmeticResult(long double value, bool integral) {
+  if (integral) {
+    return std::to_string(static_cast<long long>(value));
+  }
+  std::ostringstream out;
+  out << std::setprecision(18) << value;
+  return out.str();
+}
+
+EngineApiDiagnostic ApplyInsertConflictAssignmentExpressions(
+    const std::vector<InsertConflictAssignmentExpression>& expressions,
+    std::vector<std::pair<std::string, std::string>>* values) {
+  if (values == nullptr) {
+    return MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                        "on_conflict_assignment_values_required");
+  }
+  for (const auto& expression : expressions) {
+    std::string new_value = expression.literal_value;
+    if (expression.operation == "add" || expression.operation == "subtract") {
+      const std::string source_value = CrudFieldValue(*values, expression.source_column);
+      long double left = 0.0;
+      long double right = 0.0;
+      if (!ParseLongDoubleValue(source_value, &left) ||
+          !ParseLongDoubleValue(expression.literal_value, &right)) {
+        return MakeInvalidRequestDiagnostic(
+            "dml.insert_rows",
+            "on_conflict_assignment_arithmetic_requires_numeric_values");
+      }
+      const long double computed =
+          expression.operation == "subtract" ? left - right : left + right;
+      new_value = FormatArithmeticResult(
+          computed,
+          LooksIntegralText(source_value) &&
+              LooksIntegralText(expression.literal_value));
+    }
+    bool replaced = false;
+    for (auto& [field, value] : *values) {
+      if (field == expression.target_column) {
+        value = new_value;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) { values->push_back({expression.target_column, std::move(new_value)}); }
+  }
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
 bool ReplaceValueFromExcluded(std::vector<std::pair<std::string, std::string>>* target_values,
@@ -376,6 +692,14 @@ bool InsertOptionEnabled(const EngineInsertRowsRequest& request,
   return std::find(request.option_envelopes.begin(),
                    request.option_envelopes.end(),
                    option) != request.option_envelopes.end();
+}
+
+bool InsertOpaqueColumnsAllowed(const EngineInsertRowsRequest& request) {
+  if (InsertOptionEnabled(request, "bulk.allow_opaque_columns=true")) return true;
+  const std::string structured = LowerAscii(
+      InsertOptionValue(request, "bulk.allow_opaque_columns:"));
+  return structured == "1" || structured == "true" || structured == "yes" ||
+         structured == "on";
 }
 
 std::uint64_t InsertOptionU64(const EngineInsertRowsRequest& request,
@@ -816,10 +1140,6 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
   if (request.HasAmbiguousInputRows()) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "input_rows_or_borrowed_rows_exclusive"));
   }
-  const std::span<const EngineRowValue> input_rows = request.EffectiveInputRows();
-  if (input_rows.empty()) {
-    return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "at_least_one_row_required"));
-  }
   const auto write_result_policy =
       ResolveWriteResultPolicy(request, "dml.insert_rows");
   if (!write_result_policy.ok) {
@@ -844,7 +1164,31 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         MakeInvalidRequestDiagnostic("dml.insert_rows",
                                      "temporary_table_requires_session_uuid"));
   }
-  if (CrudRowsTouchOpaqueColumn(*table, input_rows)) {
+
+  EngineApiDiagnostic generated_rows_diagnostic =
+      MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  std::vector<EngineRowValue> generated_insert_select_rows;
+  if (request.EffectiveInputRows().empty()) {
+    generated_insert_select_rows =
+        BuildRecursiveCounterInsertRows(request, *table, &generated_rows_diagnostic);
+  }
+  if (generated_rows_diagnostic.error) {
+    return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+        request.context,
+        "dml.insert_rows",
+        generated_rows_diagnostic);
+  }
+  const std::span<const EngineRowValue> input_rows =
+      generated_insert_select_rows.empty()
+          ? request.EffectiveInputRows()
+          : std::span<const EngineRowValue>(generated_insert_select_rows.data(),
+                                            generated_insert_select_rows.size());
+  if (input_rows.empty()) {
+    return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", MakeInvalidRequestDiagnostic("dml.insert_rows", "at_least_one_row_required"));
+  }
+
+  if (CrudRowsTouchOpaqueColumn(*table, input_rows) &&
+      !InsertOpaqueColumnsAllowed(request)) {
     return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
         request.context,
         "dml.insert_rows",
@@ -937,6 +1281,11 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     }
   }
   auto result = MakeCrudSuccessResult<EngineInsertRowsResult>(request.context, "dml.insert_rows");
+  if (!generated_insert_select_rows.empty()) {
+    result.evidence.push_back({"insert_select_generator", "recursive_counter_cte"});
+    result.evidence.push_back({"insert_select_generated_row_count",
+                               std::to_string(generated_insert_select_rows.size())});
+  }
   if (batch_context.page_reservation.reservation_available) {
     ++result.dml_summary.page_reservations;
   }
@@ -1018,8 +1367,18 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
           continue;
         }
         auto update_values = conflict_row.values;
+        bool invalid_conflict_assignment_plan = false;
+        const auto conflict_assignment_expressions =
+            ParseInsertConflictAssignmentPlan(request, &invalid_conflict_assignment_plan);
+        if (invalid_conflict_assignment_plan) {
+          return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+              request.context,
+              "dml.insert_rows",
+              MakeInvalidRequestDiagnostic("dml.insert_rows",
+                                           "on_conflict_assignment_plan_invalid"));
+        }
         const auto update_columns = ConflictUpdateColumns(request, values, conflict_target_column);
-        if (update_columns.empty()) {
+        if (update_columns.empty() && conflict_assignment_expressions.empty()) {
           return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
               request.context,
               "dml.insert_rows",
@@ -1027,6 +1386,15 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
         }
         for (const auto& column : update_columns) {
           ReplaceValueFromExcluded(&update_values, values, column);
+        }
+        const auto expression_application =
+            ApplyInsertConflictAssignmentExpressions(conflict_assignment_expressions,
+                                                     &update_values);
+        if (expression_application.error) {
+          return MakeCrudDiagnosticResult<EngineInsertRowsResult>(
+              request.context,
+              "dml.insert_rows",
+              expression_application);
         }
         const auto update_domain_validation = ApplyDomainRulesToCrudValues(request.context,
                                                                            table->columns,

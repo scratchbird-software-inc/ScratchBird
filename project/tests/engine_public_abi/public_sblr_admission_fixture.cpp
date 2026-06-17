@@ -11,13 +11,20 @@
 #include "scratchbird/engine/sblr/raising.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <iostream>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace {
+
+constexpr const char* kMigrationAbiDatabasePath =
+    "/tmp/sb_engine_public_sblr_admission_migration.sbdb";
+constexpr const char* kMigrationReplayUuid =
+    "019f0000-0000-7000-8000-00000000a001";
 
 sb_engine_uuid_t test_uuid(unsigned char tail) {
   sb_engine_uuid_t uuid{};
@@ -37,6 +44,8 @@ struct Harness {
     open_params.struct_size = sizeof(open_params);
     open_params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
     open_params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
+    open_params.database_path_utf8 = kMigrationAbiDatabasePath;
+    open_params.database_path_size = std::strlen(kMigrationAbiDatabasePath);
     if (sb_engine_open(&open_params, &engine, nullptr) != SB_ENGINE_STATUS_OK || engine == nullptr) {
       return false;
     }
@@ -80,15 +89,47 @@ bool has_diagnostic(sb_engine_result_t result, std::string_view code) {
   return false;
 }
 
-bool payload_contains(sb_engine_result_t result, std::string_view expected) {
+std::string payload_text(sb_engine_result_t result) {
   sb_engine_string_view_t view{};
   if (sb_engine_result_payload(result, &view) != SB_ENGINE_STATUS_OK || view.data == nullptr) {
-    return false;
+    return {};
   }
-  return std::string_view(view.data, static_cast<std::size_t>(view.size_bytes)).find(expected) != std::string_view::npos;
+  return std::string(view.data, view.data + view.size_bytes);
 }
 
-sb_engine_status_t dispatch(Harness& harness, const std::vector<std::uint8_t>& envelope, sb_engine_result_t* result) {
+bool payload_contains(sb_engine_result_t result, std::string_view expected) {
+  const std::string payload = payload_text(result);
+  return std::string_view(payload).find(expected) != std::string_view::npos;
+}
+
+void print_result_diagnostics(std::string_view label,
+                              sb_engine_status_t status,
+                              sb_engine_result_t result) {
+  std::cerr << label << " status=" << status << "\n";
+  if (result == nullptr) {
+    std::cerr << label << " result=null\n";
+    return;
+  }
+  sb_engine_diagnostic_set_view_t diagnostics{};
+  if (sb_engine_result_diagnostics(result, &diagnostics) == SB_ENGINE_STATUS_OK) {
+    for (std::uint64_t i = 0; i < diagnostics.diagnostic_count; ++i) {
+      const auto& diagnostic = diagnostics.diagnostics[i];
+      std::cerr << label << " diag="
+                << std::string_view(diagnostic.symbolic_code.data,
+                                    static_cast<std::size_t>(diagnostic.symbolic_code.size_bytes))
+                << " detail="
+                << std::string_view(diagnostic.safe_detail.data,
+                                    static_cast<std::size_t>(diagnostic.safe_detail.size_bytes))
+                << "\n";
+    }
+  }
+  std::cerr << label << " payload=" << payload_text(result) << "\n";
+}
+
+sb_engine_status_t dispatch(Harness& harness,
+                            const std::vector<std::uint8_t>& envelope,
+                            sb_engine_result_t* result,
+                            std::uint64_t transaction_ref = 0) {
   sb_engine_request_context_v1_t context{};
   context.struct_size = sizeof(context);
   context.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
@@ -97,6 +138,7 @@ sb_engine_status_t dispatch(Harness& harness, const std::vector<std::uint8_t>& e
   context.trust_mode = SB_ENGINE_TRUST_EMBEDDED_TRUSTED;
   context.rights_set_ref = 1;
   context.capability_set_ref = 1;
+  context.transaction_ref = transaction_ref;
 
   sb_engine_sblr_dispatch_params_v1_t params{};
   params.struct_size = sizeof(params);
@@ -104,6 +146,103 @@ sb_engine_status_t dispatch(Harness& harness, const std::vector<std::uint8_t>& e
   params.envelope_bytes = envelope.data();
   params.envelope_size_bytes = envelope.size();
   return sb_engine_dispatch_sblr(harness.session, nullptr, &context, &params, result);
+}
+
+std::vector<std::uint8_t> operation_envelope(std::string_view text,
+                                             scratchbird::engine::SblrOperationFamily family =
+                                                 scratchbird::engine::SblrOperationFamily::management_control) {
+  return scratchbird::engine::sblr::EnvelopeBuilder()
+      .operation(family, 1)
+      .append_bytes(reinterpret_cast<const std::uint8_t*>(text.data()), text.size())
+      .encode();
+}
+
+std::string migration_operation_text(std::string_view operation_id,
+                                     std::string_view opcode,
+                                     std::string_view result_shape,
+                                     std::string_view trace_key,
+                                     std::string_view operands) {
+  std::string text;
+  text += "operation_id=";
+  text += operation_id;
+  text += "\n";
+  text += "opcode=";
+  text += opcode;
+  text += "\n";
+  text += "result_shape=";
+  text += result_shape;
+  text += "\n";
+  text += "diagnostic_shape=engine.diagnostic.v1\n";
+  text += "trace_key=";
+  text += trace_key;
+  text += "\n";
+  text += "contains_sql_text=false\n";
+  text += "parser_resolved_names_to_uuids=true\n";
+  text += "requires_security_context=true\n";
+  text += "requires_transaction_context=true\n";
+  text += "requires_cluster_authority=false\n";
+  text += operands;
+  return text;
+}
+
+bool require_public_abi_migration_route(Harness& harness) {
+  std::remove((std::string(kMigrationAbiDatabasePath) + ".sb.api_events").c_str());
+
+  const auto begin = operation_envelope(migration_operation_text(
+      "op.migration.begin_from_reference",
+      "SBLR_MIGRATION_BEGIN_FROM_REFERENCE",
+      "rs.migration.status.v1",
+      "public-abi-migration-begin",
+      "operand=text\treference_profile\tpostgres\n"
+      "operand=text\treference_package\tpg_compat_pack\n"));
+
+  sb_engine_result_t result = nullptr;
+  sb_engine_status_t status = dispatch(harness, begin, &result, 101);
+  if (status != SB_ENGINE_STATUS_OK || result == nullptr ||
+      !payload_contains(result, "operation_id=op.migration.begin_from_reference") ||
+      !payload_contains(result, "state=prepared")) {
+    print_result_diagnostics("migration_begin", status, result);
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    return false;
+  }
+  (void)sb_engine_result_release(result);
+
+  const auto alter = operation_envelope(migration_operation_text(
+      "op.migration.alter",
+      "SBLR_MIGRATION_ALTER",
+      "rs.migration.status.v1",
+      "public-abi-migration-alter",
+      std::string("operand=text\tmigration_ref\t") + kMigrationReplayUuid +
+          "\noperand=text\tmigration_action\tstart\n"));
+  result = nullptr;
+  status = dispatch(harness, alter, &result, 102);
+  if (status != SB_ENGINE_STATUS_OK || result == nullptr ||
+      !payload_contains(result, "operation_id=op.migration.alter") ||
+      !payload_contains(result, kMigrationReplayUuid) ||
+      !payload_contains(result, "state=running")) {
+    print_result_diagnostics("migration_alter", status, result);
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    return false;
+  }
+  (void)sb_engine_result_release(result);
+
+  const auto show = operation_envelope(migration_operation_text(
+      "op.show.migration",
+      "SBLR_SHOW_MIGRATION",
+      "rs.migration.status.v1",
+      "public-abi-migration-show",
+      std::string("operand=text\tmigration_ref\t") + kMigrationReplayUuid + "\n"));
+  result = nullptr;
+  status = dispatch(harness, show, &result, 103);
+  if (status != SB_ENGINE_STATUS_OK || result == nullptr ||
+      !payload_contains(result, "operation_id=op.show.migration") ||
+      !payload_contains(result, kMigrationReplayUuid)) {
+    print_result_diagnostics("migration_show", status, result);
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    return false;
+  }
+  (void)sb_engine_result_release(result);
+  return true;
 }
 
 }  // namespace
@@ -338,6 +477,10 @@ int main() {
     return 10;
   }
   (void)sb_engine_result_release(result);
+
+  if (!require_public_abi_migration_route(harness)) {
+    return 14;
+  }
 
   return 0;
 }

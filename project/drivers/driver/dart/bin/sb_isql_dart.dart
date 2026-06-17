@@ -89,6 +89,9 @@ Future<int> runTool(Map<String, String> args) async {
       password: required(args, '--password'),
       role: args['--role'],
       sslmode: args['--sslmode'] ?? 'require',
+      sslrootcert: args['--sslrootcert'],
+      sslcert: args['--sslcert'],
+      sslkey: args['--sslkey'],
       frontDoorMode: required(args, '--route') == 'manager-listener-parser'
           ? 'manager_proxy'
           : 'direct',
@@ -231,6 +234,7 @@ Future<int> runTool(Map<String, String> args) async {
 
   final elapsed = monotonicNs() - started;
   timings['overall'] = elapsed;
+  final sslmode = args['--sslmode'] ?? 'require';
   final summary = {
     'run_id': args['--run-id'] ?? 'manual',
     'driver_name': 'dart',
@@ -238,6 +242,8 @@ Future<int> runTool(Map<String, String> args) async {
     'parser_mode': required(args, '--parser-mode'),
     'page_size': required(args, '--page-size'),
     'namespace': required(args, '--namespace'),
+    'sslmode': sslmode,
+    'transport_mode': sslmode == 'disable' ? 'tls_disabled' : 'tls_required',
     'status': failures.isEmpty ? 'pass' : 'fail',
     'failure_count': failures.length,
     'elapsed_ns': elapsed,

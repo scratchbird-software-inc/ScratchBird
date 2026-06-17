@@ -91,8 +91,20 @@ std::optional<CrudRowVersionRecord> FindVisibleCrudRowForContext(const CrudState
                                                                  const std::string& table_uuid,
                                                                  const std::string& row_uuid,
                                                                  const EngineRequestContext& context) {
-  for (const auto& row : VisibleCrudRowsForContext(state, table_uuid, context)) {
-    if (row.row_uuid == row_uuid) { return row; }
+  std::optional<CrudRowVersionRecord> newest_visible;
+  for (const auto& row : state.row_versions) {
+    if (row.table_uuid != table_uuid || row.row_uuid != row_uuid) {
+      continue;
+    }
+    if (!CrudRowVersionVisibleToContext(state, row, context)) {
+      continue;
+    }
+    if (!newest_visible || row.sequence > newest_visible->sequence) {
+      newest_visible = row;
+    }
+  }
+  if (newest_visible && !newest_visible->deleted) {
+    return newest_visible;
   }
   return std::nullopt;
 }
@@ -129,6 +141,19 @@ bool CrudIndexSupportsPredicate(const CrudIndexRecord& index, const EnginePredic
             family == kCrudIndexFamilyCovering || family == kCrudIndexFamilyColumnarZone ||
             family == kCrudIndexFamilyInMemory || family == kCrudIndexFamilyReferenceEmulated);
   }
+  if (predicate.predicate_kind == "columns_all_equal") {
+    const auto predicate_columns = Split(predicate.canonical_predicate_envelope, ',');
+    if (predicate_columns.empty() || predicate.bound_values.size() < predicate_columns.size() ||
+        columns.size() < predicate_columns.size()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < predicate_columns.size(); ++index) {
+      if (columns[index] != predicate_columns[index]) return false;
+    }
+    return family == kCrudIndexFamilyBtree || family == kCrudIndexFamilyHash ||
+           family == kCrudIndexFamilyBitmap || family == kCrudIndexFamilyCovering ||
+           family == kCrudIndexFamilyReferenceEmulated;
+  }
   if (predicate.predicate_kind == "column_in_list") {
     return predicate.canonical_predicate_envelope == first_column &&
            (family == kCrudIndexFamilyBtree || family == kCrudIndexFamilyBitmap);
@@ -157,6 +182,44 @@ bool CrudIndexSupportsPredicate(const CrudIndexRecord& index, const EnginePredic
   return false;
 }
 
+bool CrudSqlLikePatternMatches(std::string_view value, std::string_view pattern) {
+  std::vector<bool> previous(pattern.size() + 1, false);
+  std::vector<bool> current(pattern.size() + 1, false);
+  previous[0] = true;
+  for (std::size_t pattern_index = 0; pattern_index < pattern.size();) {
+    const char pattern_char = pattern[pattern_index];
+    if (pattern_char == '%') {
+      previous[pattern_index + 1] = previous[pattern_index];
+    }
+    if (pattern_char == '\\' && pattern_index + 1 < pattern.size()) {
+      ++pattern_index;
+    }
+    ++pattern_index;
+  }
+
+  for (std::size_t value_index = 0; value_index < value.size(); ++value_index) {
+    std::fill(current.begin(), current.end(), false);
+    for (std::size_t pattern_index = 0; pattern_index < pattern.size(); ++pattern_index) {
+      const char pattern_char = pattern[pattern_index];
+      if (pattern_char == '%') {
+        current[pattern_index + 1] = current[pattern_index] || previous[pattern_index + 1];
+        continue;
+      }
+      char expected = pattern_char;
+      bool escaped = false;
+      if (pattern_char == '\\' && pattern_index + 1 < pattern.size()) {
+        escaped = true;
+        expected = pattern[++pattern_index];
+      }
+      if ((expected == '_' && !escaped) || expected == value[value_index]) {
+        current[pattern_index + 1] = previous[pattern_index];
+      }
+    }
+    previous.swap(current);
+  }
+  return previous[pattern.size()];
+}
+
 bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredicateEnvelope& predicate) {
   if (predicate.predicate_kind.empty()) { return true; }
   if (predicate.predicate_kind == "row_uuid_match") { return row.row_uuid == predicate.canonical_predicate_envelope; }
@@ -170,12 +233,81 @@ bool CrudRowMatchesPredicate(const CrudRowVersionRecord& row, const EnginePredic
     return !predicate.bound_values.empty() &&
            CrudFieldValue(row.values, predicate.canonical_predicate_envelope) == predicate.bound_values.front().encoded_value;
   }
+  if (predicate.predicate_kind == "columns_all_equal") {
+    const auto columns = Split(predicate.canonical_predicate_envelope, ',');
+    if (columns.empty() || predicate.bound_values.size() < columns.size()) return false;
+    for (std::size_t index = 0; index < columns.size(); ++index) {
+      if (CrudFieldValue(row.values, columns[index]) != predicate.bound_values[index].encoded_value) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (predicate.predicate_kind == "columns_all_null") {
+    for (const auto& column : Split(predicate.canonical_predicate_envelope, ',')) {
+      bool present = false;
+      bool is_null = true;
+      for (const auto& [field, value] : row.values) {
+        if (field != column) { continue; }
+        present = true;
+        is_null = value == "<NULL>";
+        break;
+      }
+      if (present && !is_null) { return false; }
+    }
+    return !predicate.canonical_predicate_envelope.empty();
+  }
+  if (predicate.predicate_kind == "columns_all_not_null") {
+    for (const auto& column : Split(predicate.canonical_predicate_envelope, ',')) {
+      bool present = false;
+      bool is_null = true;
+      for (const auto& [field, value] : row.values) {
+        if (field != column) { continue; }
+        present = true;
+        is_null = value == "<NULL>";
+        break;
+      }
+      if (!present || is_null) { return false; }
+    }
+    return !predicate.canonical_predicate_envelope.empty();
+  }
+  if (predicate.predicate_kind == "column_equals_column_or_left_null") {
+    const auto columns = Split(predicate.canonical_predicate_envelope, ',');
+    if (columns.size() != 2) return false;
+    const std::string left = CrudFieldValue(row.values, columns[0]);
+    if (left == "<NULL>") return true;
+    return left == CrudFieldValue(row.values, columns[1]);
+  }
+  if (predicate.predicate_kind == "column_mod_equals") {
+    if (predicate.bound_values.size() < 2) return false;
+    try {
+      const auto value = std::stoll(CrudFieldValue(row.values, predicate.canonical_predicate_envelope));
+      const auto divisor = std::stoll(predicate.bound_values[0].encoded_value);
+      const auto expected = std::stoll(predicate.bound_values[1].encoded_value);
+      return divisor != 0 && value % divisor == expected;
+    } catch (...) {
+      return false;
+    }
+  }
   if (predicate.predicate_kind == "column_in_list") {
     const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
     for (const auto& bound : predicate.bound_values) {
       if (value == bound.encoded_value) { return true; }
     }
     return false;
+  }
+  if (predicate.predicate_kind == "column_not_in_list") {
+    const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
+    for (const auto& bound : predicate.bound_values) {
+      if (value == bound.encoded_value) { return false; }
+    }
+    return true;
+  }
+  if (predicate.predicate_kind == "column_like" || predicate.predicate_kind == "column_not_like") {
+    if (predicate.bound_values.empty()) return false;
+    const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);
+    const bool matches = CrudSqlLikePatternMatches(value, predicate.bound_values.front().encoded_value);
+    return predicate.predicate_kind == "column_like" ? matches : !matches;
   }
   if (predicate.predicate_kind == "column_range") {
     const std::string value = CrudFieldValue(row.values, predicate.canonical_predicate_envelope);

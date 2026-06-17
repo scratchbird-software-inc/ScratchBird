@@ -225,6 +225,27 @@ bool IsCreateSynonymStatement(const CstDocument& cst) {
   return index < words.size() && words[index] == "SYNONYM";
 }
 
+bool IsCreateIndexStatement(const CstDocument& cst) {
+  const auto words = AllMeaningfulTokenWords(cst);
+  if (words.empty() || words.front() != "CREATE") return false;
+  std::size_t index = 1;
+  if (index < words.size() && words[index] == "UNIQUE") ++index;
+  return index < words.size() && words[index] == "INDEX";
+}
+
+bool IsCreateStatisticsStatement(const CstDocument& cst) {
+  const auto words = AllMeaningfulTokenWords(cst);
+  if (words.empty() || words.front() != "CREATE") return false;
+  std::size_t index = 1;
+  if (index + 2 < words.size() &&
+      words[index] == "IF" &&
+      words[index + 1] == "NOT" &&
+      words[index + 2] == "EXISTS") {
+    index += 3;
+  }
+  return index < words.size() && words[index] == "STATISTICS";
+}
+
 bool IsRuntimeManagementStatement(const CstDocument& cst) {
   const auto words = AllMeaningfulTokenWords(cst);
   if (words.size() >= 2 && words[0] == "SHOW" &&
@@ -1312,6 +1333,8 @@ AstDocument BuildAst(const CstDocument& cst) {
   const auto third = words.size() > 2 ? std::string_view(words[2]) : std::string_view();
   const auto fourth = words.size() > 3 ? std::string_view(words[3]) : std::string_view();
   const auto raw_keyword = raw_words.empty() ? CanonicalWordForToken(*first) : raw_words[0];
+  const auto raw_second =
+      raw_words.size() > 1 ? std::string_view(raw_words[1]) : std::string_view();
   const bool language_control_surface =
       (keyword == "SET" && second == "LANGUAGE") ||
       (keyword == "RESET" && second == "LANGUAGE") ||
@@ -1588,7 +1611,52 @@ AstDocument BuildAst(const CstDocument& cst) {
       (keyword == "POSTFIX" && second == "UNARY" && third == "EXPR") ||
       (keyword == "DATA" && second == "CHANGE" && third == "STMT") ||
       (keyword == "PSQL" && second == "IF" && third == "STMT");
-  if (IsPublicExactMigrationStatement(cst)) {
+  if (raw_keyword == "INSERT") {
+    ast.family = StatementFamily::kInsert;
+    ast.registry_family = "sbsql.dml.insert.v3";
+    ast.operation_family = "sblr.dml.insert.v3";
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
+  } else if (raw_keyword == "UPDATE") {
+    ast.family = StatementFamily::kUpdate;
+    ast.registry_family = "sbsql.dml.update.v3";
+    ast.operation_family = "sblr.dml.update.v3";
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
+  } else if (raw_keyword == "DELETE" && raw_second != "STORAGE") {
+    ast.family = StatementFamily::kDelete;
+    ast.registry_family = "sbsql.dml.delete.v3";
+    ast.operation_family = "sblr.dml.delete.v3";
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
+  } else if (raw_keyword == "MERGE" && raw_second != "FILESPACE") {
+    ast.family = StatementFamily::kMerge;
+    ast.registry_family = "sbsql.dml.merge.v3";
+    ast.operation_family = "sblr.dml.merge.v3";
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
+  } else if (raw_keyword == "UPSERT") {
+    ast.family = StatementFamily::kUpsert;
+    ast.registry_family = "sbsql.dml.upsert.v3";
+    ast.operation_family = "sblr.dml.operation.v3";
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
+  } else if (raw_keyword == "COPY") {
+    ast.family = StatementFamily::kInsert;
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
+  } else if ((raw_keyword == "CYPHER" &&
+              (raw_second == "DELETE" || raw_second == "MERGE" || raw_second == "LOAD")) ||
+             (raw_keyword == "GRAPH" && raw_second == "DELETE") ||
+             (raw_keyword == "DOCUMENT" && (raw_second == "UPDATE" || raw_second == "BULK")) ||
+             (raw_keyword == "GPU" && raw_second == "WORKLOAD") ||
+             (raw_keyword == "LOAD" && raw_second == "DATA")) {
+    ast.family = StatementFamily::kUpdate;
+    ast.registry_family = "sbsql.dml.operation.v3";
+    ast.operation_family = "sblr.dml.operation.v3";
+    ast.requires_name_resolution = true;
+    ast.produces_sblr = true;
+  } else if (IsPublicExactMigrationStatement(cst)) {
     ast.family = StatementFamily::kMigration;
     ast.registry_family = "sbsql.migration.operation.v3";
     ast.operation_family = "sblr.migration.operation.v3";
@@ -1644,6 +1712,17 @@ AstDocument BuildAst(const CstDocument& cst) {
       case EngineApiCommandAstDomain::kNone:
         break;
     }
+    ast.requires_name_resolution = false;
+    ast.produces_sblr = true;
+  } else if (keyword == "SBSQL_SURFACE_REPLAY") {
+    ast.family = StatementFamily::kObservability;
+    ast.registry_family = "sbsql.observability.inspect.v3";
+    ast.operation_family = "sblr.observability.inspect.v3";
+    ast.statement_parser_category = "observability";
+    ast.statement_binding_contract_key = "binder.statement.observability_surface_replay";
+    ast.statement_admission_contract_key = "admission.sblr.observability_inspect";
+    ast.statement_behavior_descriptor_key = "behavior.sbsql.surface_replay";
+    ast.diagnostic_key = "diagnostic.canonical_message_vector";
     ast.requires_name_resolution = false;
     ast.produces_sblr = true;
   } else if (IsBridgeStatementWords(words)) {
@@ -1911,12 +1990,12 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.registry_family = "sbsql.security.v3";
     ast.operation_family = "sblr.security.mutation.v3";
     ast.produces_sblr = true;
-  } else if ((keyword == "CYPHER" &&
+  } else if ((raw_keyword == "CYPHER" &&
               (second == "DELETE" || second == "MERGE" || second == "LOAD")) ||
-             (keyword == "GRAPH" && second == "DELETE") ||
-             (keyword == "DOCUMENT" && (second == "UPDATE" || second == "BULK")) ||
-             (keyword == "GPU" && second == "WORKLOAD") ||
-             (keyword == "LOAD" && second == "DATA")) {
+             (raw_keyword == "GRAPH" && second == "DELETE") ||
+             (raw_keyword == "DOCUMENT" && (second == "UPDATE" || second == "BULK")) ||
+             (raw_keyword == "GPU" && second == "WORKLOAD") ||
+             (raw_keyword == "LOAD" && second == "DATA")) {
     ast.family = StatementFamily::kUpdate;
     ast.registry_family = "sbsql.dml.operation.v3";
     ast.operation_family = "sblr.dml.operation.v3";
@@ -1937,31 +2016,31 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.operation_family = "sblr.query.multimodel_or_ddl.v3";
     ast.requires_name_resolution = true;
     ast.produces_sblr = true;
-  } else if (keyword == "INSERT") {
+  } else if (raw_keyword == "INSERT") {
     ast.family = StatementFamily::kInsert;
     ast.registry_family = "sbsql.dml.insert.v3";
     ast.operation_family = "sblr.dml.insert.v3";
     ast.requires_name_resolution = true;
     ast.produces_sblr = true;
-  } else if (keyword == "UPDATE") {
+  } else if (raw_keyword == "UPDATE") {
     ast.family = StatementFamily::kUpdate;
     ast.registry_family = "sbsql.dml.update.v3";
     ast.operation_family = "sblr.dml.update.v3";
     ast.requires_name_resolution = true;
     ast.produces_sblr = true;
-  } else if (keyword == "DELETE") {
+  } else if (raw_keyword == "DELETE") {
     ast.family = StatementFamily::kDelete;
     ast.registry_family = "sbsql.dml.delete.v3";
     ast.operation_family = "sblr.dml.delete.v3";
     ast.requires_name_resolution = true;
     ast.produces_sblr = true;
-  } else if (keyword == "MERGE") {
+  } else if (raw_keyword == "MERGE") {
     ast.family = StatementFamily::kMerge;
     ast.registry_family = "sbsql.dml.merge.v3";
     ast.operation_family = "sblr.dml.merge.v3";
     ast.requires_name_resolution = true;
     ast.produces_sblr = true;
-  } else if (keyword == "UPSERT") {
+  } else if (raw_keyword == "UPSERT") {
     ast.family = StatementFamily::kUpsert;
     ast.registry_family = "sbsql.dml.upsert.v3";
     ast.operation_family = "sblr.dml.operation.v3";
@@ -2010,6 +2089,8 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.requires_name_resolution =
         keyword == "COMMENT" || keyword == "RENAME" ||
         (keyword != "CREATE" && keyword != "CYPHER") ||
+        IsCreateIndexStatement(cst) ||
+        IsCreateStatisticsStatement(cst) ||
         IsCreateSynonymStatement(cst);
     ast.produces_sblr = true;
   } else if (keyword == "SHOW") {
@@ -2151,7 +2232,7 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.requires_cluster_profile = true;
     ast.exact_refusal_required = true;
     ast.produces_sblr = true;
-  } else if (keyword == "COPY") {
+  } else if (raw_keyword == "COPY") {
     ast.family = StatementFamily::kInsert;
     ast.requires_name_resolution = true;
     ast.produces_sblr = true;

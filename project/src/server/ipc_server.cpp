@@ -41,7 +41,12 @@
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <thread>
 #include <utility>
+
+#if defined(__linux__)
+#include <malloc.h>
+#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -225,6 +230,20 @@ std::string PlatformEndpointPath(const std::filesystem::path& path) {
 void RemoveEndpointPath(const std::string& endpoint) {
   std::error_code ec;
   std::filesystem::remove(endpoint, ec);
+}
+
+void ReleaseIdleConnectionHeap(ServerObservabilityState* observability) {
+#if defined(__GLIBC__)
+  const int trimmed = ::malloc_trim(0);
+  if (trimmed != 0) {
+    IncrementServerMetric(observability,
+                          "sys.metrics.server.memory.heap_trim_total",
+                          1,
+                          {{"reason", "disconnect"}});
+  }
+#else
+  (void)observability;
+#endif
 }
 
 bool WriteRawAll(IpcSocketHandle fd, const std::vector<std::uint8_t>& data) {
@@ -1277,7 +1296,8 @@ void HandleClient(IpcSocketHandle client_fd,
                   ParserEventNotificationRouter* event_router,
                   ServerListenerOrchestrator* listener_orchestrator,
                   ServerMaintenanceCoordinator* maintenance_coordinator,
-                  ServerObservabilityState* observability) {
+                  ServerObservabilityState* observability,
+                  bool* release_heap_after_close) {
   sbps::Frame frame;
   std::vector<ServerDiagnostic> frame_diagnostics;
   if (!ReadPhysicalFrame(client_fd, config, &frame, &frame_diagnostics) ||
@@ -1500,6 +1520,9 @@ void HandleClient(IpcSocketHandle client_fd,
   }
   if (frame.header.message_type ==
       static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice)) {
+    if (release_heap_after_close != nullptr) {
+      *release_heap_after_close = true;
+    }
     if (const auto event_session = EventSessionFromFrame(session_registry, engine_state, frame)) {
       ParserServerEventIpcRuntime runtime(event_router);
       PsEventDisconnectRequest disconnect;
@@ -1804,7 +1827,19 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
           {{"error", LastIpcSocketErrorString()}}));
       break;
     }
-    if (poll_rc == 0 || (listener.revents & POLLIN) == 0) {
+    if (poll_rc == 0) {
+      continue;
+    }
+    if ((listener.revents & (POLLERR | POLLNVAL)) != 0) {
+      result.exit_code = 2;
+      result.diagnostics.push_back(EndpointDiagnostic(
+          "PARSER_SERVER_IPC.ACCEPT_FAILED",
+          "The SBPS endpoint listener socket entered a failed polling state.",
+          {{"poll_revents", std::to_string(listener.revents)}}));
+      break;
+    }
+    if ((listener.revents & POLLIN) == 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
       continue;
     }
 #endif
@@ -1818,6 +1853,7 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
           {{"error", LastIpcSocketErrorString()}}));
       break;
     }
+    bool release_heap_after_close = false;
     HandleClient(client_fd,
                  config,
                  artifacts,
@@ -1827,8 +1863,12 @@ ServerIpcEndpointResult RunParserServerIpcEndpoint(const ServerBootstrapConfig& 
                  &event_router,
                  &listener_orchestrator,
                  &maintenance_coordinator,
-                 &observability);
+                 &observability,
+                 &release_heap_after_close);
     CloseIpcSocket(client_fd);
+    if (release_heap_after_close) {
+      ReleaseIdleConnectionHeap(&observability);
+    }
     if (maintenance_coordinator.shutdown_requested) {
       g_stop_requested.store(true);
     }

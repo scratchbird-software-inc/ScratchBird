@@ -3622,32 +3622,29 @@ MgaIndexedRowsLookupResult IndexedMgaRowsForPredicateForContext(
                                 "mga.secondary_index_delta_overlay.refused"));
   }
 
-  std::map<std::string, double> candidate_scores;
+  std::set<std::string> seen_candidates;
   std::size_t candidate_count = 0;
   for (const auto& entry : overlay.entries) {
     if (!OverlayEntryMatchesPredicate(entry, predicate)) {
       continue;
     }
+    const std::string row_uuid =
+        scratchbird::core::uuid::UuidToString(entry.row_uuid.value);
+    if (!seen_candidates.insert(row_uuid).second) {
+      continue;
+    }
     ++candidate_count;
-    candidate_scores[scratchbird::core::uuid::UuidToString(entry.row_uuid.value)] = 0.0;
-  }
-
-  std::vector<CrudRowVersionRecord> visible;
-  for (const auto& [row_uuid, ignored_score] : candidate_scores) {
     const auto row = FindVisibleCrudRowForContext(
         state,
         table_uuid,
         row_uuid,
         context);
     if (row && CrudRowMatchesPredicate(*row, predicate)) {
-      visible.push_back(*row);
+      result.rows.push_back(*row);
+      if (limit != 0 && result.rows.size() >= limit) {
+        break;
+      }
     }
-  }
-  for (const auto& row : visible) {
-    if (limit != 0 && result.rows.size() >= limit) {
-      break;
-    }
-    result.rows.push_back(row);
   }
   result.index_evidence_id = CrudIndexEvidenceId(
       *selected,

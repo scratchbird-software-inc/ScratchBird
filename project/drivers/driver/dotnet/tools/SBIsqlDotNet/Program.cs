@@ -83,6 +83,9 @@ internal static class SBIsqlDotNet
                 FetchSize = int.Parse(ValueOrDefault(args, "--fetch-size", "1000")),
                 CommandTimeout = Math.Max(1, int.Parse(ValueOrDefault(args, "--statement-timeout-ms", "30000")) / 1000)
             };
+            builder["SslRootCert"] = ValueOrDefault(args, "--sslrootcert", "");
+            builder["SslCert"] = ValueOrDefault(args, "--sslcert", "");
+            builder["SslKey"] = ValueOrDefault(args, "--sslkey", "");
             if (!string.IsNullOrWhiteSpace(ValueOrDefault(args, "--role", "")))
             {
                 builder["Role"] = ValueOrDefault(args, "--role", "");
@@ -238,6 +241,7 @@ internal static class SBIsqlDotNet
 
         var elapsedTotal = NowNs() - started;
         timings["overall"] = elapsedTotal;
+        var sslmode = ValueOrDefault(args, "--sslmode", "require");
         var summary = new
         {
             run_id = ValueOrDefault(args, "--run-id", "manual"),
@@ -246,6 +250,8 @@ internal static class SBIsqlDotNet
             parser_mode = Required(args, "--parser-mode"),
             page_size = Required(args, "--page-size"),
             @namespace = Required(args, "--namespace"),
+            sslmode,
+            transport_mode = string.Equals(sslmode, "disable", StringComparison.OrdinalIgnoreCase) ? "tls_disabled" : "tls_required",
             status = failures.Count == 0 ? "pass" : "fail",
             failure_count = failures.Count,
             elapsed_ns = elapsedTotal,

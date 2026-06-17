@@ -77,6 +77,30 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
         "ddl.create_table",
         MakeInvalidRequestDiagnostic("ddl.create_table", "local_transaction_id_required"));
   }
+  if (!SecurityOptionValue(request, "unresolved_schema_parent_path:").empty()) {
+    return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+        request.context,
+        "ddl.create_table",
+        MakeInvalidRequestDiagnostic("ddl.create_table", "parent_schema_not_visible"));
+  }
+  std::string target_schema_uuid = request.target_schema.uuid.canonical;
+  if (target_schema_uuid.empty()) {
+    target_schema_uuid = request.context.current_schema_uuid.canonical;
+  }
+  if (target_schema_uuid.empty()) {
+    return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+        request.context,
+        "ddl.create_table",
+        MakeInvalidRequestDiagnostic("ddl.create_table", "target_schema_uuid_required"));
+  }
+  if (!FindVisibleSchemaTreeRecord(request.context,
+                                   target_schema_uuid,
+                                   request.context.local_transaction_id)) {
+    return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+        request.context,
+        "ddl.create_table",
+        MakeInvalidRequestDiagnostic("ddl.create_table", "target_schema_not_visible"));
+  }
   if (request.table_columns.empty()) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(
         request.context,
@@ -104,7 +128,32 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   for (const auto& column : request.table_columns) {
     std::string column_name = "column_" + std::to_string(column.ordinal);
     if (!column.names.empty() && !column.names.front().name.empty()) { column_name = column.names.front().name; }
-    std::string column_descriptor = column.descriptor.canonical_type_name;
+    std::string column_descriptor = column.descriptor.encoded_descriptor.empty()
+                                        ? column.descriptor.canonical_type_name
+                                        : column.descriptor.encoded_descriptor;
+    auto descriptor_has_field = [&column_descriptor](const std::string& field) {
+      const std::string prefix = field + "=";
+      return StartsWithLocal(column_descriptor, prefix) ||
+             column_descriptor.find(";" + prefix) != std::string::npos;
+    };
+    auto append_descriptor_field = [&column_descriptor, &descriptor_has_field](
+                                       const std::string& field,
+                                       const std::string& value) {
+      if (value.empty() || descriptor_has_field(field)) return;
+      if (!column_descriptor.empty()) column_descriptor.push_back(';');
+      column_descriptor += field;
+      column_descriptor.push_back('=');
+      column_descriptor += value;
+    };
+    if (column_descriptor.empty()) {
+      column_descriptor = "type=unknown";
+    } else if (!descriptor_has_field("type") && !descriptor_has_field("canonical") &&
+               !column.descriptor.canonical_type_name.empty()) {
+      column_descriptor = "type=" + column.descriptor.canonical_type_name + ";" +
+                          column_descriptor;
+    }
+    append_descriptor_field("nullable", column.nullable ? "true" : "false");
+    append_descriptor_field("default", column.default_expression_envelope);
     const std::string domain_uuid = DomainUuidFromDescriptor(column.descriptor);
     if (!domain_uuid.empty()) {
       if (!FindVisibleDomain(request.context, domain_uuid, request.context.local_transaction_id)) {
@@ -190,11 +239,60 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
                                                                       "ddl.create_table",
                                                                       table_uuid,
                                                                       "table",
-                                                                      request.target_schema.uuid.canonical,
+                                                                      target_schema_uuid,
                                                                       table_names,
                                                                       table_name);
   if (table_name_appended.error) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table", table_name_appended);
+  }
+  std::vector<CrudIndexRecord> implicit_support_indexes;
+  for (const auto& [column_name, column_descriptor] : columns) {
+    const auto descriptor_fields = DescriptorFieldsLocal(column_descriptor);
+    const bool primary_key = DescriptorBoolLocal(descriptor_fields, {"primary_key", "pk"});
+    const bool unique_key =
+        primary_key || DescriptorBoolLocal(descriptor_fields, {"unique", "unique_key"});
+    if (!unique_key) { continue; }
+    CrudIndexRecord support_index;
+    support_index.creator_tx = request.context.local_transaction_id;
+    support_index.index_uuid = DescriptorFieldLocal(
+        descriptor_fields,
+        {"support_uuid", "support_index_uuid", "index_uuid"});
+    if (support_index.index_uuid.empty()) {
+      support_index.index_uuid = GenerateCrudEngineUuid("object");
+    }
+    support_index.table_uuid = table_uuid;
+    support_index.column_name = column_name;
+    support_index.profile = kCrudIndexProfileRowStoreScalarBtreeV1;
+    support_index.family = kCrudIndexFamilyBtree;
+    support_index.default_name =
+        std::string(primary_key ? "pk_" : "uq_") + table_name + "_" + column_name;
+    support_index.key_envelopes.push_back(column_name);
+    support_index.key_envelopes.push_back(primary_key ? "primary_key" : "unique");
+    support_index.unique = true;
+    const auto index_appended = AppendMgaIndexMetadata(request.context, support_index);
+    if (index_appended.error) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context,
+          "ddl.create_table",
+          index_appended);
+    }
+    std::vector<EngineLocalizedName> support_names;
+    support_names.push_back({"en", "primary", "", support_index.default_name, true});
+    const auto support_name_appended = PersistNameRegistryEntriesForObject(
+        request.context,
+        "ddl.create_table",
+        support_index.index_uuid,
+        "index",
+        table_uuid,
+        support_names,
+        support_index.default_name);
+    if (support_name_appended.error) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(
+          request.context,
+          "ddl.create_table",
+          support_name_appended);
+    }
+    implicit_support_indexes.push_back(std::move(support_index));
   }
   auto result = MakeCrudSuccessResult<EngineCreateTableResult>(request.context, "ddl.create_table");
   result.primary_object.uuid.canonical = table_uuid;
@@ -204,6 +302,10 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   result.catalog_row_uuid = result.table_catalog_row_uuid;
   result.created_catalog_records.push_back(result.primary_object);
   result.evidence.push_back({"mga_relation_metadata", "table_create"});
+  for (const auto& support_index : implicit_support_indexes) {
+    result.evidence.push_back({"constraint_support_index", support_index.index_uuid});
+    result.evidence.push_back({"constraint_support_column", support_index.column_name});
+  }
   if (temporary_options.temporary) {
     result.evidence.push_back({"temporary_object_scope", temporary_options.scope});
     result.evidence.push_back({"temporary_on_commit", temporary_options.on_commit_action});

@@ -74,6 +74,9 @@ def run(args)
     cfg.password = required(args, "--password")
     cfg.role = value_or_default(args, "--role", "")
     cfg.sslmode = value_or_default(args, "--sslmode", "require")
+    cfg.sslrootcert = value_or_default(args, "--sslrootcert", "")
+    cfg.sslcert = value_or_default(args, "--sslcert", "")
+    cfg.sslkey = value_or_default(args, "--sslkey", "")
     cfg.front_door_mode = required(args, "--route") == "manager-listener-parser" ? "manager_proxy" : "direct"
     cfg.metadata_expand_schema_parents = true
     cfg.application_name = "SBIsqlRuby"
@@ -182,6 +185,7 @@ def run(args)
 
   elapsed = monotonic_ns - started
   timings["overall"] = elapsed
+  sslmode = value_or_default(args, "--sslmode", "require")
   summary = {
     run_id: value_or_default(args, "--run-id", "manual"),
     driver_name: "ruby",
@@ -189,6 +193,8 @@ def run(args)
     parser_mode: required(args, "--parser-mode"),
     page_size: required(args, "--page-size"),
     namespace: required(args, "--namespace"),
+    sslmode: sslmode,
+    transport_mode: sslmode == "disable" ? "tls_disabled" : "tls_required",
     status: failures.empty? ? "pass" : "fail",
     failure_count: failures.length,
     elapsed_ns: elapsed,

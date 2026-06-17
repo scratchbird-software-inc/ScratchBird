@@ -27,6 +27,8 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <string_view>
+#include <vector>
 
 namespace scratchbird::engine::internal_api {
 namespace {
