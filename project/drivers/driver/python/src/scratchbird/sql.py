@@ -34,30 +34,82 @@ def normalize_callable_query(sql: str, params) -> Tuple[str, List[Any]]:
     return normalize_query(callable_sql, params)
 
 
+_SET_TERM_RE = re.compile(r"^set\s+term\s+(\S.*?)\s*$", re.IGNORECASE)
+
+
+def _chunk_set_term(chunk: str):
+    """Return the new terminator if ``chunk`` is a ``SET TERM <terminator>``
+    client directive, else ``None``.
+
+    Leading full-line ``--`` comments and blank lines are ignored when matching,
+    so a directive may be preceded by comment lines in the same chunk.
+    """
+    meaningful = []
+    for line in chunk.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("--"):
+            continue
+        meaningful.append(stripped)
+    if not meaningful:
+        return None
+    match = _SET_TERM_RE.match(" ".join(meaningful))
+    return match.group(1).strip() if match else None
+
+
 def split_top_level_statements(sql: str) -> List[str]:
+    """Split SQL into top-level statements on the active terminator.
+
+    Quote-aware (single/double quotes). Honors the ``SET TERM <terminator>``
+    client directive (Firebird / ``sb_isql`` semantics): the directive changes
+    the active terminator and is consumed — it is not emitted as a statement and
+    is not counted in statement indexing. This lets procedural bodies (functions,
+    procedures, triggers) contain inner ``;`` between ``SET TERM ^`` and the
+    restoring ``SET TERM ;^``.
+
+    With no ``SET TERM`` directive present, the behavior is identical to a plain
+    quote-aware top-level ``;`` split, so existing scripts and statement indices
+    are unchanged. (The chosen terminator must not appear in the bodies it wraps.)
+    """
     statements: List[str] = []
-    current: List[str] = []
+    term = ";"
+    buf: List[str] = []
     in_single = False
     in_double = False
-    for ch in sql:
+    i = 0
+    length = len(sql)
+
+    def flush() -> None:
+        nonlocal term
+        chunk = "".join(buf).strip()
+        if not chunk:
+            return
+        new_term = _chunk_set_term(chunk)
+        if new_term:
+            term = new_term
+            return
+        statements.append(chunk)
+
+    while i < length:
+        ch = sql[i]
         if ch == "'" and not in_double:
             in_single = not in_single
-            current.append(ch)
+            buf.append(ch)
+            i += 1
             continue
         if ch == '"' and not in_single:
             in_double = not in_double
-            current.append(ch)
+            buf.append(ch)
+            i += 1
             continue
-        if not in_single and not in_double and ch == ";":
-            statement = "".join(current).strip()
-            if statement:
-                statements.append(statement)
-            current = []
+        if not in_single and not in_double and term and sql.startswith(term, i):
+            matched_len = len(term)  # capture before flush(), which may change term
+            flush()
+            buf.clear()
+            i += matched_len
             continue
-        current.append(ch)
-    statement = "".join(current).strip()
-    if statement:
-        statements.append(statement)
+        buf.append(ch)
+        i += 1
+    flush()
     return statements
 
 
