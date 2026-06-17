@@ -1,0 +1,159 @@
+-- ScratchBird driver full-surface script suite
+-- script_id: SBDFS-057
+-- Purpose: selectable procedure — RETURNS (...), WHILE + SUSPEND emits N rows
+--          (integer series generator); verify via SELECT COUNT(*) / SELECT SUM(...)
+--          FROM __SB_NAMESPACE__.proc_generate_series(args); DROP.
+-- namespace placeholder: __SB_NAMESPACE__
+--
+-- HARD CONSTRAINTS OBSERVED:
+--   - Every CREATE with a procedural body is wrapped in SET TERM ^ ; ... SET TERM ; ^.
+--   - The terminator ^ does not appear inside any body.
+--   - Selectable procedure form: CREATE PROCEDURE name(params) RETURNS (cols) AS ...
+--     grounded in procedure.md "Practical Lifecycle Example" and
+--     procedural_sql_blocks.md "Return Descriptors" example.
+--   - SUSPEND emits one result row per procedural_sql_control_flow.md SUSPEND section.
+--   - WHILE loop per procedural_sql_control_flow.md WHILE section.
+--   - Query call form: SELECT ... FROM __SB_NAMESPACE__.proc(...) per
+--     procedure.md usage pattern (selectable procedures called like table expressions).
+--   - Grounded in: procedure.md, procedural_sql_blocks.md,
+--     procedural_sql_control_flow.md.
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Procedure 1: proc_generate_series
+--   Emits integer rows from p_start to p_end (inclusive) stepping by p_step.
+--   Returns column: n INTEGER.
+--   If p_step <= 0 or p_start > p_end, emits no rows (body exits without suspend).
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE PROCEDURE __SB_NAMESPACE__.proc_generate_series(
+    p_start INTEGER,
+    p_end   INTEGER,
+    p_step  INTEGER
+)
+RETURNS (
+    n INTEGER
+)
+AS
+BEGIN
+  IF p_step <= 0 THEN
+  BEGIN
+    -- Invalid step: emit nothing; return exits without suspend.
+    RETURN;
+  END
+
+  n = p_start;
+
+  WHILE n <= p_end DO
+  BEGIN
+    SUSPEND;
+    n = n + p_step;
+  END
+END^
+
+SET TERM ; ^
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Assertions: invoke proc_generate_series via SELECT.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+-- SBDFS-057-001: series 1..10 step 1 → 10 rows.
+SELECT 'SBDFS-057-001' AS assertion_id,
+       COUNT(*) AS actual_count,
+       10 AS expected_count
+FROM __SB_NAMESPACE__.proc_generate_series(1, 10, 1);
+
+-- SBDFS-057-002: series 1..10 step 1 → SUM = 55.
+SELECT 'SBDFS-057-002' AS assertion_id,
+       SUM(n) AS actual_sum,
+       55 AS expected_sum
+FROM __SB_NAMESPACE__.proc_generate_series(1, 10, 1);
+
+-- SBDFS-057-003: series 0..20 step 5 → values 0,5,10,15,20 → 5 rows.
+SELECT 'SBDFS-057-003' AS assertion_id,
+       COUNT(*) AS actual_count_step5,
+       5 AS expected_count_step5
+FROM __SB_NAMESPACE__.proc_generate_series(0, 20, 5);
+
+-- SBDFS-057-004: series 0..20 step 5 → SUM = 0+5+10+15+20 = 50.
+SELECT 'SBDFS-057-004' AS assertion_id,
+       SUM(n) AS actual_sum_step5,
+       50 AS expected_sum_step5
+FROM __SB_NAMESPACE__.proc_generate_series(0, 20, 5);
+
+-- SBDFS-057-005: series 7..7 step 1 → exactly 1 row, value = 7.
+SELECT 'SBDFS-057-005' AS assertion_id,
+       COUNT(*) AS actual_single_row,
+       1 AS expected_single_row
+FROM __SB_NAMESPACE__.proc_generate_series(7, 7, 1);
+
+SELECT 'SBDFS-057-006' AS assertion_id,
+       n AS actual_single_value,
+       7 AS expected_single_value
+FROM __SB_NAMESPACE__.proc_generate_series(7, 7, 1);
+
+-- SBDFS-057-007: start > end → 0 rows.
+SELECT 'SBDFS-057-007' AS assertion_id,
+       COUNT(*) AS actual_empty_series,
+       0 AS expected_empty_series
+FROM __SB_NAMESPACE__.proc_generate_series(10, 1, 1);
+
+-- SBDFS-057-008: step = 0 → 0 rows (guard branch).
+SELECT 'SBDFS-057-008' AS assertion_id,
+       COUNT(*) AS actual_zero_step_rows,
+       0 AS expected_zero_step_rows
+FROM __SB_NAMESPACE__.proc_generate_series(1, 10, 0);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Procedure 2: proc_even_numbers
+--   Emits even integers from 2 up to p_max (inclusive).
+--   Uses WHILE + SUSPEND. Returns column: even_n INTEGER.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE PROCEDURE __SB_NAMESPACE__.proc_even_numbers(
+    p_max INTEGER
+)
+RETURNS (
+    even_n INTEGER
+)
+AS
+DECLARE VARIABLE v_current INTEGER DEFAULT 2;
+BEGIN
+  WHILE v_current <= p_max DO
+  BEGIN
+    even_n = v_current;
+    SUSPEND;
+    v_current = v_current + 2;
+  END
+END^
+
+SET TERM ; ^
+
+-- SBDFS-057-009: evens up to 10 → 2,4,6,8,10 → 5 rows.
+SELECT 'SBDFS-057-009' AS assertion_id,
+       COUNT(*) AS actual_even_count,
+       5 AS expected_even_count
+FROM __SB_NAMESPACE__.proc_even_numbers(10);
+
+-- SBDFS-057-010: evens up to 10 → SUM = 2+4+6+8+10 = 30.
+SELECT 'SBDFS-057-010' AS assertion_id,
+       SUM(even_n) AS actual_even_sum,
+       30 AS expected_even_sum
+FROM __SB_NAMESPACE__.proc_even_numbers(10);
+
+-- SBDFS-057-011: evens up to 1 → 0 rows (first even 2 > 1).
+SELECT 'SBDFS-057-011' AS assertion_id,
+       COUNT(*) AS actual_no_evens,
+       0 AS expected_no_evens
+FROM __SB_NAMESPACE__.proc_even_numbers(1);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Cleanup.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+DROP PROCEDURE __SB_NAMESPACE__.proc_even_numbers RESTRICT;
+
+DROP PROCEDURE __SB_NAMESPACE__.proc_generate_series RESTRICT;
