@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "description": "Cross-driver statement-chunker conformance fixture. Every driver's statement splitter MUST reproduce `expected` exactly for each `input`. Honors the SET TERM client directive (consumed, not emitted, not counted) and quote-aware splitting on the active terminator. See README.md.",
+  "cases": [
+    {
+      "name": "plain_semicolon_split",
+      "input": "SELECT 1; SELECT 2;",
+      "expected": ["SELECT 1", "SELECT 2"]
+    },
+    {
+      "name": "quoted_semicolon_not_split",
+      "input": "SELECT ';' AS s; SELECT 2;",
+      "expected": ["SELECT ';' AS s", "SELECT 2"]
+    },
+    {
+      "name": "trailing_comment_chunk_preserved",
+      "input": "SELECT 1;\n-- trailing comment",
+      "expected": ["SELECT 1", "-- trailing comment"]
+    },
+    {
+      "name": "set_term_procedure_body_inner_semicolons",
+      "input": "SET TERM ^ ;\nCREATE PROCEDURE p AS BEGIN x = 1; y = 2; END^\nSET TERM ; ^\nSELECT 1;",
+      "expected": ["CREATE PROCEDURE p AS BEGIN x = 1; y = 2; END", "SELECT 1"]
+    },
+    {
+      "name": "set_term_with_leading_comment",
+      "input": "-- define trigger\nSET TERM ^ ;\nCREATE TRIGGER t AS BEGIN INSERT INTO a VALUES (1); END^\nSET TERM ; ^",
+      "expected": ["CREATE TRIGGER t AS BEGIN INSERT INTO a VALUES (1); END"]
+    },
+    {
+      "name": "set_term_multichar_terminator",
+      "input": "SET TERM $$ ;\nCREATE FUNCTION f AS BEGIN RETURN 1; END$$\nSET TERM ; $$\nSELECT 9;",
+      "expected": ["CREATE FUNCTION f AS BEGIN RETURN 1; END", "SELECT 9"]
+    },
+    {
+      "name": "terminator_char_inside_quotes_not_split",
+      "input": "SET TERM ^ ;\nINSERT INTO a VALUES ('a;b', 'c^d')^\nSET TERM ; ^",
+      "expected": ["INSERT INTO a VALUES ('a;b', 'c^d')"]
+    },
+    {
+      "name": "set_term_directives_not_counted",
+      "input": "SET TERM ^ ;\nCREATE PROCEDURE q AS BEGIN SUSPEND; END^\nSET TERM ; ^\nSELECT a FROM q;",
+      "expected": ["CREATE PROCEDURE q AS BEGIN SUSPEND; END", "SELECT a FROM q"]
+    }
+  ]
+}
