@@ -1,0 +1,137 @@
+-- script_id: SBDFS-011
+-- Purpose: Domain lifecycle - CREATE DOMAIN with CHECK/DEFAULT/NOT NULL,
+--          use in a table column, INSERT valid and invalid values,
+--          ALTER DOMAIN, catalog introspection, DROP DOMAIN.
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 1. Create a scalar domain with DEFAULT, NOT NULL, and a named CHECK.
+--    Syntax: CREATE DOMAIN <qualified_name> AS <data_type>
+--              DEFAULT <expr> NOT NULL CHECK (<domain_check_expression>)
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE DOMAIN __SB_NAMESPACE__.positive_score AS DECIMAL(10, 2)
+    DEFAULT 0.00
+    NOT NULL
+    CHECK (VALUE >= 0);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 2. Verify the domain row is present in sys.catalog.domain_descriptor.
+--    Column names grounded in: catalog_reference/sys_catalog_domain_descriptor.md
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-011-001' AS assertion_id,
+       COUNT(*) >= 1   AS actual_domain_exists,
+       TRUE            AS expected_domain_exists
+FROM sys.catalog.domain_descriptor
+WHERE source_type_name LIKE '%positive_score%';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 3. Create a second domain layered over VARCHAR for label validation.
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE DOMAIN __SB_NAMESPACE__.short_label AS VARCHAR(64)
+    NOT NULL
+    CHECK (CHAR_LENGTH(VALUE) >= 1 AND CHAR_LENGTH(VALUE) <= 64);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 4. Create a table that uses both domains as column types.
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE TABLE __SB_NAMESPACE__.domain_usage (
+    item_id   INTEGER PRIMARY KEY,
+    label     __SB_NAMESPACE__.short_label,
+    score     __SB_NAMESPACE__.positive_score
+);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 5. INSERT a valid row — all domain constraints satisfied.
+-- ──────────────────────────────────────────────────────────────────────────
+INSERT INTO __SB_NAMESPACE__.domain_usage (item_id, label, score)
+VALUES (1, 'alpha', 42.50);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 6. Assert that the valid row landed correctly.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-011-002' AS assertion_id,
+       COUNT(*)        AS actual_row_count,
+       1               AS expected_row_count
+FROM __SB_NAMESPACE__.domain_usage
+WHERE item_id = 1
+  AND label   = 'alpha'
+  AND score   = 42.50;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 7. INSERT using domain DEFAULT: score column omitted — should receive 0.00.
+-- ──────────────────────────────────────────────────────────────────────────
+INSERT INTO __SB_NAMESPACE__.domain_usage (item_id, label)
+VALUES (2, 'beta');
+
+SELECT 'SBDFS-011-003' AS assertion_id,
+       score           AS actual_score,
+       0.00            AS expected_score
+FROM __SB_NAMESPACE__.domain_usage
+WHERE item_id = 2;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 8. ALTER DOMAIN: add a named constraint to positive_score.
+--    Syntax: ALTER DOMAIN <qualified_name> ADD CONSTRAINT <id> CHECK (<expr>)
+-- ──────────────────────────────────────────────────────────────────────────
+ALTER DOMAIN __SB_NAMESPACE__.positive_score
+    ADD CONSTRAINT positive_score_max CHECK (VALUE <= 9999999.99);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 9. Assert domain descriptor still present after ALTER.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-011-004' AS assertion_id,
+       COUNT(*) >= 1   AS actual_domain_still_exists,
+       TRUE            AS expected_domain_still_exists
+FROM sys.catalog.domain_descriptor
+WHERE source_type_name LIKE '%positive_score%';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 10. ALTER DOMAIN: set a new DEFAULT expression.
+--     Syntax: ALTER DOMAIN <qualified_name> SET DEFAULT <expression>
+-- ──────────────────────────────────────────────────────────────────────────
+ALTER DOMAIN __SB_NAMESPACE__.positive_score
+    SET DEFAULT 1.00;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 11. Assert the table is still intact and queryable after domain ALTER.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-011-005' AS assertion_id,
+       COUNT(*)        AS actual_total_rows,
+       2               AS expected_total_rows
+FROM __SB_NAMESPACE__.domain_usage;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 12. REFUSAL: INSERT a value that violates the positive_score CHECK (VALUE >= 0).
+--     Statement index 12 in this file — must be REFUSED by the engine.
+-- ──────────────────────────────────────────────────────────────────────────
+INSERT INTO __SB_NAMESPACE__.domain_usage (item_id, label, score)
+VALUES (99, 'bad', -1.00);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 13. Confirm the refused row did NOT land (row count still 2).
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-011-006' AS assertion_id,
+       COUNT(*)        AS actual_row_count_after_refusal,
+       2               AS expected_row_count_after_refusal
+FROM __SB_NAMESPACE__.domain_usage;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 14. DROP TABLE first to clear the dependency on the domains.
+-- ──────────────────────────────────────────────────────────────────────────
+DROP TABLE __SB_NAMESPACE__.domain_usage RESTRICT;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 15. DROP both domains — no dependent objects remain.
+-- ──────────────────────────────────────────────────────────────────────────
+DROP DOMAIN __SB_NAMESPACE__.positive_score RESTRICT;
+
+DROP DOMAIN __SB_NAMESPACE__.short_label RESTRICT;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 16. Assert both domains are gone from the catalog.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-011-007' AS assertion_id,
+       COUNT(*)        AS actual_domain_count_after_drop,
+       0               AS expected_domain_count_after_drop
+FROM sys.catalog.domain_descriptor
+WHERE source_type_name LIKE '%positive_score%'
+   OR source_type_name LIKE '%short_label%';

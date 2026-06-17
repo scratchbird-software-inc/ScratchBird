@@ -101,6 +101,8 @@
 #include "transaction/transaction_api.hpp"
 
 #include <cctype>
+#include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -138,6 +140,12 @@ bool HexDecodeBytes(std::string_view text, std::vector<std::uint8_t>* out) {
   }
   *out = std::move(bytes);
   return true;
+}
+
+std::string FormatReal64(double value) {
+  std::ostringstream encoded;
+  encoded << std::setprecision(std::numeric_limits<double>::max_digits10) << value;
+  return encoded.str();
 }
 
 std::string HexEncodeBytes(const std::vector<std::uint8_t>& bytes) {
@@ -195,6 +203,33 @@ std::string UnquoteSbsqlLiteral(std::string value) {
     }
   }
   return out;
+}
+
+std::vector<std::string> SplitCommaSeparatedLiterals(std::string_view value) {
+  std::vector<std::string> parts;
+  std::string current;
+  bool in_string = false;
+  for (std::size_t index = 0; index < value.size(); ++index) {
+    const char ch = value[index];
+    if (ch == '\'') {
+      current.push_back(ch);
+      if (in_string && index + 1 < value.size() && value[index + 1] == '\'') {
+        current.push_back(value[index + 1]);
+        ++index;
+        continue;
+      }
+      in_string = !in_string;
+      continue;
+    }
+    if (ch == ',' && !in_string) {
+      parts.push_back(current);
+      current.clear();
+      continue;
+    }
+    current.push_back(ch);
+  }
+  parts.push_back(current);
+  return parts;
 }
 
 api::EngineTypedValue TypedValueFromLoweredLiteral(std::string value,
@@ -276,7 +311,11 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
         value.descriptor.encoded_descriptor = "type=" + value.descriptor.canonical_type_name;
       }
       value.encoded_value = operand.value;
-      value.is_null = row_null_field;
+      value.is_null = row_null_field || value.descriptor.canonical_type_name == "null";
+      if (value.is_null) {
+        value.encoded_value.clear();
+        value.setState(api::EngineValueState::sql_null);
+      }
       row.fields.push_back({field_name, std::move(value)});
     } else if (operand.type == "assignment" && !operand.name.empty()) {
       api::EngineTypedValue value;
@@ -314,9 +353,14 @@ api::EngineApiRequest BaseApiRequest(const SblrDispatchRequest& request) {
       api_request.predicate.predicate_kind = predicate_kind;
       api_request.predicate.canonical_predicate_envelope = predicate_column;
       if (!predicate_value.empty()) {
-        api_request.predicate.bound_values.push_back(TypedValueFromLoweredLiteral(
-            predicate_value,
-            api::SecurityOptionValue(api_request, "predicate_value_type:")));
+        const auto values = SplitCommaSeparatedLiterals(predicate_value);
+        const auto types = SplitCommaSeparatedLiterals(
+            api::SecurityOptionValue(api_request, "predicate_value_type:"));
+        for (std::size_t index = 0; index < values.size(); ++index) {
+          api_request.predicate.bound_values.push_back(TypedValueFromLoweredLiteral(
+              values[index],
+              index < types.size() ? types[index] : std::string{}));
+        }
       }
     }
   }
@@ -806,6 +850,7 @@ bool IsObservabilityExactShowOperation(std::string_view operation_id) {
          operation_id == "op.show.transaction" ||
          operation_id == "op.show.transaction_isolation" ||
          operation_id == "op.show.transactions" ||
+         operation_id == "op.sbsql.surface_replay" ||
          operation_id == "op.show.version" ||
          operation_id == "op.show.wait_events";
 }
@@ -1660,6 +1705,32 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
   static_cast<api::EngineApiRequest&>(typed) = base;
   typed.target_database = base.target_database;
   typed.target_schema = base.target_schema;
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "target_schema_uuid:");
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_uuid:");
+  }
+  if (typed.target_schema.uuid.canonical.empty()) {
+    typed.target_schema.uuid.canonical = api::SecurityOptionValue(base, "schema_parent_uuid:");
+  }
+  std::string normalized_parent_path;
+  const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
+  if (typed.target_schema.uuid.canonical.empty() && !schema_parent_path.empty()) {
+    const auto resolved_parent =
+        ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
+    if (resolved_parent) {
+      typed.target_schema.uuid.canonical = *resolved_parent;
+    }
+  }
+  if (!typed.target_schema.uuid.canonical.empty() && typed.target_schema.object_kind.empty()) {
+    typed.target_schema.object_kind = "schema";
+  }
+  typed.option_envelopes.clear();
+  typed.option_envelopes = base.option_envelopes;
+  if (!schema_parent_path.empty() && typed.target_schema.uuid.canonical.empty()) {
+    typed.option_envelopes.push_back("unresolved_schema_parent_path:" + schema_parent_path);
+  }
   typed.requested_table_uuid = base.target_object.uuid;
   if (typed.requested_table_uuid.canonical.empty()) {
     typed.requested_table_uuid.canonical = api::SecurityOptionValue(base, "table_object_uuid:");
@@ -1673,6 +1744,9 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
   typed.table_columns = base.columns;
   if (typed.table_columns.empty()) {
     std::uint64_t column_count = DispatchOptionU64(base, "column_count:");
+    if (column_count == 0) {
+      column_count = DispatchOptionU64(base, "column_definition_count:");
+    }
     if (column_count == 0 &&
         !api::SecurityOptionValue(base, "column_0_name:").empty()) {
       column_count = 1;
@@ -1682,19 +1756,36 @@ api::EngineCreateTableRequest TypedCreateTableRequest(const SblrDispatchRequest&
       std::string column_name = api::SecurityOptionValue(base, prefix + "name:");
       std::string column_type = api::SecurityOptionValue(base, prefix + "type:");
       std::string column_descriptor = api::SecurityOptionValue(base, prefix + "descriptor:");
+      std::string column_default = api::SecurityOptionValue(base, prefix + "default:");
       if (ordinal == 0 && column_type.empty()) {
         column_type = api::SecurityOptionValue(base, "canonical_type_name:");
       }
       if (column_name.empty() || column_type.empty()) continue;
+      if (column_descriptor.empty()) {
+        column_descriptor = "type=" + column_type;
+      } else if (column_descriptor.find("type=") == std::string::npos &&
+                 column_descriptor.find("canonical=") == std::string::npos) {
+        column_descriptor = "type=" + column_type + ";" + column_descriptor;
+      }
       api::EngineColumnDefinition column;
       column.ordinal = static_cast<std::uint32_t>(ordinal);
       column.names.push_back({"en", "primary", "", column_name, true});
       column.descriptor.descriptor_kind = "scalar";
       column.descriptor.canonical_type_name = column_type;
-      column.descriptor.encoded_descriptor =
-          column_descriptor.empty() ? "type=" + column_type : column_descriptor;
       const std::string nullable = LowerAscii(api::SecurityOptionValue(base, prefix + "nullable:"));
       column.nullable = nullable.empty() || nullable == "true" || nullable == "1";
+      if (column_descriptor.find("nullable=") == std::string::npos) {
+        column_descriptor += ";nullable=";
+        column_descriptor += column.nullable ? "true" : "false";
+      }
+      if (!column_default.empty()) {
+        column.default_expression_envelope = column_default;
+        if (column_descriptor.find("default=") == std::string::npos &&
+            column_descriptor.find("default_expression=") == std::string::npos) {
+          column_descriptor += ";default=" + column_default;
+        }
+      }
+      column.descriptor.encoded_descriptor = column_descriptor;
       typed.table_columns.push_back(std::move(column));
     }
   }
@@ -1770,7 +1861,11 @@ api::EngineCreateIndexRequest TypedCreateIndexRequest(const SblrDispatchRequest&
     if (index.index_kind.empty()) index.index_kind = "btree";
     const std::string key_envelope = api::SecurityOptionValue(base, "index_key_envelope:");
     if (!key_envelope.empty()) {
-      index.key_envelopes.push_back(key_envelope);
+      std::string current;
+      std::istringstream key_envelopes{key_envelope};
+      while (std::getline(key_envelopes, current, ',')) {
+        if (!current.empty()) index.key_envelopes.push_back(current);
+      }
     } else {
       const std::string key_column = api::SecurityOptionValue(base, "index_key_column:");
       if (!key_column.empty()) index.key_envelopes.push_back(key_column);
@@ -2004,14 +2099,23 @@ api::EngineInsertRowsRequest TypedInsertRowsRequest(const SblrDispatchRequest& r
   if (!duplicate_mode.empty()) { typed.duplicate_mode = duplicate_mode; }
   typed.on_conflict_action = api::SecurityOptionValue(base, "on_conflict_action:");
   typed.conflict_target_column = api::SecurityOptionValue(base, "conflict_target_column:");
+  const auto append_conflict_update_columns = [&typed](std::string_view encoded) {
+    std::string current;
+    std::istringstream columns{std::string(encoded)};
+    while (std::getline(columns, current, ',')) {
+      if (!current.empty()) {
+        typed.conflict_update_columns.push_back(current);
+      }
+    }
+  };
   for (const auto& option : base.option_envelopes) {
     constexpr std::string_view prefix = "conflict_update_column:";
     if (option.rfind(prefix, 0) == 0) {
-      typed.conflict_update_columns.push_back(option.substr(prefix.size()));
+      append_conflict_update_columns(std::string_view(option).substr(prefix.size()));
     }
     constexpr std::string_view lowered_prefix = "on_conflict_update_column:";
     if (option.rfind(lowered_prefix, 0) == 0) {
-      typed.conflict_update_columns.push_back(option.substr(lowered_prefix.size()));
+      append_conflict_update_columns(std::string_view(option).substr(lowered_prefix.size()));
     }
   }
   typed.strict_bulk_load_requested = api::SecurityOptionBool(base, "strict_bulk_load_requested:", false);
@@ -2205,7 +2309,7 @@ api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
   out.encoded_value = !value.encoded_value.empty() ? value.encoded_value : value.text_value;
   if (value.has_int64_value) out.encoded_value = std::to_string(value.int64_value);
   if (value.has_uint64_value) out.encoded_value = std::to_string(value.uint64_value);
-  if (value.has_real64_value) out.encoded_value = std::to_string(value.real64_value);
+  if (value.has_real64_value) out.encoded_value = FormatReal64(value.real64_value);
   return out;
 }
 
@@ -2491,6 +2595,9 @@ api::EngineProjectionFunctionResult EvaluateProjectionOperatorExpression(
     const api::EngineRequestContext& context,
     const api::EngineProjectionExpression& expression);
 
+api::EngineProjectionFunctionResult EvaluateProjectionFunction(
+    const api::EngineProjectionFunctionRequest& request);
+
 api::EngineProjectionFunctionResult OperatorResultToProjectionResult(
     const std::string& operator_id,
     const SblrResult& result) {
@@ -2522,6 +2629,40 @@ api::EngineProjectionFunctionResult EvaluateProjectionOperatorExpression(
     api::EngineProjectionFunctionResult out;
     out.ok = true;
     out.value = EngineTypedValueFromSblrValue(ProjectionLiteralToSblrValue(expression));
+    return out;
+  }
+  if (expression.expression_kind == "function") {
+    api::EngineProjectionOperatorRequest failure_request;
+    failure_request.context = context;
+    failure_request.expression = expression;
+    if (expression.function_id.empty()) {
+      return ProjectionOperatorFailure(failure_request,
+                                       "SB_DIAG_OPERATOR_INVALID_INPUT",
+                                       "nested function projection requires a function id");
+    }
+    api::EngineProjectionFunctionRequest function_request;
+    function_request.context = context;
+    function_request.function_id = expression.function_id;
+    std::vector<api::EngineEvidenceReference> argument_evidence;
+    for (std::size_t index = 0; index < expression.arguments.size(); ++index) {
+      auto argument_result = EvaluateProjectionOperatorExpression(context, expression.arguments[index]);
+      if (!argument_result.ok) return argument_result;
+      api::EngineProjectionFunctionArgument argument;
+      argument.name = expression.arguments[index].name.empty()
+                          ? "arg" + std::to_string(index)
+                          : expression.arguments[index].name;
+      argument.type_name = argument_result.value.descriptor.canonical_type_name;
+      argument.encoded_value = argument_result.value.encoded_value;
+      argument.is_null = argument_result.value.is_null;
+      function_request.arguments.push_back(std::move(argument));
+      argument_evidence.insert(argument_evidence.end(),
+                               argument_result.evidence.begin(),
+                               argument_result.evidence.end());
+    }
+    auto out = EvaluateProjectionFunction(function_request);
+    if (out.ok) {
+      out.evidence.insert(out.evidence.end(), argument_evidence.begin(), argument_evidence.end());
+    }
     return out;
   }
   if (expression.expression_kind == "special_form") {
@@ -2715,6 +2856,22 @@ api::EngineProjectionFunctionResult EvaluateProjectionOperatorExpression(
     return out;
   }
 
+  if (expression.operator_id == "op_is_null") {
+    if (expression.arguments.size() != 1) {
+      return ProjectionOperatorFailure(failure_request,
+                                       "SB_DIAG_OPERATOR_INVALID_INPUT",
+                                       "IS NULL projection requires one operand");
+    }
+    const auto operand = EvaluateProjectionOperatorExpression(context, expression.arguments[0]);
+    if (!operand.ok) return operand;
+    const auto result = EvaluateSblrComparison(
+        "op_is_null",
+        ProjectionTypedValueToSblrValue(operand.value),
+        SblrValue{},
+        ProjectionOperatorContext(context));
+    return OperatorResultToProjectionResult("op_is_null", result);
+  }
+
   if (expression.operator_id == "op_and" || expression.operator_id == "op_or" ||
       expression.operator_id == "op_xor") {
     if (expression.arguments.size() != 2) {
@@ -2763,8 +2920,14 @@ api::EngineProjectionFunctionResult EvaluateProjectionOperatorExpression(
   }
 
   if (expression.operator_id == "op_eq" ||
+      expression.operator_id == "op_ne" ||
+      expression.operator_id == "op_lt" ||
+      expression.operator_id == "op_le" ||
+      expression.operator_id == "op_ge" ||
       expression.operator_id == "op_add" ||
+      expression.operator_id == "op_sub" ||
       expression.operator_id == "op_mul" ||
+      expression.operator_id == "op_div" ||
       expression.operator_id == "op_gt" ||
       expression.operator_id == "op_like" ||
       expression.operator_id == "op_ilike" ||
@@ -2795,7 +2958,11 @@ api::EngineProjectionFunctionResult EvaluateProjectionOperatorExpression(
       return OperatorResultToProjectionResult(expression.operator_id, result);
     }
     if (expression.operator_id == "op_eq" ||
+        expression.operator_id == "op_ne" ||
+        expression.operator_id == "op_lt" ||
+        expression.operator_id == "op_le" ||
         expression.operator_id == "op_gt" ||
+        expression.operator_id == "op_ge" ||
         expression.operator_id == "op_is_distinct") {
       const auto result = EvaluateSblrComparison(expression.operator_id,
                                                  left_value,
@@ -2803,14 +2970,8 @@ api::EngineProjectionFunctionResult EvaluateProjectionOperatorExpression(
                                                  sblr_context);
       return OperatorResultToProjectionResult(expression.operator_id, result);
     }
-    if (expression.operator_id == "op_mul") {
-      const auto result = EvaluateSblrArithmetic(expression.operator_id,
-                                                 left_value,
-                                                 right_value,
-                                                 sblr_context);
-      return OperatorResultToProjectionResult(expression.operator_id, result);
-    }
-    if (expression.operator_id == "op_add") {
+    if (expression.operator_id == "op_mul" || expression.operator_id == "op_div" ||
+        expression.operator_id == "op_sub" || expression.operator_id == "op_add") {
       const auto result = EvaluateSblrArithmetic(expression.operator_id,
                                                  left_value,
                                                  right_value,
@@ -2944,6 +3105,20 @@ api::EngineUpdateRowsRequest TypedUpdateRowsRequest(const SblrDispatchRequest& r
   typed.target_table = TargetObjectForDml(base, "table");
   typed.update_predicate = base.predicate;
   typed.assignments = base.assignments;
+  if (typed.assignments.empty()) {
+    const std::string assignment_plan = api::SecurityOptionValue(base, "assignment_plan:");
+    std::string item;
+    std::istringstream items(assignment_plan);
+    while (std::getline(items, item, ';')) {
+      const auto separator = item.find('|');
+      if (separator == std::string::npos || separator == 0) { continue; }
+      api::EngineTypedValue placeholder;
+      placeholder.descriptor.descriptor_kind = "scalar";
+      placeholder.descriptor.canonical_type_name = "text";
+      placeholder.descriptor.encoded_descriptor = "type=text";
+      typed.assignments.push_back({item.substr(0, separator), std::move(placeholder)});
+    }
+  }
   return typed;
 }
 

@@ -503,6 +503,8 @@ constexpr auto kSeedDefs = std::to_array<SeedDef>({
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
     {"sb.scalar.descriptor_of", "019dffbb-f000-7c57-9ab9-4d8c52b211d0", "data.scalar", "descriptor_of",
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
+    {"data.scalar.cast", "019dffbb-f000-7c10-9caa-000000000001", "data.scalar", "cast",
+     FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
     {"sb.scalar.safe_cast", "019dffbb-f000-7811-93e2-60cf11e4c6dc", "data.scalar", "safe_cast",
      FunctionImplementationState::implemented_behavior, FunctionPackageState::core},
     {"sb.scalar.try_cast", "019dffbb-f000-7de1-850f-3699becc27a4", "data.scalar", "try_cast",

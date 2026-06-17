@@ -4604,6 +4604,21 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     set_tests_properties(cdp_copy_route_gate PROPERTIES
       LABELS "cdp_copy_route_gate;CDP-012;benchmark;performance;sbsql_parser_worker;sb_isql;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;database_lifecycle_embedded_route;local_ipc_gate;sbwp_wire_gate;mga_transaction_regression"
     )
+    add_test(
+      NAME sbsql_copy_persistence_full_route_gate
+      COMMAND "${SBSQL_PYTHON3}"
+              "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_copy_persistence_full_route_gate.py"
+              --server $<TARGET_FILE:sb_server>
+              --listener $<TARGET_FILE:sb_listener>
+              --parser-worker $<TARGET_FILE:sbp_sbsql>
+              --sb-isql $<TARGET_FILE:sb_isql>
+              --fixture-root "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/fixtures/copy_persistence"
+              --openssl ${SBSQL_OPENSSL_EXECUTABLE}
+              --work-dir "${CMAKE_BINARY_DIR}/sbsql_copy_persistence_full_route"
+    )
+    set_tests_properties(sbsql_copy_persistence_full_route_gate PROPERTIES
+      LABELS "sbsql_copy_persistence_full_route_gate;copy_persistence;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;sb_isql;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;security_auth_gate;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
+    )
     add_custom_target(cdp_native_bulk_ingest_cli_gate
       DEPENDS sb_isql sb_server sb_listener sbp_sbsql
     )

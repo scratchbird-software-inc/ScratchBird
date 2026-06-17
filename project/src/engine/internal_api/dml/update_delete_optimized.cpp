@@ -29,10 +29,13 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iomanip>
 #include <iterator>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace scratchbird::engine::internal_api {
 namespace {
@@ -126,6 +129,137 @@ std::uint64_t UpdateOptionU64(const EngineUpdateRowsRequest& request,
   return fallback;
 }
 
+std::string UpdateOptionText(const EngineUpdateRowsRequest& request,
+                             std::string_view prefix) {
+  for (const auto& option : request.option_envelopes) {
+    if (StartsWith(option, prefix)) { return option.substr(prefix.size()); }
+  }
+  return {};
+}
+
+std::vector<std::string> SplitText(const std::string& value, char delimiter) {
+  std::vector<std::string> parts;
+  std::string current;
+  std::istringstream in(value);
+  while (std::getline(in, current, delimiter)) { parts.push_back(current); }
+  return parts;
+}
+
+struct UpdateAssignmentExpression {
+  std::string target_column;
+  std::string source_column;
+  std::string operation;
+  std::string literal_value;
+  std::string literal_type;
+};
+
+std::vector<UpdateAssignmentExpression> ParseUpdateAssignmentPlan(
+    const EngineUpdateRowsRequest& request,
+    bool* invalid) {
+  if (invalid != nullptr) { *invalid = false; }
+  const std::string plan = UpdateOptionText(request, "assignment_plan:");
+  if (plan.empty()) { return {}; }
+
+  std::vector<UpdateAssignmentExpression> expressions;
+  for (const auto& item : SplitText(plan, ';')) {
+    const auto parts = SplitText(item, '|');
+    if (parts.size() != 5 || parts[0].empty() || parts[2].empty()) {
+      if (invalid != nullptr) { *invalid = true; }
+      return {};
+    }
+    UpdateAssignmentExpression expression;
+    expression.target_column = parts[0];
+    expression.source_column = parts[1];
+    expression.operation = parts[2];
+    expression.literal_value = parts[3];
+    expression.literal_type = parts[4];
+    if (expression.operation != "literal" &&
+        expression.operation != "add" &&
+        expression.operation != "subtract" &&
+        expression.operation != "concat" &&
+        expression.operation != "copy_column") {
+      if (invalid != nullptr) { *invalid = true; }
+      return {};
+    }
+    if (expression.operation != "literal" && expression.source_column.empty()) {
+      if (invalid != nullptr) { *invalid = true; }
+      return {};
+    }
+    expressions.push_back(std::move(expression));
+  }
+  return expressions;
+}
+
+bool ParseLongDoubleValue(const std::string& value, long double* out) {
+  if (out == nullptr || value.empty() || value == "<NULL>") { return false; }
+  try {
+    std::size_t consumed = 0;
+    const long double parsed = std::stold(value, &consumed);
+    if (consumed != value.size()) { return false; }
+    *out = parsed;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool LooksIntegralText(const std::string& value) {
+  if (value.empty()) { return false; }
+  std::size_t index = value.front() == '-' ? 1 : 0;
+  if (index >= value.size()) { return false; }
+  for (; index < value.size(); ++index) {
+    if (value[index] < '0' || value[index] > '9') { return false; }
+  }
+  return true;
+}
+
+std::string FormatArithmeticResult(long double value, bool integral) {
+  if (integral) {
+    return std::to_string(static_cast<long long>(value));
+  }
+  std::ostringstream out;
+  out << std::setprecision(18) << value;
+  return out.str();
+}
+
+EngineApiDiagnostic ApplyUpdateAssignmentExpressions(
+    const std::vector<UpdateAssignmentExpression>& expressions,
+    std::vector<std::pair<std::string, std::string>>* values) {
+  if (values == nullptr) {
+    return MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_values_required");
+  }
+  for (const auto& expression : expressions) {
+    std::string new_value = expression.literal_value;
+    if (expression.operation == "copy_column") {
+      new_value = CrudFieldValue(*values, expression.source_column);
+    } else if (expression.operation == "concat") {
+      new_value = CrudFieldValue(*values, expression.source_column) + expression.literal_value;
+    } else if (expression.operation == "add" || expression.operation == "subtract") {
+      const std::string source_value = CrudFieldValue(*values, expression.source_column);
+      long double left = 0.0;
+      long double right = 0.0;
+      if (!ParseLongDoubleValue(source_value, &left) ||
+          !ParseLongDoubleValue(expression.literal_value, &right)) {
+        return MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_arithmetic_requires_numeric_values");
+      }
+      const long double computed = expression.operation == "subtract" ? left - right : left + right;
+      new_value = FormatArithmeticResult(computed,
+                                         LooksIntegralText(source_value) &&
+                                             LooksIntegralText(expression.literal_value));
+    }
+    bool replaced = false;
+    for (auto& [field, value] : *values) {
+      if (field == expression.target_column) {
+        value = new_value;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) { values->push_back({expression.target_column, std::move(new_value)}); }
+  }
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+}
+
 bool DeleteOptionEnabled(const EngineDeleteRowsRequest& request,
                          std::string_view option) {
   return std::find(request.option_envelopes.begin(),
@@ -158,6 +292,12 @@ bool IsUpdateEqualityPredicate(const EnginePredicateEnvelope& predicate) {
 bool IsUpdateRangePredicate(const EnginePredicateEnvelope& predicate) {
   return predicate.predicate_kind == "column_range" &&
          !predicate.canonical_predicate_envelope.empty();
+}
+
+bool IsUpdateRowScanPredicate(const EnginePredicateEnvelope& predicate) {
+  return predicate.predicate_kind == "columns_all_not_null" ||
+         predicate.predicate_kind == "column_equals_column_or_left_null" ||
+         predicate.predicate_kind == "column_mod_equals";
 }
 
 std::vector<std::string> RowUuidListFromPredicate(
@@ -364,6 +504,10 @@ DmlTargetAccessPlanRequest BuildUpdateTargetAccessPlanRequest(
       plan_request.estimated_rows = index->unique ? 1 : 0;
       return plan_request;
     }
+    plan_request.explicit_table_scan_fallback = true;
+    return plan_request;
+  }
+  if (IsUpdateRowScanPredicate(request.update_predicate)) {
     plan_request.explicit_table_scan_fallback = true;
     return plan_request;
   }
@@ -828,6 +972,10 @@ DmlTargetAccessPlanRequest BuildDeleteTargetAccessPlanRequest(
       plan_request.estimated_rows = index->unique ? 1 : 0;
       return plan_request;
     }
+    plan_request.explicit_table_scan_fallback = true;
+    return plan_request;
+  }
+  if (IsUpdateRowScanPredicate(request.delete_predicate)) {
     plan_request.explicit_table_scan_fallback = true;
     return plan_request;
   }
@@ -1707,6 +1855,14 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   if (descriptor_ready.error) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", descriptor_ready);
   }
+  bool invalid_assignment_plan = false;
+  const auto assignment_expressions = ParseUpdateAssignmentPlan(request, &invalid_assignment_plan);
+  if (invalid_assignment_plan) {
+    return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
+        request.context,
+        "dml.update_rows",
+        MakeInvalidRequestDiagnostic("dml.update_rows", "assignment_plan_invalid"));
+  }
   UpdateBatchContext batch_context = BuildUpdateBatchContext(request, state, *table, visible_indexes);
   if (!batch_context.accepted) {
     RecordUpdateBatchMetric(batch_context,
@@ -1776,15 +1932,22 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
     AddUpdateTrace(&batch_context, "update.row.match", "match", row.row_uuid);
 
     auto values = row.values;
-    for (const auto& [field, typed] : request.assignments) {
-      bool replaced = false;
-      for (auto& [existing_field, existing_value] : values) {
-        if (existing_field == field) {
-          existing_value = typed.is_null ? "<NULL>" : typed.encoded_value;
-          replaced = true;
-        }
+    if (!assignment_expressions.empty()) {
+      const auto applied = ApplyUpdateAssignmentExpressions(assignment_expressions, &values);
+      if (applied.error) {
+        return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", applied);
       }
-      if (!replaced) { values.push_back({field, typed.is_null ? "<NULL>" : typed.encoded_value}); }
+    } else {
+      for (const auto& [field, typed] : request.assignments) {
+        bool replaced = false;
+        for (auto& [existing_field, existing_value] : values) {
+          if (existing_field == field) {
+            existing_value = typed.is_null ? "<NULL>" : typed.encoded_value;
+            replaced = true;
+          }
+        }
+        if (!replaced) { values.push_back({field, typed.is_null ? "<NULL>" : typed.encoded_value}); }
+      }
     }
 
     const auto domain_validation = ApplyDomainRulesToCrudValues(request.context,

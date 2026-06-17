@@ -38,8 +38,35 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Cr
   }
   if (!selected) { return {}; }
 
-  std::map<std::string, double> candidate_scores;
+  const bool vector_ordered =
+      predicate.predicate_kind == "vector_exact_nearest" ||
+      predicate.predicate_kind == "vector_approx_nearest";
   std::size_t candidate_count = 0;
+  if (!vector_ordered) {
+    std::set<std::string> seen_row_uuids;
+    std::vector<CrudRowVersionRecord> rows;
+    for (const auto& entry : state.index_entries) {
+      if (entry.index_uuid != selected->index_uuid ||
+          entry.table_uuid != table_uuid ||
+          !TxVisible(state, entry.creator_tx, observer_tx)) {
+        continue;
+      }
+      if (!EntryKeyMatchesPredicate(*selected, entry, predicate)) { continue; }
+      ++candidate_count;
+      if (!seen_row_uuids.insert(entry.row_uuid).second) { continue; }
+      const auto row = FindVisibleCrudRowForContext(state, table_uuid, entry.row_uuid, context);
+      if (row && CrudRowMatchesPredicate(*row, predicate)) {
+        rows.push_back(*row);
+        if (limit != 0 && rows.size() >= limit) { break; }
+      }
+    }
+    if (index_evidence_id != nullptr) {
+      *index_evidence_id = CrudIndexEvidenceId(*selected, predicate, candidate_count, rows.size());
+    }
+    return rows;
+  }
+
+  std::map<std::string, double> candidate_scores;
   for (const auto& entry : state.index_entries) {
     if (entry.index_uuid != selected->index_uuid || entry.table_uuid != table_uuid || !TxVisible(state, entry.creator_tx, observer_tx)) {
       continue;
@@ -47,8 +74,7 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Cr
     if (!EntryKeyMatchesPredicate(*selected, entry, predicate)) { continue; }
     ++candidate_count;
     double score = 0.0;
-    if ((predicate.predicate_kind == "vector_exact_nearest" || predicate.predicate_kind == "vector_approx_nearest") &&
-        !predicate.bound_values.empty()) {
+    if (!predicate.bound_values.empty()) {
       score = CrudVectorDistance(entry.key_value, predicate.bound_values.front().encoded_value);
     }
     const auto existing = candidate_scores.find(entry.row_uuid);
@@ -60,12 +86,10 @@ std::vector<CrudRowVersionRecord> IndexedCrudRowsForPredicateForContext(const Cr
     const auto row = FindVisibleCrudRowForContext(state, table_uuid, row_uuid, context);
     if (row && CrudRowMatchesPredicate(*row, predicate)) { visible_scored.push_back({*row, score}); }
   }
-  if (predicate.predicate_kind == "vector_exact_nearest" || predicate.predicate_kind == "vector_approx_nearest") {
-    std::sort(visible_scored.begin(), visible_scored.end(), [](const auto& left, const auto& right) {
-      if (left.second != right.second) { return left.second < right.second; }
-      return left.first.row_uuid < right.first.row_uuid;
-    });
-  }
+  std::sort(visible_scored.begin(), visible_scored.end(), [](const auto& left, const auto& right) {
+    if (left.second != right.second) { return left.second < right.second; }
+    return left.first.row_uuid < right.first.row_uuid;
+  });
   std::vector<CrudRowVersionRecord> rows;
   for (const auto& [row, ignored_score] : visible_scored) {
     if (limit != 0 && rows.size() >= limit) { break; }

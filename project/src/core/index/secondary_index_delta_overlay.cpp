@@ -11,7 +11,7 @@
 
 #include "unique_index_deferral_policy.hpp"
 
-#include <algorithm>
+#include <map>
 #include <utility>
 
 namespace scratchbird::core::index {
@@ -47,31 +47,23 @@ TypedUuid NewEvidenceId(const SecondaryIndexOverlayLedger* ledger) {
   return generated.ok() ? generated.value : TypedUuid{};
 }
 
-bool SameLogicalIndexEntry(const SecondaryIndexOverlayEntry& entry,
-                           const SecondaryIndexDeltaEntry& delta) {
-  return SameUuid(entry.row_uuid, delta.row_uuid) && entry.key_payload == delta.key_payload;
+std::string LogicalIndexEntryKey(const TypedUuid& row_uuid,
+                                 const std::string& key_payload) {
+  return scratchbird::core::uuid::UuidToString(row_uuid.value) + "\x1f" + key_payload;
 }
 
-void RemoveLogicalIndexEntry(std::vector<SecondaryIndexOverlayEntry>* entries,
-                             const SecondaryIndexDeltaEntry& delta) {
-  if (entries == nullptr) {
-    return;
-  }
-  entries->erase(std::remove_if(entries->begin(),
-                                entries->end(),
-                                [&](const SecondaryIndexOverlayEntry& entry) {
-                                  return SameLogicalIndexEntry(entry, delta);
-                                }),
-                 entries->end());
+std::string LogicalIndexEntryKey(const SecondaryIndexOverlayEntry& entry) {
+  return LogicalIndexEntryKey(entry.row_uuid, entry.key_payload);
 }
 
-void AddOrReplaceOverlayEntry(std::vector<SecondaryIndexOverlayEntry>* entries,
+std::string LogicalIndexEntryKey(const SecondaryIndexDeltaEntry& delta) {
+  return LogicalIndexEntryKey(delta.row_uuid, delta.key_payload);
+}
+
+void AddOrReplaceOverlayEntry(std::map<std::string, SecondaryIndexOverlayEntry>* entries,
                               const SecondaryIndexDeltaEntry& delta,
                               SecondaryIndexOverlayEntryOrigin origin) {
-  if (entries == nullptr) {
-    return;
-  }
-  RemoveLogicalIndexEntry(entries, delta);
+  if (entries == nullptr) return;
   SecondaryIndexOverlayEntry entry;
   entry.index_uuid = delta.index_uuid;
   entry.table_uuid = delta.table_uuid;
@@ -79,7 +71,7 @@ void AddOrReplaceOverlayEntry(std::vector<SecondaryIndexOverlayEntry>* entries,
   entry.version_uuid = delta.version_uuid;
   entry.key_payload = delta.key_payload;
   entry.origin = origin;
-  entries->push_back(entry);
+  (*entries)[LogicalIndexEntryKey(entry)] = std::move(entry);
 }
 
 SecondaryIndexOverlayEvidenceRecord BuildEvidence(SecondaryIndexOverlayLedger* ledger,
@@ -237,7 +229,7 @@ SecondaryIndexOverlayResult BuildSecondaryIndexDeltaOverlay(SecondaryIndexOverla
                   "unique deferred overlay still requires DML route closure to consume reservation ledger proofs");
   }
 
-  std::vector<SecondaryIndexOverlayEntry> entries;
+  std::map<std::string, SecondaryIndexOverlayEntry> entries_by_key;
   u64 base_scanned = 0;
   for (const auto& base : base_entries) {
     if (!SameIndexTable(request, base.index_uuid, base.table_uuid)) {
@@ -254,7 +246,7 @@ SecondaryIndexOverlayResult BuildSecondaryIndexDeltaOverlay(SecondaryIndexOverla
     entry.version_uuid = base.version_uuid;
     entry.key_payload = base.key_payload;
     entry.origin = SecondaryIndexOverlayEntryOrigin::base_index;
-    entries.push_back(entry);
+    entries_by_key[LogicalIndexEntryKey(entry)] = std::move(entry);
   }
 
   u64 delta_scanned = 0;
@@ -278,14 +270,14 @@ SecondaryIndexOverlayResult BuildSecondaryIndexDeltaOverlay(SecondaryIndexOverla
     ++visible_delta_count;
     switch (delta.delta_kind) {
       case SecondaryIndexDeltaKind::insert:
-        AddOrReplaceOverlayEntry(&entries, delta, SecondaryIndexOverlayEntryOrigin::delta_insert);
+        AddOrReplaceOverlayEntry(&entries_by_key, delta, SecondaryIndexOverlayEntryOrigin::delta_insert);
         break;
       case SecondaryIndexDeltaKind::delete_row:
       case SecondaryIndexDeltaKind::update_before:
-        RemoveLogicalIndexEntry(&entries, delta);
+        entries_by_key.erase(LogicalIndexEntryKey(delta));
         break;
       case SecondaryIndexDeltaKind::update_after:
-        AddOrReplaceOverlayEntry(&entries, delta, SecondaryIndexOverlayEntryOrigin::delta_update_after);
+        AddOrReplaceOverlayEntry(&entries_by_key, delta, SecondaryIndexOverlayEntryOrigin::delta_update_after);
         break;
     }
   }
@@ -293,7 +285,10 @@ SecondaryIndexOverlayResult BuildSecondaryIndexDeltaOverlay(SecondaryIndexOverla
   SecondaryIndexOverlayResult result;
   result.status = OverlayOkStatus();
   result.overlaid = true;
-  result.entries = std::move(entries);
+  result.entries.reserve(entries_by_key.size());
+  for (auto& [ignored_key, entry] : entries_by_key) {
+    result.entries.push_back(std::move(entry));
+  }
   result.evidence = BuildEvidence(overlay_ledger,
                                   request,
                                   base_scanned,

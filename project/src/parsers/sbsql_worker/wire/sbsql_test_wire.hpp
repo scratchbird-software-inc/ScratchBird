@@ -47,7 +47,8 @@ class SbsqlTestWireSession {
   PipelineResult RunPipeline(std::string_view sql,
                              bool submit,
                              bool cursor_requested = false,
-                             std::uint64_t stream_row_count = 0);
+                             std::uint64_t stream_row_count = 0,
+                             bool autocommit_emulation = false);
   PipelineResult RunSblrEnvelope(std::string_view encoded_sblr_envelope,
                                  bool cursor_requested = false);
   ServerFetchResult FetchCursorOnRoute(std::string_view cursor_uuid,

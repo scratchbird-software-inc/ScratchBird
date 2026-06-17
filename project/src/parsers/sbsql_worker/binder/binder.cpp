@@ -30,6 +30,34 @@ bool RequiresTransactionAuthority(const AstDocument& ast) {
          ast.statement_binding_contract_key == "binder.statement.transaction_context";
 }
 
+bool TokenTextIs(const Token& token, std::string_view expected) {
+  return ToUpperAscii(token.text) == expected;
+}
+
+bool IsSourceFreeCteRoute(const CstDocument& cst) {
+  std::vector<const Token*> tokens;
+  for (const auto& token : cst.tokens) {
+    if (IsTriviaToken(token)) continue;
+    tokens.push_back(&token);
+  }
+  if (tokens.empty()) return false;
+  std::size_t first = 0;
+  if (TokenTextIs(*tokens[first], "EXPLAIN")) {
+    ++first;
+    if (first >= tokens.size()) return false;
+  }
+  if (TokenTextIs(*tokens[first], "WITH")) return true;
+  if (!TokenTextIs(*tokens[first], "SELECT")) return false;
+  for (std::size_t index = first + 1; index + 2 < tokens.size(); ++index) {
+    if (TokenTextIs(*tokens[index], "FROM") &&
+        tokens[index + 1]->text == "(" &&
+        TokenTextIs(*tokens[index + 2], "WITH")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::string ResultShapeFor(const AstDocument& ast) {
   if (ast.family == StatementFamily::kQuery || ast.family == StatementFamily::kValues) {
     return "result.shape.rowset";
@@ -208,6 +236,10 @@ BoundStatement BindAst(const AstDocument& ast,
   if (ast.requires_name_resolution) {
     if (!resolved_object_uuids.empty()) {
       bound.resolved_object_uuids = resolved_object_uuids;
+      bound.bound = true;
+      return bound;
+    }
+    if (IsSourceFreeCteRoute(cst)) {
       bound.bound = true;
       return bound;
     }

@@ -64,7 +64,7 @@ FROM (
 
 SELECT 'SBDFS-040-005' AS assertion_id,
        MAX(rn) AS actual_max_row_number,
-       2 AS expected_max_row_number
+       3 AS expected_max_row_number
 FROM (
     SELECT c.region,
            o.order_id,

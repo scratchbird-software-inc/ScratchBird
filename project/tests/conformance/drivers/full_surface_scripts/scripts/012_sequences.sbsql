@@ -1,0 +1,153 @@
+-- script_id: SBDFS-012
+-- Purpose: Sequence lifecycle - CREATE SEQUENCE with documented options,
+--          consume with NEXT VALUE FOR, ALTER SEQUENCE, catalog introspection,
+--          DROP SEQUENCE.
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 1. CREATE SEQUENCE with explicit BIGINT descriptor, START, INCREMENT,
+--    MINVALUE, MAXVALUE, CACHE, and NO CYCLE.
+--    Syntax grounded in: syntax_reference/sequence.md
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE SEQUENCE __SB_NAMESPACE__.ticket_number
+    AS BIGINT
+    START WITH 1
+    INCREMENT BY 1
+    MINVALUE 1
+    MAXVALUE 9999999999
+    CACHE 10
+    NO CYCLE;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 2. Verify the sequence is functional by peeking at CURRENT VALUE FOR
+--    immediately after create — before any allocation it should return a
+--    diagnostic - use NEXT VALUE FOR as the confirmed existence probe instead.
+--    Note: sys.sequences is not confirmed in catalog_reference/*.md, so we
+--    use sys.catalog.domain_descriptor as a proxy to confirm the bootstrap
+--    schema context is live, then probe the sequence functionally.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-012-001' AS assertion_id,
+       COUNT(*) >= 1   AS actual_schema_context_live,
+       TRUE            AS expected_schema_context_live
+FROM sys.schemas
+WHERE schema_name = '__SB_NAMESPACE__';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 3. Allocate the first value using NEXT VALUE FOR.
+--    Syntax: SELECT NEXT VALUE FOR <sequence_ref>
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-012-002' AS assertion_id,
+       NEXT VALUE FOR __SB_NAMESPACE__.ticket_number AS actual_first_value,
+       1                                              AS expected_first_value;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 4. Allocate the second value — must be exactly 2 (increment = 1).
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-012-003' AS assertion_id,
+       NEXT VALUE FOR __SB_NAMESPACE__.ticket_number AS actual_second_value,
+       2                                              AS expected_second_value;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 5. Create a table that uses the sequence as a column default.
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE TABLE __SB_NAMESPACE__.seq_usage (
+    ticket_no BIGINT NOT NULL DEFAULT NEXT VALUE FOR __SB_NAMESPACE__.ticket_number,
+    description VARCHAR(120) NOT NULL,
+    PRIMARY KEY (ticket_no)
+);
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 6. INSERT a row — ticket_no should get the next allocated value (3).
+-- ──────────────────────────────────────────────────────────────────────────
+INSERT INTO __SB_NAMESPACE__.seq_usage (description)
+VALUES ('first ticket via default');
+
+SELECT 'SBDFS-012-004' AS assertion_id,
+       ticket_no       AS actual_ticket_no,
+       3               AS expected_ticket_no
+FROM __SB_NAMESPACE__.seq_usage
+WHERE description = 'first ticket via default';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 7. CREATE a second, simpler sequence to exercise descending direction.
+-- ──────────────────────────────────────────────────────────────────────────
+CREATE SEQUENCE __SB_NAMESPACE__.countdown_seq
+    AS INTEGER
+    START WITH 10
+    INCREMENT BY -1
+    MINVALUE 1
+    MAXVALUE 10
+    NO CACHE
+    NO CYCLE;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 8. Consume first descending value — must equal 10.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-012-005' AS assertion_id,
+       NEXT VALUE FOR __SB_NAMESPACE__.countdown_seq AS actual_first_desc,
+       10                                             AS expected_first_desc;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 9. Consume second descending value — must equal 9.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-012-006' AS assertion_id,
+       NEXT VALUE FOR __SB_NAMESPACE__.countdown_seq AS actual_second_desc,
+       9                                              AS expected_second_desc;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 10. COMMENT ON SEQUENCE.
+--     Syntax: COMMENT ON SEQUENCE <sequence_ref> IS <string_literal>
+-- ──────────────────────────────────────────────────────────────────────────
+COMMENT ON SEQUENCE __SB_NAMESPACE__.ticket_number IS 'Conformance test ticket allocator';
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 11. ALTER SEQUENCE: change cache and set a new maxvalue.
+--     Syntax: ALTER SEQUENCE <ref> SET CACHE <n> SET MAXVALUE <n>
+-- ──────────────────────────────────────────────────────────────────────────
+ALTER SEQUENCE __SB_NAMESPACE__.ticket_number
+    SET CACHE 50
+    SET MAXVALUE 99999999999;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 12. Assert the sequence is still queryable after ALTER (value advances).
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-012-007' AS assertion_id,
+       NEXT VALUE FOR __SB_NAMESPACE__.ticket_number >= 4 AS actual_advanced,
+       TRUE                                                AS expected_advanced;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 13. ALTER SEQUENCE RESTART — resets allocation point.
+--     Syntax: ALTER SEQUENCE <ref> RESTART WITH <value>
+-- ──────────────────────────────────────────────────────────────────────────
+ALTER SEQUENCE __SB_NAMESPACE__.ticket_number
+    RESTART WITH 1000;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 14. Assert post-restart value is at the new start point.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-012-008' AS assertion_id,
+       NEXT VALUE FOR __SB_NAMESPACE__.ticket_number AS actual_after_restart,
+       1000                                           AS expected_after_restart;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 15. Clean up table dependency before dropping the sequence.
+-- ──────────────────────────────────────────────────────────────────────────
+DROP TABLE __SB_NAMESPACE__.seq_usage RESTRICT;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 16. DROP SEQUENCE with RESTRICT (no remaining dependencies after table drop).
+--     Syntax: DROP SEQUENCE <sequence_ref> RESTRICT
+-- ──────────────────────────────────────────────────────────────────────────
+DROP SEQUENCE __SB_NAMESPACE__.ticket_number RESTRICT;
+
+DROP SEQUENCE __SB_NAMESPACE__.countdown_seq RESTRICT;
+
+-- ──────────────────────────────────────────────────────────────────────────
+-- 17. Assert schema still intact after sequence drops (cleanup sanity check).
+--     sys.sequences is not confirmed in catalog_reference/*.md so we assert
+--     schema presence rather than a sequence-specific catalog row count.
+-- ──────────────────────────────────────────────────────────────────────────
+SELECT 'SBDFS-012-009' AS assertion_id,
+       COUNT(*) >= 1   AS actual_schema_intact_after_drop,
+       TRUE            AS expected_schema_intact_after_drop
+FROM sys.schemas
+WHERE schema_name = '__SB_NAMESPACE__';

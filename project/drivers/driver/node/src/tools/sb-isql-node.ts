@@ -24,6 +24,9 @@ interface Args {
   password: string;
   role: string;
   sslmode: string;
+  sslrootcert: string;
+  sslcert: string;
+  sslkey: string;
   route: string;
   parserMode: string;
   pageSize: string;
@@ -110,6 +113,9 @@ async function run(args: Args): Promise<number> {
       password: args.password,
       role: args.role || undefined,
       sslmode: args.sslmode,
+      sslrootcert: args.sslrootcert || undefined,
+      sslcert: args.sslcert || undefined,
+      sslkey: args.sslkey || undefined,
       binaryTransfer: true,
       applicationName: "SBIsqlNode",
       frontDoorMode: args.route === "manager-listener-parser" ? "manager_proxy" : "direct",
@@ -238,6 +244,7 @@ async function run(args: Args): Promise<number> {
 
   const elapsed = Number(process.hrtime.bigint() - started);
   timings.overall = elapsed;
+  const transportMode = args.sslmode === "disable" ? "tls_disabled" : "tls_required";
   const summary = {
     run_id: args.runId,
     driver_name: "node",
@@ -245,6 +252,8 @@ async function run(args: Args): Promise<number> {
     parser_mode: args.parserMode,
     page_size: args.pageSize,
     namespace: args.namespace,
+    sslmode: args.sslmode,
+    transport_mode: transportMode,
     status: failures.length === 0 ? "pass" : "fail",
     failure_count: failures.length,
     elapsed_ns: elapsed,
@@ -308,6 +317,9 @@ function parseArgs(raw: string[]): Args {
     password: required(values, "--password"),
     role: values["--role"] ?? "",
     sslmode: values["--sslmode"] ?? "require",
+    sslrootcert: values["--sslrootcert"] ?? "",
+    sslcert: values["--sslcert"] ?? "",
+    sslkey: values["--sslkey"] ?? "",
     route: values["--route"] ?? "listener-parser",
     parserMode: values["--parser-mode"] ?? "server-parser",
     pageSize: values["--page-size"] ?? "8k",

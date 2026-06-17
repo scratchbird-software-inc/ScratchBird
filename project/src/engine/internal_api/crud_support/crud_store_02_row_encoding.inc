@@ -200,6 +200,21 @@ bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
     return predicate.canonical_predicate_envelope == first_column && !predicate.bound_values.empty() &&
            first_key == predicate.bound_values.front().encoded_value;
   }
+  if (predicate.predicate_kind == "columns_all_equal") {
+    const auto predicate_columns = Split(predicate.canonical_predicate_envelope, ',');
+    const auto key_parts = Split(entry.key_value, kCompositeSeparator);
+    if (predicate_columns.empty() || predicate.bound_values.size() < predicate_columns.size() ||
+        columns.size() < predicate_columns.size() || key_parts.size() < predicate_columns.size()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < predicate_columns.size(); ++index) {
+      if (columns[index] != predicate_columns[index] ||
+          key_parts[index] != predicate.bound_values[index].encoded_value) {
+        return false;
+      }
+    }
+    return true;
+  }
   if (predicate.predicate_kind == "column_in_list") {
     if (predicate.canonical_predicate_envelope != first_column) { return false; }
     for (const auto& value : predicate.bound_values) {
@@ -222,6 +237,10 @@ bool EntryKeyMatchesPredicate(const CrudIndexRecord& index,
       if (entry.key_value == LowerAscii(term.encoded_value)) { return true; }
     }
     return false;
+  }
+  if (predicate.predicate_kind == "expression_equals") {
+    return predicate.canonical_predicate_envelope == first_column && !predicate.bound_values.empty() &&
+           first_key == predicate.bound_values.front().encoded_value;
   }
   if (predicate.predicate_kind == "spatial_bbox_intersects" || predicate.predicate_kind == "spatial_bbox_contains") {
     if (predicate.canonical_predicate_envelope != first_column || predicate.bound_values.empty()) { return false; }

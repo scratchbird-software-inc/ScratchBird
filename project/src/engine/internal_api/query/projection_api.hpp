@@ -29,10 +29,12 @@ struct EngineProjectionFunctionArgument {
 };
 
 struct EngineProjectionExpression {
+  std::string name;
   std::string expression_kind;
   std::string type_name;
   std::string encoded_value;
   bool is_null = false;
+  std::string function_id;
   std::string operator_id;
   std::string canonical_operator_id;
   std::string special_form_id;

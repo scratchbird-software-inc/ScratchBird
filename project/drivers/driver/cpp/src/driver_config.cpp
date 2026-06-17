@@ -574,6 +574,15 @@ core::Status applyConnectionParams(const std::map<std::string, std::string>& par
                 return core::Status::INVALID_ARGUMENT;
             }
             config.binary_transfer = parsed;
+        } else if (key == "autocommit" || key == "auto_commit" || key == "auto-commit") {
+            bool parsed = false;
+            if (!parseBool(value, parsed)) {
+                if (ctx) {
+                    ctx->message = "Invalid autocommit (expected true/false)";
+                }
+                return core::Status::INVALID_ARGUMENT;
+            }
+            config.autocommit = parsed;
         } else if (key == "enable_copy_streaming" || key == "copystreaming" ||
                    key == "copy_streaming") {
             bool parsed = false;

@@ -23,6 +23,7 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <iterator>
 #include <map>
 #include <set>
@@ -33,6 +34,71 @@ namespace scratchbird::engine::internal_api {
 namespace {
 
 bool StartsWithLocal(const std::string& value, const std::string& prefix) { return value.rfind(prefix, 0) == 0; }
+
+std::string LowerAsciiLocal(std::string value) {
+  for (char& ch : value) {
+    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+  }
+  return value;
+}
+
+std::string TrimAsciiLocal(std::string value) {
+  while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) {
+    value.erase(value.begin());
+  }
+  while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
+    value.pop_back();
+  }
+  return value;
+}
+
+std::map<std::string, std::string> DescriptorFieldsLocal(const std::string& descriptor) {
+  std::map<std::string, std::string> fields;
+  std::string part;
+  for (char ch : descriptor) {
+    if (ch == ';') {
+      const std::string trimmed = TrimAsciiLocal(part);
+      if (!trimmed.empty()) {
+        const auto pos = trimmed.find('=');
+        if (pos == std::string::npos) {
+          fields[LowerAsciiLocal(trimmed)] = "true";
+        } else {
+          fields[LowerAsciiLocal(TrimAsciiLocal(trimmed.substr(0, pos)))] =
+              TrimAsciiLocal(trimmed.substr(pos + 1));
+        }
+      }
+      part.clear();
+      continue;
+    }
+    part.push_back(ch);
+  }
+  const std::string trimmed = TrimAsciiLocal(part);
+  if (!trimmed.empty()) {
+    const auto pos = trimmed.find('=');
+    if (pos == std::string::npos) {
+      fields[LowerAsciiLocal(trimmed)] = "true";
+    } else {
+      fields[LowerAsciiLocal(TrimAsciiLocal(trimmed.substr(0, pos)))] =
+          TrimAsciiLocal(trimmed.substr(pos + 1));
+    }
+  }
+  return fields;
+}
+
+std::string DescriptorFieldLocal(const std::map<std::string, std::string>& fields,
+                                 std::initializer_list<const char*> names) {
+  for (const auto* name : names) {
+    const auto found = fields.find(name);
+    if (found != fields.end()) { return found->second; }
+  }
+  return {};
+}
+
+bool DescriptorBoolLocal(const std::map<std::string, std::string>& fields,
+                         std::initializer_list<const char*> names) {
+  const std::string value = LowerAsciiLocal(DescriptorFieldLocal(fields, names));
+  return value == "1" || value == "true" || value == "yes" || value == "on";
+}
 
 bool SupportedExpressionEnvelope(const std::string& envelope) {
   return StartsWithLocal(envelope, "lower:") || StartsWithLocal(envelope, "upper:") ||

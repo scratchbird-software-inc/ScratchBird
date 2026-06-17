@@ -61,6 +61,79 @@ REQUIRED_CATALOG_ROW_FAMILIES = {
     "SecurityGroupRecord",
     "SecurityGrantRecord",
     "PolicyProfileRecord",
+    "DefaultPolicyRecord",
+}
+
+REQUIRED_DEFAULT_POLICY_COUNT = 58
+
+REQUIRED_DEFAULT_POLICY_KEYS = {
+    "admin.management_command_authorization",
+    "backup.archive_restore_snapshot_shadow",
+    "cache.checkpoint_preload_flush",
+    "capability.feature_gate",
+    "cluster.boundary_fail_closed",
+    "concurrency.lock_wait_deadlock",
+    "configuration.override_reload",
+    "configuration.source_precedence",
+    "database.bootstrap.tx1",
+    "database.create.failure_cleanup",
+    "database.first_open.tx2_activation",
+    "database.identity",
+    "diagnostics.message_vector",
+    "event.queue_notification",
+    "evidence.retention",
+    "executable.side_effect",
+    "ipc.frame_auth_backpressure",
+    "job.scheduler",
+    "lifecycle.maintenance_restricted",
+    "lifecycle.ownership_stale_owner",
+    "lifecycle.recovery_dirty_open",
+    "lifecycle.shutdown_force",
+    "lifecycle.shutdown_graceful_drain",
+    "listener.bind_tls_pool",
+    "observability.metrics_log",
+    "parser.package_admission",
+    "policy.catalog.bootstrap",
+    "reference.emulation_profile",
+    "replication.cdc_changefeed_boundary",
+    "resource.seed_i18n",
+    "resource.signature_provenance",
+    "schema.bootstrap.roots",
+    "security.audit",
+    "security.authentication_provider",
+    "security.authorization_default",
+    "security.authority_selection",
+    "security.bootstrap_password",
+    "security.encryption_key_admission",
+    "security.principal_role_group_seed",
+    "security.protected_material",
+    "security.redaction",
+    "security.user_home_schema",
+    "sequence.generator_cache",
+    "server.route_listener_startup",
+    "session.disconnect_timeout",
+    "storage.allocation_freespace_pagemap",
+    "storage.filespace_lifecycle",
+    "storage.filespace_profile",
+    "support.bundle",
+    "temp.spill_workspace",
+    "transaction.admission",
+    "transaction.commit_durability",
+    "transaction.default_isolation_snapshot",
+    "transaction.mga_gc_retention",
+    "transaction.rollback_savepoint_limbo",
+    "udr.extension_trust_resource",
+    "upgrade.migration_refusal",
+    "workload.resource_quota",
+}
+
+REQUIRED_AUTHORITY_INVARIANTS = {
+    "policy_catalog_is_authority",
+    "mga_visibility_required",
+    "wal_not_authority",
+    "parser_not_authority",
+    "reference_not_authority",
+    "uuid_order_not_finality",
 }
 
 KNOWN_RIGHTS = {
@@ -183,6 +256,8 @@ def validate_manifest(pack_root: Path) -> dict:
         seen_paths.add(rel_path)
 
     require(entries, "manifest content_manifest must not be empty")
+    require("policies/default_policy_catalog.json" in seen_paths,
+            "manifest content_manifest must include default policy catalog")
     require(manifest.get("content_sha256") == aggregate_digest(entries),
             "manifest aggregate content_sha256 mismatch")
     return manifest
@@ -277,6 +352,66 @@ def validate_policy_profiles(pack_root: Path) -> None:
     require(not missing, "missing default policy areas: " + ",".join(sorted(missing)))
 
 
+def validate_default_policy_catalog(pack_root: Path) -> None:
+    doc = load_json(pack_root / "policies/default_policy_catalog.json")
+    require(isinstance(doc, dict), "default policy catalog must be an object")
+    require(doc.get("schema_version") == 1, "default policy catalog schema_version must be 1")
+    require(doc.get("policy_generation") == 1, "default policy catalog generation must be 1")
+    require(doc.get("identity_authority") == "uuid", "default policy identity authority must be uuid")
+    require(doc.get("catalog_authority") == "durable_catalog_after_create",
+            "default policy catalog authority must be durable catalog after create")
+    require(doc.get("create_time_only") is True,
+            "default policy catalog must be create-time only")
+    require(doc.get("post_create_filesystem_authority") is False,
+            "default policy catalog must reject post-create filesystem authority")
+    require(doc.get("default_policy_count") == REQUIRED_DEFAULT_POLICY_COUNT,
+            "default policy count mismatch")
+    policies = doc.get("policies")
+    require(isinstance(policies, list), "default policy policies array is required")
+    require(len(policies) == REQUIRED_DEFAULT_POLICY_COUNT,
+            "default policy array length mismatch")
+    seen: set[str] = set()
+    for policy in policies:
+        require(isinstance(policy, dict), "default policy entries must be objects")
+        key = policy.get("policy_key")
+        require(isinstance(key, str) and key, "default policy key required")
+        require(key not in seen, f"duplicate default policy key: {key}")
+        seen.add(key)
+        require(isinstance(policy.get("default_profile"), str) and policy["default_profile"],
+                f"{key}: default profile required")
+        require(policy.get("state") in {"enabled", "fail_closed"},
+                f"{key}: invalid state")
+        require(policy.get("override_class") in {
+            "no_override",
+            "create_database_only",
+            "security_admin",
+            "sysarch",
+            "policy_defined",
+            "cluster_only",
+        }, f"{key}: invalid override class")
+        required_properties = policy.get("required_properties")
+        require(isinstance(required_properties, list) and required_properties,
+                f"{key}: required_properties must be non-empty")
+        require(all(isinstance(item, str) and item for item in required_properties),
+                f"{key}: required_properties entries must be strings")
+        tx1_seed = policy.get("tx1_seed")
+        require(isinstance(tx1_seed, dict), f"{key}: tx1_seed required")
+        require(tx1_seed.get("required") is True, f"{key}: tx1_seed.required must be true")
+        require(tx1_seed.get("policy_generation") == 1,
+                f"{key}: tx1_seed policy generation must be 1")
+        require(tx1_seed.get("created_txn") == "tx1",
+                f"{key}: tx1_seed created_txn must be tx1")
+        require(tx1_seed.get("uuid_source") == "fresh_uuidv7",
+                f"{key}: tx1_seed uuid_source must be fresh_uuidv7")
+        invariants = set(policy.get("authority_invariants") or [])
+        require(REQUIRED_AUTHORITY_INVARIANTS <= invariants,
+                f"{key}: authority invariants incomplete")
+    missing = REQUIRED_DEFAULT_POLICY_KEYS - seen
+    extra = seen - REQUIRED_DEFAULT_POLICY_KEYS
+    require(not missing, "missing default policies: " + ",".join(sorted(missing)))
+    require(not extra, "unexpected default policies: " + ",".join(sorted(extra)))
+
+
 def validate_catalog_materialization(pack_root: Path, manifest: dict) -> None:
     rel_path = manifest.get("catalog_materialization_metadata")
     require(isinstance(rel_path, str) and rel_path,
@@ -334,6 +469,7 @@ def main(argv: list[str]) -> int:
     validate_security_providers(pack_root)
     validate_roles_groups_grants(pack_root)
     validate_policy_profiles(pack_root)
+    validate_default_policy_catalog(pack_root)
     validate_catalog_materialization(pack_root, manifest)
     validate_database_lifecycle_descriptor(project_root, manifest)
     print("public_policy_pack_manifest_gate=passed")

@@ -92,6 +92,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
             '"signature_status": "signature-ready-unsigned"',
             '"post_create_filesystem_authority": false',
             '"private_inputs_required": false',
+            '"policies/default_policy_catalog.json"',
         ),
     },
     {
@@ -103,6 +104,19 @@ CHECKS: tuple[dict[str, Any], ...] = (
             '"requires_mga_catalog_commit": true',
             '"requires_authorization_for_post_create_mutation": true',
             '"catalog_identity_authority": "uuid"',
+            '"DefaultPolicyRecord"',
+        ),
+    },
+    {
+        "surface": "policy_pack_default_policy_catalog",
+        "path": "project/resources/policy-packs/default-local-password/policies/default_policy_catalog.json",
+        "tokens": (
+            '"default_policy_count": 58',
+            '"catalog_authority": "durable_catalog_after_create"',
+            '"post_create_filesystem_authority": false',
+            '"policy_key": "policy.catalog.bootstrap"',
+            '"policy_key": "transaction.admission"',
+            '"policy_key": "cluster.boundary_fail_closed"',
         ),
     },
     {
@@ -110,6 +124,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
         "path": "project/tools/release/public_policy_pack_manifest_gate.py",
         "tokens": (
             "validate_manifest",
+            "validate_default_policy_catalog",
             "min_supported_schema_version",
             "max_supported_schema_version",
             "post_create_filesystem_authority",
@@ -135,6 +150,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
             "materialized_inside_create_transaction",
             "requires_mga_catalog_commit",
             "post_create_filesystem_authority",
+            "default policy rows were not imported from the policy pack",
             "policy profile rows were not imported",
             "SB-POLICY-PACK-CONTENT-HASH-MISMATCH",
             "loaded_at_database_create",
@@ -160,6 +176,7 @@ CHECKS: tuple[dict[str, Any], ...] = (
             "custom policy pack version was not materialized",
             "SB-POLICY-PACK-PROVENANCE-INVALID",
             "SB-POLICY-PACK-CONTENT-MANIFEST-INVALID",
+            "SB-POLICY-PACK-DEFAULT-POLICIES-UNKNOWN",
             "SB-POLICY-PACK-PROFILES-UNKNOWN",
             "post-create filesystem policy pack mutation unexpectedly succeeded",
         ),
@@ -274,6 +291,10 @@ def validate_materialization_semantics(repo_root: Path) -> dict[str, Any]:
     }
     for key, value in expected.items():
         require(metadata.get(key) == value, f"catalog_materialization_value_mismatch:{key}")
+    require(
+        "DefaultPolicyRecord" in set(metadata.get("catalog_row_families", [])),
+        "catalog_materialization_missing_default_policy_record",
+    )
     return {
         "policy_generation": metadata["policy_generation"],
         "materialize_inside_create_transaction": metadata["materialize_inside_create_transaction"],

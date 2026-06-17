@@ -48,6 +48,12 @@ add_executable(sb_isql_cpp
 target_compile_features(sb_isql_cpp PRIVATE cxx_std_17)
 target_link_libraries(sb_isql_cpp PRIVATE scratchbird_client OpenSSL::Crypto)
 
+add_executable(sb_regress_cpp
+    tools/sb_regress_cpp.cpp
+)
+target_compile_features(sb_regress_cpp PRIVATE cxx_std_17)
+target_link_libraries(sb_regress_cpp PRIVATE scratchbird_client OpenSSL::Crypto)
+
 if (TARGET sbl_sbsql_parser_worker_core)
     target_compile_definitions(scratchbird_client PRIVATE SCRATCHBIRD_CLIENT_ENABLE_LOCAL_SBSQL_BRIDGE)
     if (TARGET sb_server_core)
@@ -66,6 +72,11 @@ endif()
 include(CTest)
 if (BUILD_TESTING)
     target_compile_definitions(scratchbird_client PRIVATE SCRATCHBIRD_TEST_HOOKS)
+
+    add_test(NAME sb_regress_cpp_help COMMAND sb_regress_cpp --help)
+    set_tests_properties(sb_regress_cpp_help PROPERTIES
+        LABELS "driver;cpp;full_surface;regression_runner"
+    )
 
     add_executable(scratchbird_client_c_memory_ownership_test
         tests/test_c_api_memory_ownership.cpp

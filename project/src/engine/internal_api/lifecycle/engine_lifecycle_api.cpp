@@ -383,6 +383,8 @@ EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleReq
   create.resource_seed_pack_root = OptionValue(request, "resource_seed_pack_root:");
   create.allow_minimal_resource_bootstrap = MinimalBootstrapAllowed(request);
   create.require_resource_seed_pack = !create.allow_minimal_resource_bootstrap;
+  create.policy_seed_pack_root = OptionValue(request, "policy_seed_pack_root:");
+  create.require_policy_seed_pack = !create.allow_minimal_resource_bootstrap;
   create.allow_overwrite = false;
   const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
   if (!created.ok()) {

@@ -1,0 +1,120 @@
+-- ScratchBird driver full-surface script suite
+-- script_id: SBDFS-052
+-- Purpose: expression-body scalar functions — create, invoke, catalog-introspect, drop.
+-- namespace placeholder: __SB_NAMESPACE__
+--
+-- HARD CONSTRAINTS OBSERVED:
+--   - Every statement is a single top-level statement terminated by exactly one ";".
+--   - ONLY the expression-body form is used:
+--       CREATE FUNCTION ... RETURNS <type> [attrs] AS RETURN <expression>;
+--     The procedural "begin ... end" form is NOT used because it contains
+--     inner top-level ";" which the harness splitter cannot handle.
+--   - Objects are schema-qualified with __SB_NAMESPACE__.
+--   - Attributes (DETERMINISTIC, RETURNS NULL ON NULL INPUT) are taken verbatim
+--     from function.md function_attribute_list.
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Function 1: extended_price — multiply two decimals (DETERMINISTIC, RETURNS NULL ON NULL INPUT)
+-- Grounded in function.md "Expression-Body Function" example.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE FUNCTION __SB_NAMESPACE__.fn_extended_price(
+    quantity       INTEGER,
+    unit_price     DECIMAL(18,2)
+)
+RETURNS DECIMAL(18,2)
+DETERMINISTIC
+RETURNS NULL ON NULL INPUT
+AS RETURN quantity * unit_price;
+
+-- Invoke fn_extended_price and assert the computed result.
+SELECT 'SBDFS-052-001' AS assertion_id,
+       __SB_NAMESPACE__.fn_extended_price(3, 12.50) AS actual_extended_price,
+       37.50 AS expected_extended_price;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Function 2: string_prefix — return the first N characters of a VARCHAR
+-- (DETERMINISTIC, CALLED ON NULL INPUT so behaviour with NULLs is explicit)
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE FUNCTION __SB_NAMESPACE__.fn_string_prefix(
+    src     VARCHAR(1024),
+    len     INTEGER
+)
+RETURNS VARCHAR(1024)
+DETERMINISTIC
+CALLED ON NULL INPUT
+AS RETURN SUBSTRING(src FROM 1 FOR len);
+
+-- Invoke fn_string_prefix and assert the truncated result.
+SELECT 'SBDFS-052-002' AS assertion_id,
+       __SB_NAMESPACE__.fn_string_prefix('ScratchBird', 7) AS actual_prefix,
+       'Scratch' AS expected_prefix;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Function 3: bool_flag — trivially lift a boolean expression into a function
+-- (DETERMINISTIC, IMMUTABLE, RETURNS NULL ON NULL INPUT)
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE FUNCTION __SB_NAMESPACE__.fn_is_positive(
+    value   DECIMAL(18,6)
+)
+RETURNS BOOLEAN
+DETERMINISTIC
+IMMUTABLE
+RETURNS NULL ON NULL INPUT
+AS RETURN value > 0;
+
+-- Invoke fn_is_positive for a positive number and assert TRUE.
+SELECT 'SBDFS-052-003' AS assertion_id,
+       __SB_NAMESPACE__.fn_is_positive(0.01) AS actual_positive,
+       TRUE AS expected_positive;
+
+-- Invoke fn_is_positive for a non-positive number and assert FALSE.
+SELECT 'SBDFS-052-004' AS assertion_id,
+       __SB_NAMESPACE__.fn_is_positive(-5.0) AS actual_not_positive,
+       FALSE AS expected_not_positive;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Existence + correctness are proved by INVOCATION (the strongest proof: a function
+-- that executes and returns the right value provably exists and works). There is no
+-- confirmed client-queryable function catalog surface (sys.routines / sys.catalog.*
+-- function surfaces are unconfirmed for SELECT — tracked in the private workplan
+-- CATALOG_SURFACE_VERIFICATION.csv), so catalog-based introspection is not used here.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+-- Compose two functions: fn_is_positive(fn_extended_price(4, 25.00)) = (100.00 > 0) = TRUE.
+SELECT 'SBDFS-052-005' AS assertion_id,
+       __SB_NAMESPACE__.fn_is_positive(__SB_NAMESPACE__.fn_extended_price(4, 25.00)) AS actual_composed,
+       TRUE AS expected_composed;
+
+-- Edge: zero quantity yields 0.00 (deterministic).
+SELECT 'SBDFS-052-006' AS assertion_id,
+       __SB_NAMESPACE__.fn_extended_price(0, 99.99) AS actual_zero_qty,
+       0.00 AS expected_zero_qty;
+
+-- Edge: prefix length equal to the string length returns the whole string.
+SELECT 'SBDFS-052-007' AS assertion_id,
+       __SB_NAMESPACE__.fn_string_prefix('ScratchBird', 11) AS actual_full_prefix,
+       'ScratchBird' AS expected_full_prefix;
+
+-- Boundary: zero is not positive.
+SELECT 'SBDFS-052-008' AS assertion_id,
+       __SB_NAMESPACE__.fn_is_positive(0.0) AS actual_zero_positive,
+       FALSE AS expected_zero_positive;
+
+-- A second prefix invocation with a different input.
+SELECT 'SBDFS-052-009' AS assertion_id,
+       __SB_NAMESPACE__.fn_string_prefix('Convergent', 3) AS actual_short_prefix,
+       'Con' AS expected_short_prefix;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Cleanup: DROP each function (exercises DROP FUNCTION ... RESTRICT).
+-- Grounded in function.md drop_routine_stmt ::= DROP FUNCTION ... [RESTRICT|CASCADE]
+-- ──────────────────────────────────────────────────────────────────────────────
+
+DROP FUNCTION __SB_NAMESPACE__.fn_extended_price RESTRICT;
+
+DROP FUNCTION __SB_NAMESPACE__.fn_string_prefix RESTRICT;
+
+DROP FUNCTION __SB_NAMESPACE__.fn_is_positive RESTRICT;
