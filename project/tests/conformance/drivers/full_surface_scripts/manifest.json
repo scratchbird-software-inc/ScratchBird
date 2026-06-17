@@ -206,7 +206,45 @@
     "view_create",
     "view_predicate_filter",
     "view_row_visibility",
-    "window_row_number"
+    "window_row_number",
+    "drop_function",
+    "drop_procedure",
+    "drop_trigger",
+    "dynamic_execute_statement_into",
+    "dynamic_resultset_suspend",
+    "dynamic_sql_single_row",
+    "function_decimal_arithmetic",
+    "function_if_branching",
+    "function_invocation_assertion",
+    "function_local_variables",
+    "function_procedural_body",
+    "function_return_value",
+    "function_returns_null_on_null_input",
+    "function_while_loop",
+    "procedure_exception_handler",
+    "procedure_execute_invocation",
+    "procedure_for_select_cursor",
+    "procedure_if_else",
+    "procedure_non_selectable",
+    "procedure_side_effect_insert",
+    "procedure_signal_error",
+    "selectable_procedure_empty_result",
+    "selectable_procedure_for_select",
+    "selectable_procedure_guard_branch",
+    "selectable_procedure_returns",
+    "selectable_procedure_select_invocation",
+    "selectable_procedure_step_param",
+    "selectable_procedure_suspend",
+    "selectable_procedure_while_loop",
+    "set_term_procedural_body",
+    "trigger_after_delete_row",
+    "trigger_after_insert_row",
+    "trigger_after_update_row",
+    "trigger_after_update_statement",
+    "trigger_for_each_row",
+    "trigger_for_each_statement",
+    "trigger_referencing_old_new",
+    "trigger_side_effect_audit"
   ],
   "scripts": [
     {
@@ -556,6 +594,134 @@
         "SBDFS-052-007",
         "SBDFS-052-008",
         "SBDFS-052-009"
+      ]
+    },
+    {
+      "script_id": "SBDFS-053",
+      "path": "scripts/053_triggers.sbsql",
+      "coverage": [
+        "trigger_after_insert_row",
+        "trigger_after_update_row",
+        "trigger_after_delete_row",
+        "trigger_after_update_statement",
+        "trigger_referencing_old_new",
+        "trigger_for_each_row",
+        "trigger_for_each_statement",
+        "trigger_side_effect_audit",
+        "drop_trigger",
+        "set_term_procedural_body"
+      ],
+      "assertions": [
+        "SBDFS-053-001",
+        "SBDFS-053-002",
+        "SBDFS-053-003",
+        "SBDFS-053-004",
+        "SBDFS-053-005",
+        "SBDFS-053-006",
+        "SBDFS-053-007",
+        "SBDFS-053-008",
+        "SBDFS-053-009"
+      ]
+    },
+    {
+      "script_id": "SBDFS-054",
+      "path": "scripts/054_functions_procedural.sbsql",
+      "coverage": [
+        "function_procedural_body",
+        "function_returns_null_on_null_input",
+        "function_if_branching",
+        "function_while_loop",
+        "function_local_variables",
+        "function_decimal_arithmetic",
+        "function_return_value",
+        "function_invocation_assertion",
+        "drop_function",
+        "set_term_procedural_body"
+      ],
+      "assertions": [
+        "SBDFS-054-001",
+        "SBDFS-054-002",
+        "SBDFS-054-003",
+        "SBDFS-054-004",
+        "SBDFS-054-005",
+        "SBDFS-054-006",
+        "SBDFS-054-007",
+        "SBDFS-054-008",
+        "SBDFS-054-009",
+        "SBDFS-054-010",
+        "SBDFS-054-011",
+        "SBDFS-054-012"
+      ]
+    },
+    {
+      "script_id": "SBDFS-056",
+      "path": "scripts/056_procedures.sbsql",
+      "coverage": [
+        "procedure_non_selectable",
+        "procedure_for_select_cursor",
+        "procedure_if_else",
+        "procedure_signal_error",
+        "procedure_exception_handler",
+        "procedure_side_effect_insert",
+        "procedure_execute_invocation",
+        "drop_procedure",
+        "set_term_procedural_body"
+      ],
+      "assertions": [
+        "SBDFS-056-001",
+        "SBDFS-056-002",
+        "SBDFS-056-003",
+        "SBDFS-056-004",
+        "SBDFS-056-005",
+        "SBDFS-056-006",
+        "SBDFS-056-007"
+      ]
+    },
+    {
+      "script_id": "SBDFS-057",
+      "path": "scripts/057_selectable_procedures.sbsql",
+      "coverage": [
+        "selectable_procedure_returns",
+        "selectable_procedure_suspend",
+        "selectable_procedure_while_loop",
+        "selectable_procedure_select_invocation",
+        "selectable_procedure_step_param",
+        "selectable_procedure_empty_result",
+        "selectable_procedure_guard_branch",
+        "drop_procedure",
+        "set_term_procedural_body"
+      ],
+      "assertions": [
+        "SBDFS-057-001",
+        "SBDFS-057-002",
+        "SBDFS-057-003",
+        "SBDFS-057-004",
+        "SBDFS-057-005",
+        "SBDFS-057-006",
+        "SBDFS-057-007",
+        "SBDFS-057-008",
+        "SBDFS-057-009",
+        "SBDFS-057-010",
+        "SBDFS-057-011"
+      ]
+    },
+    {
+      "script_id": "SBDFS-058",
+      "path": "scripts/058_dynamic_resultset_procedures.sbsql",
+      "coverage": [
+        "dynamic_execute_statement_into",
+        "dynamic_resultset_suspend",
+        "dynamic_sql_single_row",
+        "selectable_procedure_for_select",
+        "drop_procedure",
+        "set_term_procedural_body"
+      ],
+      "assertions": [
+        "SBDFS-058-001",
+        "SBDFS-058-002",
+        "SBDFS-058-003",
+        "SBDFS-058-004",
+        "SBDFS-058-005"
       ]
     },
     {

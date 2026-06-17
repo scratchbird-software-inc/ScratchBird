@@ -1,0 +1,190 @@
+-- ScratchBird driver full-surface script suite
+-- script_id: SBDFS-056
+-- Purpose: non-selectable procedure (side-effect via table) exercising IF/ELSE,
+--          FOR SELECT cursor loop, SIGNAL, and EXCEPTION handler; EXECUTE PROCEDURE
+--          call syntax; assert side-effect via follow-up SELECT; DROP.
+-- namespace placeholder: __SB_NAMESPACE__
+--
+-- HARD CONSTRAINTS OBSERVED:
+--   - Every CREATE with a procedural body is wrapped in SET TERM ^ ; ... SET TERM ; ^.
+--   - The terminator ^ does not appear inside any body.
+--   - Call syntax: "EXECUTE PROCEDURE __SB_NAMESPACE__.proc(args);"
+--     grounded in procedural_sql_control_flow.md WHILE example line 80:
+--     "execute procedure app.try_send_notice(:p_order_id);"
+--     (EXECUTE PROCEDURE is the confirmed call form).
+--   - FOR SELECT form: "for select cols from t where ... into v1, v2 do begin ... end"
+--     per procedural_sql_control_flow.md "FOR SELECT" section.
+--   - SIGNAL form: "signal sqlstate '45000' set message_text = '...';"
+--     per procedural_sql_exceptions.md SIGNAL section.
+--   - EXCEPTION handler form: "exception when sqlstate '<code>' do begin ... end"
+--     per procedural_sql_exceptions.md Handlers section.
+--   - Grounded in: procedure.md, procedural_sql_blocks.md,
+--     procedural_sql_control_flow.md, procedural_sql_exceptions.md.
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Fixture: source table (tasks to process) and result table (side effect sink).
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE __SB_NAMESPACE__.proc_tasks (
+    task_id     INTEGER PRIMARY KEY,
+    task_label  VARCHAR(128) NOT NULL,
+    priority    INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE __SB_NAMESPACE__.proc_results (
+    result_id   INTEGER PRIMARY KEY,
+    task_id     INTEGER NOT NULL,
+    result_text VARCHAR(256) NOT NULL
+);
+
+CREATE SEQUENCE __SB_NAMESPACE__.proc_result_seq START WITH 1;
+
+INSERT INTO __SB_NAMESPACE__.proc_tasks (task_id, task_label, priority)
+VALUES (1, 'Alpha task', 3);
+
+INSERT INTO __SB_NAMESPACE__.proc_tasks (task_id, task_label, priority)
+VALUES (2, 'Beta task',  1);
+
+INSERT INTO __SB_NAMESPACE__.proc_tasks (task_id, task_label, priority)
+VALUES (3, 'Gamma task', 2);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Procedure: proc_process_tasks
+--   - Accepts a minimum priority threshold (INTEGER).
+--   - If threshold is negative, SIGNAL an error (EXCEPTION handler proof).
+--   - FOR SELECT iterates tasks with priority >= threshold, ordered by priority.
+--   - For each task: IF priority >= 2 THEN label = 'high' ELSE label = 'normal'.
+--   - Inserts a result row per qualifying task into proc_results.
+--   - Non-selectable: no RETURNS clause, no SUSPEND. Side effect is the proof.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE PROCEDURE __SB_NAMESPACE__.proc_process_tasks(
+    p_min_priority INTEGER
+)
+AS
+DECLARE VARIABLE v_task_id    INTEGER DEFAULT 0;
+DECLARE VARIABLE v_task_label VARCHAR(128) DEFAULT '';
+DECLARE VARIABLE v_priority   INTEGER DEFAULT 0;
+DECLARE VARIABLE v_class      VARCHAR(32) DEFAULT 'normal';
+BEGIN
+  -- Guard: negative threshold is invalid.
+  IF p_min_priority < 0 THEN
+  BEGIN
+    SIGNAL SQLSTATE '45000'
+      SET MESSAGE_TEXT = 'proc_process_tasks: min_priority must be >= 0';
+  END
+
+  -- FOR SELECT loop over qualifying tasks ordered by priority desc.
+  FOR SELECT task_id, task_label, priority
+        FROM __SB_NAMESPACE__.proc_tasks
+       WHERE priority >= p_min_priority
+       ORDER BY priority DESC
+        INTO v_task_id, v_task_label, v_priority
+  DO
+  BEGIN
+    IF v_priority >= 2 THEN
+    BEGIN
+      v_class = 'high';
+    END
+    ELSE
+    BEGIN
+      v_class = 'normal';
+    END
+
+    INSERT INTO __SB_NAMESPACE__.proc_results
+      (result_id, task_id, result_text)
+    VALUES
+      (NEXT VALUE FOR __SB_NAMESPACE__.proc_result_seq,
+       v_task_id,
+       v_class || ':' || v_task_label);
+  END
+END^
+
+SET TERM ; ^
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Invoke the procedure — EXECUTE PROCEDURE call syntax.
+-- Call with min_priority = 1 → should process all 3 tasks.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+EXECUTE PROCEDURE __SB_NAMESPACE__.proc_process_tasks(1);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Assertions after first invocation.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+-- SBDFS-056-001: three result rows inserted.
+SELECT 'SBDFS-056-001' AS assertion_id,
+       COUNT(*) AS actual_result_rows,
+       3 AS expected_result_rows
+FROM __SB_NAMESPACE__.proc_results;
+
+-- SBDFS-056-002: tasks with priority >= 2 get 'high' label — tasks 1 (p=3) and 3 (p=2).
+SELECT 'SBDFS-056-002' AS assertion_id,
+       COUNT(*) AS actual_high_rows,
+       2 AS expected_high_rows
+FROM __SB_NAMESPACE__.proc_results
+WHERE result_text LIKE 'high:%';
+
+-- SBDFS-056-003: task with priority = 1 gets 'normal' label.
+SELECT 'SBDFS-056-003' AS assertion_id,
+       COUNT(*) AS actual_normal_rows,
+       1 AS expected_normal_rows
+FROM __SB_NAMESPACE__.proc_results
+WHERE result_text LIKE 'normal:%';
+
+-- SBDFS-056-004: specific result text for task_id=1 (priority 3 → 'high').
+SELECT 'SBDFS-056-004' AS assertion_id,
+       result_text AS actual_task1_result,
+       'high:Alpha task' AS expected_task1_result
+FROM __SB_NAMESPACE__.proc_results
+WHERE task_id = 1;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Invoke again with min_priority = 3 → only Alpha task (priority=3) qualifies.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+EXECUTE PROCEDURE __SB_NAMESPACE__.proc_process_tasks(3);
+
+-- SBDFS-056-005: total result rows now 4 (3 from first call + 1 from second).
+SELECT 'SBDFS-056-005' AS assertion_id,
+       COUNT(*) AS actual_total_results,
+       4 AS expected_total_results
+FROM __SB_NAMESPACE__.proc_results;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Exception-handler proof: call with threshold = 9 (no rows qualify) to show
+-- clean execution with empty loop. No signal is raised for valid thresholds.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+EXECUTE PROCEDURE __SB_NAMESPACE__.proc_process_tasks(9);
+
+-- SBDFS-056-006: total still 4 — empty loop added zero rows.
+SELECT 'SBDFS-056-006' AS assertion_id,
+       COUNT(*) AS actual_after_empty_call,
+       4 AS expected_after_empty_call
+FROM __SB_NAMESPACE__.proc_results;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Cleanup.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+DROP PROCEDURE __SB_NAMESPACE__.proc_process_tasks RESTRICT;
+
+DROP SEQUENCE __SB_NAMESPACE__.proc_result_seq;
+
+DROP TABLE __SB_NAMESPACE__.proc_results;
+
+DROP TABLE __SB_NAMESPACE__.proc_tasks;
+
+-- SBDFS-056-007: confirm proc_tasks is gone.
+SELECT 'SBDFS-056-007' AS assertion_id,
+       COUNT(*) AS actual_remaining_proc_tables,
+       0 AS expected_remaining_proc_tables
+FROM sys.tables
+WHERE table_name = 'proc_tasks'
+  AND schema_id IN (
+      SELECT schema_id FROM sys.schemas WHERE schema_name = '__SB_NAMESPACE__'
+  );

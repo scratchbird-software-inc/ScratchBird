@@ -1,0 +1,267 @@
+-- ScratchBird driver full-surface script suite
+-- script_id: SBDFS-053
+-- Purpose: table triggers — AFTER INSERT (FOR EACH ROW), AFTER UPDATE (FOR EACH ROW),
+--          AFTER DELETE (FOR EACH ROW), and AFTER UPDATE (FOR EACH STATEMENT);
+--          NEW/OLD REFERENCING; audit-row side-effect assertions; DROP.
+-- namespace placeholder: __SB_NAMESPACE__
+--
+-- HARD CONSTRAINTS OBSERVED:
+--   - Every CREATE with a procedural body is wrapped in SET TERM ^ ; ... SET TERM ; ^.
+--   - The terminator ^ does not appear inside any body.
+--   - Assertion SELECTs and DML to fire triggers are OUTSIDE SET TERM regions.
+--   - trigger_target uses the explicit TABLE keyword (trigger.md trigger_target).
+--   - REFERENCING clause precedes trigger_scope (trigger.md syntax + examples).
+--   - transition_reference form: OLD ROW AS alias / NEW ROW AS alias
+--     (trigger.md trigger_referencing).
+--   - trigger_event multi-event: trigger_event_list = event (OR event)*.
+--   - FOR EACH STATEMENT trigger: transition row values not available;
+--     trigger_event() call omitted (function availability unconfirmed); body
+--     inserts a literal event label instead.
+--   - DROP TRIGGER uses CASCADE to clear any dependency ordering.
+--   - Grounded in: trigger.md, procedural_sql_triggers_and_events.md,
+--     procedural_sql_blocks.md.
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Fixture: base table and audit table.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE __SB_NAMESPACE__.trig_items (
+    item_id    INTEGER PRIMARY KEY,
+    item_name  VARCHAR(128) NOT NULL,
+    item_price DECIMAL(10,2) NOT NULL DEFAULT 0
+);
+
+CREATE TABLE __SB_NAMESPACE__.trig_audit (
+    audit_id    INTEGER PRIMARY KEY,
+    event_kind  VARCHAR(32) NOT NULL,
+    item_id     INTEGER,
+    old_price   DECIMAL(10,2),
+    new_price   DECIMAL(10,2),
+    audit_note  VARCHAR(256)
+);
+
+CREATE SEQUENCE __SB_NAMESPACE__.trig_audit_seq START WITH 1;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Trigger 1: AFTER INSERT FOR EACH ROW — log new item into audit.
+-- Grounded in trigger.md "Row Triggers" and EBNF create_table_trigger_statement.
+-- NEW is available for INSERT; no OLD referencing needed.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE TRIGGER __SB_NAMESPACE__.trig_items_ai
+AFTER INSERT
+ON TABLE __SB_NAMESPACE__.trig_items
+FOR EACH ROW
+AS
+BEGIN
+  INSERT INTO __SB_NAMESPACE__.trig_audit
+    (audit_id, event_kind, item_id, old_price, new_price, audit_note)
+  VALUES
+    (NEXT VALUE FOR __SB_NAMESPACE__.trig_audit_seq,
+     'INSERT',
+     new.item_id,
+     NULL,
+     new.item_price,
+     'item inserted');
+END^
+
+SET TERM ; ^
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Trigger 2: AFTER UPDATE FOR EACH ROW — log old and new price into audit.
+-- Grounded in trigger.md REFERENCING example (lines ~334-344):
+--   referencing old row as old_order new row as new_order
+-- Both OLD and NEW available for UPDATE (trigger.md Table Trigger Events).
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE TRIGGER __SB_NAMESPACE__.trig_items_au
+AFTER UPDATE
+ON TABLE __SB_NAMESPACE__.trig_items
+REFERENCING OLD ROW AS old_item NEW ROW AS new_item
+FOR EACH ROW
+AS
+BEGIN
+  INSERT INTO __SB_NAMESPACE__.trig_audit
+    (audit_id, event_kind, item_id, old_price, new_price, audit_note)
+  VALUES
+    (NEXT VALUE FOR __SB_NAMESPACE__.trig_audit_seq,
+     'UPDATE',
+     new_item.item_id,
+     old_item.item_price,
+     new_item.item_price,
+     'item price changed');
+END^
+
+SET TERM ; ^
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Trigger 3: AFTER DELETE FOR EACH ROW — log deleted item into audit.
+-- OLD is available for DELETE; NEW is not.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE TRIGGER __SB_NAMESPACE__.trig_items_ad
+AFTER DELETE
+ON TABLE __SB_NAMESPACE__.trig_items
+FOR EACH ROW
+AS
+BEGIN
+  INSERT INTO __SB_NAMESPACE__.trig_audit
+    (audit_id, event_kind, item_id, old_price, new_price, audit_note)
+  VALUES
+    (NEXT VALUE FOR __SB_NAMESPACE__.trig_audit_seq,
+     'DELETE',
+     old.item_id,
+     old.item_price,
+     NULL,
+     'item deleted');
+END^
+
+SET TERM ; ^
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Trigger 4: AFTER UPDATE FOR EACH STATEMENT — statement-level audit.
+-- Grounded in trigger.md "Statement Triggers" example (lines ~249-259).
+-- FOR EACH STATEMENT: OLD/NEW row values unavailable; body must not reference them.
+-- trigger_event() availability unconfirmed — using literal 'UPDATE_STMT' instead.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE TRIGGER __SB_NAMESPACE__.trig_items_aus
+AFTER UPDATE
+ON TABLE __SB_NAMESPACE__.trig_items
+FOR EACH STATEMENT
+AS
+BEGIN
+  INSERT INTO __SB_NAMESPACE__.trig_audit
+    (audit_id, event_kind, item_id, old_price, new_price, audit_note)
+  VALUES
+    (NEXT VALUE FOR __SB_NAMESPACE__.trig_audit_seq,
+     'UPDATE_STMT',
+     NULL,
+     NULL,
+     NULL,
+     'statement-level update audit');
+END^
+
+SET TERM ; ^
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Fire triggers via DML — INSERT, UPDATE, DELETE.
+-- These statements are OUTSIDE any SET TERM region (normal ; terminator).
+-- ──────────────────────────────────────────────────────────────────────────────
+
+-- INSERT three rows → fires trig_items_ai three times.
+INSERT INTO __SB_NAMESPACE__.trig_items (item_id, item_name, item_price)
+VALUES (1, 'Gadget Alpha', 19.99);
+
+INSERT INTO __SB_NAMESPACE__.trig_items (item_id, item_name, item_price)
+VALUES (2, 'Widget Beta', 34.50);
+
+INSERT INTO __SB_NAMESPACE__.trig_items (item_id, item_name, item_price)
+VALUES (3, 'Doohickey Gamma', 7.00);
+
+-- UPDATE one row → fires trig_items_au (row) once AND trig_items_aus (stmt) once.
+UPDATE __SB_NAMESPACE__.trig_items
+SET item_price = 29.99
+WHERE item_id = 1;
+
+-- DELETE one row → fires trig_items_ad once.
+DELETE FROM __SB_NAMESPACE__.trig_items
+WHERE item_id = 3;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Assertions.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+-- SBDFS-053-001: three INSERT audit rows must exist.
+SELECT 'SBDFS-053-001' AS assertion_id,
+       COUNT(*) AS actual_insert_audit_rows,
+       3 AS expected_insert_audit_rows
+FROM __SB_NAMESPACE__.trig_audit
+WHERE event_kind = 'INSERT';
+
+-- SBDFS-053-002: one UPDATE (row-level) audit row must exist.
+SELECT 'SBDFS-053-002' AS assertion_id,
+       COUNT(*) AS actual_update_audit_rows,
+       1 AS expected_update_audit_rows
+FROM __SB_NAMESPACE__.trig_audit
+WHERE event_kind = 'UPDATE';
+
+-- SBDFS-053-003: one DELETE audit row must exist.
+SELECT 'SBDFS-053-003' AS assertion_id,
+       COUNT(*) AS actual_delete_audit_rows,
+       1 AS expected_delete_audit_rows
+FROM __SB_NAMESPACE__.trig_audit
+WHERE event_kind = 'DELETE';
+
+-- SBDFS-053-004: one STATEMENT-level UPDATE audit row must exist.
+SELECT 'SBDFS-053-004' AS assertion_id,
+       COUNT(*) AS actual_stmt_audit_rows,
+       1 AS expected_stmt_audit_rows
+FROM __SB_NAMESPACE__.trig_audit
+WHERE event_kind = 'UPDATE_STMT';
+
+-- SBDFS-053-005: UPDATE audit row records correct old and new price for item_id=1.
+SELECT 'SBDFS-053-005' AS assertion_id,
+       old_price AS actual_old_price,
+       19.99 AS expected_old_price
+FROM __SB_NAMESPACE__.trig_audit
+WHERE event_kind = 'UPDATE'
+  AND item_id = 1;
+
+SELECT 'SBDFS-053-006' AS assertion_id,
+       new_price AS actual_new_price,
+       29.99 AS expected_new_price
+FROM __SB_NAMESPACE__.trig_audit
+WHERE event_kind = 'UPDATE'
+  AND item_id = 1;
+
+-- SBDFS-053-007: DELETE audit row records old_price = 7.00 for item_id=3.
+SELECT 'SBDFS-053-007' AS assertion_id,
+       old_price AS actual_deleted_price,
+       7.00 AS expected_deleted_price
+FROM __SB_NAMESPACE__.trig_audit
+WHERE event_kind = 'DELETE'
+  AND item_id = 3;
+
+-- SBDFS-053-008: total audit rows = 3 insert + 1 update-row + 1 delete + 1 update-stmt = 6.
+SELECT 'SBDFS-053-008' AS assertion_id,
+       COUNT(*) AS actual_total_audit_rows,
+       6 AS expected_total_audit_rows
+FROM __SB_NAMESPACE__.trig_audit;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Cleanup: DROP in dependency order (triggers before tables, sequence last).
+-- Grounded in trigger.md drop_trigger_statement.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+DROP TRIGGER __SB_NAMESPACE__.trig_items_aus CASCADE;
+
+DROP TRIGGER __SB_NAMESPACE__.trig_items_ad CASCADE;
+
+DROP TRIGGER __SB_NAMESPACE__.trig_items_au CASCADE;
+
+DROP TRIGGER __SB_NAMESPACE__.trig_items_ai CASCADE;
+
+DROP TABLE __SB_NAMESPACE__.trig_audit;
+
+DROP TABLE __SB_NAMESPACE__.trig_items;
+
+DROP SEQUENCE __SB_NAMESPACE__.trig_audit_seq;
+
+-- SBDFS-053-009: confirm audit table is gone.
+SELECT 'SBDFS-053-009' AS assertion_id,
+       COUNT(*) AS actual_remaining_audit_tables,
+       0 AS expected_remaining_audit_tables
+FROM sys.tables
+WHERE table_name = 'trig_audit'
+  AND schema_id IN (
+      SELECT schema_id FROM sys.schemas WHERE schema_name = '__SB_NAMESPACE__'
+  );

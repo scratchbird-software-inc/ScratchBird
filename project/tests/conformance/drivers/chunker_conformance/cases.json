@@ -41,6 +41,16 @@
       "name": "set_term_directives_not_counted",
       "input": "SET TERM ^ ;\nCREATE PROCEDURE q AS BEGIN SUSPEND; END^\nSET TERM ; ^\nSELECT a FROM q;",
       "expected": ["CREATE PROCEDURE q AS BEGIN SUSPEND; END", "SELECT a FROM q"]
+    },
+    {
+      "name": "comment_semicolons_do_not_split",
+      "input": "-- note: a; b; c\nSELECT 1;",
+      "expected": ["-- note: a; b; c\nSELECT 1"]
+    },
+    {
+      "name": "comment_terminator_chars_with_set_term_body",
+      "input": "-- wraps a body in SET TERM ^ ; ... END^ ; SET TERM ; ^\nSET TERM ^ ;\nCREATE PROCEDURE p AS BEGIN x = 1; y = 2; END^\nSET TERM ; ^\nSELECT 1;",
+      "expected": ["CREATE PROCEDURE p AS BEGIN x = 1; y = 2; END", "SELECT 1"]
     }
   ]
 }

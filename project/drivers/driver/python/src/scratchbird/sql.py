@@ -91,6 +91,22 @@ def split_top_level_statements(sql: str) -> List[str]:
 
     while i < length:
         ch = sql[i]
+        if (
+            not in_single
+            and not in_double
+            and ch == "-"
+            and i + 1 < length
+            and sql[i + 1] == "-"
+        ):
+            # `--` line comment: consume to end of line verbatim, without scanning
+            # for the terminator or quotes inside it (the comment rides along with
+            # the statement, but ';'/terminator chars inside it never split).
+            eol = sql.find("\n", i)
+            if eol == -1:
+                eol = length
+            buf.append(sql[i:eol])
+            i = eol
+            continue
         if ch == "'" and not in_double:
             in_single = not in_single
             buf.append(ch)

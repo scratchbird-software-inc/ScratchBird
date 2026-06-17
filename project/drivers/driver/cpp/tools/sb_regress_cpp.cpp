@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "scratchbird/client/connection.h"
+#include "sb_statement_chunker.hpp"
 
 #include <openssl/sha.h>
 
@@ -300,43 +301,11 @@ std::string stripComments(const std::string& script) {
     return out;
 }
 
-std::vector<std::string> splitStatements(const std::string& script) {
-    std::vector<std::string> out;
-    std::string current;
-    bool single = false;
-    bool dbl = false;
-    for (size_t i = 0; i < script.size(); ++i) {
-        const char ch = script[i];
-        const char next = (i + 1 < script.size()) ? script[i + 1] : '\0';
-        if (ch == '\'' && !dbl) {
-            current.push_back(ch);
-            if (single && next == '\'') {
-                current.push_back(next);
-                ++i;
-            } else {
-                single = !single;
-            }
-            continue;
-        }
-        if (ch == '"' && !single) {
-            dbl = !dbl;
-        }
-        if (ch == ';' && !single && !dbl) {
-            const std::string statement = trim(current);
-            if (!statement.empty()) {
-                out.push_back(statement);
-            }
-            current.clear();
-            continue;
-        }
-        current.push_back(ch);
-    }
-    const std::string statement = trim(current);
-    if (!statement.empty()) {
-        out.push_back(statement);
-    }
-    return out;
-}
+// The statement chunker lives in the shared header sb_statement_chunker.hpp
+// (SET TERM- and comment-aware) so sb_isql_cpp and sb_regress_cpp use one
+// identical implementation. Verified against the cross-driver fixture
+// tests/conformance/drivers/chunker_conformance/cases.json. Call it as
+// sbchunk::splitStatements(...).
 
 std::string firstTokenLower(const std::string& sql) {
     std::istringstream in(trim(sql));
@@ -963,7 +932,7 @@ int main(int argc, char** argv) {
                 }
 
                 const std::string scriptText = applyPlaceholders(stripComments(readText(scriptPath)), replacements);
-                const std::vector<std::string> statements = splitStatements(scriptText);
+                const std::vector<std::string> statements = sbchunk::splitStatements(scriptText);
                 const std::string basename = relativePath.filename().string();
 
                 for (size_t statementIndex = 0; statementIndex < statements.size(); ++statementIndex) {
