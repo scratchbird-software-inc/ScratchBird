@@ -1,0 +1,196 @@
+-- ScratchBird driver full-surface script suite
+-- script_id: SBDFS-054
+-- Purpose: procedural-body scalar functions — declare locals, IF/control flow,
+--          RETURN; invoke in SELECT; assert returned values; DROP.
+-- namespace placeholder: __SB_NAMESPACE__
+--
+-- HARD CONSTRAINTS OBSERVED:
+--   - Every CREATE with a procedural body is wrapped in SET TERM ^ ; ... SET TERM ; ^.
+--   - The terminator ^ does not appear inside any body.
+--   - Declaration form: "declare variable v_name type default expr;" per
+--     procedural_sql_blocks.md (primary EBNF example).
+--   - Assignment form: "v_name = expr;" (NOT :=), per procedural_sql_blocks.md.
+--   - RETURN inside scalar function per procedural_sql_control_flow.md.
+--   - IF form: "if <cond> then begin ... end else begin ... end"
+--     per procedural_sql_control_flow.md.
+--   - No ^ operator used inside any body.
+--   - Grounded in: function.md, procedural_sql_blocks.md,
+--     procedural_sql_control_flow.md.
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Function 1: fn_classify_amount — IF/ELSE control flow returning a VARCHAR label.
+-- Grounded in function.md "Basic Scalar Function" (begin...return...end form)
+-- and procedural_sql_control_flow.md IF example.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE FUNCTION __SB_NAMESPACE__.fn_classify_amount(
+    p_amount DECIMAL(18,2)
+)
+RETURNS VARCHAR(32)
+DETERMINISTIC
+RETURNS NULL ON NULL INPUT
+AS
+DECLARE VARIABLE v_label VARCHAR(32) DEFAULT 'standard';
+BEGIN
+  IF p_amount >= 1000 THEN
+  BEGIN
+    v_label = 'large';
+  END
+  ELSE
+  BEGIN
+    IF p_amount <= 0 THEN
+    BEGIN
+      v_label = 'zero_or_negative';
+    END
+    ELSE
+    BEGIN
+      v_label = 'standard';
+    END
+  END
+  RETURN v_label;
+END^
+
+SET TERM ; ^
+
+-- Invoke fn_classify_amount with large amount.
+SELECT 'SBDFS-054-001' AS assertion_id,
+       __SB_NAMESPACE__.fn_classify_amount(1500.00) AS actual_label,
+       'large' AS expected_label;
+
+-- Invoke fn_classify_amount with standard amount.
+SELECT 'SBDFS-054-002' AS assertion_id,
+       __SB_NAMESPACE__.fn_classify_amount(250.00) AS actual_label,
+       'standard' AS expected_label;
+
+-- Invoke fn_classify_amount with zero.
+SELECT 'SBDFS-054-003' AS assertion_id,
+       __SB_NAMESPACE__.fn_classify_amount(0.00) AS actual_label,
+       'zero_or_negative' AS expected_label;
+
+-- Invoke fn_classify_amount with boundary value 1000.00 (>= 1000 → large).
+SELECT 'SBDFS-054-004' AS assertion_id,
+       __SB_NAMESPACE__.fn_classify_amount(1000.00) AS actual_label,
+       'large' AS expected_label;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Function 2: fn_factorial — WHILE loop computing factorial of a small integer.
+-- Grounded in procedural_sql_control_flow.md WHILE example.
+-- WHILE v_i <= p_n DO BEGIN ... END.
+-- Returns BIGINT. Input restricted to 0..12 to avoid overflow.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE FUNCTION __SB_NAMESPACE__.fn_factorial(
+    p_n INTEGER
+)
+RETURNS BIGINT
+DETERMINISTIC
+CALLED ON NULL INPUT
+AS
+DECLARE VARIABLE v_result BIGINT DEFAULT 1;
+DECLARE VARIABLE v_i      INTEGER DEFAULT 1;
+BEGIN
+  IF p_n IS NULL THEN
+  BEGIN
+    RETURN NULL;
+  END
+  IF p_n < 0 THEN
+  BEGIN
+    RETURN NULL;
+  END
+  WHILE v_i <= p_n DO
+  BEGIN
+    v_result = v_result * v_i;
+    v_i = v_i + 1;
+  END
+  RETURN v_result;
+END^
+
+SET TERM ; ^
+
+-- factorial(0) = 1 (empty product).
+SELECT 'SBDFS-054-005' AS assertion_id,
+       __SB_NAMESPACE__.fn_factorial(0) AS actual_fact0,
+       1 AS expected_fact0;
+
+-- factorial(5) = 120.
+SELECT 'SBDFS-054-006' AS assertion_id,
+       __SB_NAMESPACE__.fn_factorial(5) AS actual_fact5,
+       120 AS expected_fact5;
+
+-- factorial(10) = 3628800.
+SELECT 'SBDFS-054-007' AS assertion_id,
+       __SB_NAMESPACE__.fn_factorial(10) AS actual_fact10,
+       3628800 AS expected_fact10;
+
+-- factorial(1) = 1.
+SELECT 'SBDFS-054-008' AS assertion_id,
+       __SB_NAMESPACE__.fn_factorial(1) AS actual_fact1,
+       1 AS expected_fact1;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Function 3: fn_safe_divide — local variable, guard for division by zero.
+-- Returns NULL when divisor is 0; otherwise returns DECIMAL quotient.
+-- Grounded in function.md parameter + procedural_sql_blocks.md variable usage.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE FUNCTION __SB_NAMESPACE__.fn_safe_divide(
+    p_numerator   DECIMAL(18,6),
+    p_denominator DECIMAL(18,6)
+)
+RETURNS DECIMAL(18,6)
+DETERMINISTIC
+CALLED ON NULL INPUT
+AS
+DECLARE VARIABLE v_result DECIMAL(18,6) DEFAULT NULL;
+BEGIN
+  IF p_numerator IS NULL OR p_denominator IS NULL THEN
+  BEGIN
+    RETURN NULL;
+  END
+  IF p_denominator = 0 THEN
+  BEGIN
+    RETURN NULL;
+  END
+  v_result = p_numerator / p_denominator;
+  RETURN v_result;
+END^
+
+SET TERM ; ^
+
+-- Normal division: 10 / 4 = 2.5.
+SELECT 'SBDFS-054-009' AS assertion_id,
+       __SB_NAMESPACE__.fn_safe_divide(10.000000, 4.000000) AS actual_quotient,
+       2.500000 AS expected_quotient;
+
+-- Division by zero returns NULL.
+SELECT 'SBDFS-054-010' AS assertion_id,
+       __SB_NAMESPACE__.fn_safe_divide(99.0, 0.0) IS NULL AS actual_null_on_zero,
+       TRUE AS expected_null_on_zero;
+
+-- NULL numerator returns NULL.
+SELECT 'SBDFS-054-011' AS assertion_id,
+       __SB_NAMESPACE__.fn_safe_divide(NULL, 5.0) IS NULL AS actual_null_num,
+       TRUE AS expected_null_num;
+
+-- Combine: classify(safe_divide(2000,2)) → classify(1000) → 'large'.
+SELECT 'SBDFS-054-012' AS assertion_id,
+       __SB_NAMESPACE__.fn_classify_amount(
+           __SB_NAMESPACE__.fn_safe_divide(2000.00, 2.000000)
+       ) AS actual_composed,
+       'large' AS expected_composed;
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Cleanup: DROP each function (grounded in function.md drop_routine_stmt).
+-- ──────────────────────────────────────────────────────────────────────────────
+
+DROP FUNCTION __SB_NAMESPACE__.fn_safe_divide RESTRICT;
+
+DROP FUNCTION __SB_NAMESPACE__.fn_factorial RESTRICT;
+
+DROP FUNCTION __SB_NAMESPACE__.fn_classify_amount RESTRICT;

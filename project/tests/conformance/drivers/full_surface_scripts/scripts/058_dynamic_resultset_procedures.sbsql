@@ -1,0 +1,148 @@
+-- ScratchBird driver full-surface script suite
+-- script_id: SBDFS-058
+-- Purpose: selectable procedure using EXECUTE STATEMENT :v_sql INTO :v_val per
+--          iteration to return a result set whose values came from dynamic
+--          execution; verify via SELECT FROM proc(args); DROP.
+-- namespace placeholder: __SB_NAMESPACE__
+--
+-- POSITIVE EXECUTION TEST (grounded in procedural_sql_blocks.md "Dynamic
+-- Execution Boundary"):
+--   This script asserts that EXECUTE STATEMENT actually EXECUTES and returns a
+--   result set — it is not an expected-refusal script. Every assertion below is
+--   positive. If a build only parses EXECUTE STATEMENT but does not execute it,
+--   the dynamic SELECTs error and the assertions fail; that failure is the real
+--   partial-implementation finding this suite exists to catch.
+--
+-- HARD CONSTRAINTS OBSERVED:
+--   - Every CREATE with a procedural body is wrapped in SET TERM ^ ; ... SET TERM ; ^.
+--   - The terminator ^ does not appear inside any body.
+--   - Dynamic SQL single-row INTO form used:
+--       execute statement :v_sql into :v_result;
+--     per procedural_sql_control_flow.md "Dynamic Execution" section and
+--     procedural_sql_blocks.md "Dynamic Execution Boundary" example.
+--   - The multi-row "FOR EXECUTE STATEMENT" form is NOT documented — NOT used.
+--   - WHILE + SUSPEND pattern reuses the form from 057_selectable_procedures.sbsql.
+--   - Grounded in: procedure.md, procedural_sql_blocks.md,
+--     procedural_sql_control_flow.md, procedural_sql_exceptions.md.
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Fixture: a small reference table whose column values drive the dynamic queries.
+-- The procedure selects a row_key from this table, constructs a dynamic SELECT
+-- that returns a computed integer for that key, executes it, and suspends.
+-- This is the minimal self-contained pattern that exercises the documented
+-- single-row INTO dynamic form without requiring external objects.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+CREATE TABLE __SB_NAMESPACE__.dynproc_keys (
+    row_key     INTEGER PRIMARY KEY,
+    multiplier  INTEGER NOT NULL
+);
+
+INSERT INTO __SB_NAMESPACE__.dynproc_keys (row_key, multiplier) VALUES (1, 10);
+INSERT INTO __SB_NAMESPACE__.dynproc_keys (row_key, multiplier) VALUES (2, 20);
+INSERT INTO __SB_NAMESPACE__.dynproc_keys (row_key, multiplier) VALUES (3, 30);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Procedure: proc_dynamic_multiply
+--   For each row in dynproc_keys where row_key <= p_max_key:
+--     1. Build a dynamic SQL string: 'SELECT <multiplier> * <p_factor>'
+--        (purely arithmetic — no table reference needed, avoids policy complexity).
+--     2. Execute it via: execute statement :v_sql into :v_computed;
+--     3. SUSPEND with (row_key, computed_value).
+--
+--   Returns: row_key INTEGER, computed_value INTEGER.
+--   p_factor: scalar factor multiplied against each row's multiplier value.
+--
+--   No exception handler: if EXECUTE STATEMENT is not executed by the build, the
+--   error propagates to the invoking SELECT and the assertion fails visibly.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+SET TERM ^ ;
+
+CREATE PROCEDURE __SB_NAMESPACE__.proc_dynamic_multiply(
+    p_max_key INTEGER,
+    p_factor  INTEGER
+)
+RETURNS (
+    row_key        INTEGER,
+    computed_value INTEGER
+)
+AS
+DECLARE VARIABLE v_cur_key     INTEGER DEFAULT 0;
+DECLARE VARIABLE v_multiplier  INTEGER DEFAULT 0;
+DECLARE VARIABLE v_sql         VARCHAR(256) DEFAULT '';
+DECLARE VARIABLE v_computed    INTEGER DEFAULT 0;
+BEGIN
+  FOR SELECT row_key, multiplier
+        FROM __SB_NAMESPACE__.dynproc_keys
+       WHERE row_key <= p_max_key
+       ORDER BY row_key
+        INTO v_cur_key, v_multiplier
+  DO
+  BEGIN
+    -- Build a minimal dynamic SQL string that produces one integer.
+    -- Using CAST to make the expression well-typed on all implementations.
+    v_sql = 'SELECT CAST(' || CAST(v_multiplier AS VARCHAR(20))
+            || ' * ' || CAST(p_factor AS VARCHAR(20))
+            || ' AS INTEGER)';
+
+    -- Single-row INTO dynamic execution (documented form). Positive assertion
+    -- that the engine executes EXECUTE STATEMENT; on a parse-only build the
+    -- SELECT that invokes this procedure errors and its assertion fails.
+    EXECUTE STATEMENT :v_sql INTO :v_computed;
+
+    row_key = v_cur_key;
+    computed_value = v_computed;
+    SUSPEND;
+  END
+END^
+
+SET TERM ; ^
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Invoke via SELECT. These statements are counted as emitted statements and
+-- carry positive assertions: each expects rows/values produced by dynamic
+-- execution. A build that does not execute EXECUTE STATEMENT fails them.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+-- SBDFS-058-001: 3 keys, p_max_key=3 → expect 3 rows.
+SELECT 'SBDFS-058-001' AS assertion_id,
+       COUNT(*) AS actual_row_count,
+       3 AS expected_row_count
+FROM __SB_NAMESPACE__.proc_dynamic_multiply(3, 1);
+
+-- SBDFS-058-002: p_factor=2 → computed_values should be 20, 40, 60; SUM=120.
+SELECT 'SBDFS-058-002' AS assertion_id,
+       SUM(computed_value) AS actual_sum,
+       120 AS expected_sum
+FROM __SB_NAMESPACE__.proc_dynamic_multiply(3, 2);
+
+-- SBDFS-058-003: p_max_key=1 → only row_key=1 (multiplier=10), factor=5 → value=50.
+SELECT 'SBDFS-058-003' AS assertion_id,
+       computed_value AS actual_single_value,
+       50 AS expected_single_value
+FROM __SB_NAMESPACE__.proc_dynamic_multiply(1, 5);
+
+-- SBDFS-058-004: p_max_key=0 → no qualifying keys → 0 rows.
+SELECT 'SBDFS-058-004' AS assertion_id,
+       COUNT(*) AS actual_empty_rows,
+       0 AS expected_empty_rows
+FROM __SB_NAMESPACE__.proc_dynamic_multiply(0, 99);
+
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Cleanup.
+-- ──────────────────────────────────────────────────────────────────────────────
+
+DROP PROCEDURE __SB_NAMESPACE__.proc_dynamic_multiply RESTRICT;
+
+DROP TABLE __SB_NAMESPACE__.dynproc_keys;
+
+-- SBDFS-058-005: confirm dynproc_keys is gone.
+SELECT 'SBDFS-058-005' AS assertion_id,
+       COUNT(*) AS actual_remaining,
+       0 AS expected_remaining
+FROM sys.tables
+WHERE table_name = 'dynproc_keys'
+  AND schema_id IN (
+      SELECT schema_id FROM sys.schemas WHERE schema_name = '__SB_NAMESPACE__'
+  );
