@@ -100,34 +100,99 @@ std::string readInput(const std::string& path) {
     return buffer.str();
 }
 
+std::string chunkTrim(const std::string& value) {
+    const auto begin = value.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) {
+        return "";
+    }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(begin, end - begin + 1);
+}
+
+// If `chunk` is a `SET TERM <terminator>` client directive (leading full-line
+// "--" comments and blank lines ignored), return the new terminator; else "".
+std::string chunkSetTermDirective(const std::string& chunk) {
+    std::string meaningful;
+    std::istringstream lines(chunk);
+    std::string line;
+    while (std::getline(lines, line)) {
+        const std::string trimmed = chunkTrim(line);
+        if (trimmed.empty() || (trimmed.size() >= 2 && trimmed[0] == '-' && trimmed[1] == '-')) {
+            continue;
+        }
+        if (!meaningful.empty()) {
+            meaningful.push_back(' ');
+        }
+        meaningful += trimmed;
+    }
+    if (meaningful.empty()) {
+        return "";
+    }
+    std::istringstream tokens(meaningful);
+    std::string w1, w2;
+    tokens >> w1 >> w2;
+    auto lower = [](std::string s) {
+        for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+    if (lower(w1) != "set" || lower(w2) != "term") {
+        return "";
+    }
+    std::string rest;
+    std::getline(tokens, rest);
+    return chunkTrim(rest);  // "" if no terminator token follows
+}
+
+// Quote-aware split on the active terminator. Honors the SET TERM client
+// directive (consumed, not emitted, not counted; multi-char terminators).
+// Matches the cross-driver fixture tests/conformance/drivers/chunker_conformance/cases.json.
 std::vector<std::string> splitStatements(const std::string& script) {
     std::vector<std::string> out;
     std::string current;
+    std::string term = ";";
     bool single = false;
     bool dbl = false;
-    const auto hasNonWhitespace = [](const std::string& value) {
-        return std::any_of(value.begin(), value.end(), [](unsigned char ch) {
-            return !std::isspace(ch);
-        });
+
+    const auto flush = [&]() {
+        const std::string chunk = chunkTrim(current);
+        if (chunk.empty()) {
+            return;
+        }
+        const std::string newTerm = chunkSetTermDirective(chunk);
+        if (!newTerm.empty()) {
+            term = newTerm;
+            return;
+        }
+        out.push_back(chunk);
     };
-    for (char ch : script) {
+
+    std::size_t i = 0;
+    const std::size_t n = script.size();
+    while (i < n) {
+        const char ch = script[i];
         if (ch == '\'' && !dbl) {
             single = !single;
-        } else if (ch == '"' && !single) {
-            dbl = !dbl;
+            current.push_back(ch);
+            ++i;
+            continue;
         }
-        if (ch == ';' && !single && !dbl) {
-            if (hasNonWhitespace(current)) {
-                out.push_back(current);
-            }
+        if (ch == '"' && !single) {
+            dbl = !dbl;
+            current.push_back(ch);
+            ++i;
+            continue;
+        }
+        if (!single && !dbl && !term.empty() && script.compare(i, term.size(), term) == 0) {
+            const std::size_t matchedLen = term.size();  // capture before flush() may change term
+            flush();
             current.clear();
+            i += matchedLen;
             continue;
         }
         current.push_back(ch);
+        ++i;
     }
-    if (hasNonWhitespace(current)) {
-        out.push_back(current);
-    }
+    flush();
     return out;
 }
 
