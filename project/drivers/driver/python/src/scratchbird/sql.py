@@ -129,6 +129,60 @@ def split_top_level_statements(sql: str) -> List[str]:
     return statements
 
 
+_BEGIN_SCRIPT_RE = re.compile(r"^--\s*begin_script:\s*(\S.*?)\s*$")
+_END_SCRIPT_RE = re.compile(r"^--\s*end_script:\s*(\S.*?)\s*$")
+
+
+def iter_chain_statements(chain: str):
+    """Yield ``(script_name, index, statement)`` for a compiled full-surface chain.
+
+    The compiled chain concatenates per-script segments delimited by
+    ``-- begin_script: <name>`` / ``-- end_script: <name>`` line-comment markers.
+    Each segment is chunked INDEPENDENTLY: the active terminator is reset to ``;``
+    and the emitted-statement index restarts at 1 at every ``begin_script``. As a
+    result the ``statement_id`` (``<script_name>:<index>``) is identical whether a
+    runner executes the per-script compiled files one at a time or the single
+    concatenated chain, and terminator state can never leak across scripts (a
+    script that leaves ``SET TERM ^`` active does not affect the next script).
+
+    ``SET TERM`` directives inside a segment are consumed and NOT counted in the
+    index (see :func:`split_top_level_statements`). Content outside any begin/end
+    pair (the chain header) is ignored. The marker lines themselves are excluded
+    from the segment, so a segment is byte-for-byte the per-script file body and
+    the two execution modes agree exactly.
+    """
+    current_name: str | None = None
+    buf: list[str] = []
+    capturing = False
+
+    def flush():
+        if current_name is None:
+            return
+        for index, statement in enumerate(
+            split_top_level_statements("\n".join(buf)), start=1
+        ):
+            yield current_name, index, statement
+
+    for line in chain.splitlines():
+        begin = _BEGIN_SCRIPT_RE.match(line)
+        if begin:
+            current_name = begin.group(1)
+            buf = []
+            capturing = True
+            continue
+        if _END_SCRIPT_RE.match(line) and capturing:
+            yield from flush()
+            capturing = False
+            current_name = None
+            buf = []
+            continue
+        if capturing:
+            buf.append(line)
+    # Defensive: a trailing begin_script with no matching end_script still emits.
+    if capturing:
+        yield from flush()
+
+
 def normalize_callable_sql(sql: str) -> str:
     trimmed = sql.strip()
     if not (trimmed.startswith("{") and trimmed.endswith("}")):

@@ -43,9 +43,50 @@ the body it wraps.
 in order; `SET TERM` directives and empty chunks do not count. This keeps the
 existing refusal indices (e.g. `080_...:6`, `011_...:13`, `099_...:2-5`) stable.
 
+## Chain-level harness rule (terminator reset + indexing across scripts)
+
+The compiler emits two run forms (see `full_surface_scripts/`): one **per-script
+compiled file** per script, and one concatenated **chain**
+(`full_surface_chain.sbsql`) in which each script's body is wrapped by
+`-- begin_script: <name>` / `-- end_script: <name>` line-comment markers. A
+runner may execute either form, and BOTH MUST produce identical `statement_id`s.
+
+The rule a chain runner must follow:
+
+1. A `-- begin_script: <name>` marker starts a new script segment: set the current
+   script name to `<name>`, **reset the active terminator to `;`**, and **restart
+   the emitted-statement index at 1**.
+2. Chunk the segment body (the lines up to the matching `-- end_script: <name>`,
+   excluding both marker lines) exactly as a standalone script — so a segment is
+   byte-for-byte the per-script file body.
+3. Content outside any begin/end pair (the chain header) is ignored.
+
+Because each segment is chunked with a fresh terminator, **terminator state never
+leaks across scripts**: a script that leaves `SET TERM ^` active cannot change how
+the next script splits. A runner that executes the per-script files one at a time
+satisfies this automatically (each file is a fresh chunk starting at `;`), so only
+chain-mode runners need to implement the reset explicitly.
+
+Reference: `drivers/driver/python/src/scratchbird/sql.py::iter_chain_statements`,
+which yields `(script_name, index, statement)`. The fixture `chain_cases.json`
+encodes the rule as `input -> [[script, index, statement], ...]`.
+
 ## Reference implementation and how each driver is verified
 
-- Reference: `drivers/driver/python/src/scratchbird/sql.py::split_top_level_statements`.
+- Single-script splitter reference:
+  `drivers/driver/python/src/scratchbird/sql.py::split_top_level_statements`
+  (mirrored by the shared C++ header `cpp/tools/sb_statement_chunker.hpp` and the
+  per-language driver splitters).
+- Chain-rule reference: `…/sql.py::iter_chain_statements`.
 - Each driver's splitter must pass `cases.json`. A driver test loads `cases.json`,
   runs its splitter on each `input`, and asserts the result equals `expected`.
 - Adding a case here raises the bar for every driver at once.
+
+### Verifiers in this directory
+
+- `verify_python_reference.py` — single-script splitter vs `cases.json` (Python ref).
+- `verify_cpp_chunker.cpp` — single-script splitter vs `cases.json` (shared C++ header).
+- `verify_pascal_chunker.pas` — single-script splitter vs `cases.json` (Free Pascal).
+- `verify_python_chain.py` — chain rule vs `chain_cases.json`, plus a real-suite
+  parity check asserting chain-mode and per-script-mode emit identical
+  `(script, index, statement)` sequences over the full compiled suite.
