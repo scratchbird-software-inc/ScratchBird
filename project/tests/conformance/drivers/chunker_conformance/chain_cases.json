@@ -1,0 +1,39 @@
+{
+  "comment": "Chain-level harness rule fixture (P2-06). Each case is a compiled-chain fragment using -- begin_script:/-- end_script: markers; `expected` is the ordered [script_name, index, statement] tuples a runner must produce. The rule: at each begin_script the active terminator resets to ';' and the per-script emitted-statement index restarts at 1, so statement_id <script>:<index> is identical to running the per-script files and terminator state never leaks across scripts. SET TERM directives are consumed and not counted. Reference: drivers/driver/python/src/scratchbird/sql.py::iter_chain_statements.",
+  "cases": [
+    {
+      "name": "terminator_does_not_leak_across_scripts",
+      "input": "-- begin_script: a.sbsql\nSET TERM ^ ;\nCREATE PROCEDURE p AS BEGIN x = 1; END^\n-- end_script: a.sbsql\n-- begin_script: b.sbsql\nSELECT 1;\nSELECT 2;\n-- end_script: b.sbsql",
+      "expected": [
+        ["a.sbsql", 1, "CREATE PROCEDURE p AS BEGIN x = 1; END"],
+        ["b.sbsql", 1, "SELECT 1"],
+        ["b.sbsql", 2, "SELECT 2"]
+      ]
+    },
+    {
+      "name": "index_restarts_per_script",
+      "input": "-- begin_script: x.sbsql\nSELECT 1;\nSELECT 2;\nSELECT 3;\n-- end_script: x.sbsql\n-- begin_script: y.sbsql\nSELECT 9;\n-- end_script: y.sbsql",
+      "expected": [
+        ["x.sbsql", 1, "SELECT 1"],
+        ["x.sbsql", 2, "SELECT 2"],
+        ["x.sbsql", 3, "SELECT 3"],
+        ["y.sbsql", 1, "SELECT 9"]
+      ]
+    },
+    {
+      "name": "set_term_not_counted_in_index",
+      "input": "-- begin_script: z.sbsql\nSET TERM ^ ;\nCREATE PROCEDURE p AS BEGIN a = 1; END^\nSET TERM ; ^\nSELECT 5;\n-- end_script: z.sbsql",
+      "expected": [
+        ["z.sbsql", 1, "CREATE PROCEDURE p AS BEGIN a = 1; END"],
+        ["z.sbsql", 2, "SELECT 5"]
+      ]
+    },
+    {
+      "name": "chain_header_outside_markers_ignored",
+      "input": "-- ScratchBird driver full-surface SBSQL chain\n-- namespace: sbtest_ns\n\n-- begin_script: only.sbsql\n-- script_id: SBDFS-999\nSELECT 42;\n-- end_script: only.sbsql",
+      "expected": [
+        ["only.sbsql", 1, "-- script_id: SBDFS-999\nSELECT 42"]
+      ]
+    }
+  ]
+}
