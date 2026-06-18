@@ -71,6 +71,7 @@ target_include_directories(sb_isql_odbc
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_LIST_DIR}/../cpp/include
+        ${CMAKE_CURRENT_LIST_DIR}/../cpp/tools
 )
 target_compile_features(sb_isql_odbc PRIVATE cxx_std_17)
 target_link_libraries(sb_isql_odbc PRIVATE scratchbird_odbc OpenSSL::Crypto)

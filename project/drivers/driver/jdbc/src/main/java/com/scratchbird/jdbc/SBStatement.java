@@ -889,90 +889,10 @@ public class SBStatement implements Statement {
     }
 
     private List<String> splitStatements(String sql) {
-        if (sql == null) {
-            return Collections.emptyList();
-        }
-
-        List<String> statements = new ArrayList<>();
-        StringBuilder current = new StringBuilder(sql.length());
-        boolean inSingleQuote = false;
-        boolean inDoubleQuote = false;
-        boolean inLineComment = false;
-        boolean inBlockComment = false;
-
-        for (int i = 0; i < sql.length(); i++) {
-            char c = sql.charAt(i);
-            char next = (i + 1) < sql.length() ? sql.charAt(i + 1) : '\0';
-
-            if (inLineComment) {
-                current.append(c);
-                if (c == '\n' || c == '\r') {
-                    inLineComment = false;
-                }
-                continue;
-            }
-            if (inBlockComment) {
-                current.append(c);
-                if (c == '*' && next == '/') {
-                    current.append(next);
-                    i++;
-                    inBlockComment = false;
-                }
-                continue;
-            }
-            if (!inSingleQuote && !inDoubleQuote) {
-                if (c == '-' && next == '-') {
-                    current.append(c).append(next);
-                    i++;
-                    inLineComment = true;
-                    continue;
-                }
-                if (c == '/' && next == '*') {
-                    current.append(c).append(next);
-                    i++;
-                    inBlockComment = true;
-                    continue;
-                }
-            }
-
-            if (c == '\'' && !inDoubleQuote) {
-                if (inSingleQuote && next == '\'') {
-                    current.append(c).append(next);
-                    i++;
-                    continue;
-                }
-                inSingleQuote = !inSingleQuote;
-                current.append(c);
-                continue;
-            }
-            if (c == '"' && !inSingleQuote) {
-                if (inDoubleQuote && next == '"') {
-                    current.append(c).append(next);
-                    i++;
-                    continue;
-                }
-                inDoubleQuote = !inDoubleQuote;
-                current.append(c);
-                continue;
-            }
-
-            if (c == ';' && !inSingleQuote && !inDoubleQuote) {
-                String trimmed = current.toString().trim();
-                if (!trimmed.isEmpty()) {
-                    statements.add(trimmed);
-                }
-                current.setLength(0);
-                continue;
-            }
-
-            current.append(c);
-        }
-
-        String trailing = current.toString().trim();
-        if (!trailing.isEmpty()) {
-            statements.add(trailing);
-        }
-        return statements;
+        // Canonical, SET TERM- and comment-aware top-level chunker shared across the
+        // driver (see SBSQLParser.splitTopLevelStatements and the cross-driver
+        // conformance fixture tests/conformance/drivers/chunker_conformance).
+        return SBSQLParser.splitTopLevelStatements(sql);
     }
 
     protected void addWarning(SQLWarning warning) {

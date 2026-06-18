@@ -107,42 +107,104 @@ final class Sql
     }
 
     /**
+     * Split SQL into top-level statements on the active terminator.
+     *
+     * Quote-aware (single/double quotes) and `--` line-comment aware. Honors the
+     * `SET TERM <terminator>` client directive (Firebird / `sb_isql` semantics):
+     * the directive changes the active terminator and is consumed -- it is not
+     * emitted as a statement and is not counted in statement indexing. This lets
+     * procedural bodies contain inner `;` between `SET TERM ^` and the restoring
+     * `SET TERM ;^`.
+     *
+     * With no `SET TERM` directive present, the behavior reduces to a plain
+     * quote-aware top-level `;` split, so existing scripts and statement indices
+     * are unchanged.
+     *
      * @return array<int, string>
      */
     private static function splitTopLevelStatements(string $sql): array
     {
         $statements = [];
+        $term = ';';
         $current = '';
         $len = strlen($sql);
         $inString = false;
         $inDouble = false;
-        for ($i = 0; $i < $len; $i++) {
+
+        $flush = static function () use (&$current, &$term, &$statements): void {
+            $chunk = trim($current);
+            $current = '';
+            if ($chunk === '') {
+                return;
+            }
+            $newTerm = self::chunkSetTerm($chunk);
+            if ($newTerm !== null) {
+                $term = $newTerm;
+                return;
+            }
+            $statements[] = $chunk;
+        };
+
+        for ($i = 0; $i < $len;) {
             $ch = $sql[$i];
+            if (!$inString && !$inDouble && $ch === '-' && $i + 1 < $len && $sql[$i + 1] === '-') {
+                // `--` line comment: copy verbatim to end of line without scanning
+                // for the terminator or quotes inside it.
+                $eol = strpos($sql, "\n", $i);
+                if ($eol === false) {
+                    $eol = $len;
+                }
+                $current .= substr($sql, $i, $eol - $i);
+                $i = $eol;
+                continue;
+            }
             if ($ch === "'" && !$inDouble) {
                 $inString = !$inString;
                 $current .= $ch;
+                $i++;
                 continue;
             }
             if ($ch === '"' && !$inString) {
                 $inDouble = !$inDouble;
                 $current .= $ch;
+                $i++;
                 continue;
             }
-            if (!$inString && !$inDouble && $ch === ';') {
-                $statement = trim($current);
-                if ($statement !== '') {
-                    $statements[] = $statement;
-                }
-                $current = '';
+            if (!$inString && !$inDouble && $term !== '' && substr_compare($sql, $term, $i, strlen($term)) === 0) {
+                $matchedLen = strlen($term); // capture before flush(), which may change $term
+                $flush();
+                $i += $matchedLen;
                 continue;
             }
             $current .= $ch;
+            $i++;
         }
-        $statement = trim($current);
-        if ($statement !== '') {
-            $statements[] = $statement;
-        }
+        $flush();
         return $statements;
+    }
+
+    /**
+     * Return the new terminator if `$chunk` is a `SET TERM <terminator>` client
+     * directive, else `null`. Leading full-line `--` comments and blank lines are
+     * ignored when matching, so a directive may be preceded by comment lines.
+     */
+    private static function chunkSetTerm(string $chunk): ?string
+    {
+        $meaningful = [];
+        foreach (preg_split('/\r\n|\r|\n/', $chunk) as $line) {
+            $stripped = trim($line);
+            if ($stripped === '' || str_starts_with($stripped, '--')) {
+                continue;
+            }
+            $meaningful[] = $stripped;
+        }
+        if ($meaningful === []) {
+            return null;
+        }
+        if (preg_match('/^set\s+term\s+(\S.*?)\s*$/i', implode(' ', $meaningful), $matches) === 1) {
+            return trim($matches[1]);
+        }
+        return null;
     }
 
     private static function rewriteNamed(string $sql, array $params): array

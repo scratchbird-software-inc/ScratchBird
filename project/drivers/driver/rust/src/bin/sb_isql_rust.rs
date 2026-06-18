@@ -513,31 +513,9 @@ fn validate(args: &Args) -> Result<(), String> {
 }
 
 fn split_statements(script: &str) -> Vec<String> {
-    let mut statements = Vec::new();
-    let mut current = String::new();
-    let mut single = false;
-    let mut double = false;
-    for ch in script.chars() {
-        match ch {
-            '\'' if !double => single = !single,
-            '"' if !single => double = !double,
-            ';' if !single && !double => {
-                let trimmed = current.trim();
-                if !trimmed.is_empty() {
-                    statements.push(trimmed.to_string());
-                }
-                current.clear();
-                continue;
-            }
-            _ => {}
-        }
-        current.push(ch);
-    }
-    let trimmed = current.trim();
-    if !trimmed.is_empty() {
-        statements.push(trimmed.to_string());
-    }
-    statements
+    // Delegate to the canonical SET TERM- and comment-aware splitter so this
+    // tool stays consistent with the cross-driver chunker conformance fixture.
+    scratchbird::sql::split_top_level_statements(script)
 }
 
 fn classify(sql: &str) -> String {

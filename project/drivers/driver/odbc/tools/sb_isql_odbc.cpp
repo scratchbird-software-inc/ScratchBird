@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "nlohmann/json.hpp"
+#include "sb_statement_chunker.hpp"
 
 using namespace scratchbird::odbc;
 using json = nlohmann::json;
@@ -105,21 +106,6 @@ std::string readInput(const std::string& path) {
     std::ostringstream buffer;
     buffer << in.rdbuf();
     return buffer.str();
-}
-
-std::vector<std::string> splitStatements(const std::string& script) {
-    std::vector<std::string> out;
-    std::string current;
-    for (char ch : script) {
-        if (ch == ';') {
-            if (!current.empty()) out.push_back(current);
-            current.clear();
-        } else {
-            current.push_back(ch);
-        }
-    }
-    if (!current.empty()) out.push_back(current);
-    return out;
 }
 
 std::string firstTokenLower(const std::string& sql) {
@@ -231,7 +217,7 @@ int main(int argc, char** argv) {
         if (failures.empty()) {
             if (SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt) != SQL_SUCCESS) throw std::runtime_error("SQLAllocHandle stmt failed");
             api["SQLAllocHandle"]++;
-            for (const auto& sql : splitStatements(readInput(required(args, "--input")))) {
+            for (const auto& sql : sbchunk::splitStatements(readInput(required(args, "--input")))) {
                 const auto group = classify(sql);
                 const auto statementStarted = nowNs();
                 std::string outcome = "success";

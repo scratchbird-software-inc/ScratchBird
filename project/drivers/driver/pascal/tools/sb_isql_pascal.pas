@@ -12,7 +12,7 @@ program sb_isql_pascal;
 {$H+}
 
 uses
-  SysUtils, Classes, DateUtils, Variants, ScratchBird.Client;
+  SysUtils, Classes, DateUtils, Variants, ScratchBird.Client, ScratchBird.Chunker;
 
 type
   TStatementResult = record
@@ -186,29 +186,10 @@ begin
   Result := 'query';
 end;
 
-function SplitStatements(const Script: string): TStringList;
-var
-  I: Integer;
-  Current: string;
-  Ch: Char;
-begin
-  Result := TStringList.Create;
-  Current := '';
-  for I := 1 to Length(Script) do
-  begin
-    Ch := Script[I];
-    if Ch = ';' then
-    begin
-      if Trim(Current) <> '' then
-        Result.Add(Trim(Current));
-      Current := '';
-    end
-    else
-      Current := Current + Ch;
-  end;
-  if Trim(Current) <> '' then
-    Result.Add(Trim(Current));
-end;
+// The canonical SET TERM- and comment-aware statement splitter now lives in
+// the shared ScratchBird.Chunker unit so the tool and the chunker conformance
+// verifier exercise ONE implementation (prevents per-tool splitter divergence).
+// SplitStatements is imported from ScratchBird.Chunker.
 
 function VariantRowDigest(const Row: array of Variant): string;
 var

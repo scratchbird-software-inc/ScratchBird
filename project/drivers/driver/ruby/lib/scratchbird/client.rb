@@ -1620,16 +1620,65 @@ module Scratchbird
       )
     end
 
+    SET_TERM_RE = /\Aset\s+term\s+(\S.*?)\s*\z/i.freeze
+
+    # Detect a `SET TERM <terminator>` client directive in a cut chunk.
+    #
+    # Leading full-line `--` comments and blank lines are ignored when matching,
+    # so a directive may be preceded by comment lines in the same chunk. Returns
+    # the new terminator string, or nil when the chunk is not a SET TERM directive.
+    def chunk_set_term(chunk)
+      meaningful = []
+      chunk.each_line do |line|
+        stripped = line.strip
+        next if stripped.empty? || stripped.start_with?("--")
+        meaningful << stripped
+      end
+      return nil if meaningful.empty?
+      match = SET_TERM_RE.match(meaningful.join(" "))
+      match ? match[1].strip : nil
+    end
+
+    # Split SQL into top-level statements on the active terminator.
+    #
+    # Quote-aware (single/double quotes, including SQL-style doubled-quote
+    # escapes) and `--` line-comment aware. Honors the `SET TERM <terminator>`
+    # client directive (Firebird / sb_isql semantics): the directive changes the
+    # active terminator and is consumed -- it is not emitted as a statement and
+    # is not counted. With no SET TERM directive present the behavior is identical
+    # to a plain quote-aware top-level `;` split, so existing scripts are unchanged.
     def split_sql_statements(sql)
       return [] if sql.to_s.strip.empty?
 
       statements = []
+      term = ";"
       buffer = +""
       in_single = false
       in_double = false
       i = 0
+
+      flush = lambda do
+        chunk = buffer.strip
+        next if chunk.empty?
+        new_term = chunk_set_term(chunk)
+        if new_term
+          term = new_term
+          next
+        end
+        statements << chunk
+      end
+
       while i < sql.length
         ch = sql[i]
+        if !in_single && !in_double && ch == "-" && i + 1 < sql.length && sql[i + 1] == "-"
+          # `--` line comment: copy verbatim to end of line without scanning for
+          # the terminator or quotes inside it.
+          eol = sql.index("\n", i)
+          eol = sql.length if eol.nil?
+          buffer << sql[i...eol]
+          i = eol
+          next
+        end
         if ch == "'" && !in_double
           buffer << ch
           if in_single && i + 1 < sql.length && sql[i + 1] == "'"
@@ -1652,19 +1701,18 @@ module Scratchbird
           i += 1
           next
         end
-        if !in_single && !in_double && ch == ";"
-          statement = buffer.strip
-          statements << statement unless statement.empty?
+        if !in_single && !in_double && !term.empty? && sql[i, term.length] == term
+          matched_len = term.length # capture before flush, which may change term
+          flush.call
           buffer.clear
-          i += 1
+          i += matched_len
           next
         end
         buffer << ch
         i += 1
       end
 
-      trailing = buffer.strip
-      statements << trailing unless trailing.empty?
+      flush.call
       statements
     end
 

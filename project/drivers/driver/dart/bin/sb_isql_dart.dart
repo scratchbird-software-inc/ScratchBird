@@ -328,12 +328,6 @@ void validate(Map<String, String> args) {
     );
 }
 
-List<String> splitStatements(String script) => script
-    .split(';')
-    .map((part) => part.trim())
-    .where((part) => part.isNotEmpty)
-    .toList();
-
 String classifyStatement(String sql) {
   final trimmed = sql.trim().toLowerCase();
   final first = trimmed.split(RegExp(r'\s+')).first;
