@@ -325,7 +325,7 @@ internal static class SBIsqlDotNet
     }
 
     private static List<string> SplitStatements(string script) =>
-        script.Split(';').Select(part => part.Trim()).Where(part => part.Length > 0).ToList();
+        SqlStatementSplitter.Split(script).ToList();
 
     private static string Classify(string sql)
     {

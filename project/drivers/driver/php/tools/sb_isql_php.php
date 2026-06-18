@@ -328,30 +328,81 @@ function flag_enabled(array $args, string $key): bool
 function split_statements(string $script): array
 {
     $statements = [];
+    $term = ';';
     $current = '';
     $single = false;
     $double = false;
-    foreach (str_split($script) as $ch) {
+    $len = strlen($script);
+
+    $flush = static function () use (&$current, &$term, &$statements): void {
+        $chunk = trim($current);
+        $current = '';
+        if ($chunk === '') {
+            return;
+        }
+        $newTerm = chunk_set_term($chunk);
+        if ($newTerm !== null) {
+            $term = $newTerm;
+            return;
+        }
+        $statements[] = $chunk;
+    };
+
+    for ($i = 0; $i < $len;) {
+        $ch = $script[$i];
+        if (!$single && !$double && $ch === '-' && $i + 1 < $len && $script[$i + 1] === '-') {
+            // `--` line comment: copy verbatim to end of line without scanning
+            // for the terminator or quotes inside it.
+            $eol = strpos($script, "\n", $i);
+            if ($eol === false) {
+                $eol = $len;
+            }
+            $current .= substr($script, $i, $eol - $i);
+            $i = $eol;
+            continue;
+        }
         if ($ch === "'" && !$double) {
             $single = !$single;
-        } elseif ($ch === '"' && !$single) {
-            $double = !$double;
+            $current .= $ch;
+            $i++;
+            continue;
         }
-        if ($ch === ';' && !$single && !$double) {
-            $trimmed = trim($current);
-            if ($trimmed !== '') {
-                $statements[] = $trimmed;
-            }
-            $current = '';
+        if ($ch === '"' && !$single) {
+            $double = !$double;
+            $current .= $ch;
+            $i++;
+            continue;
+        }
+        if (!$single && !$double && $term !== '' && substr_compare($script, $term, $i, strlen($term)) === 0) {
+            $matchedLen = strlen($term); // capture before flush(), which may change $term
+            $flush();
+            $i += $matchedLen;
             continue;
         }
         $current .= $ch;
+        $i++;
     }
-    $trimmed = trim($current);
-    if ($trimmed !== '') {
-        $statements[] = $trimmed;
-    }
+    $flush();
     return $statements;
+}
+
+function chunk_set_term(string $chunk): ?string
+{
+    $meaningful = [];
+    foreach (preg_split('/\r\n|\r|\n/', $chunk) as $line) {
+        $stripped = trim($line);
+        if ($stripped === '' || str_starts_with($stripped, '--')) {
+            continue;
+        }
+        $meaningful[] = $stripped;
+    }
+    if ($meaningful === []) {
+        return null;
+    }
+    if (preg_match('/^set\s+term\s+(\S.*?)\s*$/i', implode(' ', $meaningful), $matches) === 1) {
+        return trim($matches[1]);
+    }
+    return null;
 }
 
 function classify_statement(string $sql): string

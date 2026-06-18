@@ -267,8 +267,96 @@ func required(_ args: [String: String], _ key: String) throws -> String {
     return value
 }
 
+/// Return the new terminator if `chunk` is a `SET TERM <terminator>` client
+/// directive, else `nil`. Leading full-line `--` comments and blank lines are
+/// ignored when matching, so a directive may be preceded by comment lines in
+/// the same chunk.
+func chunkSetTerm(_ chunk: String) -> String? {
+    var meaningful: [String] = []
+    for line in chunk.split(separator: "\n", omittingEmptySubsequences: false) {
+        let stripped = line.trimmingCharacters(in: .whitespaces)
+        if stripped.isEmpty || stripped.hasPrefix("--") { continue }
+        meaningful.append(stripped)
+    }
+    if meaningful.isEmpty { return nil }
+    let joined = meaningful.joined(separator: " ")
+    let lower = joined.lowercased()
+    guard lower.hasPrefix("set term") else { return nil }
+    // Capture the remainder after "set term" (preserve original casing) and trim.
+    let rest = joined.dropFirst("set term".count).trimmingCharacters(in: .whitespaces)
+    return rest.isEmpty ? nil : rest
+}
+
+/// Split SQL into top-level statements on the active terminator.
+///
+/// Quote-aware (single/double quotes) and `--` comment-aware. Honors the
+/// `SET TERM <terminator>` client directive (Firebird / `sb_isql` semantics):
+/// the directive changes the active terminator and is consumed — it is not
+/// emitted as a statement and is not counted. With no `SET TERM` directive
+/// present, the behavior is identical to a plain quote-aware top-level `;`
+/// split, so existing scripts and statement indices are unchanged.
 func splitStatements(_ script: String) -> [String] {
-    script.split(separator: ";").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    var statements: [String] = []
+    var term = ";"
+    var buf = ""
+    var inSingle = false
+    var inDouble = false
+    let chars = Array(script)
+    let length = chars.count
+    var i = 0
+
+    func flush() {
+        let chunk = buf.trimmingCharacters(in: .whitespacesAndNewlines)
+        if chunk.isEmpty { return }
+        if let newTerm = chunkSetTerm(chunk) {
+            term = newTerm
+            return
+        }
+        statements.append(chunk)
+    }
+
+    func matchesTerm(at pos: Int) -> Bool {
+        let t = Array(term)
+        if t.isEmpty || pos + t.count > length { return false }
+        for k in 0..<t.count where chars[pos + k] != t[k] { return false }
+        return true
+    }
+
+    while i < length {
+        let ch = chars[i]
+        if !inSingle && !inDouble && ch == "-" && i + 1 < length && chars[i + 1] == "-" {
+            // `--` line comment: consume to end of line verbatim, without scanning
+            // for the terminator or quotes inside it.
+            var eol = i
+            while eol < length && chars[eol] != "\n" { eol += 1 }
+            buf.append(contentsOf: chars[i..<eol])
+            i = eol
+            continue
+        }
+        if ch == "'" && !inDouble {
+            inSingle.toggle()
+            buf.append(ch)
+            i += 1
+            continue
+        }
+        if ch == "\"" && !inSingle {
+            inDouble.toggle()
+            buf.append(ch)
+            i += 1
+            continue
+        }
+        if !inSingle && !inDouble && matchesTerm(at: i) {
+            let matchedLen = term.count  // capture before flush(), which may change term
+            flush()
+            buf = ""
+            i += matchedLen
+            continue
+        }
+        buf.append(ch)
+        i += 1
+    }
+    flush()
+    return statements
 }
 
 func classify(_ sql: String) -> String {

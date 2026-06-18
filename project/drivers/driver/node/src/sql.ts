@@ -98,37 +98,104 @@ export function normalizeCallableSql(sql: string): string {
   return sql;
 }
 
+const SET_TERM_RE = /^set\s+term\s+(\S.*?)\s*$/i;
+
+/**
+ * Return the new terminator if `chunk` is a `SET TERM <terminator>` client
+ * directive, else `null`.
+ *
+ * Leading full-line `--` comments and blank lines are ignored when matching, so
+ * a directive may be preceded by comment lines in the same chunk.
+ */
+function chunkSetTerm(chunk: string): string | null {
+  const meaningful: string[] = [];
+  for (const line of chunk.split("\n")) {
+    const stripped = line.trim();
+    if (!stripped || stripped.startsWith("--")) {
+      continue;
+    }
+    meaningful.push(stripped);
+  }
+  if (meaningful.length === 0) {
+    return null;
+  }
+  const match = SET_TERM_RE.exec(meaningful.join(" "));
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * Split SQL into top-level statements on the active terminator.
+ *
+ * Quote-aware (single/double quotes) and `--` line-comment aware. Honors the
+ * `SET TERM <terminator>` client directive (Firebird / `sb_isql` semantics): the
+ * directive changes the active terminator and is consumed — it is not emitted as
+ * a statement and is not counted in statement indexing. This lets procedural
+ * bodies (functions, procedures, triggers) contain inner `;` between
+ * `SET TERM ^` and the restoring `SET TERM ;^`.
+ *
+ * With no `SET TERM` directive present, the behavior is identical to a plain
+ * quote-aware top-level `;` split, so existing scripts and statement indices are
+ * unchanged. (The chosen terminator must not appear in the bodies it wraps.)
+ */
 export function splitTopLevelStatements(sql: string): string[] {
   const statements: string[] = [];
-  let current = "";
+  let term = ";";
+  let buf = "";
   let inSingle = false;
   let inDouble = false;
-  for (let i = 0; i < sql.length; i++) {
+
+  const flush = (): void => {
+    const chunk = buf.trim();
+    if (!chunk) {
+      return;
+    }
+    const newTerm = chunkSetTerm(chunk);
+    if (newTerm) {
+      term = newTerm;
+      return;
+    }
+    statements.push(chunk);
+  };
+
+  let i = 0;
+  const length = sql.length;
+  while (i < length) {
     const ch = sql[i];
+    if (!inSingle && !inDouble && ch === "-" && i + 1 < length && sql[i + 1] === "-") {
+      // `--` line comment: consume to end of line verbatim, without scanning for
+      // the terminator or quotes inside it (the comment rides along with the
+      // statement, but ';'/terminator chars inside it never split).
+      let eol = sql.indexOf("\n", i);
+      if (eol === -1) {
+        eol = length;
+      }
+      buf += sql.slice(i, eol);
+      i = eol;
+      continue;
+    }
     if (ch === "'" && !inDouble) {
       inSingle = !inSingle;
-      current += ch;
+      buf += ch;
+      i += 1;
       continue;
     }
     if (ch === '"' && !inSingle) {
       inDouble = !inDouble;
-      current += ch;
+      buf += ch;
+      i += 1;
       continue;
     }
-    if (!inSingle && !inDouble && ch === ";") {
-      const trimmed = current.trim();
-      if (trimmed) {
-        statements.push(trimmed);
-      }
-      current = "";
+    if (!inSingle && !inDouble && term && sql.startsWith(term, i)) {
+      const matchedLen = term.length; // capture before flush(), which may change term
+      flush();
+      buf = "";
+      i += matchedLen;
       continue;
     }
-    current += ch;
+    buf += ch;
+    i += 1;
   }
-  const trimmed = current.trim();
-  if (trimmed) {
-    statements.push(trimmed);
-  }
+  flush();
   return statements;
 }
 
