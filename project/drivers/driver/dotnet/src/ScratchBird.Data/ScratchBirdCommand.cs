@@ -271,65 +271,8 @@ public sealed class ScratchBirdCommand : DbCommand
         return new ScratchBirdDataReader(stream, behavior, connection, outputMapper);
     }
 
-    private static IReadOnlyList<string> SplitSqlStatements(string sql)
-    {
-        if (string.IsNullOrWhiteSpace(sql))
-        {
-            return Array.Empty<string>();
-        }
-
-        var statements = new List<string>();
-        var builder = new StringBuilder();
-        var inSingle = false;
-        var inDouble = false;
-        for (var i = 0; i < sql.Length; i++)
-        {
-            var ch = sql[i];
-            if (ch == '\'' && !inDouble)
-            {
-                builder.Append(ch);
-                if (inSingle && i + 1 < sql.Length && sql[i + 1] == '\'')
-                {
-                    builder.Append('\'');
-                    i++;
-                    continue;
-                }
-                inSingle = !inSingle;
-                continue;
-            }
-            if (ch == '"' && !inSingle)
-            {
-                builder.Append(ch);
-                if (inDouble && i + 1 < sql.Length && sql[i + 1] == '"')
-                {
-                    builder.Append('"');
-                    i++;
-                    continue;
-                }
-                inDouble = !inDouble;
-                continue;
-            }
-            if (!inSingle && !inDouble && ch == ';')
-            {
-                var statement = builder.ToString().Trim();
-                if (statement.Length > 0)
-                {
-                    statements.Add(statement);
-                }
-                builder.Clear();
-                continue;
-            }
-            builder.Append(ch);
-        }
-
-        var trailing = builder.ToString().Trim();
-        if (trailing.Length > 0)
-        {
-            statements.Add(trailing);
-        }
-
-        return statements;
-    }
+    private static IReadOnlyList<string> SplitSqlStatements(string sql) =>
+        SqlStatementSplitter.Split(sql);
 
     private NormalizedQuery NormalizeParameters()
     {

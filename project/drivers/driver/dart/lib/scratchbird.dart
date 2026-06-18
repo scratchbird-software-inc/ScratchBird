@@ -18,3 +18,4 @@ export 'src/circuit_breaker.dart';
 export 'src/keepalive.dart';
 export 'src/leak_detector.dart';
 export 'src/telemetry.dart';
+export 'src/statement_chunker.dart';

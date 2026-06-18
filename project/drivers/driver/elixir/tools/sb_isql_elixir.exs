@@ -438,11 +438,115 @@ defmodule SBIsqlElixir do
       do: raise("unsupported parser mode: #{required!(args, "--parser-mode")}")
   end
 
+  # Split SQL into top-level statements on the active terminator.
+  #
+  # Quote-aware (single/double quotes) and `--` line-comment aware. Honors the
+  # `SET TERM <terminator>` client directive (Firebird / `sb_isql` semantics):
+  # the directive changes the active terminator and is consumed -- it is not
+  # emitted as a statement and is not counted in statement indexing. This lets
+  # procedural bodies contain inner `;` between `SET TERM ^` and the restoring
+  # `SET TERM ;^`.
+  #
+  # With no `SET TERM` directive present, the behavior is identical to a plain
+  # quote-aware top-level `;` split (backward compatible). Shares the
+  # cross-driver oracle at
+  # tests/conformance/drivers/chunker_conformance/cases.json.
   defp split_statements(script) do
-    script
-    |> String.split(";")
-    |> Enum.map(&String.trim/1)
-    |> Enum.reject(&(&1 == ""))
+    scan(script, ";", [], [], false, false)
+  end
+
+  # scan(remaining, term, buf_chars_reversed, statements_reversed, in_single, in_double)
+  defp scan(<<>>, _term, buf, acc, _in_single, _in_double) do
+    acc
+    |> flush(buf)
+    |> elem(0)
+    |> Enum.reverse()
+  end
+
+  # `--` line comment outside any quote: copy verbatim to end of line (or input)
+  # without scanning for the terminator or quotes inside it.
+  defp scan(<<"--", _::binary>> = rest, term, buf, acc, false, false) do
+    {comment, after_comment} = take_line(rest, [])
+    scan(after_comment, term, prepend(buf, comment), acc, false, false)
+  end
+
+  # Single quote toggles in_single (only when not in_double).
+  defp scan(<<"'", rest::binary>>, term, buf, acc, in_single, false) do
+    scan(rest, term, [?' | buf], acc, not in_single, false)
+  end
+
+  # Double quote toggles in_double (only when not in_single).
+  defp scan(<<"\"", rest::binary>>, term, buf, acc, false, in_double) do
+    scan(rest, term, [?" | buf], acc, false, not in_double)
+  end
+
+  defp scan(rest, term, buf, acc, false = in_single, false = in_double) do
+    if term != "" and String.starts_with?(rest, term) do
+      # Capture the matched length BEFORE flush, which may change the active term.
+      matched_len = byte_size(term)
+      {acc, term} = flush(acc, buf, term)
+      <<_::binary-size(matched_len), tail::binary>> = rest
+      scan(tail, term, [], acc, false, false)
+    else
+      <<ch::utf8, tail::binary>> = rest
+      scan(tail, term, [<<ch::utf8>> | buf], acc, in_single, in_double)
+    end
+  end
+
+  defp scan(rest, term, buf, acc, in_single, in_double) do
+    <<ch::utf8, tail::binary>> = rest
+    scan(tail, term, [<<ch::utf8>> | buf], acc, in_single, in_double)
+  end
+
+  defp take_line(<<>>, acc), do: {IO.iodata_to_binary(Enum.reverse(acc)), <<>>}
+  defp take_line(<<"\n", _::binary>> = rest, acc),
+    do: {IO.iodata_to_binary(Enum.reverse(acc)), rest}
+
+  defp take_line(<<ch::utf8, rest::binary>>, acc),
+    do: take_line(rest, [<<ch::utf8>> | acc])
+
+  defp prepend(buf, chunk), do: [chunk | buf]
+
+  # Final-buffer flush keeps the active terminator implicit (returns statements only).
+  defp flush(acc, buf), do: flush(acc, buf, ";")
+
+  defp flush(acc, buf, term) do
+    chunk = buf |> Enum.reverse() |> IO.iodata_to_binary() |> String.trim()
+
+    cond do
+      chunk == "" ->
+        {acc, term}
+
+      new_term = chunk_set_term(chunk) ->
+        {acc, new_term}
+
+      true ->
+        {[chunk | acc], term}
+    end
+  end
+
+  # Returns the new terminator if `chunk` is a `SET TERM <terminator>` client
+  # directive, else nil. Leading full-line `--` comments and blank lines are
+  # ignored when matching, so a directive may be preceded by comment lines.
+  defp chunk_set_term(chunk) do
+    meaningful =
+      chunk
+      |> String.split("\n")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(fn line -> line == "" or String.starts_with?(line, "--") end)
+
+    case meaningful do
+      [] ->
+        nil
+
+      lines ->
+        joined = Enum.join(lines, " ")
+
+        case Regex.run(~r/^set\s+term\s+(\S.*?)\s*$/i, joined) do
+          [_, rest] -> String.trim(rest)
+          _ -> nil
+        end
+    end
   end
 
   defp classify(sql) do

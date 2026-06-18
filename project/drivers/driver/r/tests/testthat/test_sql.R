@@ -26,3 +26,25 @@ test_that("normalize binary params", {
   expect_equal(out$sql, "SELECT $1")
   expect_equal(out$params, list(as.raw(c(0x01, 0x02))))
 })
+
+test_that("statement chunker matches cross-driver conformance fixture", {
+  skip_if_not_installed("jsonlite")
+  # Locate the shared oracle fixture relative to the R driver root. The test
+  # may run from tests/testthat (testthat) or the package root (R CMD check).
+  candidates <- c(
+    "../../../../../tests/conformance/drivers/chunker_conformance/cases.json",
+    "../../../../tests/conformance/drivers/chunker_conformance/cases.json",
+    file.path(
+      Sys.getenv("SCRATCHBIRD_REPO_ROOT", unset = "."),
+      "project/tests/conformance/drivers/chunker_conformance/cases.json"
+    )
+  )
+  cases_path <- Filter(file.exists, candidates)
+  skip_if(length(cases_path) == 0, "chunker conformance cases.json not found")
+  fixture <- jsonlite::fromJSON(cases_path[[1]], simplifyDataFrame = FALSE)
+  for (case in fixture$cases) {
+    expected <- as.character(unlist(case$expected))
+    actual <- as.character(split_top_level_statements(case$input))
+    expect_identical(actual, expected, info = case$name)
+  }
+})

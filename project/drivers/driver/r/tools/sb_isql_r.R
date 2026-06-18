@@ -271,9 +271,9 @@ value_or_default <- function(args, key, default) {
 }
 
 split_statements <- function(script) {
-  parts <- strsplit(script, ";", fixed = TRUE)[[1]]
-  trim <- trimws(parts)
-  trim[nzchar(trim)]
+  # Delegate to the canonical SET TERM- and comment-aware splitter sourced from
+  # R/sql.R. Returns a character vector of trimmed top-level statements.
+  split_top_level_statements(script)
 }
 
 classify_statement <- function(sql) {

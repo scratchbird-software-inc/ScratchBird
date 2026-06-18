@@ -78,40 +78,134 @@ pub fn normalize_callable(sql: &str, params: Params) -> Result<NormalizedQuery> 
     normalize(&callable_sql, params)
 }
 
+/// Detect a `SET TERM <terminator>` client directive in a cut chunk.
+///
+/// Leading full-line `--` comments and blank lines are ignored when matching,
+/// so a directive may be preceded by comment lines in the same chunk. Returns
+/// the new terminator string if `chunk` is a directive, otherwise `None`.
+fn chunk_set_term(chunk: &str) -> Option<String> {
+    let mut meaningful: Vec<&str> = Vec::new();
+    for line in chunk.lines() {
+        let stripped = line.trim();
+        if stripped.is_empty() || stripped.starts_with("--") {
+            continue;
+        }
+        meaningful.push(stripped);
+    }
+    if meaningful.is_empty() {
+        return None;
+    }
+    let joined = meaningful.join(" ");
+
+    // Match `set term <rest>` case-insensitively with a non-empty <rest>.
+    let lower = joined.to_ascii_lowercase();
+    let after = lower.strip_prefix("set")?;
+    if !after.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    let after = after.trim_start();
+    let after = after.strip_prefix("term")?;
+    if !after.starts_with(|c: char| c.is_whitespace()) {
+        return None;
+    }
+    // Locate the same offset in the original (non-lowercased) string to keep the
+    // terminator's original case, then trim it.
+    let consumed = joined.len() - after.trim_start().len();
+    let terminator = joined[consumed..].trim();
+    if terminator.is_empty() {
+        None
+    } else {
+        Some(terminator.to_string())
+    }
+}
+
+/// Split SQL into top-level statements on the active terminator.
+///
+/// Quote-aware (single/double quotes) and `--` line-comment aware. Honors the
+/// `SET TERM <terminator>` client directive (Firebird / `sb_isql` semantics):
+/// the directive changes the active terminator and is consumed — it is not
+/// emitted as a statement and is not counted in statement indexing. This lets
+/// procedural bodies (functions, procedures, triggers) contain inner `;`
+/// between `SET TERM ^` and the restoring `SET TERM ;^`.
+///
+/// With no `SET TERM` directive present, the behavior is identical to a plain
+/// quote-aware top-level `;` split, so existing scripts and statement indices
+/// are unchanged. (The chosen terminator must not appear in the bodies it
+/// wraps.)
 pub fn split_top_level_statements(sql: &str) -> Vec<String> {
-    let mut statements = Vec::new();
-    let mut current = String::new();
+    let mut statements: Vec<String> = Vec::new();
+    let mut term: String = ";".to_string();
+    let mut buf = String::new();
     let mut in_single = false;
     let mut in_double = false;
+    let chars: Vec<char> = sql.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
 
-    for ch in sql.chars() {
+    fn flush(buf: &mut String, term: &mut String, statements: &mut Vec<String>) {
+        let chunk = buf.trim();
+        if chunk.is_empty() {
+            buf.clear();
+            return;
+        }
+        if let Some(new_term) = chunk_set_term(chunk) {
+            *term = new_term;
+        } else {
+            statements.push(chunk.to_string());
+        }
+        buf.clear();
+    }
+
+    while i < len {
+        let ch = chars[i];
+        if !in_single && !in_double && ch == '-' && i + 1 < len && chars[i + 1] == '-' {
+            // `--` line comment: copy verbatim to end of line (or input) without
+            // scanning for the terminator or quotes inside it.
+            let mut j = i;
+            while j < len && chars[j] != '\n' {
+                j += 1;
+            }
+            buf.extend(&chars[i..j]);
+            i = j;
+            continue;
+        }
         if ch == '\'' && !in_double {
             in_single = !in_single;
-            current.push(ch);
+            buf.push(ch);
+            i += 1;
             continue;
         }
         if ch == '"' && !in_single {
             in_double = !in_double;
-            current.push(ch);
+            buf.push(ch);
+            i += 1;
             continue;
         }
-        if !in_single && !in_double && ch == ';' {
-            let statement = current.trim();
-            if !statement.is_empty() {
-                statements.push(statement.to_string());
-            }
-            current.clear();
+        if !in_single && !in_double && !term.is_empty() && starts_with_at(&chars, i, &term) {
+            // Capture the matched terminator length BEFORE flushing, because
+            // processing the chunk may change the active terminator.
+            let matched_len = term.chars().count();
+            flush(&mut buf, &mut term, &mut statements);
+            i += matched_len;
             continue;
         }
-        current.push(ch);
+        buf.push(ch);
+        i += 1;
     }
-
-    let statement = current.trim();
-    if !statement.is_empty() {
-        statements.push(statement.to_string());
-    }
-
+    flush(&mut buf, &mut term, &mut statements);
     statements
+}
+
+/// True if the `term` string matches the `chars` slice starting at index `i`.
+fn starts_with_at(chars: &[char], i: usize, term: &str) -> bool {
+    let mut idx = i;
+    for tc in term.chars() {
+        if idx >= chars.len() || chars[idx] != tc {
+            return false;
+        }
+        idx += 1;
+    }
+    true
 }
 
 pub fn normalize_callable_sql(sql: &str) -> Result<String> {
@@ -352,4 +446,62 @@ fn parse_callable_invocation(value: &str) -> Result<CallableInvocation> {
         args,
         has_parens: true,
     })
+}
+
+#[cfg(test)]
+mod chunker_conformance_tests {
+    use super::split_top_level_statements;
+
+    /// Load the shared cross-driver chunker fixture and assert that the ported
+    /// `split_top_level_statements` reproduces every `expected` list exactly.
+    ///
+    /// Mirrors `tests/conformance/drivers/chunker_conformance/verify_python_reference.py`.
+    #[test]
+    fn matches_cross_driver_fixture() {
+        // CARGO_MANIFEST_DIR points at .../project/drivers/driver/rust.
+        let cases_path = format!(
+            "{}/../../../tests/conformance/drivers/chunker_conformance/cases.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let raw = std::fs::read_to_string(&cases_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", cases_path, e));
+        let fixture: serde_json::Value =
+            serde_json::from_str(&raw).expect("cases.json is valid JSON");
+
+        let cases = fixture["cases"]
+            .as_array()
+            .expect("cases.json has a `cases` array");
+        assert_eq!(cases.len(), 10, "expected exactly 10 conformance cases");
+
+        let mut failures = Vec::new();
+        for case in cases {
+            let name = case["name"].as_str().unwrap_or("<unnamed>");
+            let input = case["input"].as_str().expect("case input is a string");
+            let expected: Vec<String> = case["expected"]
+                .as_array()
+                .expect("case expected is an array")
+                .iter()
+                .map(|v| v.as_str().expect("expected entry is a string").to_string())
+                .collect();
+
+            let actual = split_top_level_statements(input);
+            if actual == expected {
+                println!("PASS  {}", name);
+            } else {
+                println!("FAIL  {}", name);
+                failures.push(format!(
+                    "case {}: expected {:?}, got {:?}",
+                    name, expected, actual
+                ));
+            }
+        }
+
+        let passed = cases.len() - failures.len();
+        println!("chunker conformance: {}/{} cases passed", passed, cases.len());
+        assert!(
+            failures.is_empty(),
+            "chunker conformance failures:\n{}",
+            failures.join("\n")
+        );
+    }
 }

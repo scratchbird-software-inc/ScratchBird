@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/scratchbird/scratchbird-go"
+	scratchbird "github.com/scratchbird/scratchbird-go"
 )
 
 type config struct {
@@ -419,32 +419,10 @@ func readRows(rows *sql.Rows) ([][]any, error) {
 	return out, rows.Err()
 }
 
+// splitStatements delegates to the canonical SET TERM- and comment-aware
+// statement chunker shared across the Go driver.
 func splitStatements(sqlText string) []string {
-	statements := []string{}
-	var current strings.Builder
-	inSingle := false
-	inDouble := false
-	for _, ch := range sqlText {
-		if ch == '\'' && !inDouble {
-			inSingle = !inSingle
-		}
-		if ch == '"' && !inSingle {
-			inDouble = !inDouble
-		}
-		if ch == ';' && !inSingle && !inDouble {
-			statement := strings.TrimSpace(current.String())
-			if statement != "" {
-				statements = append(statements, statement)
-			}
-			current.Reset()
-			continue
-		}
-		current.WriteRune(ch)
-	}
-	if statement := strings.TrimSpace(current.String()); statement != "" {
-		statements = append(statements, statement)
-	}
-	return statements
+	return scratchbird.SplitTopLevelStatements(sqlText)
 }
 
 func classify(sqlText string) string {

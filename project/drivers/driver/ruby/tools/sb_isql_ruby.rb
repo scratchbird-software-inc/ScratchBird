@@ -241,27 +241,82 @@ def validate(args)
   raise "unsupported parser mode: #{required(args, "--parser-mode")}" unless PARSER_MODES.include?(required(args, "--parser-mode"))
 end
 
+SET_TERM_RE = /\Aset\s+term\s+(\S.*?)\s*\z/i.freeze
+
+# Detect a `SET TERM <terminator>` client directive in a cut chunk.
+# Leading full-line `--` comments and blank lines are ignored when matching.
+# Returns the new terminator string, or nil when the chunk is not a directive.
+def chunk_set_term(chunk)
+  meaningful = []
+  chunk.each_line do |line|
+    stripped = line.strip
+    next if stripped.empty? || stripped.start_with?("--")
+    meaningful << stripped
+  end
+  return nil if meaningful.empty?
+  match = SET_TERM_RE.match(meaningful.join(" "))
+  match ? match[1].strip : nil
+end
+
+# Split a script into top-level statements on the active terminator.
+#
+# Quote-aware (single/double quotes) and `--` line-comment aware. Honors the
+# `SET TERM <terminator>` client directive (sb_isql semantics): the directive
+# changes the active terminator and is consumed -- not emitted, not counted.
+# With no SET TERM present this reduces to a plain quote-aware `;` split.
 def split_statements(script)
   statements = []
+  term = ";"
   current = +""
   single = false
   double = false
-  script.each_char do |ch|
+  i = 0
+  length = script.length
+
+  flush = lambda do
+    chunk = current.strip
+    next if chunk.empty?
+    new_term = chunk_set_term(chunk)
+    if new_term
+      term = new_term
+      next
+    end
+    statements << chunk
+  end
+
+  while i < length
+    ch = script[i]
+    if !single && !double && ch == "-" && i + 1 < length && script[i + 1] == "-"
+      eol = script.index("\n", i)
+      eol = length if eol.nil?
+      current << script[i...eol]
+      i = eol
+      next
+    end
     if ch == "'" && !double
       single = !single
-    elsif ch == '"' && !single
-      double = !double
+      current << ch
+      i += 1
+      next
     end
-    if ch == ";" && !single && !double
-      trimmed = current.strip
-      statements << trimmed unless trimmed.empty?
+    if ch == '"' && !single
+      double = !double
+      current << ch
+      i += 1
+      next
+    end
+    if !single && !double && !term.empty? && script[i, term.length] == term
+      matched_len = term.length
+      flush.call
       current = +""
+      i += matched_len
       next
     end
     current << ch
+    i += 1
   end
-  trimmed = current.strip
-  statements << trimmed unless trimmed.empty?
+
+  flush.call
   statements
 end
 

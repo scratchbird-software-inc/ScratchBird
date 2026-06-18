@@ -222,25 +222,8 @@ func applyFixtures(t *testing.T, db *sql.DB, ctx context.Context) {
 	}
 }
 
+// splitSQLStatements delegates to the canonical SET TERM- and comment-aware
+// statement chunker shared across the Go driver.
 func splitSQLStatements(input string) []string {
-	lines := strings.Split(input, "\n")
-	filtered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--") || trimmed == "" {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-	joined := strings.Join(filtered, "\n")
-	parts := strings.Split(joined, ";")
-	statements := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" {
-			continue
-		}
-		statements = append(statements, trimmed)
-	}
-	return statements
+	return SplitTopLevelStatements(input)
 }

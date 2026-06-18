@@ -428,32 +428,10 @@ public final class SBIsqlJdbc {
     }
 
     private static List<String> splitStatements(String sql) {
-        List<String> statements = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean single = false;
-        boolean dbl = false;
-        for (int i = 0; i < sql.length(); i++) {
-            char ch = sql.charAt(i);
-            if (ch == '\'' && !dbl) {
-                single = !single;
-            } else if (ch == '"' && !single) {
-                dbl = !dbl;
-            }
-            if (ch == ';' && !single && !dbl) {
-                String statement = current.toString().trim();
-                if (!statement.isEmpty()) {
-                    statements.add(statement);
-                }
-                current.setLength(0);
-            } else {
-                current.append(ch);
-            }
-        }
-        String statement = current.toString().trim();
-        if (!statement.isEmpty()) {
-            statements.add(statement);
-        }
-        return statements;
+        // Canonical, SET TERM- and comment-aware top-level chunker shared across the
+        // driver (see SBSQLParser.splitTopLevelStatements and the cross-driver
+        // conformance fixture tests/conformance/drivers/chunker_conformance).
+        return com.scratchbird.jdbc.SBSQLParser.splitTopLevelStatements(sql);
     }
 
     private static String readInput(String path) throws IOException {
