@@ -124,10 +124,11 @@ substitute/invocation rather than those surfaces. (c) `014` schema parent-linkag
 still unconfirmed; nesting is proved functionally. These open items remain in the private
 workplan `CATALOG_SURFACE_VERIFICATION.csv`.
 
-## E. Out of scope for this round (feasible, future expansion)
+## E. Pending implementation items (no deferred rounds)
 
-Not yet covered, but carriable in a later round: `copy.md` (in-band COPY), `multimodel_statements.md`
-(needs backing-object CREATE DDL to be confirmed — see the example-DB findings), `database.md`,
+Not yet covered, but required for full-surface completion in this cycle:
+`copy.md` (in-band COPY), `multimodel_statements.md` (needs backing-object CREATE DDL to be confirmed — see the example-DB findings),
+`database.md`,
 `filespace.md`, `agent.md`, `backup_restore_replication_migration.md`,
 `management_and_operations.md`, `catalog_artifacts_and_external_git.md`, `set`/session config.
 `script_tokens_and_identifiers.md` is lexical (implicitly exercised); `refusal_vectors.md` is a

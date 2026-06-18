@@ -4,7 +4,7 @@ Status: round-2 (language-surface extension)
 Maps every `docs/documentation/draft/Language_Reference/syntax_reference/*.md` page to the
 script(s) that exercise it with **executable** assertions, or marks it blocked/out-of-scope.
 
-Legend: ✅ covered · ➕ added this round · ⛔ harness-blocked (see FINDINGS §A) · ⏳ future round · ➖ not a statement page
+Legend: ✅ covered · ➕ added this round / required gap-to-close · ⛔ currently blocked / pending implementation (see FINDINGS §E) · ➖ not a statement page
 
 | Page | Status | Script(s) / notes |
 | --- | --- | --- |
@@ -43,14 +43,14 @@ Legend: ✅ covered · ➕ added this round · ⛔ harness-blocked (see FINDINGS
 | `procedural_sql_cursors` | ⛔ | " |
 | `procedural_sql_exceptions` | ⛔ | " |
 | `procedural_sql_triggers_and_events` | ⛔ | " |
-| `copy` | ⏳ | in-band COPY — future round |
-| `multimodel_statements` | ⏳ | needs backing-object CREATE DDL confirmed (cf. example-DB findings) |
-| `database` | ⏳ | admin; limited in a connected-driver context |
-| `filespace` | ⏳ | admin |
-| `agent` | ⏳ | admin |
-| `backup_restore_replication_migration` | ⏳ | admin |
-| `management_and_operations` | ⏳ | admin |
-| `catalog_artifacts_and_external_git` | ⏳ | admin |
+| `copy` | ⛔ | in-band COPY (implementation and runner support pending closure in this cycle) |
+| `multimodel_statements` | ⛔ | needs backing-object CREATE DDL confirmed (cf. example-DB findings) |
+| `database` | ⛔ | admin; limited in a connected-driver context |
+| `filespace` | ⛔ | admin |
+| `agent` | ⛔ | admin |
+| `backup_restore_replication_migration` | ⛔ | admin |
+| `management_and_operations` | ⛔ | admin |
+| `catalog_artifacts_and_external_git` | ⛔ | admin |
 | `refusal_vectors` | ➖ | concept page; mechanism exercised via `expected_refusals` (080, 011, 099) |
 | `script_tokens_and_identifiers` | ➖ | lexical; implicitly exercised by every script |
 | `README` | ➖ | index, not a statement page |
@@ -64,6 +64,6 @@ Legend: ✅ covered · ➕ added this round · ⛔ harness-blocked (see FINDINGS
 - **Blocked by the harness:** the entire procedural-SQL surface (procedures, multi-statement
   functions/triggers) — see FINDINGS §A; the fix is a terminator-aware / block-aware splitter
   in the driver runners.
-- **Future rounds (⏳):** COPY, multimodel statements, and the admin statement families.
+- **Pending implementation in this closure (no deferred rounds):** COPY, multimodel statements, and admin statement families (`database`, `filespace`, `agent`, `backup_restore_replication_migration`, `management_and_operations`, `catalog_artifacts_and_external_git`).
 - **Caveat:** some introspection assertions in `052`/`086` use unconfirmed `sys.*` surface
   names — see FINDINGS §D.
