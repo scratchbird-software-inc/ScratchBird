@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -66,6 +67,14 @@ struct SblrSequenceRequest {
   bool is_called = true;
 };
 
+struct SblrSequenceAlteration {
+  std::string sequence_uuid;
+  std::optional<std::int64_t> minimum_value;
+  std::optional<std::int64_t> maximum_value;
+  std::optional<std::uint64_t> cache_size;
+  std::optional<bool> cycle;
+};
+
 struct SblrSequenceOptimizerMetadata {
   bool deterministic = false;
   bool volatile_value = true;
@@ -81,6 +90,9 @@ SblrSequenceRegistry& ProcessSblrSequenceRegistry();
 SblrResult RegisterSblrSequence(SblrSequenceRegistry* registry,
                                 const SblrSequenceDefinition& definition,
                                 const SblrExecutionContext& context);
+SblrResult AlterSblrSequence(SblrSequenceRegistry* registry,
+                             const SblrSequenceAlteration& alteration,
+                             const SblrExecutionContext& context);
 SblrResult NextSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSequenceRequest& request);
 SblrResult CurrentSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSequenceRequest& request);
 SblrResult SetSblrSequenceValue(SblrSequenceRegistry* registry, const SblrSequenceRequest& request);

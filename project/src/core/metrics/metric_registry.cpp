@@ -128,6 +128,60 @@ void LoadInsertOptimizationDescriptors(MetricRegistry* registry) {
                                                 "sys.metrics.dml.insert",
                                                 "Bound insert row template cache hits.",
                                                 "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_dml_insert_prepared_descriptor_cache_total",
+                                                MetricType::counter,
+                                                MetricUnit::count,
+                                                "sys.metrics.dml.insert",
+                                                "Prepared insert descriptor cache hits and misses by epoch-keyed statement shape.",
+                                                "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_dml_insert_relation_state_full_load_total",
+                                                MetricType::counter,
+                                                MetricUnit::count,
+                                                "sys.metrics.dml.insert",
+                                                "Full MGA relation-state loads admitted by insert or COPY slow paths.",
+                                                "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_dml_insert_relation_state_scoped_load_total",
+                                                MetricType::counter,
+                                                MetricUnit::count,
+                                                "sys.metrics.dml.insert",
+                                                "Target-scoped MGA relation-state loads admitted by insert or COPY hot paths.",
+                                                "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_dml_insert_adaptive_batch_requested_rows",
+                                                MetricType::gauge,
+                                                MetricUnit::count,
+                                                "sys.metrics.dml.insert",
+                                                "Requested rows seen by the insert adaptive batch controller.",
+                                                "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_dml_insert_adaptive_batch_admitted_rows",
+                                                MetricType::gauge,
+                                                MetricUnit::count,
+                                                "sys.metrics.dml.insert",
+                                                "Rows admitted by the insert adaptive batch controller.",
+                                                "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_dml_insert_adaptive_batch_admitted_bytes",
+                                                MetricType::gauge,
+                                                MetricUnit::bytes,
+                                                "sys.metrics.dml.insert",
+                                                "Estimated bytes admitted by the insert adaptive batch controller.",
+                                                "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_dml_insert_adaptive_batch_resize_total",
+                                                MetricType::counter,
+                                                MetricUnit::count,
+                                                "sys.metrics.dml.insert",
+                                                "Insert adaptive batch reductions caused by policy, memory, large-value, or index pressure.",
+                                                "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_dml_insert_allocation_stall_microseconds",
+                                                MetricType::histogram,
+                                                MetricUnit::microseconds,
+                                                "sys.metrics.dml.insert",
+                                                "Time spent waiting for insert allocation, page, extent, or agent resources.",
+                                                "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_dml_insert_slow_path_total",
+                                                MetricType::counter,
+                                                MetricUnit::count,
+                                                "sys.metrics.dml.insert",
+                                                "Insert or COPY degraded-path decisions by driver-visible reason.",
+                                                "engine_insert"));
   (void)registry->RegisterDescriptor(Descriptor("sb_dml_insert_identity_range_reserved_total",
                                                 MetricType::counter,
                                                 MetricUnit::count,
@@ -151,6 +205,12 @@ void LoadInsertOptimizationDescriptors(MetricRegistry* registry) {
                                                 MetricUnit::count,
                                                 "sys.metrics.page.insert",
                                                 "Page split events caused by insert.",
+                                                "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_page_insert_preallocated_pages_total",
+                                                MetricType::counter,
+                                                MetricUnit::count,
+                                                "sys.metrics.page.insert",
+                                                "Pages preallocated or reserved for insert and COPY by page family.",
                                                 "engine_insert"));
   (void)registry->RegisterDescriptor(Descriptor("sb_page_allocation_reserve_low_total",
                                                 MetricType::counter,
@@ -217,6 +277,12 @@ void LoadInsertOptimizationDescriptors(MetricRegistry* registry) {
                                                 MetricUnit::count,
                                                 "sys.metrics.index.insert",
                                                 "Unique preflight cache/check events.",
+                                                "engine_insert"));
+  (void)registry->RegisterDescriptor(Descriptor("sb_index_insert_unique_physical_probe_total",
+                                                MetricType::counter,
+                                                MetricUnit::count,
+                                                "sys.metrics.index.insert",
+                                                "Physical unique index probes performed by insert conflict checking.",
                                                 "engine_insert"));
   (void)registry->RegisterDescriptor(Descriptor("sb_index_insert_sorted_run_total",
                                                 MetricType::counter,

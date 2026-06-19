@@ -125,6 +125,7 @@ void RehashPolicyPackManifest(const std::filesystem::path& pack_root) {
       "policies/groups.json",
       "policies/grants.json",
       "policies/policy_profiles.json",
+      "policies/server_memory_cache_policy.json",
       "policies/default_policy_catalog.json",
       "catalog_materialization.json",
   };

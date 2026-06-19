@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "catalog/sys_information_projection.hpp"
 #include "observability/performance_optimization_surface.hpp"
 
 namespace scratchbird::engine::internal_api {
@@ -26,7 +27,12 @@ struct EngineShowSystemRequest : EngineApiRequest {};
 struct EngineShowSystemResult : EngineApiResult {};
 EngineShowSystemResult EngineShowSystem(const EngineShowSystemRequest& request);
 
-struct EngineShowCatalogRequest : EngineApiRequest {};
+struct EngineShowCatalogRequest : EngineApiRequest {
+  std::vector<SysInformationIparAgentLifecycleSource> ipar_agent_lifecycle;
+  std::vector<SysInformationIparMetricCounterSource> ipar_metric_counters;
+  std::vector<SysInformationIparTelemetryControlSource> ipar_telemetry_controls;
+  std::vector<SysInformationIparSlowPathReasonSource> ipar_slow_path_reasons;
+};
 struct EngineShowCatalogResult : EngineApiResult {};
 EngineShowCatalogResult EngineShowCatalog(const EngineShowCatalogRequest& request);
 

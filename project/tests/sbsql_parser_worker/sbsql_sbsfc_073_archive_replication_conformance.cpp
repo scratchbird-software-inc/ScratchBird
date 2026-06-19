@@ -558,6 +558,10 @@ int main() {
       Require(Contains(artifacts.envelope.payload, "\"option_list_present\":true"),
               "SBSFC-073 option row did not preserve option-list evidence");
     }
+    if (row.surface_id == "SBSQL-3F340C178247") {
+      Require(Contains(artifacts.envelope.payload, "\"restore_verify_only\":true"),
+              "SBSFC-073 RESTORE WITH VERIFY did not preserve verify-only mode");
+    }
   }
 
   RequireServerRoute();

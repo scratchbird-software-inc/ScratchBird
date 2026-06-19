@@ -69,6 +69,8 @@ struct ServerBootstrapConfig {
   std::string security_provider_state = "healthy";
   bool security_default_policy_installed = true;
   std::filesystem::path database_default_path;
+  std::filesystem::path database_resource_seed_pack_root;
+  std::filesystem::path database_policy_seed_pack_root;
   std::string database_runtime_scope_id;
   bool database_auto_create = false;
   std::string database_open_mode = "normal";
@@ -90,18 +92,23 @@ struct ServerBootstrapConfig {
   std::uint64_t listener_native_ready_timeout_ms = 5000;
   bool metrics_enabled = true;
   std::uint64_t metrics_flush_interval_ms = 5000;
-  std::string memory_policy_name = "server_production_default";
-  std::uint64_t memory_hard_limit_bytes = 256ull * 1024ull * 1024ull;
-  std::uint64_t memory_soft_limit_bytes = 192ull * 1024ull * 1024ull;
-  std::uint64_t memory_per_context_limit_bytes = 64ull * 1024ull * 1024ull;
-  std::uint64_t memory_page_buffer_pool_limit_bytes = 64ull * 1024ull * 1024ull;
+  std::string memory_policy_name = "default_local_server_memory_cache_v1";
+  std::uint64_t memory_hard_limit_bytes = 1024ull * 1024ull * 1024ull;
+  std::uint64_t memory_soft_limit_bytes = 768ull * 1024ull * 1024ull;
+  std::uint64_t memory_per_context_limit_bytes = 256ull * 1024ull * 1024ull;
+  std::uint64_t memory_page_buffer_pool_limit_bytes = 512ull * 1024ull * 1024ull;
+  std::uint64_t memory_min_startup_available_bytes = 1024ull * 1024ull * 1024ull;
   scratchbird::core::memory::AllocationFailureMode memory_failure_mode =
       scratchbird::core::memory::AllocationFailureMode::return_error;
   bool memory_track_allocations = true;
   bool memory_zero_memory_on_allocate = false;
   bool memory_zero_memory_on_release = true;
   bool memory_reject_over_soft_limit = false;
-  std::string memory_policy_provenance = "compiled_defaults";
+  bool memory_adaptive_page_cache_enabled = true;
+  bool memory_index_read_cache_enabled = true;
+  bool memory_trim_heap_on_disconnect = false;
+  std::string memory_policy_provenance =
+      "default_policy_pack:default-local-password:server_memory_cache_policy";
   std::uint64_t memory_policy_generation = 1;
   bool memory_enable_platform_memory_probe = true;
   bool memory_require_platform_memory_ceiling = false;
@@ -113,6 +120,7 @@ struct ServerBootstrapConfig {
   std::uint64_t sbps_max_frame_bytes = 1048576;
   std::uint64_t sbps_max_streams = 16;
   std::uint64_t sbps_hello_timeout_ms = 5000;
+  std::vector<std::string> server_agent_runtime_test_options;
   std::optional<std::filesystem::path> selected_config_path;
   std::string selected_config_source = "compiled_defaults";
 };

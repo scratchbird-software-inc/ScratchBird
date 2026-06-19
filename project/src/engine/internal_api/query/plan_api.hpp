@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "catalog/sys_information_projection.hpp"
 
 #include <cstddef>
 #include <string>
@@ -55,6 +56,10 @@ struct EnginePlanOperationRequest : EngineApiRequest {
   EngineApiU64 limit = 0;
   EngineApiU64 offset = 0;
   bool ascending = true;
+  std::vector<SysInformationIparAgentLifecycleSource> ipar_agent_lifecycle;
+  std::vector<SysInformationIparMetricCounterSource> ipar_metric_counters;
+  std::vector<SysInformationIparTelemetryControlSource> ipar_telemetry_controls;
+  std::vector<SysInformationIparSlowPathReasonSource> ipar_slow_path_reasons;
 };
 struct EnginePlanOperationResult : EngineApiResult {
   std::string plan_kind;

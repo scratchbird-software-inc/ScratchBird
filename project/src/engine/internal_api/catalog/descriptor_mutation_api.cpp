@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
+#include "catalog/name_registry.hpp"
 #include "catalog/pinned_descriptor_cache.hpp"
 
 namespace scratchbird::engine::internal_api {
@@ -48,6 +49,22 @@ EngineCatalogDescriptorMutationResult EngineCatalogDescriptorMutation(
       true,
       "descriptor_mutation_committed");
   if (!result.ok) return result;
+
+  const std::string fallback_name = ApiBehaviorPrimaryName(request, MutationObjectKind(request));
+  const std::string scope_uuid = request.target_schema.uuid.canonical.empty()
+                                     ? request.target_object.uuid.canonical
+                                     : request.target_schema.uuid.canonical;
+  const auto name_appended = PersistNameRegistryEntriesForObject(request.context,
+                                                                operation_id,
+                                                                result.primary_object.uuid.canonical,
+                                                                result.primary_object.object_kind,
+                                                                scope_uuid,
+                                                                request.localized_names,
+                                                                fallback_name);
+  if (name_appended.error) {
+    return MakeApiBehaviorDiagnostic<EngineCatalogDescriptorMutationResult>(
+        request.context, operation_id, name_appended);
+  }
 
   AddApiBehaviorEvidence(&result, "catalog_descriptor_mutation", operation_id);
   AddApiBehaviorEvidence(&result, "name_registry", result.primary_object.uuid.canonical);

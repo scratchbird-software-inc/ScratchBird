@@ -171,6 +171,8 @@ scratchbird::storage::database::DatabaseLifecycleRepairConfig LifecycleRepairCon
   config.allow_mutation = OptionBool(request, "allow_repair:", false) ||
                           OptionBool(request, "allow_mutation:", false) ||
                           OptionBool(request, "repair_execute:", false);
+  config.engine_read_identity_proof =
+      OptionBool(request, "engine_read_identity_proof:", false);
   return config;
 }
 
@@ -185,7 +187,9 @@ scratchbird::storage::database::DatabaseDropConfig LifecycleDropConfig(
   config.drop_mode = OptionValue(request, "drop_mode:");
   if (config.drop_mode.empty()) config.drop_mode = "logical";
   config.expected_database_uuid = OptionValue(request, "expected_database_uuid:");
-  if (config.expected_database_uuid.empty()) config.expected_database_uuid = request.context.database_uuid.canonical;
+  if (config.expected_database_uuid.empty() && OptionValue(request, "database_path:").empty()) {
+    config.expected_database_uuid = request.context.database_uuid.canonical;
+  }
   config.expected_filespace_uuid = OptionValue(request, "expected_filespace_uuid:");
   config.drop_safety_preconditions = OptionBool(request, "drop_safety_preconditions:", false);
   config.session_drain_complete = OptionBool(request, "session_drain_complete:", false);

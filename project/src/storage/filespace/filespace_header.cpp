@@ -549,13 +549,27 @@ PhysicalFilespaceCapacityGrowthResult ExtendPhysicalFilespaceCapacity(
   result.expected_capacity_after_bytes = expected_after_bytes;
 
   if (expected_after_bytes > size_before.size_bytes) {
-    const unsigned char zero = 0;
-    const auto extend = device.WriteAt(expected_after_bytes - 1, &zero, sizeof(zero));
-    if (!extend.ok()) {
-      result.status = extend.status;
-      result.diagnostic = extend.diagnostic;
+    result.extent_preallocation_offset_bytes = size_before.size_bytes;
+    result.extent_preallocation_bytes = expected_after_bytes - size_before.size_bytes;
+    const auto preallocated =
+        device.PreallocateExtent(result.extent_preallocation_offset_bytes,
+                                 result.extent_preallocation_bytes);
+    result.extent_preallocation_attempted =
+        preallocated.platform_preallocation_attempted;
+    result.extent_preallocation_succeeded =
+        preallocated.platform_preallocation_succeeded;
+    result.extent_preallocation_fallback_used =
+        preallocated.fallback_extension_used;
+    result.extent_preallocation_strategy = preallocated.strategy;
+    result.extent_preallocation_fallback_reason =
+        preallocated.fallback_reason;
+    if (!preallocated.ok()) {
+      result.status = preallocated.status;
+      result.diagnostic = preallocated.diagnostic;
       return result;
     }
+  } else {
+    result.extent_preallocation_strategy = "no_growth_needed";
   }
   result.physical_extension_completed = true;
 

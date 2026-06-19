@@ -206,6 +206,28 @@ void VerifyTokenCanonicalMetadata() {
           "SML-005 canonical token id missing");
 }
 
+void VerifyEmptyStringLiteralCanonicalStream() {
+  const auto cst = sbsql::BuildCst("SELECT '';");
+  if (cst.messages.has_errors()) {
+    std::cerr << sbsql::RenderMessageVectorSet(cst.messages);
+  }
+  Require(!cst.messages.has_errors(),
+          "SML-005 empty string literal canonical stream failed CST validation");
+  const auto empty_literal = std::find_if(
+      cst.canonical_element_stream.elements.begin(),
+      cst.canonical_element_stream.elements.end(),
+      [](const sbsql::CanonicalElement& element) {
+        return element.canonical_id == "SBSQL.TOKEN.STRING_LITERAL";
+      });
+  Require(empty_literal != cst.canonical_element_stream.elements.end(),
+          "SML-005 empty string literal canonical element missing");
+  Require(empty_literal->canonical_text == "''",
+          "SML-005 empty string literal canonical text must preserve literal syntax");
+  const auto validation = sbsql::ValidateCanonicalElementStream(cst.canonical_element_stream);
+  Require(validation.accepted,
+          "SML-005 empty string literal canonical element stream failed validation");
+}
+
 } // namespace
 
 int main() {
@@ -214,6 +236,7 @@ int main() {
   VerifyCanonicalStreamFeedsLowering();
   VerifyNonSelectCanonicalStreamKeepsStatementOrder();
   VerifyTokenCanonicalMetadata();
+  VerifyEmptyStringLiteralCanonicalStream();
   std::cout << "sbsql_canonical_element_stream_runtime_conformance=passed\n";
   return EXIT_SUCCESS;
 }

@@ -516,11 +516,11 @@ std::vector<MemoryCategory> ReservedMemoryCategories() {
 
 AllocationPolicy DefaultLocalEngineMemoryPolicy() {
   AllocationPolicy policy;
-  policy.policy_name = "local_engine_default_bounded";
-  policy.hard_limit_bytes = 256ull * 1024ull * 1024ull;
-  policy.soft_limit_bytes = 192ull * 1024ull * 1024ull;
-  policy.per_context_limit_bytes = 64ull * 1024ull * 1024ull;
-  policy.page_buffer_pool_limit_bytes = 64ull * 1024ull * 1024ull;
+  policy.policy_name = "default_local_server_memory_cache_v1";
+  policy.hard_limit_bytes = 1024ull * 1024ull * 1024ull;
+  policy.soft_limit_bytes = 768ull * 1024ull * 1024ull;
+  policy.per_context_limit_bytes = 256ull * 1024ull * 1024ull;
+  policy.page_buffer_pool_limit_bytes = 512ull * 1024ull * 1024ull;
   policy.failure_mode = AllocationFailureMode::return_error;
   policy.track_allocations = true;
   policy.zero_memory_on_allocate = false;

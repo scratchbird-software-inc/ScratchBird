@@ -10,6 +10,7 @@
 
 #include "api_diagnostics.hpp"
 #include "agents/index_garbage_cleanup_agent.hpp"
+#include "ipar_fault_injection.hpp"
 #include "local_transaction_store.hpp"
 #include "secondary_index_delta_merge.hpp"
 #include "transaction_inventory.hpp"
@@ -57,6 +58,35 @@ std::string MetadataStorePath(const EngineRequestContext& context) {
 
 std::string IndexStorePath(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_index_entries";
+}
+
+std::string ScopedRelationStoreRoot(const EngineRequestContext& context) {
+  return context.database_path + ".sb.mga_relation_scope";
+}
+
+std::string ScopedRelationSegmentName(const std::string& table_uuid) {
+  std::string name;
+  name.reserve(table_uuid.size());
+  for (const char ch : table_uuid) {
+    const bool safe = (ch >= 'a' && ch <= 'z') ||
+                      (ch >= 'A' && ch <= 'Z') ||
+                      (ch >= '0' && ch <= '9') ||
+                      ch == '-' || ch == '_';
+    name.push_back(safe ? ch : '_');
+  }
+  return name.empty() ? std::string("unknown") : name;
+}
+
+std::string ScopedRowStorePath(const EngineRequestContext& context,
+                               const std::string& table_uuid) {
+  return ScopedRelationStoreRoot(context) + "/" +
+         ScopedRelationSegmentName(table_uuid) + ".rows";
+}
+
+std::string ScopedIndexStorePath(const EngineRequestContext& context,
+                                 const std::string& table_uuid) {
+  return ScopedRelationStoreRoot(context) + "/" +
+         ScopedRelationSegmentName(table_uuid) + ".indexes";
 }
 
 std::string SecondaryIndexDeltaLedgerStorePath(const EngineRequestContext& context) {
@@ -107,6 +137,31 @@ bool AppendLine(const std::string& path, const std::string& line) {
   return static_cast<bool>(out);
 }
 
+bool AppendLines(const std::string& path,
+                 const std::vector<std::string>& lines,
+                 std::uint64_t* stream_opens,
+                 std::uint64_t* stream_flushes) {
+  if (lines.empty()) { return true; }
+  if (path.empty()) { return false; }
+  std::ofstream out(path, std::ios::app | std::ios::binary);
+  if (!out) { return false; }
+  if (stream_opens != nullptr) { ++(*stream_opens); }
+  for (const auto& line : lines) {
+    out << line << '\n';
+  }
+  out.flush();
+  if (stream_flushes != nullptr) { ++(*stream_flushes); }
+  return static_cast<bool>(out);
+}
+
+bool AppendScopedRelationLine(const std::string& path, const std::string& line) {
+  if (path.empty()) { return false; }
+  std::error_code ignored;
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path(),
+                                      ignored);
+  return AppendLine(path, line);
+}
+
 std::vector<std::string> ReadLines(const std::string& path) {
   std::vector<std::string> lines;
   std::ifstream in(path, std::ios::binary);
@@ -114,6 +169,12 @@ std::vector<std::string> ReadLines(const std::string& path) {
   std::string line;
   while (std::getline(in, line)) { lines.push_back(line); }
   return lines;
+}
+
+bool FileExistsAndNotEmpty(const std::string& path) {
+  std::error_code ignored;
+  return std::filesystem::exists(path, ignored) &&
+         std::filesystem::file_size(path, ignored) != 0;
 }
 
 std::vector<idx::byte> ReadBinaryFile(const std::string& path) {
@@ -1057,6 +1118,10 @@ bool StartsWith(const std::string& value, const std::string& prefix) {
   return value.rfind(prefix, 0) == 0;
 }
 
+bool IsMgaLargeValueLocator(const std::string& value) {
+  return StartsWith(value, "SBMGA_LARGE_VALUE:");
+}
+
 EngineApiDiagnostic OverlayMgaTransactionAuthority(const EngineRequestContext& context,
                                                    CrudState* state);
 
@@ -1159,7 +1224,7 @@ EngineApiDiagnostic ExpandMgaLargeValueLocators(const EngineRequestContext& cont
   for (auto& row : *rows) {
     for (auto& [field, value] : row.values) {
       (void)field;
-      if (!StartsWith(value, "SBMGA_LARGE_VALUE:")) { continue; }
+      if (!IsMgaLargeValueLocator(value)) { continue; }
       const auto payload_it = payloads.locator_payloads.find(value);
       if (payload_it == payloads.locator_payloads.end()) {
         if (payloads.reclaimed_locators.count(value) != 0) { continue; }
@@ -1177,9 +1242,16 @@ struct SavepointCutoffs {
   std::uint64_t index_event_sequence = 0;
 };
 
+struct SavepointRollbackRange {
+  SavepointCutoffs cutoffs;
+  std::uint64_t row_upper_event_sequence = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t metadata_upper_event_sequence = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t index_upper_event_sequence = std::numeric_limits<std::uint64_t>::max();
+};
+
 struct SavepointParsedState {
   std::map<std::uint64_t, std::map<std::string, SavepointCutoffs>> active_savepoints;
-  std::map<std::uint64_t, SavepointCutoffs> rollback_cutoffs;
+  std::map<std::uint64_t, std::vector<SavepointRollbackRange>> rollback_ranges;
 };
 
 SavepointParsedState ParseSavepoints(const EngineRequestContext& context) {
@@ -1200,10 +1272,65 @@ SavepointParsedState ParseSavepoints(const EngineRequestContext& context) {
       const auto tx_it = state.active_savepoints.find(tx);
       if (tx_it != state.active_savepoints.end()) { tx_it->second.erase(name); }
     } else if (kind == "ROLLBACK_TO_SAVEPOINT") {
-      state.rollback_cutoffs[tx] = cutoffs;
+      SavepointRollbackRange range;
+      range.cutoffs = cutoffs;
+      if (fields.size() >= 10) {
+        range.row_upper_event_sequence = ParseU64(fields[7]);
+        range.metadata_upper_event_sequence = ParseU64(fields[8]);
+        range.index_upper_event_sequence = ParseU64(fields[9]);
+      }
+      state.rollback_ranges[tx].push_back(range);
     }
   }
   return state;
+}
+
+bool RowEventRolledBackBySavepoint(const SavepointParsedState& savepoints,
+                                   std::uint64_t creator_tx,
+                                   std::uint64_t event_sequence) {
+  const auto ranges_it = savepoints.rollback_ranges.find(creator_tx);
+  if (ranges_it == savepoints.rollback_ranges.end()) {
+    return false;
+  }
+  for (const auto& range : ranges_it->second) {
+    if (event_sequence > range.cutoffs.row_event_sequence &&
+        event_sequence <= range.row_upper_event_sequence) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool MetadataEventRolledBackBySavepoint(const SavepointParsedState& savepoints,
+                                        std::uint64_t creator_tx,
+                                        std::uint64_t event_sequence) {
+  const auto ranges_it = savepoints.rollback_ranges.find(creator_tx);
+  if (ranges_it == savepoints.rollback_ranges.end()) {
+    return false;
+  }
+  for (const auto& range : ranges_it->second) {
+    if (event_sequence > range.cutoffs.metadata_event_sequence &&
+        event_sequence <= range.metadata_upper_event_sequence) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool IndexEventRolledBackBySavepoint(const SavepointParsedState& savepoints,
+                                     std::uint64_t creator_tx,
+                                     std::uint64_t event_sequence) {
+  const auto ranges_it = savepoints.rollback_ranges.find(creator_tx);
+  if (ranges_it == savepoints.rollback_ranges.end()) {
+    return false;
+  }
+  for (const auto& range : ranges_it->second) {
+    if (event_sequence > range.cutoffs.index_event_sequence &&
+        event_sequence <= range.index_upper_event_sequence) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::map<std::string, std::vector<std::pair<std::string, std::string>>> LoadDescriptorFieldsByRelation(
@@ -1443,9 +1570,9 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
       table.temporary_scope = fields[8];
       table.temporary_session_uuid = fields[9];
       table.on_commit_action = fields[10];
-      const auto cutoff_it = savepoints.rollback_cutoffs.find(table.creator_tx);
-      if (cutoff_it != savepoints.rollback_cutoffs.end() &&
-          table.event_sequence > cutoff_it->second.metadata_event_sequence) {
+      if (MetadataEventRolledBackBySavepoint(savepoints,
+                                             table.creator_tx,
+                                             table.event_sequence)) {
         continue;
       }
       state->tables.push_back(std::move(table));
@@ -1475,9 +1602,9 @@ EngineApiDiagnostic LoadMgaMetadata(CrudState* state, const EngineRequestContext
       index.unique = fields[15] == "1";
       index.approximate = IsApproximateCrudIndexFamily(index.family);
       index.exact_fallback = index.approximate || fields[16] == "1";
-      const auto cutoff_it = savepoints.rollback_cutoffs.find(index.creator_tx);
-      if (cutoff_it != savepoints.rollback_cutoffs.end() &&
-          index.event_sequence > cutoff_it->second.metadata_event_sequence) {
+      if (MetadataEventRolledBackBySavepoint(savepoints,
+                                             index.creator_tx,
+                                             index.event_sequence)) {
         continue;
       }
       state->indexes.push_back(std::move(index));
@@ -1495,10 +1622,171 @@ std::string EncodeStringListAsCrudPairs(const std::vector<std::string>& values) 
   return EncodeCrudPairs(pairs);
 }
 
+std::string RelationDescriptorTrimAscii(std::string value) {
+  std::size_t first = 0;
+  while (first < value.size() &&
+         (value[first] == ' ' || value[first] == '\t' ||
+          value[first] == '\n' || value[first] == '\r')) {
+    ++first;
+  }
+  std::size_t last = value.size();
+  while (last > first &&
+         (value[last - 1] == ' ' || value[last - 1] == '\t' ||
+          value[last - 1] == '\n' || value[last - 1] == '\r')) {
+    --last;
+  }
+  return value.substr(first, last - first);
+}
+
+std::string RelationDescriptorLowerAscii(std::string value) {
+  for (char& ch : value) {
+    if (ch >= 'A' && ch <= 'Z') {
+      ch = static_cast<char>(ch - 'A' + 'a');
+    }
+  }
+  return value;
+}
+
+std::map<std::string, std::string> RelationDescriptorFields(
+    const std::string& descriptor) {
+  std::map<std::string, std::string> fields;
+  std::string current;
+  auto flush = [&fields](std::string part) {
+    part = RelationDescriptorTrimAscii(std::move(part));
+    if (part.empty()) { return; }
+    const auto equals = part.find('=');
+    if (equals == std::string::npos) {
+      fields[RelationDescriptorLowerAscii(std::move(part))] = "true";
+      return;
+    }
+    fields[RelationDescriptorLowerAscii(
+        RelationDescriptorTrimAscii(part.substr(0, equals)))] =
+            RelationDescriptorTrimAscii(part.substr(equals + 1));
+  };
+  for (char ch : descriptor) {
+    if (ch == ';') {
+      flush(current);
+      current.clear();
+    } else {
+      current.push_back(ch);
+    }
+  }
+  flush(current);
+  return fields;
+}
+
+std::optional<std::string> ParentTableUuidFromRelationDescriptor(
+    const std::string& descriptor) {
+  const auto fields = RelationDescriptorFields(descriptor);
+  auto field = [&fields](const char* key) -> std::string {
+    const auto found = fields.find(key);
+    return found == fields.end() ? std::string{} : found->second;
+  };
+  std::string parent = field("referenced_table_uuid");
+  if (parent.empty()) { parent = field("foreign_table_uuid"); }
+  if (parent.empty()) { parent = field("foreign_table"); }
+  if (!parent.empty()) { return parent; }
+  std::string envelope = field("foreign_key");
+  if (envelope.empty()) { envelope = field("references"); }
+  if (envelope.empty()) { envelope = field("fk"); }
+  if (envelope.empty()) { return std::nullopt; }
+  envelope = RelationDescriptorTrimAscii(std::move(envelope));
+  const auto colon = envelope.find(':');
+  const auto dot = envelope.rfind('.');
+  const auto open = envelope.find('(');
+  if (colon != std::string::npos) {
+    parent = envelope.substr(0, colon);
+  } else if (dot != std::string::npos) {
+    parent = envelope.substr(0, dot);
+  } else if (open != std::string::npos) {
+    parent = envelope.substr(0, open);
+  }
+  parent = RelationDescriptorTrimAscii(std::move(parent));
+  if (parent.empty()) { return std::nullopt; }
+  return parent;
+}
+
+std::set<std::string> InsertTargetRelationScope(const EngineRequestContext& context,
+                                                const CrudState& metadata,
+                                                const std::string& table_uuid) {
+  std::set<std::string> table_scope;
+  if (table_uuid.empty()) { return table_scope; }
+  table_scope.insert(table_uuid);
+  const auto table = FindVisibleCrudTable(metadata,
+                                          table_uuid,
+                                          context.local_transaction_id);
+  if (!table) { return table_scope; }
+  for (const auto& [column_name, descriptor] : table->columns) {
+    (void)column_name;
+    const auto parent = ParentTableUuidFromRelationDescriptor(descriptor);
+    if (parent && !parent->empty()) {
+      table_scope.insert(*parent);
+    }
+  }
+  for (const auto& candidate : metadata.tables) {
+    if (candidate.table_uuid.empty() || candidate.table_uuid == table_uuid) {
+      continue;
+    }
+    if (!CrudCreatorVisible(metadata,
+                            candidate.creator_tx,
+                            candidate.event_sequence,
+                            context.local_transaction_id)) {
+      continue;
+    }
+    for (const auto& [column_name, descriptor] : candidate.columns) {
+      (void)column_name;
+      const auto parent = ParentTableUuidFromRelationDescriptor(descriptor);
+      if (parent && *parent == table_uuid) {
+        table_scope.insert(candidate.table_uuid);
+        break;
+      }
+    }
+  }
+  return table_scope;
+}
+
+bool RowsContainLargeValueLocators(const std::vector<CrudRowVersionRecord>& rows) {
+  for (const auto& row : rows) {
+    for (const auto& [field, value] : row.values) {
+      (void)field;
+      if (CrudValueIsLargeValueLocator(value)) {
+        return true;
+      }
+      if (IsMgaLargeValueLocator(value)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void AddRelationLoadEvidence(MgaRelationStoreResult* result,
+                             const std::string& route) {
+  if (result == nullptr) { return; }
+  result->evidence.push_back({"mga_relation_state_load_route", route});
+  result->evidence.push_back({"mga_relation_state_full_load",
+                              result->full_state_load ? "true" : "false"});
+  result->evidence.push_back({"mga_relation_state_scoped_load",
+                              result->scoped_state_load ? "true" : "false"});
+  result->evidence.push_back({"mga_relation_state_row_versions_scanned",
+                              std::to_string(result->row_versions_scanned)});
+  result->evidence.push_back({"mga_relation_state_row_versions_retained",
+                              std::to_string(result->row_versions_retained)});
+  result->evidence.push_back({"mga_relation_state_index_entries_scanned",
+                              std::to_string(result->index_entries_scanned)});
+  result->evidence.push_back({"mga_relation_state_index_entries_retained",
+                              std::to_string(result->index_entries_retained)});
+  result->evidence.push_back({"mga_relation_state_scoped_physical_segments",
+                              result->scoped_physical_segments_used ? "true" : "false"});
+  result->evidence.push_back({"mga_relation_state_scoped_physical_fallback",
+                              result->scoped_physical_segments_fallback ? "true" : "false"});
+}
+
 }  // namespace
 
 MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& context) {
   MgaRelationStoreResult result;
+  result.full_state_load = true;
   if (context.database_path.empty()) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
     return result;
@@ -1517,6 +1805,7 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
   for (const auto& line : ReadLines(RowStorePath(context))) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 11 || fields[0] != kRowStoreMagic || fields[1] != "ROW_VERSION") { continue; }
+    ++result.row_versions_scanned;
     CrudRowVersionRecord row;
     row.creator_tx = ParseU64(fields[2]);
     row.event_sequence = ParseU64(fields[3]);
@@ -1531,17 +1820,19 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     if (fields.size() >= 12) {
       row.temporary_session_uuid = fields[11];
     }
-    const auto cutoff_it = savepoints.rollback_cutoffs.find(row.creator_tx);
-    if (cutoff_it != savepoints.rollback_cutoffs.end() &&
-        row.event_sequence > cutoff_it->second.row_event_sequence) {
+    if (RowEventRolledBackBySavepoint(savepoints,
+                                      row.creator_tx,
+                                      row.event_sequence)) {
       continue;
     }
     result.state.max_row_event_sequence = std::max(result.state.max_row_event_sequence, row.event_sequence);
     result.state.row_versions.push_back(std::move(row));
+    ++result.row_versions_retained;
   }
   for (const auto& line : ReadLines(IndexStorePath(context))) {
     const auto fields = SplitTabs(line);
     if (fields.size() < 13 || fields[0] != kRowStoreMagic || fields[1] != "INDEX_ENTRY") { continue; }
+    ++result.index_entries_scanned;
     CrudIndexEntryRecord entry;
     entry.creator_tx = ParseU64(fields[2]);
     entry.event_sequence = ParseU64(fields[3]);
@@ -1555,13 +1846,14 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
     entry.payload_value = fields[10];
     entry.row_uuid = fields[11];
     entry.version_uuid = fields[12];
-    const auto cutoff_it = savepoints.rollback_cutoffs.find(entry.creator_tx);
-    if (cutoff_it != savepoints.rollback_cutoffs.end() &&
-        entry.event_sequence > cutoff_it->second.index_event_sequence) {
+    if (IndexEventRolledBackBySavepoint(savepoints,
+                                        entry.creator_tx,
+                                        entry.event_sequence)) {
       continue;
     }
     result.state.max_index_event_sequence = std::max(result.state.max_index_event_sequence, entry.event_sequence);
     result.state.index_entries.push_back(std::move(entry));
+    ++result.index_entries_retained;
   }
   const auto retired_tables =
       VisibleRetiredTemporaryTableMetadata(context, result.state.crud_metadata);
@@ -1580,10 +1872,12 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
                        return retired_tables.count(entry.table_uuid) != 0;
                      }),
       result.state.index_entries.end());
-  const auto expanded_large_values = ExpandMgaLargeValueLocators(context, &result.state.row_versions);
-  if (expanded_large_values.error) {
-    result.diagnostic = expanded_large_values;
-    return result;
+  if (RowsContainLargeValueLocators(result.state.row_versions)) {
+    const auto expanded_large_values = ExpandMgaLargeValueLocators(context, &result.state.row_versions);
+    if (expanded_large_values.error) {
+      result.diagnostic = expanded_large_values;
+      return result;
+    }
   }
   const auto chain_status = ValidateMgaRowVersionChains(BuildCrudCompatibilityStateFromMga(result.state));
   if (chain_status.error) {
@@ -1593,6 +1887,158 @@ MgaRelationStoreResult LoadMgaRelationStoreState(const EngineRequestContext& con
   FilterMgaTemporaryObjectsForSession(context, &result.state.crud_metadata);
   result.ok = true;
   result.diagnostic = OkDiagnostic();
+  AddRelationLoadEvidence(&result, "full");
+  return result;
+}
+
+MgaRelationStoreResult LoadMgaRelationStoreStateForInsertTarget(
+    const EngineRequestContext& context,
+    const std::string& table_uuid) {
+  MgaRelationStoreResult result;
+  result.scoped_state_load = true;
+  if (context.database_path.empty()) {
+    result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store", "database_path_required");
+    return result;
+  }
+  if (table_uuid.empty()) {
+    result.diagnostic = MakeInvalidRequestDiagnostic("mga.row_store", "target_table_uuid_required");
+    return result;
+  }
+  const auto metadata = LoadMgaMetadata(&result.state.crud_metadata, context);
+  if (metadata.error) {
+    result.diagnostic = metadata;
+    return result;
+  }
+  const auto authority = OverlayMgaTransactionAuthority(context, &result.state.crud_metadata);
+  if (authority.error) {
+    result.diagnostic = authority;
+    return result;
+  }
+  const auto retired_tables =
+      VisibleRetiredTemporaryTableMetadata(context, result.state.crud_metadata);
+  FilterVisibleRetiredTemporaryMetadata(context, &result.state.crud_metadata);
+  const std::set<std::string> table_scope =
+      InsertTargetRelationScope(context, result.state.crud_metadata, table_uuid);
+  const auto savepoints = ParseSavepoints(context);
+
+  auto scoped_lines = [&context, &table_scope](bool row_store,
+                                               bool* used_segments) {
+    std::vector<std::string> lines;
+    bool used = false;
+    for (const auto& scoped_table_uuid : table_scope) {
+      const std::string path = row_store
+                                   ? ScopedRowStorePath(context, scoped_table_uuid)
+                                   : ScopedIndexStorePath(context, scoped_table_uuid);
+      if (!FileExistsAndNotEmpty(path)) {
+        continue;
+      }
+      used = true;
+      const auto segment_lines = ReadLines(path);
+      lines.insert(lines.end(), segment_lines.begin(), segment_lines.end());
+    }
+    if (used_segments != nullptr) {
+      *used_segments = used;
+    }
+    return lines;
+  };
+
+  bool row_segments_used = false;
+  bool index_segments_used = false;
+  auto row_lines = scoped_lines(true, &row_segments_used);
+  auto index_lines = scoped_lines(false, &index_segments_used);
+  const bool global_row_fallback = !row_segments_used;
+  const bool global_index_fallback = !index_segments_used;
+  if (global_row_fallback) {
+    row_lines = ReadLines(RowStorePath(context));
+  }
+  if (global_index_fallback) {
+    index_lines = ReadLines(IndexStorePath(context));
+  }
+  result.scoped_physical_segments_used = row_segments_used || index_segments_used;
+  result.scoped_physical_segments_fallback =
+      global_row_fallback || global_index_fallback;
+
+  for (const auto& line : row_lines) {
+    const auto fields = SplitTabs(line);
+    if (fields.size() < 11 || fields[0] != kRowStoreMagic || fields[1] != "ROW_VERSION") { continue; }
+    ++result.row_versions_scanned;
+    if (table_scope.count(fields[4]) == 0 || retired_tables.count(fields[4]) != 0) {
+      continue;
+    }
+    CrudRowVersionRecord row;
+    row.creator_tx = ParseU64(fields[2]);
+    row.event_sequence = ParseU64(fields[3]);
+    row.sequence = row.event_sequence;
+    row.table_uuid = fields[4];
+    row.row_uuid = fields[5];
+    row.version_uuid = fields[6];
+    row.deleted = fields[7] == "1";
+    row.previous_version_uuid = fields[8];
+    row.previous_sequence = ParseU64(fields[9]);
+    row.values = DecodeCrudPairs(fields[10]);
+    if (fields.size() >= 12) {
+      row.temporary_session_uuid = fields[11];
+    }
+    if (RowEventRolledBackBySavepoint(savepoints,
+                                      row.creator_tx,
+                                      row.event_sequence)) {
+      continue;
+    }
+    result.state.max_row_event_sequence =
+        std::max(result.state.max_row_event_sequence, row.event_sequence);
+    result.state.row_versions.push_back(std::move(row));
+    ++result.row_versions_retained;
+  }
+
+  for (const auto& line : index_lines) {
+    const auto fields = SplitTabs(line);
+    if (fields.size() < 13 || fields[0] != kRowStoreMagic || fields[1] != "INDEX_ENTRY") { continue; }
+    ++result.index_entries_scanned;
+    if (table_scope.count(fields[5]) == 0 || retired_tables.count(fields[5]) != 0) {
+      continue;
+    }
+    CrudIndexEntryRecord entry;
+    entry.creator_tx = ParseU64(fields[2]);
+    entry.event_sequence = ParseU64(fields[3]);
+    entry.sequence = entry.event_sequence;
+    entry.index_uuid = fields[4];
+    entry.table_uuid = fields[5];
+    entry.column_name = fields[6];
+    entry.family = fields[7];
+    entry.entry_kind = fields[8];
+    entry.key_value = fields[9];
+    entry.payload_value = fields[10];
+    entry.row_uuid = fields[11];
+    entry.version_uuid = fields[12];
+    if (IndexEventRolledBackBySavepoint(savepoints,
+                                        entry.creator_tx,
+                                        entry.event_sequence)) {
+      continue;
+    }
+    result.state.max_index_event_sequence =
+        std::max(result.state.max_index_event_sequence, entry.event_sequence);
+    result.state.index_entries.push_back(std::move(entry));
+    ++result.index_entries_retained;
+  }
+
+  if (RowsContainLargeValueLocators(result.state.row_versions)) {
+    const auto expanded_large_values =
+        ExpandMgaLargeValueLocators(context, &result.state.row_versions);
+    if (expanded_large_values.error) {
+      result.diagnostic = expanded_large_values;
+      return result;
+    }
+  }
+  const auto chain_status =
+      ValidateMgaRowVersionChains(BuildCrudCompatibilityStateFromMga(result.state));
+  if (chain_status.error) {
+    result.diagnostic = chain_status;
+    return result;
+  }
+  FilterMgaTemporaryObjectsForSession(context, &result.state.crud_metadata);
+  result.ok = true;
+  result.diagnostic = OkDiagnostic();
+  AddRelationLoadEvidence(&result, "insert_target_scoped");
   return result;
 }
 
@@ -2241,6 +2687,9 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendRowVersions(
     if (!impl_->row_out) {
       return MakeInvalidRequestDiagnostic("mga.row_store", "row_version_append_failed");
     }
+    (void)AppendScopedRelationLine(
+        ScopedRowStorePath(impl_->context, writable.table_uuid),
+        line);
     impl_->row_dirty = true;
     ++impl_->counters.row_versions_appended;
     if (written_event_sequences != nullptr) {
@@ -2319,6 +2768,9 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendIndexEntryBatches(
         if (!impl_->index_out) {
           return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
         }
+        (void)AppendScopedRelationLine(
+            ScopedIndexStorePath(impl_->context, table_uuid),
+            line);
         impl_->index_dirty = true;
         ++impl_->counters.index_entries_appended;
       }
@@ -2380,6 +2832,9 @@ EngineApiDiagnostic MgaRelationHotAppendContext::AppendExactIndexEntryBatches(
       if (!impl_->index_out) {
         return MakeInvalidRequestDiagnostic("mga.index_store", "index_entry_append_failed");
       }
+      (void)AppendScopedRelationLine(
+          ScopedIndexStorePath(impl_->context, table_uuid),
+          line);
       impl_->index_dirty = true;
       ++impl_->counters.index_entries_appended;
     }
@@ -2798,6 +3253,22 @@ MgaSecondaryIndexDeltaMergeAgentResult MergeMgaSecondaryIndexDeltasForIndex(
                                               recovery.stable_reason);
     AddMergeEvidence(&result.evidence, "mga_secondary_index_delta_merge_refused",
                      result.throttle_or_refusal_reason);
+    return result;
+  }
+  if (request.ipar_fault_injection_point == "secondary_merge") {
+    result.throttle_or_refusal_reason = "ipar_fault_injection_secondary_merge";
+    result.diagnostic = IparFaultDiagnostic("mga.secondary_index_delta_merge",
+                                            "secondary_merge",
+                                            "phase=before_merge_publish");
+    AddMergeEvidence(&result.evidence,
+                     "mga_secondary_index_delta_merge_refused",
+                     result.throttle_or_refusal_reason);
+    AddMergeEvidence(&result.evidence,
+                     "mga_secondary_index_delta_merge_authority",
+                     kIparP706Authority);
+    AppendIparFaultEvidence(&result.evidence,
+                            "secondary_merge",
+                            "retain_delta_overlay_or_retry_under_inventory_horizon");
     return result;
   }
 
@@ -3687,55 +4158,147 @@ EngineApiDiagnostic PersistMgaLargeValuesForRow(const EngineRequestContext& cont
                                                 bool force_large_value,
                                                 std::vector<std::pair<std::string, std::string>>* values,
                                                 std::vector<EngineEvidenceReference>* evidence) {
-  if (values == nullptr) {
-    return MakeInvalidRequestDiagnostic("mga.large_value", "values_required");
+  MgaLargeValuePersistBatchCounters counters;
+  return PersistMgaLargeValuesForRows(
+      context,
+      {MgaLargeValuePersistBatchRowInput{table_uuid,
+                                         row_uuid,
+                                         version_uuid,
+                                         force_large_value,
+                                         values}},
+      &counters,
+      evidence);
+}
+
+EngineApiDiagnostic PersistMgaLargeValuesForRows(
+    const EngineRequestContext& context,
+    const std::vector<MgaLargeValuePersistBatchRowInput>& rows,
+    MgaLargeValuePersistBatchCounters* counters,
+    std::vector<EngineEvidenceReference>* evidence) {
+  MgaLargeValuePersistBatchCounters local_counters;
+  if (counters == nullptr) {
+    counters = &local_counters;
   }
-  bool force_one_remaining = force_large_value;
-  while (EncodedValueBytes(*values) > kCrudVerticalSliceMaxEncodedValueBytes || force_one_remaining) {
-    auto selected = values->end();
-    for (auto it = values->begin(); it != values->end(); ++it) {
-      if (it->second == "<NULL>" || CrudValueIsLargeValueLocator(it->second)) { continue; }
-      if (selected == values->end() || it->second.size() > selected->second.size()) { selected = it; }
+  *counters = MgaLargeValuePersistBatchCounters{};
+  counters->rows_seen = static_cast<std::uint64_t>(rows.size());
+
+  struct PendingValueMutation {
+    std::vector<std::pair<std::string, std::string>>* values = nullptr;
+    std::vector<std::pair<std::string, std::string>> replacement_values;
+  };
+
+  std::vector<PendingValueMutation> pending_mutations;
+  pending_mutations.reserve(rows.size());
+  std::vector<EngineEvidenceReference> pending_evidence;
+  std::vector<std::string> lines;
+
+  for (const auto& row : rows) {
+    if (row.values == nullptr) {
+      return MakeInvalidRequestDiagnostic("mga.large_value", "values_required");
     }
-    if (selected == values->end()) {
-      return MakeInvalidRequestDiagnostic("mga.large_value", "no_overflow_candidate_available");
-    }
-    force_one_remaining = false;
-    const std::string original = selected->second;
-    const std::string overflow_uuid = GenerateCrudEngineUuid("object");
-    const std::string content_hash = std::to_string(ChecksumText(original));
-    const std::uint64_t total_bytes = static_cast<std::uint64_t>(original.size());
-    const std::string value_line = JoinLine({kRowStoreMagic,
-                                             "LARGE_VALUE",
-                                             std::to_string(context.local_transaction_id),
-                                             overflow_uuid,
-                                             table_uuid,
-                                             row_uuid,
-                                             version_uuid,
-                                             selected->first,
-                                             std::to_string(total_bytes),
-                                             content_hash,
-                                             "durable_uncommitted"});
-    if (!AppendLine(LargeValueStorePath(context), value_line)) {
-      return MakeInvalidRequestDiagnostic("mga.large_value", "large_value_append_failed");
-    }
-    std::uint64_t ordinal = 0;
-    for (std::size_t offset = 0; offset < original.size(); offset += kMgaLargeValueChunkBytes) {
-      const std::size_t end = std::min<std::size_t>(original.size(), offset + kMgaLargeValueChunkBytes);
-      const std::string fragment = original.substr(offset, end - offset);
-      const std::string chunk_line = JoinLine({kRowStoreMagic,
-                                               "LARGE_VALUE_CHUNK",
-                                               std::to_string(context.local_transaction_id),
-                                               overflow_uuid,
-                                               std::to_string(ordinal++),
-                                               EncodeCrudText(fragment),
-                                               std::to_string(ChecksumText(fragment))});
-      if (!AppendLine(LargeValueStorePath(context), chunk_line)) {
-        return MakeInvalidRequestDiagnostic("mga.large_value", "large_value_chunk_append_failed");
+    PendingValueMutation mutation;
+    mutation.values = row.values;
+    mutation.replacement_values = *row.values;
+    bool force_one_remaining = row.force_large_value;
+    while (EncodedValueBytes(mutation.replacement_values) >
+               kCrudVerticalSliceMaxEncodedValueBytes ||
+           force_one_remaining) {
+      auto selected = mutation.replacement_values.end();
+      for (auto it = mutation.replacement_values.begin();
+           it != mutation.replacement_values.end();
+           ++it) {
+        if (it->second == "<NULL>" ||
+            CrudValueIsLargeValueLocator(it->second) ||
+            IsMgaLargeValueLocator(it->second)) {
+          continue;
+        }
+        if (selected == mutation.replacement_values.end() ||
+            it->second.size() > selected->second.size()) {
+          selected = it;
+        }
       }
+      if (selected == mutation.replacement_values.end()) {
+        return MakeInvalidRequestDiagnostic("mga.large_value",
+                                            "no_overflow_candidate_available");
+      }
+
+      force_one_remaining = false;
+      const std::string original = selected->second;
+      const std::string overflow_uuid = GenerateCrudEngineUuid("object");
+      const std::string content_hash = std::to_string(ChecksumText(original));
+      const std::uint64_t total_bytes =
+          static_cast<std::uint64_t>(original.size());
+      lines.push_back(JoinLine({kRowStoreMagic,
+                                "LARGE_VALUE",
+                                std::to_string(context.local_transaction_id),
+                                overflow_uuid,
+                                row.table_uuid,
+                                row.row_uuid,
+                                row.version_uuid,
+                                selected->first,
+                                std::to_string(total_bytes),
+                                content_hash,
+                                "durable_uncommitted"}));
+      ++counters->values_overflowed;
+      counters->payload_bytes += total_bytes;
+
+      std::uint64_t ordinal = 0;
+      for (std::size_t offset = 0; offset < original.size();
+           offset += kMgaLargeValueChunkBytes) {
+        const std::size_t end =
+            std::min<std::size_t>(original.size(),
+                                  offset + kMgaLargeValueChunkBytes);
+        const std::string fragment = original.substr(offset, end - offset);
+        lines.push_back(JoinLine({kRowStoreMagic,
+                                  "LARGE_VALUE_CHUNK",
+                                  std::to_string(context.local_transaction_id),
+                                  overflow_uuid,
+                                  std::to_string(ordinal++),
+                                  EncodeCrudText(fragment),
+                                  std::to_string(ChecksumText(fragment))}));
+        ++counters->chunks_appended;
+      }
+      selected->second = MakeMgaLargeValueLocator(overflow_uuid,
+                                                  content_hash,
+                                                  total_bytes);
+      pending_evidence.push_back({"mga_large_value_overflow", overflow_uuid});
     }
-    selected->second = MakeMgaLargeValueLocator(overflow_uuid, content_hash, total_bytes);
-    if (evidence != nullptr) { evidence->push_back({"mga_large_value_overflow", overflow_uuid}); }
+    pending_mutations.push_back(std::move(mutation));
+  }
+
+  counters->preallocated_chunk_slots = counters->chunks_appended;
+  counters->store_lines_appended = static_cast<std::uint64_t>(lines.size());
+  if (!AppendLines(LargeValueStorePath(context),
+                   lines,
+                   &counters->stream_opens,
+                   &counters->stream_flushes)) {
+    return MakeInvalidRequestDiagnostic("mga.large_value",
+                                        "large_value_batch_append_failed");
+  }
+
+  for (auto& mutation : pending_mutations) {
+    *mutation.values = std::move(mutation.replacement_values);
+  }
+
+  if (evidence != nullptr && counters->values_overflowed != 0) {
+    evidence->insert(evidence->end(),
+                     pending_evidence.begin(),
+                     pending_evidence.end());
+    evidence->push_back({"mga_large_value_batch_writer", "window"});
+    evidence->push_back({"mga_large_value_batch_rows",
+                         std::to_string(counters->rows_seen)});
+    evidence->push_back({"mga_large_value_batch_overflows",
+                         std::to_string(counters->values_overflowed)});
+    evidence->push_back({"mga_large_value_batch_chunks",
+                         std::to_string(counters->chunks_appended)});
+    evidence->push_back({"mga_large_value_batch_preallocated_chunks",
+                         std::to_string(counters->preallocated_chunk_slots)});
+    evidence->push_back({"mga_large_value_batch_payload_bytes",
+                         std::to_string(counters->payload_bytes)});
+    evidence->push_back({"mga_large_value_batch_stream_opens",
+                         std::to_string(counters->stream_opens)});
+    evidence->push_back({"mga_large_value_batch_stream_flushes",
+                         std::to_string(counters->stream_flushes)});
   }
   return OkDiagnostic();
 }
@@ -3962,13 +4525,19 @@ EngineApiDiagnostic RollbackToMgaSavepointMarker(const EngineRequestContext& con
   if (savepoint_it == tx_it->second.end()) {
     return MakeInvalidRequestDiagnostic("transaction.rollback_to_savepoint", "savepoint_not_found");
   }
+  const std::uint64_t row_upper = NextRowEventSequence(context) - 1;
+  const std::uint64_t metadata_upper = NextMetadataEventSequence(context) - 1;
+  const std::uint64_t index_upper = NextIndexEventSequence(context) - 1;
   const std::string line = JoinLine({kRowStoreMagic,
                                      "ROLLBACK_TO_SAVEPOINT",
                                      std::to_string(context.local_transaction_id),
                                      EncodeCrudText(savepoint_name),
                                      std::to_string(savepoint_it->second.row_event_sequence),
                                      std::to_string(savepoint_it->second.metadata_event_sequence),
-                                     std::to_string(savepoint_it->second.index_event_sequence)});
+                                     std::to_string(savepoint_it->second.index_event_sequence),
+                                     std::to_string(row_upper),
+                                     std::to_string(metadata_upper),
+                                     std::to_string(index_upper)});
   if (!AppendLine(SavepointStorePath(context), line)) {
     return MakeInvalidRequestDiagnostic("transaction.rollback_to_savepoint", "savepoint_rollback_append_failed");
   }

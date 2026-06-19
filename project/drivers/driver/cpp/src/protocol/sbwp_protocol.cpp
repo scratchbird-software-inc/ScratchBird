@@ -207,6 +207,27 @@ void appendLpString(std::vector<uint8_t>& out, const std::string& value) {
     out.insert(out.end(), value.begin(), value.end());
 }
 
+void appendU16String(std::vector<uint8_t>& out, const std::string& value) {
+    appendU16(out, static_cast<uint16_t>(value.size()));
+    out.insert(out.end(), value.begin(), value.end());
+}
+
+bool readU16String(const std::vector<uint8_t>& payload,
+                   size_t& offset,
+                   std::string& value) {
+    if (offset + 2 > payload.size()) {
+        return false;
+    }
+    const uint16_t length = readU16(payload.data() + offset);
+    offset += 2;
+    if (offset + length > payload.size()) {
+        return false;
+    }
+    value.assign(reinterpret_cast<const char*>(payload.data() + offset), length);
+    offset += length;
+    return true;
+}
+
 } // namespace
 
 std::vector<uint8_t> buildP1StartupPayload(uint64_t client_features,
@@ -473,9 +494,57 @@ std::vector<uint8_t> buildTxnCommitPayload(uint8_t flags) {
     return payload;
 }
 
+std::vector<uint8_t> buildTxnCommitPayload(const TxnCommitRequest& request) {
+    std::vector<uint8_t> payload(36);
+    payload[0] = request.legacy_flags;
+    payload[1] = kTxnFinalityPayloadVersion;
+    writeU16(payload, 2, request.contract_flags);
+    std::memcpy(payload.data() + 4,
+                request.idempotency_key.data(),
+                request.idempotency_key.size());
+    writeU64(payload, 20, request.request_fingerprint);
+    writeU64(payload, 28, request.expected_txn_id);
+    return payload;
+}
+
 std::vector<uint8_t> buildTxnRollbackPayload(uint8_t flags) {
     std::vector<uint8_t> payload(4);
     payload[0] = flags;
+    return payload;
+}
+
+std::vector<uint8_t> buildTxnFinalityQueryPayload(const TxnFinalityQuery& query) {
+    std::vector<uint8_t> payload(44);
+    payload[0] = kTxnFinalityPayloadVersion;
+    payload[1] = 0;
+    writeU16(payload, 2, query.flags);
+    std::memcpy(payload.data() + 4,
+                query.idempotency_key.data(),
+                query.idempotency_key.size());
+    std::memcpy(payload.data() + 20,
+                query.finality_token.data(),
+                query.finality_token.size());
+    writeU64(payload, 36, query.expected_txn_id);
+    return payload;
+}
+
+std::vector<uint8_t> buildTxnFinalityStatusPayload(const TxnFinalityStatus& status) {
+    std::vector<uint8_t> payload;
+    payload.reserve(64 + status.diagnostic_code.size() + status.detail.size());
+    payload.push_back(kTxnFinalityPayloadVersion);
+    payload.push_back(static_cast<uint8_t>(status.state));
+    appendU16(payload, status.flags);
+    payload.insert(payload.end(),
+                   status.idempotency_key.begin(),
+                   status.idempotency_key.end());
+    payload.insert(payload.end(),
+                   status.finality_token.begin(),
+                   status.finality_token.end());
+    appendU64(payload, status.request_fingerprint);
+    appendU64(payload, status.original_txn_id);
+    appendU64(payload, status.replacement_txn_id);
+    appendU16String(payload, status.diagnostic_code);
+    appendU16String(payload, status.detail);
     return payload;
 }
 
@@ -566,6 +635,47 @@ std::vector<uint8_t> buildCancelPayload(uint32_t cancel_type, uint32_t target_se
     writeU32(payload, 0, cancel_type);
     writeU32(payload, 4, target_seq);
     return payload;
+}
+
+std::vector<uint8_t> buildCopyDataPayload(const std::vector<uint8_t>& data) {
+    return data;
+}
+
+std::vector<uint8_t> buildCopyDonePayload() {
+    return {};
+}
+
+std::vector<uint8_t> buildCopyFailPayload(const std::string& error_message) {
+    std::vector<uint8_t> payload(4 + error_message.size());
+    writeU32(payload, 0, static_cast<uint32_t>(error_message.size()));
+    if (!error_message.empty()) {
+        std::memcpy(payload.data() + 4, error_message.data(), error_message.size());
+    }
+    return payload;
+}
+
+std::vector<uint8_t> buildCopyInResponsePayload(uint8_t format, uint32_t window_bytes) {
+    std::vector<uint8_t> payload(5);
+    payload[0] = format;
+    writeU32(payload, 1, window_bytes);
+    return payload;
+}
+
+std::vector<uint8_t> buildCopyOutResponsePayload(uint8_t format,
+                                                 const std::vector<uint32_t>& column_formats) {
+    std::vector<uint8_t> payload(3 + column_formats.size() * 4);
+    payload[0] = format;
+    writeU16(payload, 1, static_cast<uint16_t>(column_formats.size()));
+    size_t offset = 3;
+    for (uint32_t column_format : column_formats) {
+        writeU32(payload, offset, column_format);
+        offset += 4;
+    }
+    return payload;
+}
+
+std::vector<uint8_t> buildCopyBothResponsePayload(uint8_t format, uint32_t window_bytes) {
+    return buildCopyInResponsePayload(format, window_bytes);
 }
 
 core::Status parseAuthRequest(const std::vector<uint8_t>& payload,
@@ -905,6 +1015,90 @@ core::Status parseCommandComplete(const std::vector<uint8_t>& payload,
     return core::Status::OK;
 }
 
+core::Status parseTxnCommitRequest(const std::vector<uint8_t>& payload,
+                                   TxnCommitRequest& request,
+                                   core::ErrorContext* ctx) {
+    request = TxnCommitRequest{};
+    if (payload.size() < 4) {
+        setError(ctx, "TxnCommit payload truncated");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    request.legacy_flags = payload[0];
+    if (payload.size() == 4 && payload[1] == 0 && payload[2] == 0 && payload[3] == 0) {
+        return core::Status::OK;
+    }
+    if (payload.size() < 36) {
+        setError(ctx, "TxnCommit finality payload truncated");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    if (payload[1] != kTxnFinalityPayloadVersion) {
+        setError(ctx, "Unsupported TxnCommit finality payload version");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    request.contract_flags = readU16(payload.data() + 2);
+    std::memcpy(request.idempotency_key.data(),
+                payload.data() + 4,
+                request.idempotency_key.size());
+    request.request_fingerprint = readU64(payload.data() + 20);
+    request.expected_txn_id = readU64(payload.data() + 28);
+    return core::Status::OK;
+}
+
+core::Status parseTxnFinalityQuery(const std::vector<uint8_t>& payload,
+                                   TxnFinalityQuery& query,
+                                   core::ErrorContext* ctx) {
+    query = TxnFinalityQuery{};
+    if (payload.size() < 44) {
+        setError(ctx, "TxnStatus query payload truncated");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    if (payload[0] != kTxnFinalityPayloadVersion) {
+        setError(ctx, "Unsupported TxnStatus query payload version");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    query.flags = readU16(payload.data() + 2);
+    std::memcpy(query.idempotency_key.data(),
+                payload.data() + 4,
+                query.idempotency_key.size());
+    std::memcpy(query.finality_token.data(),
+                payload.data() + 20,
+                query.finality_token.size());
+    query.expected_txn_id = readU64(payload.data() + 36);
+    return core::Status::OK;
+}
+
+core::Status parseTxnFinalityStatus(const std::vector<uint8_t>& payload,
+                                    TxnFinalityStatus& status,
+                                    core::ErrorContext* ctx) {
+    status = TxnFinalityStatus{};
+    if (payload.size() < 60) {
+        setError(ctx, "TxnStatus payload truncated");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    if (payload[0] != kTxnFinalityPayloadVersion) {
+        setError(ctx, "Unsupported TxnStatus payload version");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    status.state = static_cast<TxnFinalityState>(payload[1]);
+    status.flags = readU16(payload.data() + 2);
+    std::memcpy(status.idempotency_key.data(),
+                payload.data() + 4,
+                status.idempotency_key.size());
+    std::memcpy(status.finality_token.data(),
+                payload.data() + 20,
+                status.finality_token.size());
+    status.request_fingerprint = readU64(payload.data() + 36);
+    status.original_txn_id = readU64(payload.data() + 44);
+    status.replacement_txn_id = readU64(payload.data() + 52);
+    size_t offset = 60;
+    if (!readU16String(payload, offset, status.diagnostic_code) ||
+        !readU16String(payload, offset, status.detail)) {
+        setError(ctx, "TxnStatus string fields truncated");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    return core::Status::OK;
+}
+
 core::Status parseNotification(const std::vector<uint8_t>& payload,
                                Notification& notice,
                                core::ErrorContext* ctx) {
@@ -979,6 +1173,77 @@ core::Status parseSblrCompiled(const std::vector<uint8_t>& payload,
         return core::Status::PROTOCOL_VIOLATION;
     }
     compiled.bytecode.assign(payload.begin() + 16, payload.begin() + 16 + length);
+    return core::Status::OK;
+}
+
+core::Status parseCopyInResponse(const std::vector<uint8_t>& payload,
+                                 CopyInResponse& response,
+                                 core::ErrorContext* ctx) {
+    if (payload.size() < 5) {
+        setError(ctx, "Copy in response truncated");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    response.format = payload[0];
+    response.window_bytes = readU32(payload.data() + 1);
+    return core::Status::OK;
+}
+
+core::Status parseCopyOutResponse(const std::vector<uint8_t>& payload,
+                                  CopyOutResponse& response,
+                                  core::ErrorContext* ctx) {
+    if (payload.size() < 3) {
+        setError(ctx, "Copy out response truncated");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    response.format = payload[0];
+    response.column_count = readU16(payload.data() + 1);
+    size_t offset = 3;
+    response.column_formats.clear();
+    response.column_formats.reserve(response.column_count);
+    for (uint16_t i = 0; i < response.column_count; ++i) {
+        if (offset + 4 > payload.size()) {
+            setError(ctx, "Copy out response truncated");
+            return core::Status::PROTOCOL_VIOLATION;
+        }
+        response.column_formats.push_back(readU32(payload.data() + offset));
+        offset += 4;
+    }
+    return core::Status::OK;
+}
+
+core::Status parseCopyBothResponse(const std::vector<uint8_t>& payload,
+                                   CopyBothResponse& response,
+                                   core::ErrorContext* ctx) {
+    CopyInResponse in_response;
+    auto status = parseCopyInResponse(payload, in_response, ctx);
+    if (status != core::Status::OK) {
+        return status;
+    }
+    response.format = in_response.format;
+    response.window_bytes = in_response.window_bytes;
+    return core::Status::OK;
+}
+
+core::Status parseCopyData(const std::vector<uint8_t>& payload,
+                           CopyData& data,
+                           core::ErrorContext* /*ctx*/) {
+    data.data = payload;
+    return core::Status::OK;
+}
+
+core::Status parseCopyFail(const std::vector<uint8_t>& payload,
+                           CopyFailInfo& fail,
+                           core::ErrorContext* ctx) {
+    if (payload.size() < 4) {
+        setError(ctx, "Copy fail truncated");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    const uint32_t length = readU32(payload.data());
+    if (4u + length > payload.size()) {
+        setError(ctx, "Copy fail truncated");
+        return core::Status::PROTOCOL_VIOLATION;
+    }
+    fail.error_message.assign(reinterpret_cast<const char*>(payload.data() + 4), length);
     return core::Status::OK;
 }
 

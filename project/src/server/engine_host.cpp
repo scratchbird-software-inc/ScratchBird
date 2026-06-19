@@ -103,6 +103,10 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
   HostedDatabaseSnapshot snapshot;
   snapshot.state = HostedDatabaseState::kOpening;
   snapshot.database_path = config.database_default_path.string();
+  snapshot.resource_seed_pack_root =
+      config.database_resource_seed_pack_root.string();
+  snapshot.policy_seed_pack_root =
+      config.database_policy_seed_pack_root.string();
   snapshot.lifecycle_mode = config.database_open_mode;
 
   if (snapshot.database_path.empty()) {
@@ -182,8 +186,14 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config) {
     create.filespace_uuid = filespace_uuid.value;
     create.page_size = 16384;
     create.creation_unix_epoch_millis = now;
-    create.allow_minimal_resource_bootstrap = true;
-    create.require_resource_seed_pack = false;
+    create.resource_seed_pack_root = config.database_resource_seed_pack_root.string();
+    create.policy_seed_pack_root = config.database_policy_seed_pack_root.string();
+    create.allow_minimal_resource_bootstrap =
+        config.database_resource_seed_pack_root.empty();
+    create.require_resource_seed_pack =
+        !config.database_resource_seed_pack_root.empty();
+    create.require_policy_seed_pack =
+        !config.database_policy_seed_pack_root.empty();
     create.allow_overwrite = false;
     const auto created = db::CreateDatabaseFile(create);
     if (!created.ok()) {

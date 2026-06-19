@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "policy_generation": 1,
+  "policy_key": "server.memory_cache.default",
+  "profile_area": "memory_resource_governance",
+  "profile_mode": "configured_policy_required",
+  "policy_name": "default_local_server_memory_cache_v1",
+  "provenance": "default_policy_pack:default-local-password:server_memory_cache_policy",
+  "limits": {
+    "hard_limit_bytes": 1073741824,
+    "soft_limit_bytes": 805306368,
+    "per_context_limit_bytes": 268435456,
+    "page_buffer_pool_limit_bytes": 536870912,
+    "min_startup_available_bytes": 1073741824
+  },
+  "allocation": {
+    "failure_mode": "return_error",
+    "track_allocations": true,
+    "zero_memory_on_allocate": false,
+    "zero_memory_on_release": true,
+    "reject_over_soft_limit": false,
+    "enable_platform_memory_probe": true,
+    "require_platform_memory_ceiling": false
+  },
+  "adaptive_cache": {
+    "enabled": true,
+    "page_buffer_growth": "adaptive_with_policy_limit",
+    "index_read_optimization": true,
+    "ordinary_disconnect_heap_trim": false,
+    "dirty_writeback_required": true,
+    "write_flush_authority": "mga_inventory_and_page_writeback",
+    "cache_finality_authority": false,
+    "cache_visibility_authority": false,
+    "wal_or_redo_authority": false
+  }
+}

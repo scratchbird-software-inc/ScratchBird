@@ -1,0 +1,58 @@
+-- script_id: SBDFS-093
+-- Purpose: admin, session, lifecycle, archive, and artifact routes through drivers.
+-- namespace placeholder: __SB_NAMESPACE__
+
+CREATE FILESPACE sbdfs093_fs LOCATION '__SB_ARTIFACT_ROOT__/filespaces/sbdfs093_fs';
+CREATE FILESPACE AGENT sbdfs093_fsa;
+ALTER FILESPACE sbdfs093_fs SET QUOTA 1;
+
+SHOW FILESPACE EXTENDED;
+STORAGE FILESPACE main;
+GROW FILESPACE sbdfs093_fs BY 16 PAGES;
+VERIFY FILESPACE sbdfs093_fs;
+
+SHOW AGENT memory_governor;
+SHOW AGENTS WHERE AGENT_TYPE = memory_governor;
+ALTER AGENT memory_governor START;
+
+SHOW MANAGEMENT;
+SHOW MANAGEMENT CONFIG;
+SHOW MANAGEMENT LISTENERS;
+SHOW LISTENERS;
+CONFIG STMT inspect;
+
+SET SESSION work_mem;
+SESSION SETTING TARGET search_path;
+SESSION SETTING STMT set;
+SHOW SESSIONS;
+
+CREATE DATABASE sbdfs093_lifecycle;
+OPEN DATABASE sbdfs093_lifecycle;
+ALTER DATABASE sbdfs093_lifecycle SET MAINTENANCE WITH EVIDENCE;
+MAINTENANCE DATABASE sbdfs093_lifecycle;
+REPAIR DATABASE sbdfs093_lifecycle WITH PLAN record_verified_repair_evidence;
+SHUTDOWN DATABASE sbdfs093_lifecycle;
+DROP DATABASE sbdfs093_lifecycle LOGICAL;
+
+MIGRATE FROM REFERENCE postgres WITH PACKAGE pg_compat_pack;
+SHOW MIGRATIONS;
+
+BACKUP DATABASE TO '__SB_ARTIFACT_ROOT__/sbdfs093.sblbak';
+BACKUP DATABASE TO '__SB_ARTIFACT_ROOT__/sbdfs093_checksum.sblbak' WITH CHECKSUM;
+RESTORE DATABASE FROM '__SB_ARTIFACT_ROOT__/sbdfs093.sblbak' WITH VERIFY;
+ARCHIVE DATABASE TO '__SB_ARTIFACT_ROOT__/sbdfs093.sbdelta';
+REPLICATE DATABASE TO sbdfs093_replica;
+CHANGEFEED DATABASE TO sbdfs093_feed;
+
+EXPORT EXTERNAL GIT CATALOG SNAPSHOT;
+DIFF EXTERNAL GIT CATALOG SNAPSHOT;
+PLAN EXTERNAL GIT CATALOG ROLLBACK;
+
+SELECT 'SBDFS-093-001' AS assertion_id,
+       1 AS actual_marker,
+       1 AS expected_marker;
+
+SELECT 'SBDFS-093-002' AS assertion_id,
+       COUNT(*) AS actual_context_rows,
+       5 AS expected_context_rows
+FROM __SB_NAMESPACE__.run_context;

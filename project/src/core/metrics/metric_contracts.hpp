@@ -9,7 +9,7 @@
 #pragma once
 
 // SEARCH_KEY: SB_METRICS_PRODUCER_CONTRACTS
-// Contract-ready producer entry points for current and future runtime owners.
+// Contract-ready producer entry points for registered runtime owners.
 // These functions never fabricate samples. If the owning runtime is not wired,
 // the descriptor readiness causes the underlying producer call to fail closed.
 
@@ -105,6 +105,39 @@ MetricValidationResult RecordInsertTraceEvent(std::string object_uuid,
 MetricValidationResult RecordInsertCancel(std::string object_uuid,
                                           std::string insert_mode,
                                           std::string reason);
+MetricValidationResult RecordInsertPreparedDescriptorCache(std::string object_uuid,
+                                                           std::string insert_mode,
+                                                           bool cache_hit);
+MetricValidationResult RecordInsertRelationStateLoad(std::string object_uuid,
+                                                     std::string insert_mode,
+                                                     bool full_state_load,
+                                                     bool scoped_state_load,
+                                                     std::string reason);
+MetricValidationResult PublishInsertAdaptiveBatchPlan(std::string object_uuid,
+                                                      std::string insert_mode,
+                                                      double requested_rows,
+                                                      double admitted_rows,
+                                                      double admitted_bytes,
+                                                      std::string reason);
+MetricValidationResult RecordInsertPreallocatedPages(double pages,
+                                                     std::string object_uuid,
+                                                     std::string insert_mode,
+                                                     std::string page_family,
+                                                     std::string result,
+                                                     std::string reason);
+MetricValidationResult ObserveInsertAllocationStall(double latency_microseconds,
+                                                    std::string object_uuid,
+                                                    std::string insert_mode,
+                                                    std::string wait_class,
+                                                    std::string result);
+MetricValidationResult RecordInsertUniquePhysicalProbe(std::string object_uuid,
+                                                       std::string insert_mode,
+                                                       std::string result,
+                                                       std::string reason);
+MetricValidationResult RecordInsertSlowPath(std::string object_uuid,
+                                            std::string insert_mode,
+                                            std::string chosen_path,
+                                            std::string reason);
 
 // SEARCH_KEY: SB_CLUSTER_INSERT_METRIC_CONTRACTS
 MetricValidationResult RecordClusterInsertRouteCheck(std::string database_uuid,

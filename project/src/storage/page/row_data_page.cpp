@@ -38,6 +38,7 @@ using scratchbird::storage::disk::kPageHeaderSerializedBytes;
 
 inline constexpr byte kRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '2'};
 inline constexpr byte kRowDataV1Magic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '1'};
+inline constexpr byte kRowDataMagicPrefix[5] = {'S', 'B', 'R', 'O', 'W'};
 inline constexpr u32 kOffsetMagic = 0;
 inline constexpr u32 kOffsetHeaderBytes = 8;
 inline constexpr u32 kOffsetRowCount = 12;
@@ -107,6 +108,13 @@ bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
 
 bool SameTypedUuid(const TypedUuid& left, const TypedUuid& right) {
   return left.kind == right.kind && left.value == right.value;
+}
+
+bool HasRowDataMagicPrefix(const std::vector<byte>& serialized) {
+  return serialized.size() >= sizeof(kRowDataMagicPrefix) &&
+         std::memcmp(serialized.data() + kOffsetMagic,
+                     kRowDataMagicPrefix,
+                     sizeof(kRowDataMagicPrefix)) == 0;
 }
 
 DenseRowOrdinalValidation RowOrdinalRefusal(const RowDataPageBody& body,
@@ -411,6 +419,10 @@ RowDataPageResult ParseRowDataPageBody(const std::vector<byte>& serialized, u64 
   const bool row_data_v1 =
       std::memcmp(serialized.data() + kOffsetMagic, kRowDataV1Magic, sizeof(kRowDataV1Magic)) == 0;
   if (!row_data_v2 && !row_data_v1) {
+    if (HasRowDataMagicPrefix(serialized)) {
+      return RowPageError("SB-ROW-DATA-PAGE-FORMAT-UNSUPPORTED",
+                          "storage.row_data_page.format_unsupported");
+    }
     return RowPageError("SB-ROW-DATA-PAGE-MAGIC-INVALID",
                         "storage.row_data_page.magic_invalid");
   }

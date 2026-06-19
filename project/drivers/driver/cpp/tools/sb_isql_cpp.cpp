@@ -41,6 +41,27 @@ int64_t nowNs() {
         .count();
 }
 
+bool networkRoute(const std::string& route) {
+    return route == "listener-parser" || route == "manager-listener-parser";
+}
+
+std::string transportModeForRoute(const std::string& route, const std::string& sslmode) {
+    if (route == "embedded") {
+        return "embedded_no_network_transport";
+    }
+    if (route == "ipc_local") {
+        return "local_ipc_no_tls";
+    }
+    return sslmode == "disable" ? "tls_disabled" : "tls_required";
+}
+
+std::string tlsPolicyForRoute(const std::string& route, const std::string& sslmode) {
+    if (!networkRoute(route)) {
+        return "not_applicable_non_network_route";
+    }
+    return sslmode == "disable" ? "explicit_non_tls_test_route" : "scratchbird_tls_1_3_floor";
+}
+
 std::string required(const std::map<std::string, std::string>& args, const std::string& key) {
     auto it = args.find(key);
     if (it == args.end() || it->second.empty()) {
@@ -106,8 +127,35 @@ std::string readInput(const std::string& path) {
 // sb_statement_chunker.hpp so every C++ tool uses one identical implementation.
 // Verified against tests/conformance/drivers/chunker_conformance/cases.json.
 
-std::string firstTokenLower(std::string sql) {
-    std::istringstream in(sql);
+std::string stripLeadingTrivia(const std::string& sql) {
+    size_t pos = 0;
+    while (pos < sql.size()) {
+        while (pos < sql.size() && std::isspace(static_cast<unsigned char>(sql[pos]))) {
+            ++pos;
+        }
+        if (pos + 1 < sql.size() && sql[pos] == '-' && sql[pos + 1] == '-') {
+            const size_t newline = sql.find('\n', pos + 2);
+            if (newline == std::string::npos) {
+                return "";
+            }
+            pos = newline + 1;
+            continue;
+        }
+        if (pos + 1 < sql.size() && sql[pos] == '/' && sql[pos + 1] == '*') {
+            const size_t close = sql.find("*/", pos + 2);
+            if (close == std::string::npos) {
+                return "";
+            }
+            pos = close + 2;
+            continue;
+        }
+        break;
+    }
+    return sql.substr(pos);
+}
+
+std::string firstTokenLower(const std::string& sql) {
+    std::istringstream in(stripLeadingTrivia(sql));
     std::string first;
     in >> first;
     for (char& ch : first) {
@@ -116,12 +164,49 @@ std::string firstTokenLower(std::string sql) {
     return first;
 }
 
+std::string copyInputForStatement(const std::string& sql) {
+    static const std::string kMarker = "-- SB_COPY_INPUT ";
+    std::istringstream lines(sql);
+    std::string line;
+    std::string payload;
+    while (std::getline(lines, line)) {
+        const size_t start = line.find_first_not_of(" \t");
+        if (start == std::string::npos) {
+            continue;
+        }
+        if (line.compare(start, kMarker.size(), kMarker) != 0) {
+            continue;
+        }
+        std::string row = line.substr(start + kMarker.size());
+        if (!row.empty() && row.back() == '\r') {
+            row.pop_back();
+        }
+        payload += row;
+        payload += '\n';
+    }
+    return payload;
+}
+
 std::string classify(const std::string& sql) {
     const auto first = firstTokenLower(sql);
+    if (first == "graph" || first == "document" || first == "kv" || first == "timeseries" ||
+        first == "fulltext" || first == "opensearch" || first == "search" || first == "reindex") {
+        return "multimodel";
+    }
+    if (first == "backup" || first == "restore" || first == "archive" ||
+        first == "replicate" || first == "changefeed") {
+        return "archive";
+    }
+    if (first == "migrate" || first == "maintenance" || first == "repair" ||
+        first == "config" || first == "storage" || first == "show") {
+        return "admin";
+    }
+    if (first == "session" || first == "connect" || first == "disconnect") return "session";
     if (first == "create" || first == "alter" || first == "drop") return "ddl";
     if (first == "insert" || first == "update" || first == "delete" || first == "merge" || first == "upsert") return "dml";
     if (first == "commit" || first == "rollback" || first == "savepoint" || first == "begin" || first == "start") return "transaction";
     if (first == "grant" || first == "revoke") return "security_refusal";
+    if (first == "copy") return "copy";
     return sql.find("sys.") != std::string::npos ? "metadata" : "query";
 }
 
@@ -205,6 +290,12 @@ int main(int argc, char** argv) {
         json failures = json::array();
         json digests = json::array();
         const int64_t started = nowNs();
+        const std::string route = required(args, "--route");
+        const std::string parserMode = required(args, "--parser-mode");
+        const std::string pageSize = required(args, "--page-size");
+        const std::string sslmode = valueOrDefault(args, "--sslmode", "require");
+        const std::string transportMode = transportModeForRoute(route, sslmode);
+        const std::string tlsPolicy = tlsPolicyForRoute(route, sslmode);
 
         scratchbird::client::Connection conn;
         api["scratchbird::client::Connection"]++;
@@ -215,11 +306,11 @@ int main(int argc, char** argv) {
         config.username = required(args, "--user");
         config.password = required(args, "--password");
         config.role = valueOrDefault(args, "--role", "");
-        config.ssl_mode = valueOrDefault(args, "--sslmode", "require");
+        config.ssl_mode = sslmode;
         config.ssl_root_cert = valueOrDefault(args, "--sslrootcert", "");
         config.ssl_cert = valueOrDefault(args, "--sslcert", "");
         config.ssl_key = valueOrDefault(args, "--sslkey", "");
-        config.front_door_mode = required(args, "--route") == "manager-listener-parser" ? "manager_proxy" : "direct";
+        config.front_door_mode = route == "manager-listener-parser" ? "manager_proxy" : "direct";
         config.application_name = "SBIsqlCpp";
         config.query_timeout_ms = static_cast<uint32_t>(
             std::stoul(valueOrDefault(args, "--statement-timeout-ms", "30000")));
@@ -234,9 +325,19 @@ int main(int argc, char** argv) {
         if (status == scratchbird::core::Status::OK) {
             api["connect"]++;
             addTiming(timings, "connection", connectStarted);
-            appendJsonl(required(args, "--transcript"), {{"event", "connect"}, {"driver", "cpp"}, {"route", required(args, "--route")},
-                                                         {"parser_mode", required(args, "--parser-mode")}, {"page_size", required(args, "--page-size")}});
-            appendJsonl(paths.at("wire"), {{"event", "server_admission_required"}, {"driver_or_parser_finality", "forbidden"}});
+            appendJsonl(required(args, "--transcript"), {{"event", "connect"},
+                                                         {"driver", "cpp"},
+                                                         {"route", route},
+                                                         {"parser_mode", parserMode},
+                                                         {"page_size", pageSize},
+                                                         {"sslmode", sslmode},
+                                                         {"transport_mode", transportMode},
+                                                         {"tls_policy", tlsPolicy},
+                                                         {"engine_sql_text_execution", false}});
+            appendJsonl(paths.at("wire"), {{"event", "server_admission_required"},
+                                           {"driver_or_parser_finality", "forbidden"},
+                                           {"parser_output_to_engine_required", true},
+                                           {"engine_sql_text_execution", false}});
         } else {
             failures.push_back({{"statement_id", "connect"}, {"message", statusMessage(ctx)}});
         }
@@ -244,8 +345,8 @@ int main(int argc, char** argv) {
         if (failures.empty() && args.count("--create-database")) {
             failures.push_back({{"statement_id", "database_create"}, {"message", "--create-database is not implemented in the C++ native tool yet"}});
         }
-        if (failures.empty() && required(args, "--parser-mode") != "server-parser") {
-            failures.push_back({{"statement_id", "parser_mode"}, {"message", required(args, "--parser-mode") + " is not yet implemented by the C++ native tool; it fails closed"}});
+        if (failures.empty() && parserMode != "server-parser") {
+            failures.push_back({{"statement_id", "parser_mode"}, {"message", parserMode + " is not yet implemented by the C++ native tool; it fails closed"}});
         }
 
         if (failures.empty()) {
@@ -275,6 +376,18 @@ int main(int argc, char** argv) {
                 } else {
                     scratchbird::client::ResultSet results;
                     int64_t rowsAffected = 0;
+                    const bool copyStatement = firstTokenLower(sql) == "copy";
+                    std::string copyInputPayload;
+                    std::istringstream copyInput;
+                    std::ostringstream copyOutput;
+                    if (copyStatement) {
+                        copyInputPayload = copyInputForStatement(sql);
+                        if (!copyInputPayload.empty()) {
+                            copyInput.str(copyInputPayload);
+                            conn.setCopyInputStream(&copyInput);
+                        }
+                        conn.setCopyOutputStream(&copyOutput);
+                    }
                     if (statementReturnsRows(sql)) {
                         status = conn.executeQuery(sql, &results, &ctx);
                         api["executeQuery"]++;
@@ -282,6 +395,19 @@ int main(int argc, char** argv) {
                     } else {
                         status = conn.execute(sql, &rowsAffected, &ctx);
                         api["execute"]++;
+                    }
+                    if (copyStatement) {
+                        conn.setCopyInputStream(nullptr);
+                        conn.setCopyOutputStream(nullptr);
+                        appendJsonl(paths.at("wire"), {{"event", "copy_stream"},
+                                                       {"statement_id", statementId},
+                                                       {"driver_payload_kind", "copy_canonical_rows"},
+                                                       {"engine_payload_kind", "canonical_rows"},
+                                                       {"copy_input_bytes", copyInputPayload.size()},
+                                                       {"copy_output_bytes", copyOutput.str().size()},
+                                                       {"copy_output_sha256", sha256Text(copyOutput.str())},
+                                                       {"engine_sql_text_execution", false},
+                                                       {"mga_authority", "engine"}});
                     }
                     json rows = json::array();
                     if (status == scratchbird::core::Status::OK && statementReturnsRows(sql)) {
@@ -299,8 +425,15 @@ int main(int argc, char** argv) {
                     } else if (status == scratchbird::core::Status::OK) {
                         rowCount = rowsAffected;
                         resultDigest = sha256Text("rows_affected:" + std::to_string(rowsAffected));
-                        appendText(required(args, "--output"),
-                                   json({{"statement_id", statementId}, {"rows_affected", rowsAffected}}).dump() + "\n");
+                        json outputRecord{{"statement_id", statementId}, {"rows_affected", rowsAffected}};
+                        if (copyStatement) {
+                            outputRecord["copy_input_bytes"] = copyInputPayload.size();
+                            if (!copyOutput.str().empty()) {
+                                outputRecord["copy_output_bytes"] = copyOutput.str().size();
+                                outputRecord["copy_output_sha256"] = sha256Text(copyOutput.str());
+                            }
+                        }
+                        appendText(required(args, "--output"), outputRecord.dump() + "\n");
                     }
                 }
 
@@ -319,9 +452,9 @@ int main(int argc, char** argv) {
                 const auto event = json{{"run_id", valueOrDefault(args, "--run-id", "manual")},
                                         {"driver_name", "cpp"},
                                         {"driver_version", "unknown"},
-                                        {"route", required(args, "--route")},
-                                        {"parser_mode", required(args, "--parser-mode")},
-                                        {"page_size", required(args, "--page-size")},
+                                        {"route", route},
+                                        {"parser_mode", parserMode},
+                                        {"page_size", pageSize},
                                         {"namespace", required(args, "--namespace")},
                                         {"script", required(args, "--input")},
                                         {"statement_index", index + 1},
@@ -337,6 +470,9 @@ int main(int argc, char** argv) {
                                         {"result_digest", resultDigest},
                                         {"elapsed_ns", nowNs() - statementStarted},
                                         {"server_revalidation_state", "required"},
+                                        {"parser_output_to_engine_required", true},
+                                        {"engine_sql_text_execution", false},
+                                        {"sql_text_artifact", "sha256_only"},
                                         {"transaction_id_observed", nullptr},
                                         {"mga_authority", "engine"},
                                         {"native_api_surface", "cpp"},
@@ -360,20 +496,21 @@ int main(int argc, char** argv) {
 
         conn.disconnect();
         timings["overall"] = nowNs() - started;
-        const std::string sslmode = valueOrDefault(args, "--sslmode", "require");
-        const std::string transportMode = sslmode == "disable" ? "tls_disabled" : "tls_required";
         const json summaryJson{{"run_id", valueOrDefault(args, "--run-id", "manual")},
                                {"driver_name", "cpp"},
-                               {"route", required(args, "--route")},
-                               {"parser_mode", required(args, "--parser-mode")},
-                               {"page_size", required(args, "--page-size")},
+                               {"route", route},
+                               {"parser_mode", parserMode},
+                               {"page_size", pageSize},
                                {"namespace", required(args, "--namespace")},
                                {"sslmode", sslmode},
                                {"transport_mode", transportMode},
+                               {"tls_policy", tlsPolicy},
                                {"status", failures.empty() ? "pass" : "fail"},
                                {"failure_count", failures.size()},
                                {"elapsed_ns", timings["overall"]},
                                {"server_revalidation_required", true},
+                               {"parser_output_to_engine_required", true},
+                               {"engine_sql_text_execution", false},
                                {"driver_or_parser_finality", "forbidden"},
                                {"mga_authority", "engine"}};
         writeText(summaryPath, summaryJson.dump() + "\n");

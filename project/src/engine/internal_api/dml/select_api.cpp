@@ -171,6 +171,8 @@ bool PredicateCanRowScan(const EnginePredicateEnvelope& predicate) {
          predicate.predicate_kind == "columns_all_null" ||
          predicate.predicate_kind == "columns_all_not_null" ||
          predicate.predicate_kind == "column_equals_column_or_left_null" ||
+         predicate.predicate_kind == "column_like" ||
+         predicate.predicate_kind == "column_not_like" ||
          predicate.predicate_kind == "column_mod_equals" ||
          predicate.predicate_kind == "column_in_list" ||
          predicate.predicate_kind == "column_range" ||

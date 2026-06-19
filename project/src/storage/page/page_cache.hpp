@@ -33,6 +33,7 @@ using scratchbird::storage::disk::PageType;
 
 enum class PageCacheIoContext : u32 {
   normal,
+  index_read,
   bulk_read,
   bulk_write,
   vacuum_cleanup,
@@ -40,7 +41,7 @@ enum class PageCacheIoContext : u32 {
   strict_bulk_load
 };
 
-inline constexpr std::size_t kPageCacheIoContextCount = 6;
+inline constexpr std::size_t kPageCacheIoContextCount = 7;
 inline constexpr std::size_t kPageCacheFrameShardCount = 8;
 
 struct PageCacheContextCounters {
@@ -60,6 +61,7 @@ struct PageCachePolicy {
   u64 max_resident_bytes = 64ull * 1024ull * 1024ull;
   bool allow_dirty_eviction = false;
   bool require_memory_manager_frames = true;
+  u64 index_read_ring_pages = 32;
   u64 bulk_read_ring_pages = 4;
   u64 bulk_write_ring_pages = 4;
   u64 vacuum_cleanup_ring_pages = 4;
@@ -282,6 +284,10 @@ const char* PageCacheIoContextName(PageCacheIoContext context);
 bool PageCacheIoContextFromName(std::string_view name, PageCacheIoContext* context);
 bool PageCacheIoContextUsesBoundedRing(PageCacheIoContext context);
 u64 PageCacheIoContextRingLimit(const PageCachePolicy& policy, PageCacheIoContext context);
+PageCachePolicy MakeAdaptivePageCachePolicyFromMemoryPolicy(
+    const scratchbird::core::memory::AllocationPolicy& memory_policy,
+    u32 page_size,
+    u64 minimum_resident_pages = 16);
 const char* PageCacheLifecycleStateName(PageCacheLifecycleState state);
 const char* PageCacheCheckpointModeName(PageCacheCheckpointMode mode);
 bool PageCacheAuthorityBoundaryValid(const PageCacheAuthorityBoundary& boundary);

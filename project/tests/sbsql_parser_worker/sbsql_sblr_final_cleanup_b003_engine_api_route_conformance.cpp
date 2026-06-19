@@ -538,7 +538,15 @@ void RequireInvalidSyntaxDiagnostics() {
 }
 
 void RequireSecurityRefusalRedaction() {
-  const auto row = kRows[23];
+  const B003Row* security_row = nullptr;
+  for (const auto& row : kRows) {
+    if (row.operation_id == "security.grant_right") {
+      security_row = &row;
+      break;
+    }
+  }
+  Require(security_row != nullptr, "security refusal row missing from B003 route table");
+  const auto& row = *security_row;
   auto request = ApiRequestForRow(row);
   request.option_envelopes.push_back("target_object_uuid:secret_customer_table");
   auto context = EngineContext();

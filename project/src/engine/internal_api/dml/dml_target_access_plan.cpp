@@ -10,6 +10,7 @@
 
 #include "hot_point_lookup_cache.hpp"
 #include "logical_plan.hpp"
+#include "memory.hpp"
 #include "optimizer_hot_point_lookup.hpp"
 #include "physical_plan.hpp"
 #include "uuid.hpp"
@@ -26,6 +27,7 @@ namespace {
 namespace opt = scratchbird::engine::optimizer;
 namespace planner = scratchbird::engine::planner;
 namespace idx = scratchbird::core::index;
+namespace mem = scratchbird::core::memory;
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
@@ -131,7 +133,23 @@ std::optional<idx::HotPointProbeClass> HotPointProbeClassForAccessKind(
 }
 
 idx::AdaptiveHotPointLookupCache& DmlHotPointLookupCache() {
-  static idx::AdaptiveHotPointLookupCache cache;
+  static idx::AdaptiveHotPointLookupCache cache([] {
+    idx::HotPointLookupCacheConfig config;
+    const auto memory_state = mem::DefaultMemoryManagerState();
+    const auto page_pool_bytes =
+        memory_state.active_policy.page_buffer_pool_limit_bytes == 0
+            ? 512ull * 1024ull * 1024ull
+            : memory_state.active_policy.page_buffer_pool_limit_bytes;
+    const auto scale = std::max<std::uint64_t>(
+        1,
+        page_pool_bytes / (128ull * 1024ull * 1024ull));
+    config.partition_count = static_cast<std::size_t>(
+        std::min<std::uint64_t>(128, 16ull * scale));
+    config.contention_disable_threshold = 256ull * scale;
+    config.authority_refusal_disable_threshold = 256ull * scale;
+    config.max_entries_per_partition = 4096ull * scale;
+    return config;
+  }());
   return cache;
 }
 

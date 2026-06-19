@@ -14,6 +14,7 @@
 #include "diagnostics.hpp"
 #include "engine_host.hpp"
 #include "agents/agent_runtime_service_store_api.hpp"
+#include "catalog/sys_information_projection.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -25,6 +26,29 @@
 #include <vector>
 
 namespace scratchbird::server {
+
+enum class ServerAgentActionOutcome {
+  kNone,
+  kAccepted,
+  kRefused,
+  kFailed,
+};
+
+struct ServerAgentRuntimeWorkerSnapshot {
+  std::string name;
+  std::string role;
+  std::string agent_type_id;
+  std::string instance_uuid;
+  std::uint64_t ticks = 0;
+  std::uint64_t actions_accepted = 0;
+  std::uint64_t actions_refused = 0;
+  std::uint64_t actions_failed = 0;
+  std::string last_action;
+  std::string last_action_outcome;
+  std::string last_diagnostic_code;
+  std::string last_diagnostic_detail;
+  std::uint64_t last_diagnostic_generation = 0;
+};
 
 struct ServerAgentRuntimeSnapshot {
   bool started = false;
@@ -43,6 +67,16 @@ struct ServerAgentRuntimeSnapshot {
   std::uint64_t total_worker_ticks = 0;
   std::uint64_t total_actions_accepted = 0;
   std::uint64_t total_actions_refused = 0;
+  std::uint64_t total_actions_failed = 0;
+  std::uint64_t scheduled_worker_count = 0;
+  std::uint64_t min_worker_ticks = 0;
+  std::uint64_t max_worker_ticks = 0;
+  std::uint64_t starvation_events = 0;
+  std::string last_diagnostic_agent_type_id;
+  std::string last_diagnostic_action;
+  std::string last_diagnostic_outcome;
+  std::string last_diagnostic_code;
+  std::string last_diagnostic_detail;
   std::uint64_t durable_catalog_generation = 0;
   std::uint64_t durable_lease_count = 0;
   std::uint64_t durable_replay_pending_lease_count = 0;
@@ -55,6 +89,7 @@ struct ServerAgentRuntimeSnapshot {
   std::uint64_t process_rss_high_water_kb = 0;
   std::uint64_t process_vsize_kb = 0;
   bool process_memory_sample_available = false;
+  std::vector<ServerAgentRuntimeWorkerSnapshot> workers;
 };
 
 class ServerAgentRuntime {
@@ -84,18 +119,23 @@ class ServerAgentRuntime {
     std::uint64_t ticks = 0;
     std::uint64_t actions_accepted = 0;
     std::uint64_t actions_refused = 0;
+    std::uint64_t actions_failed = 0;
     std::string last_action;
+    std::string last_action_outcome;
     std::string last_diagnostic_code;
+    std::string last_diagnostic_detail;
+    std::uint64_t last_diagnostic_generation = 0;
   };
 
   void SchedulerLoop();
   void WorkerLoop(std::size_t worker_index);
   void RunWorkerTick(std::size_t worker_index, std::uint64_t generation);
   void RecordWorkerTick(std::size_t worker_index,
+                        std::uint64_t generation,
                         std::string last_action,
-                        bool action_attempted,
-                        bool action_accepted,
-                        std::string diagnostic_code);
+                        ServerAgentActionOutcome action_outcome,
+                        std::string diagnostic_code,
+                        std::string diagnostic_detail);
   void UpdateRuntimeCatalogSnapshotLocked(
       const scratchbird::core::agents::DurableAgentCatalogImage& catalog);
   bool IsPrimaryWorkerForAgent(std::size_t worker_index,
@@ -127,6 +167,7 @@ class ServerAgentRuntime {
   std::uint64_t resource_epoch_ = 1;
   std::uint64_t name_resolution_epoch_ = 1;
   std::vector<std::string> selected_agents_;
+  std::vector<std::string> server_agent_runtime_test_options_;
   std::vector<WorkerEvidence> worker_evidence_;
   mutable std::mutex database_transaction_mutex_;
   mutable std::mutex runtime_service_mutex_;
@@ -142,5 +183,8 @@ class ServerAgentRuntime {
   std::thread scheduler_thread_;
   std::vector<std::thread> worker_threads_;
 };
+
+scratchbird::engine::internal_api::SysInformationIparAgentLifecycleSource
+BuildIparAgentLifecycleProjectionSource(const ServerAgentRuntimeSnapshot& snapshot);
 
 }  // namespace scratchbird::server

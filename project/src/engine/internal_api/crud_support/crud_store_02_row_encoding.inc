@@ -55,6 +55,53 @@ std::vector<std::string> TokenizeCrudText(const std::string& value) {
   return {unique_tokens.begin(), unique_tokens.end()};
 }
 
+std::vector<std::string> TokenizeCrudNgrams(const std::string& value) {
+  std::string normalized;
+  for (unsigned char c : value) {
+    if (std::isalnum(c) || c == '_') {
+      normalized.push_back(static_cast<char>(std::tolower(c)));
+    }
+  }
+  if (normalized.empty()) {
+    return {};
+  }
+  if (normalized.size() <= 3) {
+    return {normalized};
+  }
+  std::set<std::string> unique_grams;
+  for (std::size_t index = 0; index + 3 <= normalized.size(); ++index) {
+    unique_grams.insert(normalized.substr(index, 3));
+  }
+  return {unique_grams.begin(), unique_grams.end()};
+}
+
+std::vector<std::string> TokenizeCrudDocumentPath(const std::string& value) {
+  std::set<std::string> keys;
+  std::string token;
+  for (unsigned char c : value) {
+    if (std::isalnum(c) || c == '_' || c == '$') {
+      token.push_back(static_cast<char>(std::tolower(c)));
+    } else if (!token.empty()) {
+      keys.insert(token);
+      token.clear();
+    }
+  }
+  if (!token.empty()) { keys.insert(token); }
+  if (keys.empty()) { return TokenizeCrudText(value); }
+  return {keys.begin(), keys.end()};
+}
+
+bool CrudTokenIndexFamily(const std::string& family) {
+  return family == kCrudIndexFamilyFullText ||
+         family == kCrudIndexFamilyGin ||
+         family == kCrudIndexFamilyInverted ||
+         family == kCrudIndexFamilySparseWand;
+}
+
+bool CrudNgramIndexFamily(const std::string& family) {
+  return family == kCrudIndexFamilyNgram;
+}
+
 bool TryParseDouble(const std::string& value, double* out) {
   try {
     std::size_t pos = 0;
@@ -177,7 +224,15 @@ std::vector<std::string> CrudIndexEntryKeysForValues(const CrudIndexRecord& inde
   const auto columns = CrudIndexKeyColumns(index);
   const std::string family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
   if (columns.empty()) { return {}; }
-  if (family == kCrudIndexFamilyFullText) { return TokenizeCrudText(CrudFieldValue(values, columns.front())); }
+  if (CrudTokenIndexFamily(family)) {
+    return TokenizeCrudText(CrudFieldValue(values, columns.front()));
+  }
+  if (CrudNgramIndexFamily(family)) {
+    return TokenizeCrudNgrams(CrudFieldValue(values, columns.front()));
+  }
+  if (family == kCrudIndexFamilyDocumentPath) {
+    return TokenizeCrudDocumentPath(CrudFieldValue(values, columns.front()));
+  }
   if (family == kCrudIndexFamilyExpression) { return {ExpressionKeyForValues(columns.front(), values)}; }
   return {BuildCompositeKey(values, columns)};
 }

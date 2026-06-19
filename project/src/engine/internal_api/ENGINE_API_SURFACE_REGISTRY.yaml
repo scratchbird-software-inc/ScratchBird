@@ -411,6 +411,63 @@ operations:
     accepts_names: false
     requires_transaction_context: true
     notes: imports canonical artifacts with explicit UUID preserve/remap rules and conflict diagnostics
+  - operation_id: artifact.external_git.export_snapshot
+    scope_status: noncluster_required
+    closure_slice: NCE-0503
+    function_name: EngineExportExternalGitSnapshot
+    request_type: EngineExportExternalGitSnapshotRequest
+    result_type: EngineExportExternalGitSnapshotResult
+    family: artifact
+    authority_domain: catalog_artifact
+    header: artifacts/artifact_api.hpp
+    implementation: artifacts/artifact_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: exports review-only catalog snapshots for external Git workflows; Git is not runtime authority
+  - operation_id: artifact.external_git.diff_snapshot
+    scope_status: noncluster_required
+    closure_slice: NCE-0503
+    function_name: EngineDiffExternalGitSnapshot
+    request_type: EngineDiffExternalGitSnapshotRequest
+    result_type: EngineDiffExternalGitSnapshotResult
+    family: artifact
+    authority_domain: catalog_artifact
+    header: artifacts/artifact_api.hpp
+    implementation: artifacts/artifact_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: compares an authorized candidate snapshot to the ScratchBird catalog without granting Git authority
+  - operation_id: artifact.external_git.rollback_plan
+    scope_status: noncluster_required
+    closure_slice: NCE-0503
+    function_name: EnginePlanExternalGitRollback
+    request_type: EnginePlanExternalGitRollbackRequest
+    result_type: EnginePlanExternalGitRollbackResult
+    family: artifact
+    authority_domain: catalog_artifact
+    header: artifacts/artifact_api.hpp
+    implementation: artifacts/artifact_api.cpp
+    implementation_status: behavior_implemented
+    default_diagnostic: SB_ENGINE_API_OK
+    cluster_only: false
+    requires_security_context: false
+    requires_cluster_authority: false
+    sblr_mapping_required: true
+    accepts_names: false
+    requires_transaction_context: true
+    notes: plans catalog rollback actions for review; apply authority remains the authorized catalog API
   - operation_id: dml.execute_import_rows
     category: dml
     function_name: EngineExecuteImportRows

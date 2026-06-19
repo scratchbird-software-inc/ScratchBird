@@ -65,6 +65,8 @@ REQUIRED_CATALOG_ROW_FAMILIES = {
 }
 
 REQUIRED_DEFAULT_POLICY_COUNT = 58
+REQUIRED_MEMORY_HARD_LIMIT_BYTES = 1024 * 1024 * 1024
+REQUIRED_MEMORY_PAGE_BUFFER_POOL_BYTES = 512 * 1024 * 1024
 
 REQUIRED_DEFAULT_POLICY_KEYS = {
     "admin.management_command_authorization",
@@ -258,6 +260,8 @@ def validate_manifest(pack_root: Path) -> dict:
     require(entries, "manifest content_manifest must not be empty")
     require("policies/default_policy_catalog.json" in seen_paths,
             "manifest content_manifest must include default policy catalog")
+    require("policies/server_memory_cache_policy.json" in seen_paths,
+            "manifest content_manifest must include server memory/cache policy")
     require(manifest.get("content_sha256") == aggregate_digest(entries),
             "manifest aggregate content_sha256 mismatch")
     return manifest
@@ -350,6 +354,69 @@ def validate_policy_profiles(pack_root: Path) -> None:
         seen.add(area)
     missing = REQUIRED_POLICY_AREAS - seen
     require(not missing, "missing default policy areas: " + ",".join(sorted(missing)))
+    memory_profiles = [p for p in profiles if p.get("area") == "memory_resource_governance"]
+    require(memory_profiles and memory_profiles[0].get("resource_file") ==
+            "policies/server_memory_cache_policy.json",
+            "memory_resource_governance must point at server memory/cache policy")
+
+
+def validate_server_memory_cache_policy(pack_root: Path) -> None:
+    doc = load_json(pack_root / "policies/server_memory_cache_policy.json")
+    require(isinstance(doc, dict), "server memory/cache policy must be an object")
+    require(doc.get("schema_version") == 1,
+            "server memory/cache policy schema_version must be 1")
+    require(doc.get("policy_generation") == 1,
+            "server memory/cache policy generation must be 1")
+    require(doc.get("profile_area") == "memory_resource_governance",
+            "server memory/cache policy profile area mismatch")
+    require(doc.get("policy_name") == "default_local_server_memory_cache_v1",
+            "server memory/cache policy name mismatch")
+    limits = doc.get("limits")
+    require(isinstance(limits, dict), "server memory/cache policy limits required")
+    for field in (
+        "hard_limit_bytes",
+        "soft_limit_bytes",
+        "per_context_limit_bytes",
+        "page_buffer_pool_limit_bytes",
+        "min_startup_available_bytes",
+    ):
+        require(isinstance(limits.get(field), int),
+                f"server memory/cache {field} must be an integer")
+    require(limits.get("hard_limit_bytes") >= REQUIRED_MEMORY_HARD_LIMIT_BYTES,
+            "server memory/cache hard limit must be at least 1 GiB")
+    require(limits.get("min_startup_available_bytes") >= REQUIRED_MEMORY_HARD_LIMIT_BYTES,
+            "server memory/cache startup floor must be at least 1 GiB")
+    require(limits.get("page_buffer_pool_limit_bytes") >=
+            REQUIRED_MEMORY_PAGE_BUFFER_POOL_BYTES,
+            "server memory/cache page-buffer pool must be at least 512 MiB")
+    require(limits.get("soft_limit_bytes") <= limits.get("hard_limit_bytes"),
+            "server memory/cache soft limit exceeds hard limit")
+    require(limits.get("per_context_limit_bytes") <= limits.get("hard_limit_bytes"),
+            "server memory/cache per-context limit exceeds hard limit")
+    require(limits.get("page_buffer_pool_limit_bytes") <= limits.get("hard_limit_bytes"),
+            "server memory/cache page-buffer pool exceeds hard limit")
+    allocation = doc.get("allocation")
+    require(isinstance(allocation, dict), "server memory/cache allocation required")
+    require(allocation.get("failure_mode") == "return_error",
+            "server memory/cache failure mode must return errors")
+    require(allocation.get("track_allocations") is True,
+            "server memory/cache must track allocations")
+    adaptive = doc.get("adaptive_cache")
+    require(isinstance(adaptive, dict), "server memory/cache adaptive cache required")
+    require(adaptive.get("enabled") is True,
+            "server memory/cache adaptive cache must be enabled")
+    require(adaptive.get("index_read_optimization") is True,
+            "server memory/cache must enable index read optimization")
+    require(adaptive.get("ordinary_disconnect_heap_trim") is False,
+            "server memory/cache must not trim heap on ordinary disconnect")
+    require(adaptive.get("dirty_writeback_required") is True,
+            "server memory/cache must require dirty writeback")
+    require(adaptive.get("cache_finality_authority") is False,
+            "server memory/cache must not be transaction finality authority")
+    require(adaptive.get("cache_visibility_authority") is False,
+            "server memory/cache must not be visibility authority")
+    require(adaptive.get("wal_or_redo_authority") is False,
+            "server memory/cache must not introduce WAL/redo authority")
 
 
 def validate_default_policy_catalog(pack_root: Path) -> None:
@@ -469,6 +536,7 @@ def main(argv: list[str]) -> int:
     validate_security_providers(pack_root)
     validate_roles_groups_grants(pack_root)
     validate_policy_profiles(pack_root)
+    validate_server_memory_cache_policy(pack_root)
     validate_default_policy_catalog(pack_root)
     validate_catalog_materialization(pack_root, manifest)
     validate_database_lifecycle_descriptor(project_root, manifest)

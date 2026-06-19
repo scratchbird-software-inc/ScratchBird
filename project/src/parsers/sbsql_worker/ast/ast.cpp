@@ -382,7 +382,10 @@ EngineApiCommandAstDomain EngineApiCommandAstDomainFor(const CstDocument& cst) {
     return EngineApiCommandAstDomain::kAgentManagement;
   }
   if (WordsEqual(words, {"EXPORT", "CATALOG", "ARTIFACT"}) ||
-      WordsEqual(words, {"IMPORT", "CATALOG", "ARTIFACT"})) {
+      WordsEqual(words, {"IMPORT", "CATALOG", "ARTIFACT"}) ||
+      WordsEqual(words, {"EXPORT", "EXTERNAL", "GIT", "CATALOG", "SNAPSHOT"}) ||
+      WordsEqual(words, {"DIFF", "EXTERNAL", "GIT", "CATALOG", "SNAPSHOT"}) ||
+      WordsEqual(words, {"PLAN", "EXTERNAL", "GIT", "CATALOG", "ROLLBACK"})) {
     return EngineApiCommandAstDomain::kArtifact;
   }
   if (WordsEqual(words, {"ENGINE", "IMPORT", "ROWS", "EXECUTE"}) ||
@@ -1335,6 +1338,23 @@ AstDocument BuildAst(const CstDocument& cst) {
   const auto raw_keyword = raw_words.empty() ? CanonicalWordForToken(*first) : raw_words[0];
   const auto raw_second =
       raw_words.size() > 1 ? std::string_view(raw_words[1]) : std::string_view();
+  const bool filespace_lifecycle_target_surface =
+      (keyword == "DELETE" && second == "STORAGE" && third == "FILESPACE") ||
+      ((keyword == "ATTACH" || keyword == "DETACH" || keyword == "PROMOTE" ||
+        keyword == "MOVE" || keyword == "MERGE" ||
+        keyword == "GROW" || keyword == "RESIZE" || keyword == "SHRINK" ||
+        keyword == "VERIFY" || keyword == "COMPACT" || keyword == "FENCE" ||
+        keyword == "RELEASE" || keyword == "ARCHIVE" ||
+        keyword == "QUARANTINE" || keyword == "REPAIR" ||
+        keyword == "REBUILD" || keyword == "SALVAGE" ||
+        keyword == "DISCONNECT") &&
+       second == "FILESPACE") ||
+      ((keyword == "CREATE" || keyword == "REFRESH" || keyword == "VALIDATE" ||
+        keyword == "RETIRE") &&
+       second == "SNAPSHOT" && third == "FILESPACE") ||
+      ((keyword == "CREATE" || keyword == "REFRESH" || keyword == "VALIDATE") &&
+       second == "SHADOW" && third == "FILESPACE") ||
+      (keyword == "ALTER" && second == "SHADOW");
   const bool language_control_surface =
       (keyword == "SET" && second == "LANGUAGE") ||
       (keyword == "RESET" && second == "LANGUAGE") ||
@@ -1942,25 +1962,11 @@ AstDocument BuildAst(const CstDocument& cst) {
                keyword == "ADMIT" || keyword == "REJECT") &&
               second == "FILESPACE" && third == "PACKAGE") ||
              (keyword == "SHARD" && second == "PLACEMENT") ||
-             (keyword == "DELETE" && second == "STORAGE" && third == "FILESPACE") ||
-             ((keyword == "ATTACH" || keyword == "DETACH" || keyword == "PROMOTE" ||
-               keyword == "MOVE" || keyword == "MERGE" ||
-               keyword == "GROW" || keyword == "RESIZE" || keyword == "SHRINK" ||
-               keyword == "VERIFY" || keyword == "COMPACT" || keyword == "FENCE" ||
-               keyword == "RELEASE" || keyword == "ARCHIVE" ||
-               keyword == "QUARANTINE" || keyword == "REPAIR" ||
-               keyword == "REBUILD" || keyword == "SALVAGE" ||
-               keyword == "DISCONNECT") &&
-              second == "FILESPACE") ||
-             ((keyword == "CREATE" || keyword == "REFRESH" || keyword == "VALIDATE" ||
-               keyword == "RETIRE") &&
-              second == "SNAPSHOT" && third == "FILESPACE") ||
-             ((keyword == "CREATE" || keyword == "REFRESH" || keyword == "VALIDATE") &&
-              second == "SHADOW" && third == "FILESPACE") ||
-             (keyword == "ALTER" && second == "SHADOW")) {
+             filespace_lifecycle_target_surface) {
     ast.family = StatementFamily::kStorageManagement;
     ast.registry_family = "sbsql.storage.management_operation.v3";
     ast.operation_family = "sblr.filespace.management.v3";
+    ast.requires_name_resolution = filespace_lifecycle_target_surface;
     ast.produces_sblr = true;
   } else if ((keyword == "CREATE" && second == "PROTECTED" && third == "MATERIAL") ||
              (keyword == "ADD" && second == "PROTECTED" && third == "MATERIAL") ||
@@ -2001,7 +2007,13 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.operation_family = "sblr.dml.operation.v3";
     ast.requires_name_resolution = true;
     ast.produces_sblr = true;
-  } else if (keyword == "GRAPH" || keyword == "DOCUMENT" || keyword == "KV" ||
+  } else if (keyword == "KV") {
+    ast.family = StatementFamily::kMultiModel;
+    ast.registry_family = "sbsql.query.multimodel_or_ddl.v3";
+    ast.operation_family = "sblr.query.multimodel_or_ddl.v3";
+    ast.requires_name_resolution = false;
+    ast.produces_sblr = true;
+  } else if (keyword == "GRAPH" || keyword == "DOCUMENT" ||
              keyword == "TIMESERIES" || (keyword == "TIME" && second == "SERIES") ||
              keyword == "FULLTEXT" || keyword == "OPENSEARCH" ||
              (keyword == "CHANGE" && second == "STREAM")) {
@@ -2145,8 +2157,14 @@ AstDocument BuildAst(const CstDocument& cst) {
     ast.produces_sblr = true;
   } else if (keyword == "EXECUTE") {
     ast.family = StatementFamily::kExecute;
-    ast.registry_family = "sbsql.execute.v3";
-    ast.operation_family = "sblr.general.operation.v3";
+    if (second == "PROCEDURE") {
+      ast.registry_family = "sbsql.routine.execute.v3";
+      ast.operation_family = "sblr.routine.execute.v3";
+      ast.requires_name_resolution = true;
+    } else {
+      ast.registry_family = "sbsql.execute.v3";
+      ast.operation_family = "sblr.general.operation.v3";
+    }
     ast.produces_sblr = true;
   } else if (keyword == "CALL" && second != "TARGET" && second != "ARG") {
     ast.family = StatementFamily::kCall;

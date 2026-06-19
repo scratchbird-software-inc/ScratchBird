@@ -117,6 +117,29 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
   return false;
 }
 
+std::size_t EvidenceCount(const std::vector<api::EngineEvidenceReference>& evidence,
+                          std::string_view kind) {
+  std::size_t count = 0;
+  for (const auto& item : evidence) {
+    if (item.evidence_kind == kind) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+std::size_t EvidenceCount(const std::vector<api::EngineEvidenceReference>& evidence,
+                          std::string_view kind,
+                          std::string_view id) {
+  std::size_t count = 0;
+  for (const auto& item : evidence) {
+    if (item.evidence_kind == kind && item.evidence_id == id) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 std::string FieldValue(const api::EngineResultShape& result,
                        std::size_t row_index,
                        std::string_view field_name) {
@@ -242,7 +265,8 @@ api::EngineExecuteImportRowsRequest ImportRequest(
     const api::EngineRequestContext& context,
     std::vector<api::EngineRowValue> rows,
     std::vector<std::string> options,
-    std::string reject_mode = "fail_fast") {
+    std::string reject_mode = "fail_fast",
+    api::EngineApiU64 reject_limit_rows = 10) {
   api::EngineExecuteImportRowsRequest request;
   request.context = context;
   request.target_table.uuid.canonical = fixture.table_uuid;
@@ -254,7 +278,7 @@ api::EngineExecuteImportRowsRequest ImportRequest(
   request.import_policy.reject_payload_policy = "diagnostic_only";
   request.import_policy.resume_policy = "fail_closed";
   if (request.import_policy.reject_mode != "fail_fast") {
-    request.import_policy.reject_limit_rows = 10;
+    request.import_policy.reject_limit_rows = reject_limit_rows;
   }
   request.canonical_rows = std::move(rows);
   request.estimated_row_count = static_cast<api::EngineApiU64>(request.canonical_rows.size());
@@ -505,8 +529,10 @@ void TestRejectModeFallsBackWithoutLosingGoodRows() {
   auto context = Begin(fixture, "cdp011-reject");
   std::vector<api::EngineRowValue> rows;
   rows.push_back(Row("new-id-1", "accepted-a"));
-  rows.push_back(Row("duplicate-id", "rejected-duplicate"));
   rows.push_back(Row("new-id-2", "accepted-b"));
+  rows.push_back(Row("duplicate-id", "rejected-duplicate"));
+  rows.push_back(Row("new-id-3", "accepted-c"));
+  rows.push_back(Row("new-id-4", "accepted-d"));
 
   const auto result = api::EngineExecuteImportRows(ImportRequest(
       fixture,
@@ -515,22 +541,110 @@ void TestRejectModeFallsBackWithoutLosingGoodRows() {
       {"copy_append_batching=enabled", "copy_append_batch_rows=8"},
       "reject_row"));
   RequireOk(result, "CDP-011 reject-row COPY import failed");
-  Require(result.accepted_rows == 2 && result.inserted_rows == 2 && result.rejected_rows == 1,
+  Require(result.accepted_rows == 4 && result.inserted_rows == 4 && result.rejected_rows == 1,
           "CDP-011 reject-row counts mismatch");
+  Require(result.delegated_to_insert_rows,
+          "CDP-011 reject-row path did not use EngineInsertRows");
+  Require(HasEvidence(result.evidence, "copy_append_reject_fallback", "bisection"),
+          "CDP-011 reject-row path did not record bisection fallback");
+  Require(HasEvidence(result.evidence, "copy_slow_path",
+                      "reject_bisection_singleton_fallback"),
+          "CDP-011 reject-row path did not record slow-path reason");
   Require(HasEvidence(result.evidence, "copy_append_singleton_fallback_batches", "1"),
           "CDP-011 reject-row path did not record singleton fallback");
+  Require(HasEvidence(result.evidence, "copy_append_bisection_split_count", "2"),
+          "CDP-011 reject-row split count changed");
+  Require(HasEvidence(result.evidence,
+                      "copy_append_bisection_terminal_singleton_count",
+                      "1"),
+          "CDP-011 reject-row terminal singleton count changed");
+  Require(HasEvidence(result.evidence,
+                      "copy_append_bisection_batch_attempt_count",
+                      "5"),
+          "CDP-011 reject-row batch attempt count changed");
+  Require(EvidenceCount(result.evidence,
+                        "copy_append_bisection_batch_outcome",
+                        "accepted_sub_batch") >= 2,
+          "CDP-011 reject-row did not preserve accepted sub-batches");
+  Require(EvidenceCount(result.evidence,
+                        "copy_append_bisection_accepted_sub_batch_rows",
+                        "2") >= 2,
+          "CDP-011 reject-row accepted sub-batches were not batched");
+  Require(EvidenceCount(result.evidence, "prepared_insert_descriptor") >= 2,
+          "CDP-011 reject-row accepted sub-batches skipped prepared descriptors");
+  Require(EvidenceCount(result.evidence, "insert_row_encoder_plan") >= 2,
+          "CDP-011 reject-row accepted sub-batches skipped canonical row encoder");
+  Require(EvidenceCount(result.evidence, "relation_state_scoped_loads", "1") >= 2,
+          "CDP-011 reject-row accepted sub-batches skipped scoped relation load");
+  Require(EvidenceCount(result.evidence, "mga_row_store", "row_insert") >= 2,
+          "CDP-011 reject-row accepted sub-batches skipped MGA row writer");
+  Require(HasEvidence(result.evidence, "dml_summary.rows_changed", "4"),
+          "CDP-011 reject-row final DML summary changed");
   Require(HasEvidence(result.evidence, "import_reject_materialization", "result_shape"),
           "CDP-011 reject-row path did not materialize reject diagnostic");
-  Require(result.result_shape.rows.size() == 3,
-          "CDP-011 reject-row result should include two accepted rows and one diagnostic row");
-  const std::string duplicate_code = FieldValue(result.result_shape, 1, "diagnostic_code");
+  Require(!HasEvidence(result.evidence, "import_reject_materialization", "reject_target"),
+          "CDP-011 diagnostic-only reject-row path wrote a reject target");
+  Require(result.result_shape.rows.size() == 5,
+          "CDP-011 reject-row result should include four accepted rows and one diagnostic row");
+  const std::string duplicate_code = FieldValue(result.result_shape, 2, "diagnostic_code");
   Require(duplicate_code == "CLI.CONSTRAINT_PRIMARY_KEY_VIOLATION" ||
               duplicate_code == "SB_ENGINE_API_INVALID_REQUEST",
           "CDP-011 reject-row diagnostic code mismatch");
-  const std::string duplicate_detail = FieldValue(result.result_shape, 1, "diagnostic_detail");
+  const std::string duplicate_detail = FieldValue(result.result_shape, 2, "diagnostic_detail");
   Require(duplicate_detail.find("duplicate_key") != std::string::npos ||
               duplicate_detail.find("unique_index_duplicate") != std::string::npos,
           "CDP-011 reject-row diagnostic detail did not describe duplicate key");
+  Require(SelectCount(fixture, context) == 5,
+          "CDP-011 reject-row valid rows were not visible in writer transaction");
+  Rollback(context);
+}
+
+void TestRejectLimitStopsBisectionAfterBoundedRejects() {
+  auto fixture = MakeFixture("reject_limit", 6000);
+  SeedCommittedRow(fixture, "duplicate-id", "seed");
+
+  auto context = Begin(fixture, "cdp011-reject-limit");
+  std::vector<api::EngineRowValue> rows;
+  rows.push_back(Row("duplicate-id", "rejected-first"));
+  rows.push_back(Row("limit-valid-id", "accepted-before-limit"));
+  rows.push_back(Row("duplicate-id", "rejected-over-limit"));
+
+  const auto result = api::EngineExecuteImportRows(ImportRequest(
+      fixture,
+      context,
+      std::move(rows),
+      {"copy_append_batching=enabled", "copy_append_batch_rows=8"},
+      "reject_row",
+      1));
+  Require(!result.ok, "CDP-011 reject limit import unexpectedly succeeded");
+  Require(!result.diagnostics.empty(),
+          "CDP-011 reject limit failure did not return a diagnostic");
+  Require(result.diagnostics.front().detail.find("reject_limit_exceeded") !=
+              std::string::npos,
+          "CDP-011 reject limit diagnostic changed");
+  Require(result.accepted_rows == 1 && result.inserted_rows == 1 &&
+              result.rejected_rows == 2,
+          "CDP-011 reject limit counts mismatch");
+  Require(HasEvidence(result.evidence, "import_execution_refused_by", "reject_limit"),
+          "CDP-011 reject limit refusal evidence missing");
+  Require(HasEvidence(result.evidence, "import_reject_limit_exceeded", "2"),
+          "CDP-011 reject limit count evidence missing");
+  Require(HasEvidence(result.evidence, "copy_append_reject_fallback", "bisection"),
+          "CDP-011 reject limit did not retain bisection evidence");
+  Require(HasEvidence(result.evidence, "copy_slow_path_reason", "reject_limit_exceeded"),
+          "CDP-011 reject limit slow-path reason missing");
+  Require(EvidenceCount(result.evidence,
+                        "copy_append_bisection_batch_outcome",
+                        "rejected_singleton") >= 2,
+          "CDP-011 reject limit did not isolate rejected singleton rows");
+  Require(EvidenceCount(result.evidence, "prepared_insert_descriptor") != 0,
+          "CDP-011 reject limit accepted row skipped prepared descriptor path");
+  Require(EvidenceCount(result.evidence, "insert_row_encoder_plan") != 0,
+          "CDP-011 reject limit accepted row skipped canonical row encoder");
+  Require(HasEvidence(result.evidence, "relation_state_scoped_loads", "1"),
+          "CDP-011 reject limit accepted row skipped scoped relation load");
+  Require(SelectCount(fixture, context) == 2,
+          "CDP-011 reject limit accepted row was not visible before rollback");
   Rollback(context);
 }
 
@@ -543,5 +657,6 @@ int main() {
   TestRollbackInvisibilityAndCommittedReopenVisibility();
   TestSblrExecuteImportRowsDispatchesToExecutor();
   TestRejectModeFallsBackWithoutLosingGoodRows();
+  TestRejectLimitStopsBisectionAfterBoundedRejects();
   return EXIT_SUCCESS;
 }

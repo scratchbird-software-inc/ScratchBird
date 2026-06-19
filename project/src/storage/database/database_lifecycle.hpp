@@ -101,6 +101,7 @@ struct DatabaseOpenConfig {
   std::string expected_resource_seed_pack_name;
   std::string expected_resource_seed_pack_version;
   std::string expected_resource_seed_pack_content_hash;
+  std::string ipar_fault_injection_point;
 };
 
 enum class DatabaseLifecyclePhase : u16 {
@@ -260,6 +261,7 @@ struct DatabaseLifecycleRepairConfig {
   std::string expected_filespace_uuid;
   bool repair_admission_proven = false;
   bool allow_mutation = false;
+  bool engine_read_identity_proof = false;
 };
 
 struct DatabaseDropConfig {
